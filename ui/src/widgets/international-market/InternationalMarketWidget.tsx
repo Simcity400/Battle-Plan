@@ -1,3 +1,4 @@
+import { contractRevision, offerRevision } from './marketData.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameReadText } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
@@ -82,6 +83,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     : data?.warnings ?? NO_WARNINGS, [listed.unattributed, data, view]);
   useDiagnostics(onDiagnostics, warnings);
   const offers = useMemo(() => ready && view === 'inventory' ? offerRows(data!, hour, match.matches) : [], [ready, data, view, hour, match]);
+  const offerMaximum = useMemo(() => offers.reduce((most, item) => item.amount > most ? item.amount : most, 1n), [offers]);
   const [visibleTags, setVisibleTags] = useState<readonly string[]>([]);
   const [visibleVariants, setVisibleVariants] = useState<readonly string[]>([]);
   const onVisibleContracts = useCallback((rows: readonly ContractRow[]) => {
@@ -134,10 +136,10 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 1.4fr)', renderMissing: true,
       value: row => row.name, text: row => row.name ?? EQUIPMENT_UNNAMED, render: row => <EquipmentCell name={row.name} icon={art.get(row.variant)} /> },
     { key: 'amount', header: 'On market', label: 'On market', numeric: true, bar: 'visible', width: 'minmax(90px, max-content)',
-      value: row => row.amount, render: row => <CellBar value={row.amount} maximum={offers.reduce((most, item) => item.amount > most ? item.amount : most, 1n)}>{unitsLabel(row.amount)}</CellBar> },
+      value: row => row.amount, render: row => <CellBar value={row.amount} maximum={offerMaximum}>{unitsLabel(row.amount)}</CellBar> },
     { key: 'level', header: 'Price level', label: 'Price level', width: 'max-content', priority: 1, renderMissing: true,
       value: row => row.level, text: row => levelText(row.level), render: row => levelText(row.level) },
-  ], [country, art, offers]);
+  ], [country, art, offerMaximum]);
   const contractTip = useCallback((row: ContractRow) => contractTooltip(row, tag => tag === null ? { name: 'Country name unavailable' } : labelAt(hour)(tag), hour, viewport), [labelAt, hour, viewport]);
   const offerTip = useCallback((row: OfferRow) => offerTooltip(row, tag => tag === null ? { name: 'Country name unavailable' } : labelAt(hour)(tag), hour, viewport), [labelAt, hour, viewport]);
   const playing = runtime.clock.getSnapshot().playing;
@@ -175,10 +177,12 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const body = !knownAt(data!, hour)
     ? <WidgetState kind="unavailable" message={view === 'inventory' ? 'Market inventory was not recorded.' : 'Contract terms unavailable.'} />
     : view === 'inventory'
-      ? offers.length ? <Table key={`${track.source.id}:${track.branch.id}:inventory`} label="Listed equipment" rows={offers} columns={offerColumns} rowKey={row => row.key}
+      ? offers.length ? <Table rowRevision={row => [...offerRevision(row), row.seller === null ? null : labelAt(hour)(row.seller), art.get(row.variant),
+        offerMaximum]} key={`${track.source.id}:${track.branch.id}:inventory`} label="Listed equipment" rows={offers} columns={offerColumns} rowKey={row => row.key}
         tooltip={offerTip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${label(row.seller)}: market`, [row.seller], null, [row.offer.seller])} {...common} />
         : <WidgetState kind="empty" icon="globe" message="Nothing listed." />
-      : contracts.length ? <Table key={`${track.source.id}:${track.branch.id}:${view}`} label={view === 'contracts' ? 'Market contracts' : 'Market requests'}
+      : contracts.length ? <Table rowRevision={row => [...contractRevision(row), view, row.seller === null ? null : labelAt(hour)(row.seller),
+        row.buyer === null ? null : labelAt(hour)(row.buyer), row.equipment[0] ? art.get(row.equipment[0].variant) : null]} key={`${track.source.id}:${track.branch.id}:${view}`} label={view === 'contracts' ? 'Market contracts' : 'Market requests'}
         rows={contracts} columns={contractColumns} rowKey={row => row.key} tooltip={contractTip} onVisibleRows={onVisibleContracts}
         onRowClick={row => open(`${label(row.seller)} → ${label(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.contract.id}`,
           [row.contract.seller, valueAt(row.contract.buyer, hour)])} {...common} />

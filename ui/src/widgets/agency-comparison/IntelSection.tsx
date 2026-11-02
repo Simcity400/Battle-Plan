@@ -68,8 +68,7 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
     </div>
     {current?.error ? <WidgetState kind="error" failure={current.error} onRetry={() => retry(value => value + 1)} /> : !data ? <WidgetState kind="loading" label="Loading country intel…" /> : <>
       {data.warnings.length > 0 && <details className="agency-unknown"><summary>Unavailable intel inputs ({data.warnings.length})</summary>{data.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}
-      <Table label="Country intel" rows={rows} rowKey={keyOf} columns={columns} sort={{ column: 'group', direction: 'ascending' }} density="compact" narrow={narrowTableOf(widget.options)} tooltip={intelTooltip} parity={{ complete: true, item: row => row }} />
+      <Table rowRevision={row => [row, columns]} label="Country intel" rows={rows} rowKey={keyOf} columns={columns} sort={{ column: 'group', direction: 'ascending' }} density="compact" narrow={narrowTableOf(widget.options)} tooltip={intelTooltip} parity={{ complete: true, item: row => row }} />
     </>}
   </section>;
 }
-

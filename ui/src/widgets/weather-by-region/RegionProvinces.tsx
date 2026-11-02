@@ -50,6 +50,6 @@ export default function RegionProvinces({ runtime, track, region, hour, active, 
   if (current?.error) return <WidgetState kind="error" what="the region’s provinces" failure={current.error} />;
   if (!current?.data) return <WidgetState kind="loading" label="Loading provinces…" />;
   if (!current.data.provinces.length) return <p className="drill-empty">No provinces are recorded for this region at this date.</p>;
-  return <Table label="Provinces of this region" rows={current.data.provinces} columns={columns} rowKey={rowKey}
+  return <Table rowRevision={row => [row, columns]} label="Provinces of this region" rows={current.data.provinces} columns={columns} rowKey={rowKey}
     sort={{ column: 'temperature', direction: 'ascending' }} />;
 }

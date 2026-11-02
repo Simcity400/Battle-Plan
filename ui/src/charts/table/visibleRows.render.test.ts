@@ -65,7 +65,7 @@ class FakeNode {
   addEventListener() {}
   removeEventListener() {}
   matches(selector: string): boolean {
-    return selector === '[data-table-natural]' ? this.hasAttribute('data-table-natural')
+    return selector.startsWith('[data-') ? this.hasAttribute(selector.slice(1, -1))
       : selector === 'tbody tr' ? this.nodeName === 'TR' && this.parentNode?.nodeName === 'TBODY'
       : this.nodeName.toLowerCase() === selector;
   }
@@ -202,12 +202,12 @@ test('equal playback rows do no layout, style or state work, while changed layou
     let cellRenders = 0, clicked: Row | undefined;
     function Cell({ name }: { name: string }) { cellRenders++; return createElement('span', null, name); }
     const columnsFor = (width = 'max-content'): readonly TableColumn<Row>[] => [
-      { key: 'name', label: 'Name', header: 'Name', value: row => row.name, render: row => createElement(Cell, { name: row.name }), width: 'max-content' },
-      { key: 'score', label: 'Score', header: 'Score', value: row => row.score, numeric: true, priority: 1, width },
+      { key: 'name', label: 'Name', header: 'Name', value: row => row.name, widthKey: row => row.name, render: row => createElement(Cell, { name: row.name }), width: 'max-content' },
+      { key: 'score', label: 'Score', header: 'Score', value: row => row.score, widthKey: row => [row.score], numeric: true, priority: 1, width },
     ];
     const rows: Row[] = [{ key: 'a', name: 'Alpha', score: 1, hour: 0 }, { key: 'b', name: 'Beta', score: 2, hour: 0 }];
     const draw = async (items: Row[], columns = columnsFor(), density: 'comfortable' | 'compact' = 'comfortable', rowHeight?: number, rank = false) => {
-      await act(async () => root.render(createElement(Table<Row>, { rows: items, columns, label: 'Playback', rowKey: row => row.key,
+      await act(async () => root.render(createElement(Table<Row>, { rows: items, rowRevision: row => [row.name, row.score], columns, label: 'Playback', rowKey: row => row.key,
         sort: { column: 'name', direction: 'ascending' }, density, rowHeight, rank, onRowClick: row => { clicked = row; } })));
       await settle();
     };
@@ -227,8 +227,8 @@ test('equal playback rows do no layout, style or state work, while changed layou
       assert.equal(reads.properties, 0);
       assert.equal(reads.setFit, 0);
       assert.equal(reads.state, 0);
-      assert.deepEqual(reads.observed, []);
-      assert.equal(cellRenders, renders, 'equal cell props do not render the row or its children');
+      assert.equal(reads.observed.length, 0);
+      assert.equal(cellRenders, renders, 'unchanged data revisions do not render the row or its children');
       const row = container.querySelectorAll('tbody tr')[0];
       const reactProps = Object.entries(row).find(([key]) => key.startsWith('__reactProps$'))?.[1] as { onClick(): void };
       reactProps.onClick();
@@ -239,7 +239,7 @@ test('equal playback rows do no layout, style or state work, while changed layou
       await draw(rows.map(row => ({ ...row, score: row.score + 100 })));
       assert.ok(reads.observed.includes('score'));
       assert.ok(!reads.observed.includes('name'), 'unchanged custom-rendered cells keep their cached natural measurements');
-      assert.ok(reads.layout > 0, 'changed cell content refits');
+      assert.equal(reads.layout, 0, 'a value inside the cached natural maximum needs no synchronous refit');
       const before = cellRenders;
       resetReads();
       await draw(rows.map(row => ({ ...row, score: row.score + 100, name: row.key === 'a' ? 'Alpha extended' : row.name })));
@@ -308,13 +308,13 @@ test('equal playback rows do no layout, style or state work, while changed layou
       assert.equal(reads.layout, 0);
       assert.equal(reads.setFit, 0);
       assert.equal(reads.state, 0);
-      assert.deepEqual(reads.observed, []);
+      assert.equal(reads.observed.length, 0);
       assert.deepEqual(visual(), before, 'unchanged layout metrics preserve the historical natural grid');
     }
   }));
 });
 
-test('windowed rows reuse equal displayed content and keep their latest nested callbacks', async () => {
+test('unkeyed windowed render callbacks update nested controls without inspecting their elements', async () => {
   await withTable(async ({ WindowedRows, root, container, settle }) => {
     let renders = 0, clicked = 0;
     function Cell({ value }: { value: string }) { renders++; return createElement('span', null, value); }
@@ -329,7 +329,7 @@ test('windowed rows reuse equal displayed content and keep their latest nested c
     resetReads();
     const equalRenders = renders;
     await draw(1);
-    assert.equal(renders, equalRenders, 'equal cells skip their row even when its event closures change');
+    assert.ok(renders > equalRenders, 'an arbitrary render callback is conservatively invalidated');
     assert.equal(reads.styles, 0);
     assert.equal(reads.layout, 0);
     const button = container.querySelectorAll('button')[0];
@@ -376,14 +376,14 @@ test('bar values, maxima and colours update paint without reading table layout',
       const columns: readonly TableColumn<Row>[] = [
         { key: 'name', label: 'Name', header: 'Name', width: '100px', value: item => item.key },
         { key: 'resistance', label: 'Resistance', header: 'Resistance', width: mode === 'column' ? '150px' : 'max-content', priority: 1,
-          value: item => item.raw, bar: mode === 'column' ? row.maximum : undefined, widthKey: mode === 'key' ? text : undefined, render: item => {
+          value: item => item.raw, bar: mode === 'column' ? row.maximum : undefined, widthKey: text, render: item => {
             const content = createElement('span', { style: { color: item.color } }, text(item));
             return mode === 'key' ? createElement(ComposedCell, { row: item }) : mode === 'nested'
               ? createElement(CellBar, { value: item.raw, maximum: item.maximum, children: content }) : mode === 'meter'
                 ? createElement('span', null, createElement(ProgressMeter, { value: Number(item.raw) / Number(item.maximum), state: 'live' }), content) : content;
           } },
       ];
-      await act(async () => root.render(createElement(Table<Row>, { rows: [row], columns, label: 'Resistance', rowKey: item => item.key,
+      await act(async () => root.render(createElement(Table<Row>, { rows: [row], rowRevision: item => [item.raw, item.maximum, item.color], columns, label: 'Resistance', rowKey: item => item.key,
         sort: { column: 'name', direction: 'ascending' } })));
       await settle();
     };
@@ -399,7 +399,7 @@ test('bar values, maxima and colours update paint without reading table layout',
     assert.equal(reads.properties, 0);
     assert.equal(reads.setFit, 0);
     assert.equal(reads.state, 0);
-    assert.deepEqual(reads.observed, []);
+    assert.equal(reads.observed.length, 0);
   }));
 });
 
@@ -436,7 +436,7 @@ test('a column addition, removal or reorder resets every historical natural maxi
   }));
 });
 
-test('windowed chart memoization leaves histories opaque and preserves callback consumer handoffs', async () => {
+test('windowed render callbacks leave histories opaque and preserve consumer handoffs', async () => {
   await withTable(async ({ WindowedRows, root, container, settle }) => {
     let dataReads = 0, picked = -1;
     const opaque = { get() { dataReads++; throw new Error('chart history was traversed'); },
@@ -463,11 +463,11 @@ test('windowed chart memoization leaves histories opaque and preserves callback 
     await draw(1);
     assert.equal(dataReads, 0);
     assert.equal(rendered.length, 2, 'changed playheads still render their chart');
-    assert.equal(click, nativeHandler(), 'a native element keeps one stable wrapper per handler');
-    click();
+    assert.notEqual(click, nativeHandler(), 'a changed arbitrary renderer installs its current handler');
+    nativeHandler()();
     assert.equal(picked, 1, 'the stable native handler dispatches the latest committed callback');
     await draw(1);
-    assert.equal(rendered.length, 2, 'equal content and data identities skip the row');
+    assert.equal(rendered.length, 3, 'a new render callback remains an explicit content revision');
     await draw(1, consumeNext);
     assert.equal(rendered.at(-1)!.onSummaryView, consumeNext, 'custom component callbacks retain their original identity');
     assert.deepEqual(first, [0, 1]);
@@ -478,12 +478,13 @@ test('windowed chart memoization leaves histories opaque and preserves callback 
 
 test('the actual Missing cell keys formatted text and font weight rather than raw operands', async () => {
   await withTable(async ({ Table, root, container, settle, loadModule }) => {
+    const { items } = await loadModule<typeof import('../../widgets/division-equipment/divisionEquipmentData.ts')>('/ui/src/widgets/division-equipment/divisionEquipmentData.ts');
     const { missingCell } = await loadModule<typeof import('../../widgets/division-equipment/DivisionEquipmentWidget.tsx')>('/ui/src/widgets/division-equipment/DivisionEquipmentWidget.tsx');
     type Row = { key: string; raw: string };
     const columns: readonly TableColumn<Row>[] = [
       { key: 'name', label: 'Name', header: 'Name', width: '100px', value: row => row.key },
       { key: 'missing', label: 'Missing', header: 'Missing', width: 'max-content', priority: 1, numeric: true,
-        value: row => BigInt(row.raw), render: row => missingCell(row.raw) },
+        value: row => BigInt(row.raw), widthKey: row => [items(row.raw), BigInt(row.raw) > 0n], render: row => missingCell(row.raw) },
     ];
     const draw = async (raw: string) => {
       await act(async () => root.render(createElement(Table<Row>, { rows: [{ key: 'a', raw }], columns, label: 'Missing equipment', rowKey: row => row.key,
@@ -500,14 +501,14 @@ test('the actual Missing cell keys formatted text and font weight rather than ra
     assert.equal(reads.styles, 0);
     assert.equal(reads.setFit, 0);
     assert.equal(reads.state, 0);
-    assert.deepEqual(reads.observed, []);
+    assert.equal(reads.observed.length, 0);
     await draw('40000');
     const zero = container.textContent;
     resetReads();
     await draw('0');
     assert.equal(container.textContent, zero);
     assert.equal(container.querySelectorAll('b').length, 0);
-    assert.ok(reads.layout > 0, 'bold zero and plain zero have distinct rendered widths');
+    assert.ok(reads.observed.includes('missing'), 'bold zero and plain zero have distinct data width keys');
   });
 });
 
@@ -517,12 +518,12 @@ test('unchanged custom-cell styles and colour-only changes do no layout or style
     function CustomCell({ style, children }: { style: CSSProperties; children: ReactNode }) { return createElement('span', { style }, children); }
     type Row = { key: string; hour: number };
     const columns: readonly TableColumn<Row>[] = [
-      { key: 'name', label: 'Name', header: 'Name', width: 'max-content', value: () => 'Alpha',
+      { key: 'name', label: 'Name', header: 'Name', width: 'max-content', widthKey: () => [style.fontWeight], value: () => 'Alpha',
         render: () => createElement(CustomCell, { style, children: 'Alpha' }) },
       { key: 'value', label: 'Value', header: 'Value', width: '80px', priority: 1, value: () => 1 },
     ];
     const draw = async (hour: number) => {
-      await act(async () => root.render(createElement(Table<Row>, { rows: [{ key: 'a', hour }], columns, label: 'Styled cell', rowKey: row => row.key,
+      await act(async () => root.render(createElement(Table<Row>, { rows: [{ key: 'a', hour }], rowRevision: () => [style.color, style.fontWeight], columns, label: 'Styled cell', rowKey: row => row.key,
         sort: { column: 'name', direction: 'ascending' } })));
       await settle();
     };
@@ -535,13 +536,13 @@ test('unchanged custom-cell styles and colour-only changes do no layout or style
       assert.equal(reads.styles, 0);
       assert.equal(reads.setFit, 0);
       assert.equal(reads.state, 0);
-      assert.deepEqual(reads.observed, []);
+      assert.equal(reads.observed.length, 0);
     }
     assert.ok(container.querySelectorAll('span').some(span => span.style.color === 'blue'));
     style = { ...style, fontWeight: 700 };
     resetReads();
     await draw(2);
-    assert.ok(reads.layout > 0, 'a changed font weight still invalidates the width key');
+    assert.ok(reads.observed.includes('name'), 'a changed font weight invalidates the data width key');
   });
 });
 
@@ -553,7 +554,7 @@ test('Generals identity artwork, flags and hidden skill operands are paint-only 
       image: undefined, portraitFailure: undefined, portraitMissing: undefined };
     type Row = { key: string; hour: number };
     const columns: readonly TableColumn<Row>[] = [
-      { key: 'name', label: 'Leader', header: 'Leader', width: 'max-content', value: () => identity.name,
+      { key: 'name', label: 'Leader', header: 'Leader', width: 'max-content', widthKey: () => [identity.name, identity.rank, identity.hasOwner], value: () => identity.name,
         render: () => createElement(LeaderIdentity, identity) },
       { key: 'value', label: 'Value', header: 'Value', width: '80px', priority: 1, value: () => 1 },
     ];
@@ -573,7 +574,7 @@ test('Generals identity artwork, flags and hidden skill operands are paint-only 
     assert.equal(reads.styles, 0);
     assert.equal(reads.setFit, 0);
     assert.equal(reads.state, 0);
-    assert.deepEqual(reads.observed, []);
+    assert.equal(reads.observed.length, 0);
     assert.ok(container.querySelectorAll('img').some(img => img.getAttribute('src') === 'synthetic-portrait'));
     identity = { ...identity, rank: 'Field marshal' };
     resetReads();
@@ -636,5 +637,77 @@ test('compact battle counts use their displayed format without full-mode measure
     assert.equal(reads.styles, 0);
     assert.equal(reads.setFit, 0);
     assert.equal(reads.state, 0);
+  });
+});
+
+test('data revisions render exactly the changed row and include failures without disturbing widths', async () => {
+  await withTable(async ({ Table, root, container, settle }) => {
+    type Row = { key: string; revision: number; value: string; failure?: Error };
+    const rendered: string[] = [];
+    const columns: readonly TableColumn<Row>[] = [
+      { key: 'value', label: 'Value', header: 'Value', width: 'max-content', value: row => row.value,
+        widthKey: row => row.value, render: row => { rendered.push(row.key);
+          return createElement('span', { 'data-detail': row.failure?.message }, row.value); } },
+    ];
+    const draw = async (rows: readonly Row[]) => {
+      await act(async () => root.render(createElement(Table<Row>, { label: 'Keyed rows', rows, columns, rowKey: row => row.key,
+        rowRevision: row => [row.revision, row.failure?.message], sort: { column: 'value', direction: 'ascending' } })));
+      await settle();
+    };
+    const original = [{ key: 'a', revision: 10, value: 'Alpha' }, { key: 'b', revision: 10, value: 'Beta' }];
+    await draw(original);
+    rendered.length = 0; resetReads();
+    const grid = container.querySelectorAll('table')[0].parentNode!.style['--table-columns'];
+    await draw(original.map(row => ({ ...row })));
+    assert.deepEqual(rendered, [], 'new row objects with unchanged data revisions skip cell construction');
+    assert.equal(container.querySelectorAll('table')[0].parentNode!.style['--table-columns'], grid);
+    assert.equal(reads.observed.length, 0);
+    assert.equal(reads.layout, 0);
+    assert.equal(reads.styles, 0);
+    await draw([original[0], { ...original[1], revision: 11, value: 'Beta updated' }]);
+    assert.deepEqual(rendered, ['b']);
+    rendered.length = 0; resetReads();
+    const changed = { ...original[1], revision: 11, value: 'Beta updated' };
+    await draw([{ ...original[0], failure: new Error('Country name request refused') }, changed]);
+    assert.deepEqual(rendered, ['a'], 'a failure changes only its own row even with the same value revision');
+    assert.ok(container.querySelectorAll('span').some(span => span.getAttribute('data-detail') === 'Country name request refused'));
+    assert.ok(!reads.observed.includes('value'), 'failure metadata does not change the cell data width key');
+    rendered.length = 0;
+    await draw([original[0], changed]);
+    assert.deepEqual(rendered, ['a'], 'clearing the failure also invalidates its row');
+    assert.ok(!container.querySelectorAll('span').some(span => span.hasAttribute('data-detail')));
+  });
+});
+
+test('memoRows keys lazy rendering by identity and revision while keeping one current callback', async () => {
+  await withTable(async ({ root, container, settle, loadModule }) => {
+    const { useMemoRows } = await loadModule<typeof import('../memoRows.tsx')>('/ui/src/charts/memoRows.tsx');
+    let rendered = 0, clicked = -1;
+    const opaque = new Proxy({}, { ownKeys() { throw new Error('revision data was traversed'); } });
+    function Rows({ revision, hour }: { revision: number; hour: number }) {
+      const row = useMemoRows();
+      return row('a', [revision, opaque], handlers => {
+        rendered++;
+        return createElement('button', handlers, `Revision ${revision}`);
+      }, { onClick: () => { clicked = hour; } });
+    }
+    const draw = async (revision: number, hour: number) => {
+      await act(async () => root.render(createElement(Rows, { revision, hour })));
+      await settle();
+    };
+    const click = () => (Object.entries(container.querySelectorAll('button')[0]).find(([key]) => key.startsWith('__reactProps$'))?.[1] as { onClick(): void }).onClick;
+    await draw(5, 10);
+    const handler = click();
+    await draw(5, 11);
+    assert.equal(rendered, 1, 'an unchanged revision never invokes the element builder');
+    assert.equal(click(), handler);
+    handler();
+    assert.equal(clicked, 11, 'a skipped row reads its newest committed callback');
+    await draw(6, 12);
+    assert.equal(rendered, 2);
+    assert.equal(click(), handler, 'the callback remains bound once across revision changes');
+    handler();
+    assert.equal(clicked, 12);
+    assert.equal(container.textContent, 'Revision 6');
   });
 });

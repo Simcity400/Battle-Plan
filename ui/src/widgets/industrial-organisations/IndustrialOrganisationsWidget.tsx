@@ -1,3 +1,4 @@
+import { organisationRevision } from './organisationsData.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
@@ -119,7 +120,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} organisations</span>, headerSlot);
   const main = !rows.length ? rosterKnown(data, hour) ? <WidgetState kind="empty" icon="factory" message={`${country} has no industrial organisations at this date.`} />
     : <WidgetState kind="unavailable" message="Industrial organisations were not recorded at this date." />
-    : <Table key={`${track.source.id}:${track.branch.id}:${tag}`} label="Industrial organisations" rows={rows} columns={columns} rowKey={row => row.key}
+    : <Table rowRevision={organisationRevision} key={`${track.source.id}:${track.branch.id}:${tag}`} label="Industrial organisations" rows={rows} columns={columns} rowKey={row => row.key}
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
       rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} hoursPerSecond={hoursPerSecond}
       onRowClick={Chooser ? open : undefined} tooltip={tooltip} />;

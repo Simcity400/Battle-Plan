@@ -176,7 +176,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
     </p>}
     {notes.length > 0 && <p className="politics-spending-note">{notes.join(' ')}</p>}
     {rows.length ? <div className="politics-spending-table">
-      <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label={currency === 'Political' ? 'Political power spending' : 'Command power spending'}
+      <Table rowRevision={row => [row, columns]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label={currency === 'Political' ? 'Political power spending' : 'Command power spending'}
         rows={rows} columns={columns} rowKey={rowKey} sort={spendingSort(widget.options)} setOption={setOption}
         cellBars={options.cellBars !== false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         tooltip={tooltip} menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />

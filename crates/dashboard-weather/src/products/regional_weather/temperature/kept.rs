@@ -13,8 +13,6 @@ use replay_data::{rows::tables, temperature::Memo};
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc};
 
-const MISSING: &str = "region membership is empty or a member province temperature is unavailable";
-
 fn invalid(what: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
@@ -30,16 +28,28 @@ fn reserved<T>(count: usize, owner: &'static str) -> io::Result<Vec<T>> {
 /// What a segment's keeper derived of one hour's temperatures.
 pub(in super::super) enum Derived {
     /// No temperature is shown, for this reason.
-    Refused(String),
+    Refused {
+        reason: String,
+        hour: i32,
+        unavailable: Vec<u32>,
+    },
     /// The means of the regions that changed since the keeper's last hour, by dense index,
     /// ascending; after none at all where `whole`. A region with no mean never has one.
-    Means { whole: bool, changes: Vec<(u32, i64)> },
+    Means {
+        hour: i32,
+        whole: bool,
+        changes: Vec<(u32, i64)>,
+    },
 }
 
 impl Derived {
     pub(in super::super) fn bytes(&self) -> usize {
         match self {
-            Self::Refused(reason) => reason.capacity(),
+            Self::Refused {
+                reason,
+                unavailable,
+                ..
+            } => reason.capacity() + unavailable.capacity() * size_of::<u32>(),
             Self::Means { changes, .. } => changes.capacity() * size_of::<(u32, i64)>(),
         }
     }
@@ -127,7 +137,11 @@ impl Deriving {
                 held.summed = None;
                 held.means.fill(None);
                 held.fresh = true;
-                Ok(Some(Derived::Refused(reason)))
+                Ok(Some(Derived::Refused {
+                    reason,
+                    hour: frame.hour,
+                    unavailable: held.content.unavailable(frame),
+                }))
             }
             Ok(()) => held.aggregate(frame.hour).map(Some),
         }
@@ -215,6 +229,7 @@ impl Held {
         let mut changes = reserved(self.changes.len(), "segment region means")?;
         changes.extend_from_slice(&self.changes);
         Ok(Derived::Means {
+            hour,
             whole: std::mem::take(&mut self.fresh),
             changes,
         })
@@ -276,8 +291,8 @@ impl Mirror {
     /// Takes in what a keeper derived of an hour.
     fn take(&mut self, derived: &Derived) -> io::Result<()> {
         let (whole, changes) = match derived {
-            Derived::Refused(_) => (true, &[][..]),
-            Derived::Means { whole, changes } => (*whole, changes.as_slice()),
+            Derived::Refused { .. } => (true, &[][..]),
+            Derived::Means { whole, changes, .. } => (*whole, changes.as_slice()),
         };
         if whole {
             for at in 0..self.kept.len() {
@@ -423,15 +438,19 @@ impl Observation {
         mirror.publish(publish);
         let layout = content.layout();
         match derived {
-            Derived::Refused(reason) => {
+            Derived::Refused {
+                reason,
+                hour,
+                unavailable,
+            } => {
+                self.note_membership(&content, *hour);
+                self.note_unavailable(*hour, unavailable);
                 self.certified = None;
                 count(&mut self.refused, reason, 1);
                 Ok(false)
             }
-            Derived::Means { .. } => {
-                if layout.missing > 0 {
-                    count(&mut self.refused, MISSING, layout.missing);
-                }
+            Derived::Means { hour, .. } => {
+                self.note_membership(&content, *hour);
                 Ok(layout.missing < layout.len() as u64)
             }
         }

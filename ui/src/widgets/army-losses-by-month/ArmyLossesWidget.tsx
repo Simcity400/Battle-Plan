@@ -126,7 +126,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
       onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}
         {unrecorded && <p className="army-losses-key"><i aria-hidden="true" style={hatchStyle(tokens)} />Not recorded: these months’ totals are unknown</p>}</div>}>
       {month !== null && data && track && <div className="army-losses-drill">
-        {drillRows.length ? <Table label={`${caption} in ${monthLabel(month)}`} rows={drillRows} columns={columns} rowKey={armyKey} sort={SORT}
+        {drillRows.length ? <Table rowRevision={row => [row, columns]} label={`${caption} in ${monthLabel(month)}`} rows={drillRows} columns={columns} rowKey={armyKey} sort={SORT}
           cellBars={false} rankMarkers={false} narrow={narrowTableOf(options)}
           tooltip={row => ({ title: armyName(row.army), rows: [
             ...(row.losses ? CHANNELS.map((channel, index) => ({ label: channel.label, value: formatAmount(row.losses![index], 'manpower') })) : [{ label: 'Manpower', value: 'Not recorded' }]),

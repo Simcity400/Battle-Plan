@@ -47,12 +47,24 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
   const bad = () => { throw new Error('The unit leaders reply is malformed.'); };
   if (!object(input) || !handle(input.branchId) || !integer(input.firstHour) || !Array.isArray(input.leaders) || !Array.isArray(input.people)
     || !Array.isArray(input.roles) || !Array.isArray(input.traits)
+    || !Array.isArray(input.withheld)
     || !ordered(input.observed) || !input.observed.every(s => ['leaders', 'landBattles', 'navalBattles', 'landCommands', 'navalCommands'].every(k => typeof s[k] === 'boolean'))
     || !(input.selectionTags === undefined || Array.isArray(input.selectionTags) && input.selectionTags.every(opaqueTag))
     || typeof input.resultsMissing !== 'string' || typeof input.navyCommandsMissing !== 'string'
     || !Array.isArray(input.warnings) || !input.warnings.every(w => typeof w === 'string')) return bad();
   if (input.preparing !== undefined && (!Array.isArray(input.preparing) || !input.preparing.every(field => typeof field === 'string'))) return bad();
   const firstHour = input.firstHour;
+  const withheldKeys = new Set<string>(); const withheldSpans = new Map<string, { firstHour: number; lastHour: number }[]>();
+  for (const w of input.withheld) {
+    if (!object(w) || !handle(w.reference) || !(w.owner === null || opaqueTag(w.owner)) || !(w.kind === 1 || w.kind === 2) || !text(w.name) || !text(w.detail)
+      || typeof w.reason !== 'string' || !w.reason.length || !ordered(w.spans) || !w.spans.length
+      || !w.spans.every(s => integer(s.firstHour) && integer(s.lastHour) && s.firstHour >= firstHour)) return bad();
+    const key = JSON.stringify([w.reference, w.owner, w.kind, w.name, w.reason, w.detail]);
+    if (withheldKeys.has(key)) return bad();
+    withheldKeys.add(key);
+    const spans = withheldSpans.get(w.reference) ?? []; for (const span of w.spans) spans.push(span); withheldSpans.set(w.reference, spans);
+  }
+  for (const spans of withheldSpans.values()) if (!ordered(spans.sort((a, b) => a.firstHour - b.firstHour))) return bad();
   for (const p of input.people) if (!object(p) || !u32(p.characterId) || !text(p.token) || !text(p.name) || !integer(p.portraitHour) || !handle(p.portraitReference)) return bad();
   for (const t of input.traits) if (!object(t) || typeof t.token !== 'string' || !text(t.name) || !text(t.missing) || !(t.icon === null || png(t.icon))) return bad();
   for (const r of input.roles) if (!object(r) || !(r.owner === null || opaqueTag(r.owner)) || !integer(r.category) || !text(r.rank)
@@ -138,6 +150,20 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
 }
 
 export interface LeaderRow { key: string; hour: number; career: LeaderCareer; value: LeaderValues & LeaderRole; person: LeaderPerson; traitCatalogue: UnitLeadersData['traits']; fought: number | null; preparing: boolean; foughtPartial: boolean; won: number | null; lost: number | null; winRate: number | null; unresolved: number | null }
+
+export function withheldLeadersAt(reply: UnitLeadersData, hour: number, countries: ReadonlySet<string> | null, kind: string) {
+  return reply.withheld.filter(leader => (kind === 'all' || leader.kind === (kind === 'navy' ? 2 : 1))
+    && (leader.owner === null || countries === null || countries.has(leader.owner)) && runAt(leader.spans, hour));
+}
+
+export function withheldLeaderState(leaders: UnitLeadersData['withheld'], country?: string) {
+  const count = new Set(leaders.map(leader => leader.reference)).size;
+  const owners = country ? `of ${country}’s` : 'of these countries’';
+  return {
+    message: `${count} ${owners} ${count === 1 ? 'leader' : 'leaders'} can’t be shown: ${[...new Set(leaders.map(leader => leader.reason))].join('; ')}`,
+    detail: leaders.map(leader => `${leader.name ?? `Leader ${leader.reference}`}: ${leader.reason}${leader.detail ? `; ${leader.detail}` : ''}`).join('\n'),
+  };
+}
 
 /** Current battle-table coverage, shared by every row of the same kind/hour. */
 export function battleHistoryComplete(reply: UnitLeadersData, kind: number, hour: number): boolean {

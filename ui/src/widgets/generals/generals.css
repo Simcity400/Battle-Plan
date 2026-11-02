@@ -21,6 +21,7 @@
 .career-stats { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1) var(--space-4); margin-left: auto; font-size: var(--type-xs); color: var(--muted); text-align: end; }
 .career-stats strong { display: block; color: var(--text); font-size: var(--type-sm); font-weight: 600; }
 .career-note { margin: var(--space-2) var(--space-4); color: var(--muted); font-size: var(--type-xs); }
+.leader-withheld-detail { white-space: pre-line; }
 .career-training { padding: 0 var(--space-4) var(--space-2); font-size: var(--type-xs); color: var(--muted); }
 .career-training strong { color: var(--text); font-size: var(--type-sm); font-weight: 600; }
 .career-training p { margin: var(--space-1) 0 0; }

@@ -44,7 +44,7 @@ export function CountryTable({ rows, labels, sort, setOption, cellBars, density,
     { key: 'netVictoryPoints', header: 'Net VP', label: 'Net VP', priority: 1, text: row => { const value = netVictoryPoints(row); return value == null ? null : formatSigned(value, 0, 0); }, hint: 'Victory points gained minus lost; unknown when any of the states’ points were not recorded.',
       numeric: true, value: netVictoryPoints, render: row => signedCell(netVictoryPoints(row)!), width: 'max-content' },
   ], [labels]);
-  return <Table label="Territory transfers by country" rows={rows} columns={columns} rowKey={countryKey} sort={sort} setOption={setOption}
+  return <Table rowRevision={row => [row, columns]} label="Territory transfers by country" rows={rows} columns={columns} rowKey={countryKey} sort={sort} setOption={setOption}
     cellBars={cellBars} density={density} narrow={narrow} hoursPerSecond={hoursPerSecond} onRowClick={onPick} tooltip={tooltip} menu={menu} onVisibleRows={onVisibleRows} />;
 }
 
@@ -71,6 +71,6 @@ export function TransferTable({ rows, labels, sort, setOption, cellBars, density
         render: row => focus == null ? usNumber.format(row.victoryPoints!) : signedCell(signedVictoryPoints(row)!), width: 'max-content' },
     ];
   }, [labels, focus]);
-  return <Table label={label} rows={rows} columns={columns} rowKey={transferKey} sort={sort} setOption={setOption}
+  return <Table rowRevision={row => [row, columns]} label={label} rows={rows} columns={columns} rowKey={transferKey} sort={sort} setOption={setOption}
     cellBars={cellBars} density={density} narrow={narrow} hoursPerSecond={hoursPerSecond} tooltip={tooltip} menu={menu} onVisibleRows={onVisibleRows} />;
 }

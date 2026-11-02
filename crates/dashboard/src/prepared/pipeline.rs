@@ -102,11 +102,19 @@ pub(crate) fn native_published(
     Ok(current_gates(source, content)?.is_some_and(|published| published.plan().is_some()))
 }
 
-/// Whether `gate`, `name`'s on its branch, was published under the stamp the plan gives `name`
-/// now: by its root's identity; a page published with no root (a refusal) has no stamp.
+fn accepts_publication(name: &str, root: &dashboard_base::prepared::roots::Published) -> bool {
+    let plan = plan::native();
+    let version = plan
+        .family(name)
+        .map(|family| family.version)
+        .or_else(|| registry::job(name).map(|job| job.version));
+    Some(root.identity.schema) == plan.stamp(name) && Some(root.frontier.version) == version
+}
+
+/// A page published with no root (a refusal) has no stamp.
 fn stamped(gate: &gates::Gate, name: &str) -> io::Result<bool> {
     Ok(match gate.publication()? {
-        Some(root) => Some(root.identity.schema) == plan::native().stamp(name),
+        Some(root) => accepts_publication(name, root),
         None => true,
     })
 }
@@ -389,6 +397,22 @@ pub(crate) fn published_pages(
 struct Gates;
 
 impl super::coverage::Gates for Gates {
+    fn page_owner(&self, section: &str) -> Option<&'static str> {
+        match plan::native().owner(section)? {
+            plan::Owner::Family(family) => Some(family.name()),
+            plan::Owner::Job(job) => Some(job),
+            plan::Owner::Coordinator => None,
+        }
+    }
+
+    fn accepts_publication(
+        &self,
+        family: &str,
+        published: &dashboard_base::prepared::roots::Published,
+    ) -> bool {
+        accepts_publication(family, published)
+    }
+
     fn refusal(
         &self,
         source: &Source,
@@ -515,3 +539,6 @@ pub fn run(
 ) -> io::Result<Accepted> {
     super::driver::prepare(source, content, cancelled, accepted)
 }
+
+#[cfg(test)]
+mod publication_tests;

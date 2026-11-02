@@ -75,7 +75,7 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
     [onPick, runtime, trackId]);
   const tooltip = useCallback((flow: PairFlow) => fitTooltip([pairTooltip([flow], label, hour)], height), [label, hour, height]);
   return <><p className="casualty-breakdown-total">{subtotal ? 'Recorded subtotal' : 'Signed total'}: <b>{total}</b></p>
-    <div className="casualty-pair-table"><Table label="Casualty pairs" rows={rows} rowKey={pairKey}
+    <div className="casualty-pair-table"><Table rowRevision={row => [row, tableColumns]} label="Casualty pairs" rows={rows} rowKey={pairKey}
       sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} columns={tableColumns} narrow={narrow} /></div></>;
 });
 

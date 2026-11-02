@@ -6,7 +6,6 @@ import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import Table from '../../charts/table/Table';
-import { defineCellWidth } from '../../charts/table/cellWidth.ts';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
@@ -74,7 +73,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const columns = useMemo<readonly TableColumn<MissionRow>[]>(() => [
     { key: 'region', header: 'Region', label: 'Region', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name,
       render: row => <span className="air-missions-region">{row.name}</span> },
-    ...missions.map((mission, index) => ({ key: `m${mission.id}`, header: <MissionHeader name={mission.name} icon={icon(mission.icon)} />, label: mission.name, numeric: true, width: 'max-content',
+    ...missions.map((mission, index) => ({ key: `m${mission.id}`, headerRevision: icon(mission.icon), header: <MissionHeader name={mission.name} icon={icon(mission.icon)} />, label: mission.name, numeric: true, width: 'max-content',
       priority: index + 1, inTooltip: true, bar: maximum,
       value: (row: MissionRow) => row.planes.get(mission.id) ?? null,
       // A mission the region has no registration for is empty, not unknown.
@@ -107,7 +106,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     : theatres.theatres === undefined ? <WidgetState kind="loading" label="Loading air theatres…" />
     : <WidgetState kind="unavailable" message="Air theatre membership was not recorded at this time." />
     : !rows.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no air missions at this date.`} />
-    : <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Air missions by region" rows={rows} columns={columns}
+    : <Table rowRevision={row => [row, columns]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Air missions by region" rows={rows} columns={columns}
       rowKey={rowKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} cellBars={options.cellBars === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
       hoursPerSecond={hoursPerSecond} onRowClick={row => { setRegion(row); dispatch(openWings(rowsHour, hour, widget.time.mode === 'follow')); }}
@@ -160,7 +159,7 @@ function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWing
   if (!reply) return <WidgetState kind="loading" label="Loading wings…" />;
   if (!reply.wings.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="This region's wings were not recorded at this date." />
     : <WidgetState kind="empty" message="No wings are assigned here at this date." />;
-  return <Table label="Wings in this region" rows={reply.wings} columns={columns} rowKey={wingKey}
+  return <Table rowRevision={row => [row, columns]} label="Wings in this region" rows={reply.wings} columns={columns} rowKey={wingKey}
     sort={{ column: 'planes', direction: 'descending' }} hoursPerSecond={hoursPerSecond}
     tooltip={row => ({ title: row.name ?? 'Wing name unavailable', rows: [
       { label: 'Aircraft', value: row.type ?? 'Aircraft name unavailable' },
@@ -174,5 +173,3 @@ function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWing
 function MissionHeader({ name, icon }: { name: string; icon: string | null }) {
   return <span className="air-missions-head">{icon && <img src={icon} alt="" />}<span>{name}</span></span>;
 }
-
-defineCellWidth(MissionHeader, ({ name, icon }) => <span className="air-missions-head">{icon && <img alt="" />}<span>{name}</span></span>);

@@ -78,3 +78,5 @@ export function policyText(row: OrganisationRow): string {
 /** Whether the organisation roster was read complete at `hour`. */
 export const rosterKnown = (reply: Pick<ProductionCatalogueReply, 'known'>, hour: number) => runAt(reply.known, hour) !== null;
 
+
+export const organisationRevision = (row: OrganisationRow) => [row.name, row.token, row.icon, row.size, row.funds, row.traits, row.policy, row.policyToken, row.cooldownDays];

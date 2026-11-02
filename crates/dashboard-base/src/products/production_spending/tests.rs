@@ -1489,3 +1489,164 @@ fn converted_input_is_its_own_leaf_and_counts_with_or_without_refits() {
     assert_eq!(total(false).unwrap().total_raw.as_deref(), Some("170000"));
     assert_eq!(total(true).unwrap().total_raw.as_deref(), Some("190000"));
 }
+
+#[test]
+fn combined_samples_start_at_both_sources_stretch_without_inventing_missing_coverage() {
+    let equipment = vec![ProductionSpendingRun {
+        first_hour: 60803210,
+        last_hour: 60803239,
+        total_raw: Some("0".into()),
+        reason: None,
+    }];
+    let rocket = vec![ProductionSpendingRun {
+        first_hour: 60803216,
+        ..equipment[0].clone()
+    }];
+    let total = combined(
+        &equipment,
+        &rocket,
+        &[60803210],
+        &[60803210],
+        Some(&[
+            CombinedSample::new(Some(60803210), Some(60803216), 60803233),
+            CombinedSample::new(Some(60803210), Some(60803216), 60803239),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(equipment[0].first_hour, 60803210);
+    assert_eq!(rocket[0].first_hour, 60803216);
+    assert_eq!(total, rocket);
+    let missing = combined(
+        &equipment,
+        &[],
+        &[60803210],
+        &[],
+        Some(&[CombinedSample::new(Some(60803210), None, 60803239)]),
+    )
+    .unwrap();
+    assert_eq!(
+        missing,
+        vec![ProductionSpendingRun {
+            first_hour: 60803210,
+            last_hour: 60803239,
+            total_raw: None,
+            reason: Some(ProductionSpendingUnknown::RocketTableUnavailable),
+        }]
+    );
+    let missing_equipment = combined(
+        &[],
+        &rocket,
+        &[],
+        &[60803210],
+        Some(&[CombinedSample::new(None, Some(60803216), 60803239)]),
+    )
+    .unwrap();
+    assert_eq!(
+        missing_equipment[0].reason,
+        Some(ProductionSpendingUnknown::NotRecorded)
+    );
+    let reversed = combined(
+        &rocket,
+        &equipment,
+        &[60803210],
+        &[60803210],
+        Some(&[CombinedSample::new(Some(60803216), Some(60803210), 60803239)]),
+    )
+    .unwrap();
+    assert_eq!(reversed, total);
+}
+
+#[test]
+fn combined_disappearance_never_extends_unknown_coverage_before_absence() {
+    let equipment = vec![ProductionSpendingRun {
+        first_hour: 100,
+        last_hour: 119,
+        total_raw: Some("1".into()),
+        reason: None,
+    }, ProductionSpendingRun {
+        first_hour: 140,
+        last_hour: 150,
+        total_raw: Some("1".into()),
+        reason: None,
+    }];
+    let rocket = vec![ProductionSpendingRun {
+        first_hour: 100,
+        last_hour: 150,
+        total_raw: Some("2".into()),
+        reason: None,
+    }];
+    for earlier in [false, true] {
+        for cut in [false, true] {
+            let mut samples = Vec::new();
+            if earlier {
+                samples.push(CombinedSample::new(Some(100), Some(100), 110));
+            }
+            if cut {
+                samples.push(CombinedSample::new(Some(120), Some(100), 125));
+            }
+            samples.push(CombinedSample::new(Some(120), Some(100), 130));
+            samples.push(CombinedSample::new(Some(140), Some(100), 150));
+            let total = combined(&equipment, &rocket, &[100], &[100], Some(&samples)).unwrap();
+            let unknown = total.iter().find(|run| run.total_raw.is_none()).unwrap();
+            assert_eq!(unknown.first_hour, 120);
+            assert_eq!(unknown.last_hour, 130);
+            assert_eq!(unknown.reason, Some(ProductionSpendingUnknown::NotRecorded));
+            assert_eq!(total.last().unwrap().first_hour, 140);
+            assert_eq!(total.last().unwrap().total_raw.as_deref(), Some("3"));
+        }
+    }
+    let total = combined(&[], &rocket, &[], &[100], Some(&[
+        CombinedSample::new(Some(90), Some(100), 130),
+    ])).unwrap();
+    assert_eq!(total[0].first_hour, 100);
+    assert_eq!(total[0].reason, Some(ProductionSpendingUnknown::NotRecorded));
+}
+
+#[test]
+fn presence_between_read_stretches_is_unknown_not_left_out() {
+    let track = |presence| TagHistory {
+        hours: vec![72, 240],
+        last_hours: vec![85, 253],
+        presence: vec![Some(presence), Some(presence)],
+        ..Default::default()
+    };
+    let run = |first_hour, last_hour, present, empty_census_hour| ProductionPresenceRun {
+        first_hour,
+        last_hour,
+        present,
+        empty_census_hour,
+    };
+    let (equipment, rocket) = (track(false), track(false));
+    let samples = [
+        CombinedSample::new(Some(72), Some(72), 85),
+        CombinedSample::new(Some(240), Some(240), 253),
+    ];
+    let expected = vec![
+        run(72, 85, Some(false), Some(72)),
+        run(86, 239, None, None),
+        run(240, 253, Some(false), Some(240)),
+    ];
+    assert_eq!(
+        production_presence(Some(&equipment), Some(&rocket), Some(&samples)),
+        expected
+    );
+    assert_eq!(
+        production_presence(Some(&equipment), Some(&rocket), None),
+        expected
+    );
+    // Stretches read back to back leave no gap.
+    let joined = TagHistory {
+        hours: vec![72, 86],
+        last_hours: vec![85, 253],
+        presence: vec![Some(true), Some(true)],
+        ..Default::default()
+    };
+    let samples = [
+        CombinedSample::new(Some(72), Some(72), 85),
+        CombinedSample::new(Some(86), Some(86), 253),
+    ];
+    assert_eq!(
+        production_presence(Some(&joined), Some(&joined), Some(&samples)),
+        vec![run(72, 253, Some(true), None)]
+    );
+}

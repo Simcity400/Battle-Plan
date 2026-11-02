@@ -56,14 +56,34 @@ fn block_lines_follow_the_braces_in_preorder() {
     assert_eq!(document.items.len(), 2);
     let spans: Vec<_> = lines
         .iter()
-        .map(|lines| (lines.open, lines.close))
+        .map(|lines| (lines.open, lines.first_token, lines.close))
         .collect();
-    // a, b, the tagged colour, d, then e; the supplied brace closes d.
-    assert_eq!(spans, [(1, 4), (2, 2), (3, 3), (5, 8), (7, 8)]);
+    // a, b, the tagged colour, d, then e; EOF closes d.
+    assert_eq!(
+        spans,
+        [(1, 2, 4), (2, 2, 2), (3, 3, 3), (5, 7, 8), (7, 8, 8)]
+    );
     assert_eq!(
         parse(b"x = { }").unwrap(),
         parse_unclosed_lines(b"x = { }").unwrap().0
     );
+}
+
+#[test]
+fn block_first_token_lines_skip_whitespace_and_comments() {
+    for (input, first_token) in [
+        (b"x = {\n value = 1\n}".as_slice(), 2),
+        (b"x = {\n\n # comment\n value = 1\n}", 4),
+        (b"x = { value = 1 }", 1),
+        (b"x = {}", 1),
+        (b"x = {\n\n}", 3),
+        (b"x = {\r# comment\rvalue = 1\r}", 1),
+        (b"x = {\r\n\r\n# comment\r\nvalue = 1\r\n}", 4),
+        (b"x = {\n\n", 3),
+    ] {
+        let (_, lines, _) = parse_unclosed_lines(input).unwrap();
+        assert_eq!(lines[0].first_token, first_token, "{input:?}");
+    }
 }
 
 #[test]

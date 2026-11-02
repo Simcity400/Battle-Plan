@@ -113,7 +113,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   if (!rows.length && view?.unknown) return <>{groupFailure}<WidgetState kind="unavailable" message="Election eligibility was not recorded at this date." /></>;
   if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="ballot" message="No country holds elections at this date." /></>;
   return <div className="next-elections">{groupFailure}
-    <Table key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
+    <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
       menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />

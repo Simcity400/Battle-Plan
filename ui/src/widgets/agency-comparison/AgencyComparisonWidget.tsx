@@ -78,12 +78,13 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
     { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)', priority: 3, text: row => row.value.name ?? 'Unknown',
       value: row => row.value.name, render: row => <span title={row.value.name ?? 'Unknown'}>{row.value.name ?? 'Unknown'}</span> },
     { key: 'upgrades', header: 'Agency upgrades', label: 'Agency upgrades', numeric: true, renderMissing: true, width: 'max-content', priority: 2, inTooltip: true,
+      widthKey: row => [row.value.upgrades.nonnegativeLevelSum, row.value.upgrades.readHour === null, row.value.upgrades.unavailable],
       value: row => row.value.upgrades.nonnegativeLevelSum === null ? null : BigInt(row.value.upgrades.nonnegativeLevelSum),
       render: row => <span className={row.value.upgrades.nonnegativeLevelSum === null ? 'agency-unknown' : undefined}>{upgradesCell(row.value)}</span> },
     { key: 'defense', header: data?.defenseLabel ?? 'Defence', label: data?.defenseLabel ?? 'Defence', numeric: true, bar: 'visible', width: 'max-content',
-      value: row => BigInt(row.value.defenseRaw), render: row => row.value.defenseValue ?? 'Unknown' },
+      widthKey: row => [row.value.defenseValue], value: row => BigInt(row.value.defenseRaw), render: row => row.value.defenseValue ?? 'Unknown' },
     { key: 'active', header: 'Operatives active / maximum', label: 'Operatives active / maximum', numeric: true, width: 'max-content', priority: 1, inTooltip: true,
-      value: row => row.value.activeCount,
+      widthKey: row => [row.value.activeCount, row.value.maximum], value: row => row.value.activeCount,
       render: row => <CellBar value={options.cellBars === true && row.value.maximum > 0 ? row.value.activeCount : null} maximum={row.value.maximum}>{operativesCell(row.value)}</CellBar> },
   ], [names, labelAt, options.cellBars, data?.defenseLabel]);
   const tooltip = useCallback((row: AgencyRow) => fitTooltip([{ ...agencyTooltip(row, labelAt(row.hour)(row.tag).name), ...countryNameDetails(labelAt(row.hour)(row.tag)) }], viewport), [labelAt, viewport]);
@@ -106,7 +107,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
   if (!rows.length && !filter.known) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." /></>;
   return <div ref={root} className="agency-comparison">{groupFailure}
-    <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
+    <Table rowRevision={row => [row.value, labelAt(row.hour)(row.tag), options.cellBars]} key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} muted={row => !row.value.created}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />

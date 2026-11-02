@@ -436,7 +436,19 @@ impl Prepared {
         Ok(observed)
     }
     pub fn buffered_bytes(&self) -> usize {
-        self.series.bytes().saturating_add(self.scan.pending_bytes)
+        let active = self.scan.withheld_active.len();
+        // B-tree nodes hold 11 pairs and up to 12 children, with at least five pairs outside the root.
+        let active_bytes = if active == 0 {
+            0
+        } else {
+            (active.div_ceil(5) + 1)
+                * (11 * std::mem::size_of::<(u64, usize)>() + 14 * std::mem::size_of::<usize>())
+        };
+        self.series
+            .bytes()
+            .saturating_add(self.scan.pending_bytes)
+            .saturating_add(self.scan.withheld_bytes)
+            .saturating_add(active_bytes)
     }
     /// Publish the window. Changed outcomes and sources are found against
     /// [`Published`], so the published series is never read.
@@ -466,6 +478,7 @@ impl Prepared {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("leaders:presentation_flush");
         self.scan.seal();
+        self.scan.normalize_withheld();
         // Static presentation uses the existing content loaders once per new token.
         for token in &self.scan.token_list[self.scan.reply.traits.len()..] {
             let info = trait_info(token, content);

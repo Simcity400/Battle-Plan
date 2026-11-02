@@ -28,7 +28,7 @@ document.documentElement.dataset.motion = 'reduced';
 const root = createRoot(host);
 let mounts = 0;
 let shown = { narrow: 'hide' as NarrowTable, tooltip: true, sort: 'first', fourth: '120px', firstPriority: undefined as number | undefined, tall: 0, rank: false };
-const draw = () => root.render(<><TooltipLayer /><Table key={mounts} label="Synthetic table" rows={rows} columns={columnsFor(shown.fourth, shown.firstPriority)} rowKey={row => row.key} narrow={shown.narrow} rank={shown.rank}
+const draw = () => root.render(<><TooltipLayer /><Table rowRevision={row => [row]} key={mounts} label="Synthetic table" rows={rows} columns={columnsFor(shown.fourth, shown.firstPriority)} rowKey={row => row.key} narrow={shown.narrow} rank={shown.rank}
   sort={{ column: shown.sort, direction: 'descending' }} tooltip={shown.tooltip ? row => ({ title: row.name,
     rows: [{ label: 'Fourth measure', value: row.key }, ...(shown.tall ? Array.from({ length: shown.tall }, (_, i) => ({ label: `Fitted row ${i}`, value: String(i) })) : [])] }) : undefined} /></>);
 export const fixture = {
@@ -58,7 +58,7 @@ export const fixture = {
   },
   async mountTree(width = 600, tall = false) {
     host.style.cssText = `width:${width}px;height:400px;display:flex;flex-direction:column`;
-    root.render(<><TooltipLayer /><Table<Line> key={++mounts} label="Synthetic tree" rows={lines} columns={columnsFor('120px') as unknown as TableColumn<Line>[]} rowKey={row => row.key}
+    root.render(<><TooltipLayer /><Table<Line> rowRevision={row => [row]} key={++mounts} label="Synthetic tree" rows={lines} columns={columnsFor('120px') as unknown as TableColumn<Line>[]} rowKey={row => row.key}
       tree={{ children: lineChildren }} unsorted sort={{ column: 'first', direction: 'descending' }}
       tooltip={tall ? row => ({ title: row.name, rows: Array.from({ length: 60 }, (_, i) => ({ label: `Fitted row ${i}`, value: String(i) })) }) : undefined} /></>);
     await settle();

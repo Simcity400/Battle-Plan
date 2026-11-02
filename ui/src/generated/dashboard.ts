@@ -845,11 +845,12 @@ atHour?: LeaderAtHour, };
 export type LeaderAtHour = { hour: number, firstSeenHour: number, fought: number, won: number | null, lost: number | null, };
 export type LeaderTraitInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
 export type LeaderObservation = { firstHour: number, lastHour: number, leaders: boolean, landBattles: boolean, navalBattles: boolean, landCommands: boolean, navalCommands: boolean, };
+export type LeaderWithheld = { reference: string, owner: string | null, kind: number, name: string | null, reason: string, detail: string | null, spans: Array<HourSpan>, };
 export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: Array<LeaderCareer>, people: Array<LeaderPerson>,
 /**
  * Owner/rank facts shared across runs and leaders; a transfer selects another role.
  */
-roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
+roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, withheld: Array<LeaderWithheld>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
 export type UnitLeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type UnitLeaderPortrait = { reference: string, image: string | null, missing: string | null, };
 export type UnitLeaderPortraitsReply = { portraits: Array<UnitLeaderPortrait>, warnings: Array<string>, };

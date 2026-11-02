@@ -21,6 +21,9 @@ test('technical errors stay generic with Retry and named refusals have no Retry'
     const part = render({ kind: 'error', what: 'faction members' }).replace(/<[^>]*>/g, ' ');
     assert.match(part, /Couldn’t load faction members\./);
     assert.doesNotMatch(part, /Retry/, 'no Retry without a way to retry');
+    const withheld = render({ kind: 'unavailable', message: '2 leaders can’t be shown.', detail: 'Commander: Template missing\nLeader 2: Owner missing' });
+    assert.match(withheld, /2 leaders can’t be shown\./);
+    assert.match(withheld, /<small>Commander: Template missing\nLeader 2: Owner missing<\/small>/);
     const refused = render({ kind: 'error', failure: queryFailure({ kind: 'refused', text: 'Land owners are not prepared natively yet' }), onRetry: () => {} }).replace(/<[^>]*>/g, ' ');
     assert.match(refused, /Land owners are not prepared natively yet/);
     assert.doesNotMatch(refused, /Retry/);

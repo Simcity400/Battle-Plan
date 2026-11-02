@@ -3964,7 +3964,13 @@ fn query_data(
                 None,
                 cancelled,
             )?;
-            let mut scan = match store.read(&key, &format!("country-groups-{branch}"), 0)? {
+            let section = format!("country-groups-{branch}");
+            let file = if super::coverage::accepts_pages(&store, &key, &section, branch)? {
+                store.read(&key, &section, 0)?
+            } else {
+                None
+            };
+            let mut scan = match file {
                 Some(file) => {
                     crate::products::country_groups::Scan::read(io::BufReader::new(file))?
                 }

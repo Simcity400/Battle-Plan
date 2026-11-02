@@ -86,3 +86,8 @@ export const firstAmount = (row: AgreementRow, which: 'delivered' | 'lost') => r
  * later hour's reply holds it, whatever the playhead or playback. */
 export const openAgreement = (row: Pick<AgreementRow, 'at' | 'ended'>, breakdown: string, playing: boolean, playhead: number | null): DrillAction =>
   ({ type: 'open', breakdown, hour: row.at, playing, playhead: row.ended ? null : playhead });
+
+export const agreementRevision = (row: AgreementRow) => [
+  row.ended, row.fuel, row.from, row.partner, row.giver, row.receiver, row.items[0]?.name, row.items[0]?.variant, row.items[0]?.schedule,
+  row.items[0]?.delivered, row.items[0]?.lost, row.items.length, row.since, row.last
+];

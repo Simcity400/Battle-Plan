@@ -56,11 +56,11 @@ const memberColumns: TableColumn<Member>[] = [
   { key: 'share', header: 'Share', label: 'Share of the pool', numeric: true, width: 'max-content', priority: 1, value: row => row.value / 12502500 },
 ];
 const forms: Record<string, () => ReactNode> = {
-  'faction-pooled-strength': () => <Table label="Manpower" rows={members} columns={memberColumns} rowKey={row => row.key} sort={{ column: 'manpower', direction: 'descending' }}
+  'faction-pooled-strength': () => <Table rowRevision={row => [row]} label="Manpower" rows={members} columns={memberColumns} rowKey={row => row.key} sort={{ column: 'manpower', direction: 'descending' }}
     onVisibleRows={rows => { drawnMembers = rows.length; }} />,
   'war-contribution': () => <div className="war-contribution"><ButterflyChart label="Contributions" items={butterfly} leftLabel="◀ Viewpoint’s side" rightLabel="Opposing side ▶"
     ratioLabel="" showRatio={false} showFlags={false} showValues={host.clientWidth >= 420} axis active /></div>,
-  'faction-goals': () => <div className="faction-goals"><Table label="Goals" rows={goals} columns={goalColumns} rowKey={row => row.key}
+  'faction-goals': () => <div className="faction-goals"><Table rowRevision={row => [row]} label="Goals" rows={goals} columns={goalColumns} rowKey={row => row.key}
     groupBy={row => ({ key: row.term, label: row.term })} sort={{ column: 'progress', direction: 'descending' }} /></div>,
   'diplomatic-relations': () => <HeatMatrix label="Opinions" rows={matrix} columns={matrix} revision={1} active tooltip={() => null}
     cell={(row, column) => row === column ? null : (row + column) % 5 ? { color: colours[(row + column) % 6] } : { unknown: true }} />,

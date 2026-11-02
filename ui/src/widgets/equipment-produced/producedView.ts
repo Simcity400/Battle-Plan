@@ -140,3 +140,5 @@ export function typeRows(units: ProducedModel | null, ic: ProducedModel | null, 
       share: icValue == null ? '—' : exactPartShare(BigInt(icValue), icTotal) };
   });
 }
+
+export const typeRowRevision = (row: TypeRow) => [row.label, row.models, row.units, row.ic, row.share, row.recorded.units, row.recorded.ic];

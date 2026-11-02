@@ -105,6 +105,59 @@ fn assert_parity(fixture: &Fixture, replay: &Replay) {
 }
 
 #[test]
+fn active_refusals_continue_identically_after_serialized_save_and_resume() {
+    let frames: Vec<_> = (100..=109)
+        .map(|hour| {
+            let mut input = frame(hour, 2);
+            if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *input.tables[TableId::UnitLeaders.index()]
+            {
+                rows[1].owner = if hour < 104 { u32::MAX } else { 0 };
+                if hour >= 105 {
+                    rows[1].kind = 2;
+                }
+                if hour == 107 {
+                    rows.pop();
+                }
+            }
+            input
+        })
+        .collect();
+    let replay = replay(&frames);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [Prepared::new(&replay, 1), Prepared::new(&replay, 1)];
+    let cancelled = AtomicBool::new(false);
+    for (state, fixture) in states.iter_mut().zip(&fixtures) {
+        observe(state, &replay, &frames[..3]);
+        assert_eq!(state.scan.withheld_active.len(), 1);
+        assert!(state.scan.withheld_bytes > std::mem::size_of::<LeaderWithheld>());
+        assert!(
+            state.buffered_bytes()
+                >= state.scan.pending_bytes
+                    + state.scan.withheld_bytes
+                    + std::mem::size_of::<(u64, usize)>()
+        );
+        publish(state, fixture, &cancelled);
+    }
+    states[1] = resume(&fixtures[1]);
+    assert_eq!(
+        states[1].scan.withheld_active,
+        states[0].scan.withheld_active
+    );
+    assert_eq!(states[1].scan.reply.withheld, states[0].scan.reply.withheld);
+    for (state, fixture) in states.iter_mut().zip(&fixtures) {
+        observe(state, &replay, &frames[3..]);
+        publish(state, fixture, &cancelled);
+        assert_parity(fixture, &replay);
+    }
+    dashboard_base::prepared::series::tests::assert_payloads_equal(
+        &fixtures[1].payloads(),
+        &fixtures[0].payloads(),
+        "active leader refusals after serialized resume",
+    );
+}
+
+#[test]
 fn prepared_leaders_match_projection_after_two_commits_resume_gaps_and_identity_changes() {
     let mut frames: Vec<_> = [100, 101, 103, 104]
         .into_iter()
@@ -1028,6 +1081,82 @@ fn prepared_leaders_join_outcomes_published_in_earlier_windows() {
             state = resume(&fixture);
         }
     }
+}
+
+#[test]
+fn withheld_names_carry_unchanged_inputs_and_reread_changed_characters_and_tokens() {
+    use replay_data::rows::LexicalTokenRow;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let frames: Vec<_> = (100..=103)
+        .map(|hour| {
+            let mut input = frame(hour, 2);
+            if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *input.tables[TableId::UnitLeaders.index()]
+            {
+                rows[1].owner = u32::MAX;
+            }
+            if let TableView::Complete(TableRows::Characters(rows)) =
+                &mut *input.tables[TableId::Characters.index()]
+            {
+                rows[1].name_token_id = 7;
+                if hour >= 102 {
+                    rows[1].token = b"Renamed commander".to_vec();
+                }
+            }
+            set(
+                &mut input,
+                TableRows::LexicalTokens(vec![
+                    LexicalTokenRow {
+                        token: 7,
+                        literal: if hour < 103 {
+                            b"first".to_vec()
+                        } else {
+                            b"second".to_vec()
+                        },
+                    },
+                    LexicalTokenRow {
+                        token: 8,
+                        literal: hour.to_string().into_bytes(),
+                    },
+                ]),
+            );
+            input
+        })
+        .collect();
+    let replay = replay(&frames);
+    let mut state = Prepared::new(&replay, 1);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut saved = None;
+    for (at, input) in frames.iter().enumerate() {
+        let wire = encoder.encode(input.clone(), at == 0).unwrap();
+        let decoded = decoder.advance(&wire).unwrap().clone();
+        let changes = tracker.observe_updates(&decoded, Arc::new(wire), replay.format);
+        state.observe(&decoded, &replay, None, &changes).unwrap();
+        let index = state.scan.leader_indices[&reference(1)];
+        let read = state.scan.leaders[index].withheld_name.as_ref().unwrap();
+        assert_eq!(read.epoch, state.scan.identity_epoch);
+        assert_eq!(
+            read.saved.as_deref(),
+            Some(if at < 2 {
+                b"Synthetic commander 1".as_slice()
+            } else {
+                b"Renamed commander".as_slice()
+            })
+        );
+        assert_eq!(
+            read.token.as_deref(),
+            Some(if at < 3 { "first" } else { "second" })
+        );
+        if at == 1 {
+            assert_eq!(read.saved.as_ref().unwrap().as_ptr(), saved.unwrap());
+        }
+        saved = Some(read.saved.as_ref().unwrap().as_ptr());
+    }
+    let fixture = Fixture::new();
+    publish(&mut state, &fixture, &AtomicBool::new(false));
+    assert_parity(&fixture, &replay);
 }
 
 /// Changed identity tables re-read only the leaders whose own rows changed:

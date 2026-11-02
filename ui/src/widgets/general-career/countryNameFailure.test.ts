@@ -15,7 +15,8 @@ test('General Career preserves its caption, empty and unavailable states when th
       data: { observed: [{ firstHour: 0, lastHour: 10, leaders: globalThis.__careerName.recorded }] }, moment: "[10]" });`,
     '/widgets/generals/useLeaders.ts': `export const useLeaderCountries = () => ({ requestSelection: {}, countries: null, known: true, group: {} });`,
     '/widgets/generals/generalsData.ts': `export const leadersAt = () => globalThis.__careerName.rows ? [{}] : [];
-      export const topLeader = () => globalThis.__careerName.top ? {key:"1"} : null; export const validateUnitLeadersReply = data => data;`,
+      export const topLeader = () => globalThis.__careerName.top ? {key:"1"} : null; export const validateUnitLeadersReply = data => data;
+      export const withheldLeadersAt = () => []; export const withheldLeaderState = () => ({ message: "", detail: "" });`,
     '/widgets/general-career/CareerView.tsx': 'export default props => props.caption;',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 10;',
     '/dashboard/countrySelection.ts': 'export const defaultCountryTag = () => "MOD"; export const selectedTags = () => null;',

@@ -1522,8 +1522,8 @@ pub struct LeaderTemplate {
     pub path: ScriptPath,
     /// The authored character token used as its template tag.
     pub tag: String,
-    /// The template read starts at the character block's `{`, or an
-    /// instance's `}` closing `allowed`. `None` means the template was never read.
+    /// The game's reading began at the first token after the character block's `{`,
+    /// or an instance's `}` closing `allowed`. `None` means the template was never read.
     pub line: Option<u32>,
     /// `None` without a role, otherwise its `visible` conjunction;
     /// `Err` for a form refused by name.
@@ -1560,7 +1560,9 @@ fn character_templates(
             .filter(|item| !is_key(item, "instance"))
             .cloned()
             .collect();
-        let line = lines.get(&(value as *const Value)).map(|lines| lines.open);
+        let line = lines
+            .get(&(value as *const Value))
+            .map(|lines| lines.first_token);
         return vec![template(line, template_role_for(&body, roles))];
     }
     let trailing = leading < items.len();
@@ -2474,6 +2476,48 @@ add_scientist_role={scientist={
     }
 
     #[test]
+    fn leader_template_lines_follow_the_first_token_and_instance_allowed_close() {
+        let templates = parse_leader_templates(
+            &"common/characters/mod.txt".into(),
+            br#"characters = {
+    next = {
+        corps_commander = {}
+    }
+    blank = {
+
+        navy_leader = {}
+    }
+    instanced = {
+        instance = {
+            allowed = {
+                always = yes
+            }
+            field_marshal = {}
+        }
+    }
+}"#,
+        )
+        .unwrap();
+        let places: Vec<_> = templates
+            .iter()
+            .map(|template| (template.tag.as_str(), template.line))
+            .collect();
+        assert_eq!(
+            places,
+            [
+                ("next", Some(3)),
+                ("blank", Some(7)),
+                ("instanced", Some(13))
+            ]
+        );
+        assert!(
+            templates
+                .iter()
+                .all(|template| template.role == Ok(Some(Vec::new())))
+        );
+    }
+
+    #[test]
     fn leader_templates_follow_the_database_and_its_lines() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -2513,7 +2557,8 @@ other = { ignored = { navy_leader = { } } }
             found,
             [
                 ("plain", Some(2)),
-                ("joined", Some(3)),
+                // The game's reader has lexed the first body token when reading begins.
+                ("joined", Some(4)),
                 ("replaced", Some(6)),
                 ("advisor_only", Some(7)),
                 // Each instance's line is its allowed's closing brace; the

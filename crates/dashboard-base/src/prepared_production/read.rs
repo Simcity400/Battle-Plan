@@ -1177,6 +1177,9 @@ fn publication(
     branch: u64,
 ) -> io::Result<Option<(u64, Option<[u64; 3]>)>> {
     let name = section(FACTS, branch);
+    if !crate::prepared::coverage::accepts_pages(store, key, &name, branch)? {
+        return Ok(None);
+    }
     let count = store.range_count(key, &name)?.unwrap_or(0);
     let Some(last) = count.checked_sub(1) else {
         return Ok(None);

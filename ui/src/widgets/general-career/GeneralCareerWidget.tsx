@@ -11,7 +11,7 @@ import { pendingReplyAt } from '../../dashboard/preparedPrefix';
 import { useFollowedProduct } from '../../dashboard/products';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { runAt } from '../../charts/series';
-import { leadersAt, topLeader, validateUnitLeadersReply } from '../generals/generalsData';
+import { leadersAt, topLeader, validateUnitLeadersReply, withheldLeadersAt, withheldLeaderState } from '../generals/generalsData';
 import type { UnitLeadersData } from '../generals/generalsData';
 import { useLeaderCountries } from '../generals/useLeaders';
 import { OPTIONS } from './definition';
@@ -57,5 +57,10 @@ function TopGeneralCareer(props: WidgetProps & { hour: number }) {
   if (!selection.known || pendingReplyAt(data, read)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (rows.length) return <WidgetState kind="unavailable" message="Generals’ skills weren’t recorded at this time." detail={nameDetail} />;
   if (!runAt(data.observed, read)?.leaders) return <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." detail={nameDetail} />;
+  const withheld = withheldLeadersAt(data, read, selection.countries, 'land');
+  if (withheld.length) {
+    const state = withheldLeaderState(withheld, dashboard && !nameDetail ? country.name : undefined);
+    return <WidgetState kind="unavailable" message={state.message} detail={nameDetail ? <>{nameDetail}{'\n'}{state.detail}</> : state.detail} />;
+  }
   return <WidgetState kind="empty" message={nameDetail ? 'No generals yet.' : dashboard ? `${country.name} has no generals yet.` : 'These countries have no generals yet.'} detail={nameDetail} />;
 }

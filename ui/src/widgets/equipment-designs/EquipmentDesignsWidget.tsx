@@ -1,3 +1,4 @@
+import { designRevision } from './designsData.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
@@ -114,7 +115,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   if (!data) return <WidgetState kind="loading" label="Loading designs…" />;
   if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   const country = nameReadText(names.get(nameKey(hour, tag)));
-  const table = (label: string, list: readonly DesignRow[], columns: readonly TableColumn<DesignRow>[], obsolete: boolean) => <Table key={`${track.source.id}:${track.branch.id}:${label}`}
+  const table = (label: string, list: readonly DesignRow[], columns: readonly TableColumn<DesignRow>[], obsolete: boolean) => <Table rowRevision={row => [...designRevision(row), art.get(row.key)]} key={`${track.source.id}:${track.branch.id}:${label}`}
     label={label} rows={list} columns={columns} rowKey={row => row.key} sort={obsolete ? OBSOLETE_SORT : sort} setOption={obsolete ? undefined : setOption} cellBars={false}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
     narrow={narrowTableOf(options)} hoursPerSecond={hoursPerSecond} onRowClick={open} menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} />;

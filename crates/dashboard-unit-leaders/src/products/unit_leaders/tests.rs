@@ -778,7 +778,7 @@ fn missing_trait_reads_kinds_and_lightweight_choices_stay_honest() {
     assert_eq!(army.runs[2].value.traits.as_deref(), Some(&[0][..]));
     assert_eq!(army.trait_gains[0].date, LeaderChangeDate::HeldBefore);
     assert_eq!(army.trait_gains.len(), 1); // A missing read never re-dates an existing holding.
-    assert!(reply.observed.iter().all(|o| !o.leaders));
+    assert!(reply.observed.iter().all(|o| o.leaders));
     assert!(reply.traits[0].icon.is_none());
     assert!(reply.traits[0].missing.is_some());
     assert!(reply.warnings.iter().any(|warning| {
@@ -1310,6 +1310,116 @@ fn scan_uses_layered_trait_skill_and_localisation_override_of_rank_key() {
 }
 
 #[test]
+fn withheld_projection_selects_before_copying_and_charges_the_transport_budget() {
+    let mut scanned = UnitLeadersReply {
+        branch_id: "1".into(),
+        first_hour: 100,
+        withheld: (0..1500)
+            .map(|index| LeaderWithheld {
+                reference: index.to_string(),
+                owner: Some(format!("country {index}")),
+                kind: 1,
+                name: None,
+                reason: "x".repeat(18_000),
+                detail: None,
+                spans: vec![HourSpan {
+                    first_hour: 100,
+                    last_hour: 102,
+                }],
+            })
+            .collect(),
+        ..Default::default()
+    };
+    for (reference, owner, kind) in [
+        ("1500", Some("country 0"), 2),
+        ("1501", None, 1),
+        ("1502", None, 2),
+    ] {
+        scanned.withheld.push(LeaderWithheld {
+            reference: reference.into(),
+            owner: owner.map(str::to_owned),
+            kind,
+            name: None,
+            reason: "Owner or template unavailable".into(),
+            detail: None,
+            spans: vec![HourSpan {
+                first_hour: 100,
+                last_hour: 102,
+            }],
+        });
+    }
+    assert!(reply_bytes_within(&scanned, MAX_REPLY_BYTES).is_err());
+    let countries = UnitLeadersParams {
+        selection: LeaderSelection::Countries {
+            tags: vec!["country 0".into()],
+        },
+        leaders: LeaderKinds::Land,
+        ..prepared::full_params("1")
+    };
+    for hour in [None, Some(101), Some(103)] {
+        let selected = project_at(
+            &scanned,
+            &UnitLeadersParams {
+                view: LeaderView::Leaderboard,
+                ..countries.clone()
+            },
+            None,
+            hour,
+            None,
+        );
+        assert_eq!(
+            selected
+                .withheld
+                .iter()
+                .map(|row| row.reference.as_str())
+                .collect::<Vec<_>>(),
+            if hour == Some(103) {
+                vec![]
+            } else {
+                vec!["0", "1501"]
+            }
+        );
+        let bytes = reply_bytes_within(&selected, MAX_REPLY_BYTES).unwrap();
+        let mut without = selected.clone();
+        without.withheld.clear();
+        let empty_bytes = reply_bytes_within(&without, MAX_REPLY_BYTES).unwrap();
+        if !selected.withheld.is_empty() {
+            assert!(bytes > empty_bytes + 18_000);
+            assert!(reply_bytes_within(&selected, bytes - 1).is_err());
+        }
+    }
+    let selected = project(
+        &scanned,
+        &UnitLeadersParams {
+            leaders: LeaderKinds::All,
+            ..countries
+        },
+        None,
+    );
+    assert_eq!(
+        selected
+            .withheld
+            .iter()
+            .map(|row| row.reference.as_str())
+            .collect::<Vec<_>>(),
+        vec!["0", "1500", "1501", "1502"]
+    );
+    let career = project(
+        &scanned,
+        &UnitLeadersParams {
+            selection: LeaderSelection::Leader {
+                reference: "42".into(),
+            },
+            ..prepared::full_params("1")
+        },
+        None,
+    );
+    assert_eq!(career.withheld.len(), 1);
+    assert_eq!(career.withheld[0].reference, "42");
+    assert!(reply_bytes_within(&career, MAX_REPLY_BYTES).is_ok());
+}
+
+#[test]
 fn transport_budget_refuses_without_truncating_and_selection_has_no_count_cap() {
     let mut reply = scan_fixture(2, 4, 3, false);
     let leaders = reply.leaders.len();
@@ -1594,6 +1704,7 @@ fn empty_reply() -> UnitLeadersReply {
         roles: vec![],
         traits: vec![],
         observed: vec![],
+        withheld: vec![],
         selection_tags: None,
         preparing: Vec::new(),
         results_missing: RESULTS_MISSING.into(),

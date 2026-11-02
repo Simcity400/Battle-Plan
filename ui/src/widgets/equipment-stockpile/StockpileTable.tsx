@@ -1,3 +1,4 @@
+import { stockRowRevision } from './stockpileView.ts';
 import { useMemo } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import ArtFallback from '../../components/ArtFallback';
@@ -59,17 +60,17 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
         </span>;
       } },
     player
-      ? { key: 'surplus', header: 'Surplus / shortage', label: 'Surplus or shortage', numeric: true, width: 'max-content', value: row => row.surplus,
+      ? { key: 'surplus', header: 'Surplus / shortage', label: 'Surplus or shortage', numeric: true, width: 'max-content', widthKey: row => [row.surplus, row.share, data.decimals], value: row => row.surplus,
         hint: 'The game’s Logistics figure: available minus needed', renderMissing: true,
         render: row => row.surplus == null ? <span className="stockpile-missing">Not known</span>
           : <span className={`stockpile-balance${row.surplus < 0n ? ' is-negative' : row.surplus > 0n ? ' is-positive' : ''}`}>
             {formatSigned(row.surplus, data.decimals, 0)}{row.share != null && <small>{formatPercent(row.share)} of need</small>}
           </span> }
-      : { key: 'stock', header: 'In stock', label: 'In stock', numeric: true, width: 'max-content', value: row => row.stock, renderMissing: true,
+      : { key: 'stock', header: 'In stock', label: 'In stock', numeric: true, width: 'max-content', widthKey: row => [row.stock, data.decimals], value: row => row.stock, renderMissing: true,
         render: row => row.stock == null ? <span className="stockpile-missing">Not recorded</span> : formatAmount(row.stock, data.decimals, 0) },
     { key: 'output', header: count === 'ic' ? 'IC / day' : 'Output / day', label: count === 'ic' ? 'IC a day' : 'Output a day', numeric: true, width: 'max-content', priority: 1,
       text: row => row.output == null ? 'Not recorded' : formatRate(row.output, data.decimals),
-      value: row => row.output, renderMissing: true,
+      widthKey: row => [row.output, data.decimals], value: row => row.output, renderMissing: true,
       render: row => row.output == null ? <span className="stockpile-missing">Not recorded</span>
         : <span className={row.output === 0n ? 'stockpile-zero-output' : undefined}>{formatRate(row.output, data.decimals)}</span> },
   ], [art, player, count, data.decimals]);
@@ -82,7 +83,7 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
     </div>
     {rows.length === 0 ? <p className="stockpile-empty">Nothing of the included types was recorded on {date}.</p>
       : <div className="stockpile-table-rows" style={{ height: Math.min(rows.length * ROW_HEIGHT + 28, Math.max(160, viewport)) }}>
-        <Table label={`Equipment stockpile on ${date}`} rows={rows} columns={columns} rowKey={row => row.group.key} rowHeight={ROW_HEIGHT} narrow={narrow}
+        <Table rowRevision={row => [...stockRowRevision(row), player, count, data.decimals, art.get(`type:${row.group.key}`)?.icon]} label={`Equipment stockpile on ${date}`} rows={rows} columns={columns} rowKey={row => row.group.key} rowHeight={ROW_HEIGHT} narrow={narrow}
           sort={player ? { column: 'surplus', direction: 'ascending' } : { column: 'stock', direction: 'descending' }}
           onRowClick={row => onPick(row.group, hour, player ? 'balance' : 'stock')}
           tooltip={row => groupTooltip(data, row.group, 'type', hour, { title: row.group.label, subtitle: date,

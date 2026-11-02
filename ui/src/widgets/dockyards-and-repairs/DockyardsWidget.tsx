@@ -79,7 +79,12 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
     </div>
     {!rows.length ? censusComplete(at, 'queueCensusComplete') ? <WidgetState kind="empty" message="No ports with repairs at this date." />
       : <WidgetState kind="unavailable" message="Repairs were not fully recorded at this date." />
-      : <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Repair queues by port" rows={rows} columns={columns}
+      : <Table rowRevision={row => {
+        const group = at.groups.get(row.port), ship = group?.ships.get(row.ship!);
+        const label = shipLabel(data, ship);
+        return row.kind === 'port' ? [portName(data, at, row.port), group?.measures.get('dockyards'), group?.measures.get('priority')]
+          : [label.name, label.source, hullShare(ship)];
+      }} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Repair queues by port" rows={rows} columns={columns}
         rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }} cellBars={options.cellBars !== false}
         density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
         hoursPerSecond={hoursPerSecond} parity={{ complete: true, item: row => row }} />}

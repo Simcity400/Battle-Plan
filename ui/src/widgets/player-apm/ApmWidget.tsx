@@ -104,7 +104,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   if (!data || (players && !registry.data) || !query.known || (!graph && query.pending)) return <WidgetState kind="loading" label="Loading eAPM…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Player orders were not recorded in this campaign." />;
   if (!rows.length && !graph) return <WidgetState kind="empty" message="No eAPM is available for these countries, players and dates." />;
-  if (!graph) return <Table label="eAPM over the selected period" rows={rows} rowKey={rowKey} columns={columns}
+  if (!graph) return <Table rowRevision={row => [row, columns]} label="eAPM over the selected period" rows={rows} rowKey={rowKey} columns={columns}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} hoursPerSecond={motion}
     onVisibleRows={setVisibleRows} tooltip={row => ({ ...countryNameDetails(players ? null : labels.labelAt(row.hour)(row.tag ?? '')), title: players ? names.get(row.id)! : labels.labelAt(row.hour)(row.tag ?? '').name, subtitle: `${dayLabel(first)} – ${dayLabel(last)}`,

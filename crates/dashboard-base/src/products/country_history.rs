@@ -204,7 +204,11 @@ pub fn read_prepared_histories(
     branch: u64,
     through: Option<i32>,
 ) -> io::Result<Option<Arc<RecordedHistories>>> {
-    let Some(file) = store.read(key, &format!("country-identities-{branch}"), 0)? else {
+    let section = format!("country-identities-{branch}");
+    if !crate::prepared::coverage::accepts_pages(store, key, &section, branch)? {
+        return Ok(None);
+    }
+    let Some(file) = store.read(key, &section, 0)? else {
         return Ok(None);
     };
     let pages = vec![file.id().cache_key()];

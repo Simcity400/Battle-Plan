@@ -804,6 +804,14 @@ pub fn query(
         return Ok(Value::Null);
     }
     let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
+    if !crate::prepared::coverage::accepts_pages(
+        &store,
+        &key,
+        &format!("country-groups-{branch}"),
+        branch,
+    )? {
+        return Ok(Value::Null);
+    }
     let Some(file) = store.read(&key, &format!("country-groups-{branch}"), 0)? else {
         return Ok(Value::Null);
     };

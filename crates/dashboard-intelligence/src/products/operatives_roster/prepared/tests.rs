@@ -471,6 +471,18 @@ struct IdentityProgress(Option<dashboard_base::prepared::coverage::Coverage>);
 /// Identity preparation advances independently of the roster's accepted pages.
 struct IdentityGates;
 impl dashboard_base::prepared::coverage::Gates for IdentityGates {
+    fn page_owner(&self, _section: &str) -> Option<&'static str> {
+        None
+    }
+
+    fn accepts_publication(
+        &self,
+        _family: &str,
+        _published: &dashboard_base::prepared::roots::Published,
+    ) -> bool {
+        false
+    }
+
     fn refusal(
         &self,
         _source: &Source,

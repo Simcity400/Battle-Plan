@@ -14,7 +14,7 @@ const data: UnitLeadersData = { branchId: '1', firstHour: 100,
   traits: [], leaders: [{ reference: '21474841193', runs: [{ firstHour: 100, lastHour: 500,
     value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } }],
     traitGains: [], commands: [], battleStarts: [100], battleStartReadHours: [100], unknownBattleStarts: [0], battleWon: [true], battleResultHours: [110], battleResultReadHours: [125], partialFrom: null }],
-  observed: [{ firstHour: 100, lastHour: 500, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
+  withheld: [], observed: [{ firstHour: 100, lastHour: 500, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
   resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
 
 test('actual career renderer preserves growing zoom and supplies the shown label hour', async () => {

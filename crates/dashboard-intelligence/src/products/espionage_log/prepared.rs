@@ -845,11 +845,12 @@ pub fn query(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<EspionageLogReply>> {
     EspionageLog::validate(params).map_err(dashboard_core::invalid)?;
-    let Some(manifest) = series::read_reply::<EspionageLogReply>(
+    let Some(manifest) = series::read_branch_reply::<EspionageLogReply>(
         store,
         key,
         &format!("espionage-log-{branch}-manifest"),
         0,
+        branch,
     )?
     else {
         return Ok(None);
@@ -862,11 +863,12 @@ pub fn query(
             .block_windows(branch)
             .partition_point(|block| block.first_hour <= span.first_hour)
             .saturating_sub(1) as u64;
-        let Some(mut replies) = series::read_reply::<Vec<EspionageLogReply>>(
+        let Some(mut replies) = series::read_branch_reply::<Vec<EspionageLogReply>>(
             store,
             key,
             &format!("espionage-log-{branch}-windows"),
             ordinal,
+            branch,
         )?
         else {
             return Ok(None);

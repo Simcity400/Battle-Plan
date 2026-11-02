@@ -1223,10 +1223,13 @@ fn catalogue_text(
     family: &str,
     branch: u64,
 ) -> io::Result<Option<(Vec<[u64; 3]>, Arc<Vec<u8>>)>> {
+    let section = catalogue_section(family, branch);
+    if !super::coverage::accepts_pages(store, key, &section, branch)? {
+        return Ok(None);
+    }
     let Some(session) = store.session(key)? else {
         return Ok(None);
     };
-    let section = catalogue_section(family, branch);
     let mut ranges = Vec::new();
     while let Some(range) = session.read(&section, ranges.len() as u64)? {
         if range.is_empty() {
@@ -4549,6 +4552,20 @@ pub fn write_compressed<W: super::pages::Pages + ?Sized>(
     );
     Ok(())
 }
+/// A standalone reply, absent while its owning publication needs rebuilding.
+pub fn read_branch_reply<T: DeserializeOwned>(
+    store: &store::Store,
+    key: &store::SourceKey,
+    section: &str,
+    ordinal: u64,
+    branch: u64,
+) -> io::Result<Option<T>> {
+    if !super::coverage::accepts_pages(store, key, section, branch)? {
+        return Ok(None);
+    }
+    read_reply(store, key, section, ordinal)
+}
+
 pub fn read_reply<T: serde::de::DeserializeOwned>(
     store: &store::Store,
     key: &store::SourceKey,

@@ -99,3 +99,5 @@ export function licencePairs(rows: readonly LicenceAt[], width: LicenceWidth): L
   }
   return [...pairs.values()];
 }
+
+export const licenceRevision = (row: LicenceAt) => [row.licensor, row.licensee, row.lent, row.since, ...row.designs.map(design => design.name)];

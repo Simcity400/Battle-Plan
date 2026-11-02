@@ -107,7 +107,7 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   if (!rows.length) return <>{groupFailure}{header}<WidgetState kind="empty" icon="target" message="No goals match this setting." /></>;
   return <div className="faction-goals">{groupFailure}
     {header}
-    <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, dataHour)} goals`}
+    <Table rowRevision={row => [row, columns]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, dataHour)} goals`}
       rows={rows} columns={columns} rowKey={rowKey} groupBy={groupBy} sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
       cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
       muted={row => row.state === 'cancelled'} tooltip={tooltip} />

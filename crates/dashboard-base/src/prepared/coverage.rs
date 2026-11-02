@@ -23,6 +23,9 @@ use std::{
 
 /// What the dashboard answers from the pages of its families and jobs.
 pub trait Gates: Sync {
+    fn accepts_publication(&self, family: &str, published: &roots::Published) -> bool;
+    fn page_owner(&self, section: &str) -> Option<&'static str>;
+
     /// The refusal `query` answers with on `branch`, if a family it reads
     /// refused the branch at or before the hours declared ([`declared`]).
     fn refusal(
@@ -49,6 +52,39 @@ pub trait Gates: Sync {
 }
 
 static GATES: OnceLock<&'static dyn Gates> = OnceLock::new();
+
+pub fn accepts_publication(family: &str, published: &roots::Published) -> bool {
+    GATES
+        .get()
+        .is_none_or(|gates| gates.accepts_publication(family, published))
+}
+
+/// Whether a standalone page's owner published a current root on this branch.
+pub fn accepts_pages(
+    store: &store::Store,
+    key: &store::SourceKey,
+    section: &str,
+    branch: u64,
+) -> io::Result<bool> {
+    let Some(gates) = GATES.get() else {
+        return Ok(true);
+    };
+    let Some(published) = super::gates::current(store, key) else {
+        return Ok(false);
+    };
+    let Some(owner) = gates.page_owner(section) else {
+        return Ok(published.plan().is_none());
+    };
+    let root = published
+        .gate(branch, owner)
+        .map(super::gates::Gate::publication)
+        .transpose()?
+        .flatten();
+    Ok(match root {
+        Some(root) => accepts_publication(owner, root),
+        None => published.plan().is_none(),
+    })
+}
 
 /// The right to declare queries ([`Entry::declare`]), which only the installer of the gates
 /// holds: the query entry point.

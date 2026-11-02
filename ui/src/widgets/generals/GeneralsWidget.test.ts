@@ -15,7 +15,7 @@ test('a leaderboard read at its hour jumps to the first seen hour and keeps its 
     leaders: [{ reference: '5', runs: [{ firstHour: 101, lastHour: 102, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [{ hour: 90, token: 0, date: 'heldBefore' }, { hour: 101, token: 0, date: 'gained' }], commands: [], partialFrom: null,
       atHour: { hour: 102, firstSeenHour: 95, fought: 2, won: 1, lost: 0 } }],
-    observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
+    withheld: [], observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
   const replacements: Record<string, string> = {
     '/widgets/generals/useLeaders.ts': `export const useLeaders = () => ({ data: ${JSON.stringify(data)}, retry() {} });
@@ -44,10 +44,9 @@ test('a leaderboard read at its hour jumps to the first seen hour and keeps its 
     renderToStaticMarkup(createElement(Widget, props));
     const table = host.__projectedLeaders!;
     const [row] = table.rows;
-    const { sameContent } = await vite.ssrLoadModule('/ui/src/charts/memoRows.tsx') as typeof import('../../charts/memoRows.tsx');
     const identity = table.columns.find(column => column.key === 'leader')!.render!;
-    assert.ok(sameContent(identity(row), identity({ ...row, hour: row.hour + 1 })), 'hourly metadata does not change the rendered identity props');
-    assert.ok(!sameContent(identity(row), identity({ ...row, person: { ...row.person, name: 'Renamed leader' } })), 'a displayed identity change still invalidates its cell');
+    assert.equal(renderToStaticMarkup(identity(row)), renderToStaticMarkup(identity({ ...row, hour: row.hour + 1 })), 'hourly metadata does not change the rendered identity');
+    assert.notEqual(renderToStaticMarkup(identity(row)), renderToStaticMarkup(identity({ ...row, person: { ...row.person, name: 'Renamed leader' } })), 'a displayed identity change still invalidates its cell');
     assert.deepEqual([row.fought, row.won, row.lost], [2, 1, 0]);
     const [jump] = table.menu!(row) as unknown as { hour: number; label: string }[];
     assert.equal(jump.hour, 95, 'the first seen hour, not the projected run\'s');
@@ -68,7 +67,7 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null, missing: null }], leaders: [5, 6].map((id, index) => ({ reference: String(id),
       runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: index, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null })),
-    observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
+    withheld: [], observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
   const replacements: Record<string, string> = {
     '/widgets/generals/useLeaders.ts': `export const useLeaders = () => ({ data: ${JSON.stringify(data)}, retry() {} });

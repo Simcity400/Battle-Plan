@@ -78,3 +78,10 @@ export const unitsLabel = (raw: bigint | null) => raw === null ? '—' : formatA
 export const cicLabel = (raw: bigint | null) => raw === null ? '—' : `${formatAmount(raw, 5)} CIC`;
 export const levelText = (level: number | null) => level === null ? '—' : priceLevel(level);
 export const firstWithMore = (items: readonly MarketItemAt[]) => items.length > 1 ? `+${items.length - 1}` : null;
+
+export const contractRevision = (row: ContractRow) => [
+  row.seller, row.buyer, row.equipment[0]?.name, row.equipment[0]?.variant, row.equipment[0]?.amount, row.equipment.length,
+  row.prices[0]?.amount, row.levels[0]?.level, row.assigned, row.convoys, row.collected, row.deliveries
+];
+
+export const offerRevision = (row: OfferRow) => [row.seller, row.variant, row.name, row.amount, row.level];

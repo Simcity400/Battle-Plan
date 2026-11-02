@@ -148,7 +148,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
         <b>{formatAmount(entry.raw, SCALE)}</b>))}</ol>;
   } else if (pool === 'manpower') {
     body = !members.length ? <WidgetState kind="empty" icon="layers" message="No member contributes manpower yet." />
-      : <Table label={`Manpower contributions on ${dayLabel(dataHour)}`} rows={members} columns={manpowerColumns} rowKey={memberKey}
+      : <Table rowRevision={row => [row, manpowerColumns]} label={`Manpower contributions on ${dayLabel(dataHour)}`} rows={members} columns={manpowerColumns} rowKey={memberKey}
         sort={{ column: 'manpower', direction: 'descending' }} rankMarkers={false} tooltip={memberTip} onRowClick={entry => open(entry.tag)}
         onVisibleRows={rows => setVisibleTags(previous => { const next = [...new Set(rows.flatMap(entry => entry.tag ? [entry.tag] : []))];
           return previous.length === next.length && previous.every((tag, index) => tag === next[index]) ? previous : next; })} />;

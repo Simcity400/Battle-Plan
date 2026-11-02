@@ -31,7 +31,7 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
       traitGains: [], commands: [], partialFrom: null,
       foughtHours: [100, ...Array(index + 3).fill(0)], wonHours: [100, ...Array(1 - Math.min(index, 1)).fill(0)],
       lostHours: [100, ...Array(Math.min(index, 1)).fill(0)] })),
-    observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
+    withheld: [], observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] });
   const fixture = {
     data: data(2), countries: new Set(['synthetic']), portraits: new Map<string, unknown>(),

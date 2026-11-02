@@ -116,7 +116,7 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
         rows: battleLogRows(paritySemantic.rows, live), reads: paritySemantic.reads };
     }
   }
-  if (view === 'biggest') return <div className="battle-view"><Table label={label} rows={rows} columns={columns} rowKey={rowKey}
+  if (view === 'biggest') return <div className="battle-view"><Table rowRevision={row => [row, columns]} label={label} rows={rows} columns={columns} rowKey={rowKey}
     sort={sort} setOption={setOption} cellBars={cellBars} rank rankMarkers={rankMarkers} narrow={narrow} density={log.density}
     menu={menu} tooltip={row => fitTooltip([tooltip(row)], viewportHeight)} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
     {...(import.meta.env.MODE === 'parity' ? { parity: tableParity } : {})} /></div>;

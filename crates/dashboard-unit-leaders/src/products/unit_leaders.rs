@@ -57,10 +57,10 @@ use dashboard_text::{
 };
 use replay::container::Replay;
 use replay_data::{
-    format::FormatVersion, rows::CharacterPortraitRow, rows::CharacterRow,
-    rows::LandCombatDetailsRow, rows::NavalCombatDetailsRow, rows::Recorded, rows::TableId,
-    rows::UnitLeaderRow, rows::UnitLeaderTraitExperienceRow, rows::UnitLeaderTraitRow,
-    rows::full_mask, rows::tables,
+    format::FormatVersion, rows::CharacterPortraitRow, rows::CharacterRow, rows::CountryRow,
+    rows::LandCombatDetailsRow, rows::LexicalTokenRow, rows::NavalCombatDetailsRow, rows::Recorded,
+    rows::TableId, rows::UnitLeaderRow, rows::UnitLeaderTraitExperienceRow,
+    rows::UnitLeaderTraitRow, rows::full_mask, rows::tables,
 };
 use replay_frame::{
     frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
@@ -462,6 +462,40 @@ pub struct LeaderObservation {
     pub naval_commands: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderWithheld {
+    pub reference: String,
+    pub owner: Option<String>,
+    pub kind: u8,
+    pub name: Option<String>,
+    pub reason: String,
+    pub detail: Option<String>,
+    pub spans: Vec<HourSpan>,
+}
+
+impl LeaderWithheld {
+    fn identity(&self) -> (&str, Option<&str>, u8, Option<&str>, &str, Option<&str>) {
+        (
+            &self.reference,
+            self.owner.as_deref(),
+            self.kind,
+            self.name.as_deref(),
+            &self.reason,
+            self.detail.as_deref(),
+        )
+    }
+
+    fn heap_bytes(&self) -> usize {
+        self.reference.capacity()
+            + self.owner.as_ref().map_or(0, String::capacity)
+            + self.name.as_ref().map_or(0, String::capacity)
+            + self.reason.capacity()
+            + self.detail.as_ref().map_or(0, String::capacity)
+            + self.spans.capacity() * std::mem::size_of::<HourSpan>()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitLeadersReply {
@@ -474,6 +508,7 @@ pub struct UnitLeadersReply {
 
     pub traits: Vec<LeaderTraitInfo>,
     pub observed: Vec<LeaderObservation>,
+    pub withheld: Vec<LeaderWithheld>,
     pub results_missing: String,
     pub navy_commands_missing: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -521,7 +556,7 @@ impl Serialize for UnitLeadersResponse {
         let history = &self.history;
         let mut reply = serializer.serialize_struct(
             "UnitLeadersReply",
-            10 + usize::from(history.selection_tags.is_some())
+            11 + usize::from(history.selection_tags.is_some())
                 + usize::from(!history.preparing.is_empty()),
         )?;
         reply.serialize_field("branchId", &history.branch_id)?;
@@ -531,6 +566,7 @@ impl Serialize for UnitLeadersResponse {
         reply.serialize_field("roles", &history.roles)?;
         reply.serialize_field("traits", &history.traits)?;
         reply.serialize_field("observed", &history.observed)?;
+        reply.serialize_field("withheld", &history.withheld)?;
         reply.serialize_field("resultsMissing", &history.results_missing)?;
         reply.serialize_field("navyCommandsMissing", &history.navy_commands_missing)?;
         if let Some(tags) = &history.selection_tags {
@@ -590,6 +626,63 @@ fn span_push(spans: &mut Vec<HourSpan>, hour: i32) {
             last_hour: hour,
         });
     }
+}
+
+fn normalize_withheld(rows: &mut Vec<LeaderWithheld>) {
+    rows.sort_by(|a, b| a.identity().cmp(&b.identity()));
+    rows.dedup_by(|later, earlier| {
+        if later.identity() != earlier.identity() {
+            return false;
+        }
+        earlier.spans.append(&mut later.spans);
+        true
+    });
+    for row in rows {
+        row.spans.sort_by_key(|span| span.first_hour);
+        let mut spans: Vec<HourSpan> = Vec::with_capacity(row.spans.len());
+        for span in row.spans.drain(..) {
+            if let Some(last) = spans.last_mut()
+                && i64::from(span.first_hour) <= i64::from(last.last_hour) + 1
+            {
+                last.last_hour = last.last_hour.max(span.last_hour);
+            } else {
+                spans.push(span);
+            }
+        }
+        row.spans = spans;
+    }
+}
+
+fn withheld_at(
+    rows: &[LeaderWithheld],
+    hour: Option<i32>,
+    selected: impl Fn(&LeaderWithheld) -> bool,
+) -> Vec<LeaderWithheld> {
+    rows.iter()
+        .filter(|row| selected(row))
+        .filter_map(|row| {
+            let spans = match hour {
+                Some(hour) => {
+                    let index = row.spans.partition_point(|span| span.last_hour < hour);
+                    vec![
+                        *row.spans
+                            .get(index)
+                            .filter(|span| span.first_hour <= hour)?,
+                    ]
+                }
+                None => row.spans.clone(),
+            };
+            Some(LeaderWithheld {
+                reference: row.reference.clone(),
+                owner: row.owner.clone(),
+                kind: row.kind,
+                name: row.name.clone(),
+                reason: row.reason.clone(),
+                detail: row.detail.clone(),
+                spans,
+            })
+        })
+        .collect()
 }
 
 fn observe(
@@ -1398,6 +1491,79 @@ struct PersonRead {
     person: u32,
 }
 
+struct WithheldNameRead {
+    epoch: u64,
+    character_id: u32,
+    saved: Option<Vec<u8>>,
+    token_id: Option<u32>,
+    token: Option<String>,
+    name: Option<String>,
+}
+
+fn withheld_name<'a>(
+    cached: &'a mut Option<WithheldNameRead>,
+    character_id: u32,
+    epoch: u64,
+    characters: Option<&[CharacterRow]>,
+    lexical: Option<&[LexicalTokenRow]>,
+    content: Option<&Content>,
+) -> &'a Option<String> {
+    if cached
+        .as_ref()
+        .is_none_or(|read| read.epoch != epoch || read.character_id != character_id)
+    {
+        let character = characters.and_then(|rows| {
+            rows.binary_search_by_key(&character_id, |row| row.id)
+                .ok()
+                .map(|at| &rows[at])
+        });
+        let saved = character.map(|row| row.token.as_slice());
+        let token = character
+            .zip(lexical)
+            .and_then(|(row, lexical)| character_script_token(row, lexical));
+        let name = if let Some(read) = cached
+            .as_ref()
+            .filter(|read| read.saved.as_deref() == saved && read.token.as_deref() == token)
+        {
+            read.name.clone()
+        } else {
+            saved.and_then(|saved| {
+                content?
+                    .politics
+                    .character_name(token, std::str::from_utf8(saved).ok()?)
+            })
+        };
+        *cached = Some(WithheldNameRead {
+            epoch,
+            character_id,
+            saved: saved.map(<[u8]>::to_vec),
+            token_id: character.and_then(|row| u32::try_from(row.name_token_id).ok()),
+            token: token.map(str::to_owned),
+            name,
+        });
+    }
+    &cached.as_ref().expect("a withheld name read").name
+}
+
+fn owner_refusal_detail(raw: u32, slot: Option<u32>, country: Option<&CountryRow>) -> String {
+    if raw == 0 {
+        return "raw owner 0".into();
+    }
+    let Some(slot) = slot else {
+        return format!("raw owner {raw} has no CountryLinks row");
+    };
+    let Some(country) = country else {
+        return format!("raw owner {raw} links to slot {slot}, which has no Countries row");
+    };
+    if country.tag.is_empty() {
+        format!("raw owner {raw} links to slot {slot}, whose Countries row has no tag")
+    } else {
+        format!(
+            "raw owner {raw} links to slot {slot}, whose Countries row has a tag that isn't UTF-8"
+        )
+    }
+}
+
 fn person(
     frame: &DecodedFrame,
     row: &UnitLeaderRow,
@@ -1503,11 +1669,16 @@ impl IdentityChanges {
             return 0;
         }
         // Unchanged this hour, so the row the earlier reads read.
-        let character = characters.and_then(|rows| {
-            rows.binary_search_by_key(&row.character_id, |character| character.id)
-                .ok()
-                .map(|at| &rows[at])
-        });
+        let character = OnceCell::new();
+        let character = || {
+            *character.get_or_init(|| {
+                characters.and_then(|rows| {
+                    rows.binary_search_by_key(&row.character_id, |character| character.id)
+                        .ok()
+                        .map(|at| &rows[at])
+                })
+            })
+        };
         let mut renewed = 0;
         if let Some(read) = &mut state.visibility {
             if visibility_epoch.is_some()
@@ -1518,12 +1689,13 @@ impl IdentityChanges {
                         row.visibility_choice,
                         row.template_visibility,
                     )
-                && !Self::has(
-                    &self.tokens,
-                    character
-                        .filter(|character| character.template_present != 0)
-                        .map(|character| character.template_tag),
-                )
+                && (self.tokens.is_empty()
+                    || !Self::has(
+                        &self.tokens,
+                        character()
+                            .filter(|character| character.template_present != 0)
+                            .map(|character| character.template_tag),
+                    ))
             {
                 read.key.0 = visibility_epoch;
                 renewed += 1;
@@ -1532,19 +1704,34 @@ impl IdentityChanges {
             }
         }
         if let Some(last) = &mut state.last_read {
-            if (last.person_epoch == before || lazy)
+            if last.person_epoch != u64::MAX
+                && (last.person_epoch == before || lazy)
                 && last.row.character_id == row.character_id
                 && last.row.kind == row.kind
                 && !Self::has(&self.portraits, Some(row.character_id))
-                && !Self::has(
-                    &self.tokens,
-                    character.and_then(|character| u32::try_from(character.name_token_id).ok()),
-                )
+                && (self.tokens.is_empty()
+                    || !Self::has(
+                        &self.tokens,
+                        character()
+                            .and_then(|character| u32::try_from(character.name_token_id).ok()),
+                    ))
             {
                 last.person_epoch = epoch;
                 renewed += 1;
             } else if lazy {
                 last.person_epoch = u64::MAX;
+            }
+        }
+        if let Some(read) = &mut state.withheld_name {
+            if read.epoch != u64::MAX
+                && (read.epoch == before || lazy)
+                && read.character_id == row.character_id
+                && !Self::has(&self.tokens, read.token_id)
+            {
+                read.epoch = epoch;
+                renewed += 1;
+            } else if lazy {
+                read.epoch = u64::MAX;
             }
         }
         renewed
@@ -1559,6 +1746,9 @@ impl IdentityChanges {
         if let Some(last) = &mut state.last_read {
             last.person_epoch = u64::MAX;
         }
+        if let Some(read) = &mut state.withheld_name {
+            read.epoch = u64::MAX;
+        }
     }
 }
 
@@ -1570,6 +1760,8 @@ struct LeaderState {
     command_indices: HashMap<u64, usize>,
     #[serde(skip)]
     last_read: Option<LastRead>,
+    #[serde(skip)]
+    withheld_name: Option<WithheldNameRead>,
     #[serde(skip)]
     visibility: Option<VisibilityRead>,
     /// Runtime state: empty on resume, when the next read evaluates.
@@ -1588,6 +1780,7 @@ fn invalidate_leader_reads(
     people.clear();
     for state in leaders {
         state.last_read = None;
+        state.withheld_name = None;
         state.visibility = None;
         state.evaluation = None;
     }
@@ -1616,6 +1809,7 @@ impl LeaderState {
             },
             command_indices: HashMap::new(),
             last_read: None,
+            withheld_name: None,
             visibility: None,
             evaluation: None,
             visible_hour: None,
@@ -1772,6 +1966,9 @@ struct NavalSource {
 #[allow(clippy::type_complexity)]
 pub(crate) struct Scan {
     reply: UnitLeadersReply,
+    withheld_active: BTreeMap<u64, usize>,
+    #[serde(skip)]
+    withheld_bytes: usize,
     #[serde(skip)]
     projection: Option<columnar::Work>,
     #[serde(skip)]
@@ -2056,7 +2253,59 @@ pub(crate) fn read_mask(
 }
 
 impl Scan {
+    fn normalize_withheld(&mut self) {
+        let active: Vec<_> = self
+            .withheld_active
+            .iter()
+            .map(|(&reference, &index)| {
+                let row = &self.reply.withheld[index];
+                (
+                    reference,
+                    (
+                        row.reference.clone(),
+                        row.owner.clone(),
+                        row.kind,
+                        row.name.clone(),
+                        row.reason.clone(),
+                        row.detail.clone(),
+                    ),
+                )
+            })
+            .collect();
+        normalize_withheld(&mut self.reply.withheld);
+        self.withheld_active = active
+            .into_iter()
+            .map(|(reference, key)| {
+                let index = self
+                    .reply
+                    .withheld
+                    .binary_search_by(|row| {
+                        row.identity().cmp(&(
+                            key.0.as_str(),
+                            key.1.as_deref(),
+                            key.2,
+                            key.3.as_deref(),
+                            key.4.as_str(),
+                            key.5.as_deref(),
+                        ))
+                    })
+                    .expect("an active withheld leader");
+                (reference, index)
+            })
+            .collect();
+        self.recount_withheld();
+    }
+
+    fn seal_withheld(&mut self, through: i32) {
+        for &index in self.withheld_active.values() {
+            if let Some(span) = self.reply.withheld[index].spans.last_mut() {
+                span.last_hour = through;
+            }
+        }
+    }
+
     fn recount_pending(&mut self) {
+        self.recount_withheld();
         self.pending_bytes = self.stored_runs.len() * std::mem::size_of::<StoredRun>()
             + self
                 .battle_hours
@@ -2071,6 +2320,17 @@ impl Scan {
                     std::mem::size_of::<LeaderCommand>()
                         + command.name_unknown.len() * std::mem::size_of::<HourSpan>()
                 })
+                .sum::<usize>();
+    }
+
+    fn recount_withheld(&mut self) {
+        self.withheld_bytes = self.reply.withheld.capacity()
+            * std::mem::size_of::<LeaderWithheld>()
+            + self
+                .reply
+                .withheld
+                .iter()
+                .map(LeaderWithheld::heap_bytes)
                 .sum::<usize>();
     }
     /// Read the admission holders again when the countries' slots and tags
@@ -2146,6 +2406,7 @@ impl Scan {
         let (Some(at), Some(through)) = (self.materialized, self.frontier) else {
             return;
         };
+        self.seal_withheld(through);
         if let Some(work) = &mut self.projection {
             if work.lazy {
                 for &index in &work.live {
@@ -2235,6 +2496,7 @@ impl Scan {
             roles: Vec::new(),
             traits: Vec::new(),
             observed: Vec::new(),
+            withheld: Vec::new(),
             selection_tags: None,
             preparing: Vec::new(),
             results_missing: RESULTS_MISSING.into(),
@@ -2776,6 +3038,8 @@ impl Scan {
         };
         let Self {
             reply,
+            withheld_active,
+            withheld_bytes,
             projection,
             leader_indices,
             leaders,
@@ -2829,7 +3093,6 @@ impl Scan {
         if let Some(work) = projection {
             if full {
                 work.live.clear();
-                work.failing.clear();
             }
             work.lazy = !full;
             work.results(format, decoded, changes.expect("projected table changes"));
@@ -2917,6 +3180,7 @@ impl Scan {
                 && decoded.complete::<tables::NavalMissionTaskForces>().is_ok()
                 && decoded.complete::<tables::TaskForces>().is_ok();
         if !slot_read(format, &decoded.metrics, TableId::UnitLeaders, hour) {
+            withheld_active.clear();
             observe(
                 &mut reply.observed,
                 hour,
@@ -2935,11 +3199,12 @@ impl Scan {
             *walked = false;
             return Ok(true);
         }
-        let (Ok(rows), Ok(_), Ok(links)) = (
+        let (Ok(rows), Ok(countries), Ok(links)) = (
             decoded.complete::<tables::UnitLeaders>(),
             decoded.complete::<tables::Countries>(),
             decoded.complete::<tables::CountryLinks>(),
         ) else {
+            withheld_active.clear();
             observe(
                 &mut reply.observed,
                 hour,
@@ -3002,7 +3267,6 @@ impl Scan {
             }
         }
         *progress_tables = Some(now_progress.map(SharedView::identity));
-        let mut complete = true;
         let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
         if trait_table
             .as_ref()
@@ -3094,7 +3358,6 @@ impl Scan {
                 owner_tags.get(row.owner).is_some()
             };
             if !owner_known {
-                complete = false;
                 refusals.note(
                     "Leader owner has no resolved recorded country tag",
                     reference.to_string(),
@@ -3133,14 +3396,6 @@ impl Scan {
             {
                 evaluated.push(index);
             }
-            // A projection's coverage counts the leaders whose owner or visibility is unknown.
-            if let Some(work) = projection.as_mut() {
-                if owner_known && decided.is_ok() {
-                    work.failing.remove(&index);
-                } else {
-                    work.failing.insert(index);
-                }
-            }
             planned.push((row_index, index, owner_unchanged, owner_slot, decided));
         }
         if let Some(kept) = kept
@@ -3165,10 +3420,12 @@ impl Scan {
         }
         // Each projected leader read, whether it was visible and the kind it was read with.
         let mut commanders = Vec::new();
+        let owner_countries = OnceCell::new();
         for (row_index, index, owner_unchanged, owner_slot, decided) in planned {
             let row = &rows[row_index];
             let reference = handle(row);
             let state = &mut leaders[index];
+            let previous_withheld = withheld_active.remove(&reference);
             let was_visible = projection
                 .as_ref()
                 .is_some_and(|work| work.live.contains(&index));
@@ -3181,18 +3438,83 @@ impl Scan {
                     state.last_read.as_ref().map(|read| read.row.kind),
                 ));
             }
-            match decided {
-                Ok(true) => {}
-                Ok(false) => {
-                    continue;
-                }
-                Err(reason) => {
-                    complete = false;
-                    if let Some(reason) = reason {
-                        refusals.note(reason, reference.to_string());
+            if let Err(Some(reason)) = &decided {
+                refusals.note(reason.clone(), reference.to_string());
+            }
+            let owner = owner_tags.get(row.owner);
+            let reason = if owner.is_none() {
+                Some("Leader owner has no resolved recorded country tag".to_owned())
+            } else if let Err(reason) = &decided {
+                reason.clone().or_else(|| {
+                    let read = state.visibility.as_ref()?;
+                    match &read.visibility {
+                        LeaderVisibility::Decided(value) => value.clone().decided().err(),
+                        _ => None,
                     }
-                    continue;
-                }
+                })
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let name = withheld_name(
+                    &mut state.withheld_name,
+                    row.character_id,
+                    *identity_epoch,
+                    characters,
+                    lexical,
+                    content,
+                );
+                let detail = owner.is_none().then(|| {
+                    owner_refusal_detail(
+                        row.owner,
+                        owner_slot,
+                        owner_slot.filter(|_| row.owner != 0).and_then(|slot| {
+                            owner_countries
+                                .get_or_init(|| {
+                                    countries
+                                        .iter()
+                                        .map(|row| (row.canonical_slot, row))
+                                        .collect::<BTreeMap<_, _>>()
+                                })
+                                .get(&slot)
+                                .copied()
+                        }),
+                    )
+                });
+                let existing = previous_withheld.filter(|&index| {
+                    let last = &reply.withheld[index];
+                    last.owner.as_ref() == owner
+                        && last.kind == row.kind
+                        && &last.name == name
+                        && last.reason == reason
+                        && last.detail == detail
+                });
+                let index = existing.unwrap_or_else(|| {
+                    let index = reply.withheld.len();
+                    let capacity = reply.withheld.capacity();
+                    reply.withheld.push(LeaderWithheld {
+                        reference: reference.to_string(),
+                        owner: owner.cloned(),
+                        kind: row.kind,
+                        name: name.clone(),
+                        reason,
+                        detail,
+                        spans: Vec::new(),
+                    });
+                    *withheld_bytes += (reply.withheld.capacity() - capacity)
+                        * std::mem::size_of::<LeaderWithheld>()
+                        + reply.withheld[index].heap_bytes();
+                    index
+                });
+                let spans = &mut reply.withheld[index].spans;
+                let capacity = spans.capacity();
+                span_push(spans, hour);
+                *withheld_bytes += (spans.capacity() - capacity) * std::mem::size_of::<HourSpan>();
+                withheld_active.insert(reference, index);
+                continue;
+            }
+            if !matches!(decided, Ok(true)) {
+                continue;
             }
             state.visible_hour = Some(hour);
             if let Some(work) = projection {
@@ -3641,7 +3963,6 @@ impl Scan {
             }
         }
         if let Some(work) = projection.as_mut() {
-            complete = work.failing.is_empty();
             for (index, was_visible, was_kind) in commanders {
                 let state = &leaders[index];
                 if work.live.contains(&index) != was_visible
@@ -3650,6 +3971,14 @@ impl Scan {
                     work.relive.insert(state.reference);
                 }
             }
+        }
+        if full {
+            withheld_active.retain(|_, index| {
+                reply.withheld[*index]
+                    .spans
+                    .last()
+                    .is_some_and(|span| span.last_hour == hour)
+            });
         }
         row_indices.truncate(rows.len());
         *read_gap = world.as_ref().and_then(|world| world.gap.get().cloned());
@@ -3822,7 +4151,7 @@ impl Scan {
         observe(
             &mut reply.observed,
             hour,
-            complete,
+            true,
             land.is_some(),
             navy.is_some(),
             land_commands,
@@ -4042,6 +4371,21 @@ impl Scan {
         reply
             .warnings
             .extend(refusals.lines("Leader data withheld"));
+        reply.withheld.retain(|row| {
+            !choices
+                && params.leaders.includes(row.kind)
+                && match &params.selection {
+                    LeaderSelection::All => true,
+                    LeaderSelection::Leader { reference } => &row.reference == reference,
+                    LeaderSelection::Countries { .. } => row.owner.as_ref().is_none_or(|owner| {
+                        requested
+                            .as_ref()
+                            .expect("selected countries")
+                            .contains(owner.as_str())
+                    }),
+                }
+        });
+        normalize_withheld(&mut reply.withheld);
         extend_content_warnings(&mut reply, content);
         reply.warnings.sort();
         reply.warnings.dedup();
@@ -4903,6 +5247,21 @@ pub(crate) fn project_at(
                 .collect(),
             None => scanned.observed.clone(),
         },
+        withheld: if choices {
+            Vec::new()
+        } else {
+            withheld_at(&scanned.withheld, at, |row| {
+                params.leaders.includes(row.kind)
+                    && match &params.selection {
+                        LeaderSelection::All => true,
+                        LeaderSelection::Leader { reference } => &row.reference == reference,
+                        LeaderSelection::Countries { .. } => row
+                            .owner
+                            .as_ref()
+                            .is_none_or(|owner| requested.contains(owner)),
+                    }
+            })
+        },
         selection_tags: match &params.selection {
             LeaderSelection::Countries { .. } => Some(requested.into_iter().collect()),
             _ => None,
@@ -5070,6 +5429,7 @@ pub fn leaderboard_from(careers: &UnitLeadersReply, hour: i32) -> UnitLeadersRep
             .filter(|span| span.first_hour <= hour && hour <= span.last_hour)
             .cloned()
             .collect(),
+        withheld: withheld_at(&careers.withheld, Some(hour), |_| true),
         results_missing: careers.results_missing.clone(),
         navy_commands_missing: careers.navy_commands_missing.clone(),
         selection_tags: careers.selection_tags.clone(),
@@ -5133,6 +5493,7 @@ impl Product for UnitLeaders {
             LeaderAtHour::decl(),
             LeaderTraitInfo::decl(),
             LeaderObservation::decl(),
+            LeaderWithheld::decl(),
             UnitLeadersReply::decl(),
         ]
     }

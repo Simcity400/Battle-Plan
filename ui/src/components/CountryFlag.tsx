@@ -4,7 +4,6 @@ import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import { isFailedFact } from '../dashboard/countryFacts.ts';
 import { flagReadKey, useFlagReads } from '../dashboard/countryFlags';
 import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentation';
-import { defineCellWidth } from '../charts/table/cellWidth.ts';
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
 
@@ -84,8 +83,6 @@ export function CountryFlagUrl({ url, reason, detail, pending, className = '' }:
   return <span className={`country-flag country-flag-unavailable ${className}`} role="img" data-detail={detail} aria-label={tooltip} data-tooltip={tooltip} />;
 }
 
-defineCellWidth(CountryFlagUrl, ({ url, className = '', fixedSize }) => <span className={fixedSize ? className
-  : `${url ? 'country-flag-art' : 'country-flag country-flag-unavailable'} ${className}`} />);
 
 /** A country's flag from a recording's own installed content, at the hour the country was observed, as
  * preparation chose it. Without a readable flag it shows an empty frame, never a substitute.

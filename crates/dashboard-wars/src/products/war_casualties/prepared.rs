@@ -93,6 +93,14 @@ pub fn read_measures(
     hour: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<Option<CasualtyMeasure>>> {
+    if !dashboard_base::prepared::coverage::accepts_pages(
+        store,
+        source,
+        &format!("casualty-coverage-{branch}"),
+        branch,
+    )? {
+        return Ok((0..keys.len()).map(|_| None).collect());
+    }
     let mut coverage = Reader::new(
         store,
         source,
@@ -758,16 +766,11 @@ pub fn query(
         .branch_id
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid casualty branch"))?;
-    let (tags, catalogue) = series::read_catalogue::<Catalogue>(store, source, "casualty", branch)?
-        .unwrap_or_else(|| {
-            (
-                BTreeMap::new(),
-                Catalogue {
-                    unknown_label: "Unknown attacker".into(),
-                    ..Default::default()
-                },
-            )
-        });
+    let Some((tags, catalogue)) =
+        series::read_catalogue::<Catalogue>(store, source, "casualty", branch)?
+    else {
+        return Ok(Value::Null);
+    };
     let mut observations = Reader::new(
         store,
         source,

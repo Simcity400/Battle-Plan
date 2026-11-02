@@ -1,0 +1,5079 @@
+version = 1
+families_source = "c13.json measured.families"
+
+[[families]]
+name = "aces"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "AirAces"
+fields = "all"
+subscription = "lookup,wake-on-read,watch"
+source = "family-aces.md:23"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "AirWings"
+fields = ["name"]
+subscription = "lookup,watch"
+source = "family-aces.md:26"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,watch"
+source = "family-aces.md:24"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag"]
+subscription = "lookup,watch"
+source = "family-aces.md:30"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,watch"
+source = "family-aces.md:25"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "lookup,watch"
+source = "family-aces.md:31"
+previous = false
+[[families.tables]]
+name = "RaidTooltipOperands"
+fields = ["kind", "key", "raw"]
+subscription = "lookup,watch"
+source = "family-aces.md:29"
+previous = false
+[[families.tables]]
+name = "Raids"
+fields = ["phase", "unit", "air_wing"]
+subscription = "lookup,watch"
+source = "family-aces.md:28"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "lookup,watch"
+source = "family-aces.md"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = ["equipment_token", "creator_link", "origin_link", "append_variant_name", "display_name", "variant_name"]
+subscription = "lookup,wake-on-read,watch"
+source = "family-aces.md:32"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "VariantModules"
+fields = ["slot", "definition_token", "definition_active"]
+subscription = "lookup,watch"
+source = "family-aces.md:33"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = ["definition_token", "level"]
+subscription = "lookup,watch"
+source = "family-aces.md:34"
+previous = false
+[[families.tables]]
+name = "WingEquipment"
+fields = ["variant"]
+subscription = "lookup,watch"
+source = "family-aces.md:27"
+previous = false
+
+[[families]]
+name = "air"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-forces/src/products/air_force/facts.rs:31"
+[[families.tables]]
+name = "AirWings"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-forces/src/products/air_force/facts.rs:31"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-forces/src/products/air_force/facts.rs:31"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "WingEquipment"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "air-missions"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-air-operations/src/products/air_missions.rs:193"
+[[families.tables]]
+name = "AirRegionalMissions"
+fields = ["ordinal"]
+subscription = "stream,wake-on-read"
+source = "crates/dashboard-air-operations/src/products/air_missions.rs:193"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "AirWings"
+fields = ["owner", "planes", "mission_mask", "mission_region"]
+subscription = "stream"
+source = "crates/dashboard-air-operations/src/products/air_missions.rs:193"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-air-operations/src/products/air_missions.rs:193"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "crates/dashboard-air-operations/src/products/air_missions.rs:193"
+previous = false
+
+[[families]]
+name = "air-statistics"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-air-operations/src/products/air_statistics.rs:127"
+[[families.tables]]
+name = "AirStatistics"
+fields = "all"
+subscription = "stream,wake-on-read"
+source = "crates/dashboard-air-operations/src/products/air_statistics.rs:127"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-air-operations/src/products/air_statistics.rs:127"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "crates/dashboard-air-operations/src/products/air_statistics.rs:127"
+previous = false
+
+[[families]]
+name = "air_ledger"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-military-air-ledger/src/products/military_air_ledger/facts.rs:30"
+[[families.tables]]
+name = "AirLossEvents"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "BuildingBombingDamage"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-military-air-ledger/src/products/military_air_ledger/facts.rs:30"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-military-air-ledger/src/products/military_air_ledger/facts.rs:30"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "army"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-forces/src/products/army_size/facts.rs:31"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-forces/src/products/army_size/facts.rs:31"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-forces/src/products/army_size/facts.rs:31"
+previous = false
+[[families.tables]]
+name = "DivisionCensus"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionLandInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionTemplateIcons"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Divisions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SentVolunteers"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VolunteerHosts"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "autonomy"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Autonomy"
+fields = ["score", "lower_score", "upper_score", "state", "previous", "next"]
+subscription = "stream"
+source = "family-autonomy.md:15"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-autonomy.md:13"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-autonomy.md:14"
+previous = false
+[[families.tables]]
+name = "Subjects"
+fields = ["start_hour", "end_hour", "cancel", "autonomy_ratio"]
+subscription = "stream"
+source = "family-autonomy.md:16"
+previous = false
+
+[[families]]
+name = "casualties"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-wars/src/products/war_casualties.rs:1880"
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "crates/dashboard-wars/src/products/war_casualties.rs:1880"
+previous = false
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-wars/src/products/war_casualties.rs:1880"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "leader_ideology", "overlord"]
+subscription = "stream"
+source = "crates/dashboard-wars/src/products/war_casualties.rs:1880"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "crates/dashboard-wars/src/products/war_casualties.rs:1880"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "crates/dashboard-wars/src/products/war_casualties.rs:1880"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "construction"
+origin = "note"
+ordered = true
+[[families.tables]]
+name = "BuildingConstruction"
+fields = ["country", "active_factories", "cost", "amount", "created_hour", "building_type", "target_flags", "target_location", "target_state", "repair_levels"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-construction.md:21"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "ConstructionLineOutput"
+fields = ["railway", "construction_raw", "repair_raw", "since_hour", "observed_since_creation", "linked", "ended", "exact", "repair_ticks", "completion"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-construction.md:23"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "family-construction.md:17"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream"
+source = "family-construction.md:18"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "ordered,stream"
+source = "family-construction.md:25"
+previous = false
+[[families.tables]]
+name = "ProvinceBuildings"
+fields = ["level", "healthy_level"]
+subscription = "ordered,stream"
+source = "family-construction.md:20"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["state"]
+subscription = "ordered,stream"
+source = "family-construction.md:24"
+previous = false
+[[families.tables]]
+name = "RailwayConstruction"
+fields = ["country", "active_factories", "cost", "amount", "created_hour", "base_level", "target_level", "route"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-construction.md:22"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "StateBuildings"
+fields = ["level", "healthy_level"]
+subscription = "ordered,stream"
+source = "family-construction.md:19"
+previous = false
+
+[[families]]
+name = "convoys"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "ConvoyClients"
+fields = ["category", "owner", "other", "bad", "convoys_assigned", "convoys_required"]
+subscription = "reverse,stream"
+source = "family-convoys.md:19"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,reverse,stream"
+source = "family-convoys.md:15"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-convoys.md:16"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-convoys.md:21"
+previous = false
+[[families.tables]]
+name = "RegionalConvoyEfficiency"
+fields = ["efficiency"]
+subscription = "reverse,stream"
+source = "family-convoys.md:17"
+previous = false
+[[families.tables]]
+name = "ResourceDefinitions"
+fields = ["token"]
+subscription = "stream"
+source = "family-convoys.md:20"
+previous = false
+[[families.tables]]
+name = "ResourceExchanges"
+fields = ["exporter", "importer", "resource", "convoys_assigned", "convoys_required", "efficiency_a", "efficiency_b"]
+subscription = "reverse,stream"
+source = "family-convoys.md:18"
+previous = false
+[[families.reverse]]
+chain = ["RegionalConvoyEfficiency.$key:32"]
+[[families.reverse]]
+chain = ["ResourceExchanges.importer"]
+[[families.reverse]]
+chain = ["ResourceExchanges.exporter"]
+[[families.reverse]]
+chain = ["ConvoyClients.other"]
+[[families.reverse]]
+chain = ["ConvoyClients.owner"]
+[[families.reverse]]
+chain = ["Countries.canonical_slot"]
+
+[[families]]
+name = "country-styles"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard/src/products/style_runs/facts.rs:32"
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:77"
+previous = false
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:61"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["red", "green", "blue", "cosmetic_tag", "name_tag", "leader_ideology", "overlord"]
+subscription = "stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:63"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:62"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:76"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:75"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"]
+subscription = "stream"
+source = "crates/dashboard/src/products/style_runs/facts.rs:78"
+previous = false
+
+[[families]]
+name = "diplomacy_state"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-diplomacy/src/products/diplomacy_state/facts.rs:35"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-diplomacy/src/products/diplomacy_state/facts.rs:35"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-diplomacy/src/products/diplomacy_state/facts.rs:35"
+previous = false
+[[families.tables]]
+name = "IncomingDiplomaticActions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "RelationOpinions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "RelationTuples"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "division-equipment"
+origin = "code"
+ordered = true
+declaration = "crates/dashboard-army/src/products/division_equipment/history/facts.rs:28"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "crates/dashboard-army/src/products/division_equipment/history/facts.rs:28"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream"
+source = "crates/dashboard-army/src/products/division_equipment/history/facts.rs:28"
+previous = false
+[[families.tables]]
+name = "CountryLocalSubunits"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionEquipment"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionLandInputs"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionStatus"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionTemplateIcons"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionTemplates"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Divisions"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NewDivisionEquipment"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Stockpiles"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "divisions"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-land-battles/src/products/division_log.rs:53"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-land-battles/src/products/division_log.rs:53"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-land-battles/src/products/division_log.rs:53"
+previous = false
+[[families.tables]]
+name = "DestroyedDivisions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionEquipmentDeletions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionStatus"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionTemplateIcons"
+fields = ["priority_unit", "priority_unit_name", "custom_icon", "country", "display_name"]
+subscription = "stream"
+source = "crates/dashboard-land-battles/src/products/division_log.rs:53"
+previous = false
+[[families.tables]]
+name = "DivisionTemplates"
+fields = ["name", "name_key"]
+subscription = "stream"
+source = "crates/dashboard-land-battles/src/products/division_log.rs:53"
+previous = false
+[[families.tables]]
+name = "Divisions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LandEventCoverage"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "doctrine-mastery"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-doctrine-mastery.md:20"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-doctrine-mastery.md:19"
+previous = false
+[[families.tables]]
+name = "DoctrineCountries"
+fields = ["country"]
+subscription = "stream"
+source = "family-doctrine-mastery.md:16"
+previous = false
+[[families.tables]]
+name = "DoctrineFolders"
+fields = "all"
+subscription = "stream"
+source = "family-doctrine-mastery.md:17"
+previous = false
+[[families.tables]]
+name = "DoctrineTracks"
+fields = "all"
+subscription = "stream"
+source = "family-doctrine-mastery.md:18"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "family-doctrine-mastery.md:21"
+previous = false
+
+[[families]]
+name = "equipment_losses"
+origin = "note"
+ordered = true
+[[families.tables]]
+name = "Campaign"
+fields = ["id"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:19"
+previous = false
+[[families.tables]]
+name = "CombatLogEquipment"
+fields = ["amount_raw"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:29"
+previous = false
+[[families.tables]]
+name = "CombatLogState"
+fields = ["viewing_country_raw", "prune_observed"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:31"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "family-equipment_losses.md:20"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:22"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream"
+source = "family-equipment_losses.md:21"
+previous = false
+[[families.tables]]
+name = "DivisionCensus"
+fields = ["grouped", "ungrouped"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:34"
+previous = false
+[[families.tables]]
+name = "EquipmentDestruction"
+fields = ["amount_raw", "coverage", "unavailable_reason"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-equipment_losses.md:28"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "LendLeaseEquipment"
+fields = ["amount_raw"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-equipment_losses.md:37"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:23"
+previous = false
+[[families.tables]]
+name = "Players"
+fields = ["country"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:32"
+previous = false
+[[families.tables]]
+name = "SimulationFeatures"
+fields = ["dlc_mask"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:33"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = ["sample_hour"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:30"
+previous = false
+[[families.tables]]
+name = "SunkConvoys"
+fields = ["convoys"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-equipment_losses.md:36"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "SunkShips"
+fields = ["entries"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-equipment_losses.md:35"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:27"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = ["equipment_token", "creator_link", "origin_link", "append_variant_name", "display_name", "variant_name"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:24"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = ["slot", "definition_token", "definition_active"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:25"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = ["definition_token", "level"]
+subscription = "ordered,stream"
+source = "family-equipment_losses.md:26"
+previous = false
+
+[[families]]
+name = "event_feed"
+origin = "note"
+ordered = true
+declaration = "crates/dashboard/src/products/event_feed/columnar.rs:51"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["owned_state_count"]
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "CountryExperienceGains"
+fields = []
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "CountryPowerChanges"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "EventFeedHistory"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "NuclearStrikes"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "PoliticsCaptureCoverage"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "RelationTuples"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-event_feed.md"
+previous = false
+
+[[families]]
+name = "experience"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-experience.md:11"
+previous = false
+[[families.tables]]
+name = "CountryExperience"
+fields = ["army_raw", "navy_raw", "air_raw"]
+subscription = "stream"
+source = "family-experience.md:13"
+previous = false
+[[families.tables]]
+name = "CountryExperienceGains"
+fields = ["army_raw", "navy_raw", "air_raw", "complete"]
+subscription = "stream"
+source = "family-experience.md:14"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-experience.md:12"
+previous = false
+
+[[families]]
+name = "faction_state"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-faction_state.md:46"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "FactionAccounts"
+fields = ["country", "upgrade_groups", "upgrade_tokens", "influence_share_raw", "influence_numerator_raw", "influence_denominator_raw", "influence_refresh", "influence_faction"]
+subscription = "stream"
+source = "family-faction_state.md:33"
+previous = false
+[[families.tables]]
+name = "FactionDoctrine"
+fields = ["token"]
+subscription = "stream"
+source = "family-faction_state.md:39"
+previous = false
+[[families.tables]]
+name = "FactionGoalEntries"
+fields = ["token", "status", "progress_raw"]
+subscription = "stream"
+source = "family-faction_state.md:42"
+previous = false
+[[families.tables]]
+name = "FactionGoalStatus"
+fields = []
+subscription = "stream"
+source = "family-faction_state.md:41"
+previous = false
+[[families.tables]]
+name = "FactionManpower"
+fields = ["country", "value"]
+subscription = "stream"
+source = "family-faction_state.md:40"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = ["faction", "ordinal"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "FactionMinimumUpgrades"
+fields = ["group", "token"]
+subscription = "stream"
+source = "family-faction_state.md:38"
+previous = false
+[[families.tables]]
+name = "FactionPrograms"
+fields = ["reference"]
+subscription = "stream"
+source = "family-faction_state.md:37"
+previous = false
+[[families.tables]]
+name = "FactionProjection"
+fields = []
+subscription = "stream"
+source = "family-faction_state.md:34"
+previous = false
+[[families.tables]]
+name = "FactionRules"
+fields = ["token"]
+subscription = "stream"
+source = "family-faction_state.md:36"
+previous = false
+[[families.tables]]
+name = "FactionUnlocks"
+fields = []
+subscription = "stream"
+source = "family-faction_state.md:35"
+previous = false
+[[families.tables]]
+name = "Factions"
+fields = []
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "LocalPlayer"
+fields = ["country", "observer_country"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "ProjectPrograms"
+fields = ["owner", "active_project"]
+subscription = "stream"
+source = "family-faction_state.md:51"
+previous = false
+[[families.tables]]
+name = "Projects"
+fields = ["definition_id", "program_reference"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "Subjects"
+fields = ["start_hour", "end_hour"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour"]
+subscription = "lookup"
+source = "family-faction_state.md"
+previous = false
+
+[[families]]
+name = "factories"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-factories.md:16"
+previous = false
+[[families.tables]]
+name = "CountryFactories"
+fields = ["military_total_raw", "military_controlled_raw", "military_owned_raw", "military_damaged_raw", "military_unavailable", "military_from_subjects", "military_to_overlord", "military_from_others", "military_to_others", "naval_total_raw", "naval_controlled_raw", "naval_owned_raw", "naval_damaged_raw", "naval_unavailable", "naval_from_subjects", "naval_to_overlord", "naval_from_others", "naval_to_others", "civilian_total_raw", "civilian_controlled_raw", "civilian_owned_raw", "civilian_damaged_raw", "civilian_unavailable", "civilian_from_subjects", "civilian_to_overlord", "civilian_from_others", "civilian_to_others", "civilian_license_exports", "civilian_trade_exports", "consumer_goods", "special_projects", "license_imports", "trade_imports", "contract_payments"]
+subscription = "stream"
+source = "family-factories.md:18"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-factories.md:17"
+previous = false
+
+[[families]]
+name = "focus"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "CompletedFocuses"
+fields = ["token"]
+subscription = "stream"
+source = "family-focus.md:15"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-focus.md:12"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-focus.md:13"
+previous = false
+[[families.tables]]
+name = "Focus"
+fields = ["current", "continuous", "progress", "paused", "completed_count"]
+subscription = "stream"
+source = "family-focus.md"
+previous = false
+
+[[families]]
+name = "fuel"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-country-fuel/src/products/country_fuel/facts.rs:30"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-country-fuel/src/products/country_fuel/facts.rs:30"
+previous = false
+[[families.tables]]
+name = "CountryFuel"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-country-fuel/src/products/country_fuel/facts.rs:30"
+previous = false
+[[families.tables]]
+name = "FuelDemandParts"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "States"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "fuel_branches"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-fuel_branches.md:14"
+previous = false
+[[families.tables]]
+name = "CountryFuelConsumers"
+fields = ["priority", "requested_raw", "received_raw"]
+subscription = "stream"
+source = "family-fuel_branches.md:13"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-fuel_branches.md:15"
+previous = false
+
+[[families]]
+name = "game_score"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "AirBaseRegistrations"
+fields = ["wings"]
+subscription = "stream"
+source = "family-game_score.md:20"
+previous = false
+[[families.tables]]
+name = "AirWingGameScoreStats"
+fields = ["planes", "planes_error", "stat_raw", "stat_error"]
+subscription = "stream"
+source = "family-game_score.md:17"
+previous = false
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "family-game_score.md:24"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-game_score.md:14"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["red", "green", "blue", "cosmetic_tag", "name_tag", "leader_ideology", "overlord"]
+subscription = "stream"
+source = "family-game_score.md:21"
+previous = false
+[[families.tables]]
+name = "CountryFactories"
+fields = ["military_total_raw", "military_to_overlord", "military_to_others", "naval_total_raw", "civilian_total_raw", "civilian_to_overlord", "civilian_to_others"]
+subscription = "stream"
+source = "family-game_score.md:19"
+previous = false
+[[families.tables]]
+name = "CountryGameScoreInputs"
+fields = ["army_count", "army_error", "navy_count", "navy_error", "land_count", "land_error", "air_state", "air_error", "first_sites"]
+subscription = "stream"
+source = "family-game_score.md:16"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-game_score.md:15"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = "all"
+subscription = "stream"
+source = "family-game_score.md:26"
+previous = false
+[[families.tables]]
+name = "Factions"
+fields = ["name", "template_token"]
+subscription = "stream"
+source = "family-game_score.md:25"
+previous = false
+[[families.tables]]
+name = "GameScoreMultipliers"
+fields = "all"
+subscription = "stream"
+source = "family-game_score.md:18"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "reverse,stream"
+source = "family-game_score.md:27"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "family-game_score.md:23"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "family-game_score.md:22"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"]
+subscription = "stream"
+source = "family-game_score.md:28"
+previous = false
+[[families.reverse]]
+chain = ["LexicalTokens.literal"]
+
+[[families]]
+name = "groups"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "family-groups.md:22"
+previous = false
+[[families.tables]]
+name = "Capitulation"
+fields = ["capitulated", "capitulated_hour"]
+subscription = "stream"
+source = "family-groups.md:20"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-groups.md:14"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-groups.md:15"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = ["faction", "ordinal"]
+subscription = "stream"
+source = "family-groups.md:18"
+previous = false
+[[families.tables]]
+name = "Factions"
+fields = ["name", "template_token"]
+subscription = "stream"
+source = "family-groups.md:17"
+previous = false
+[[families.tables]]
+name = "HumanControllers"
+fields = ["count"]
+subscription = "stream"
+source = "family-groups.md:16"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-groups.md:21"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour", "first_was_instigator"]
+subscription = "stream"
+source = "family-groups.md:19"
+previous = false
+
+[[families]]
+name = "ideas"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "ActiveIdeas"
+fields = ["token"]
+subscription = "stream"
+source = "family-ideas.md:15"
+previous = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-ideas.md:25"
+previous = false
+[[families.tables]]
+name = "Characters"
+fields = ["name_token_id", "token", "template_present", "template_tag", "template_file", "template_line", "template_generated"]
+subscription = "stream"
+source = "family-ideas.md:17"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-ideas.md:13"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "family-ideas.md:19"
+previous = false
+[[families.tables]]
+name = "CountryCivilWars"
+fields = ["target"]
+subscription = "stream"
+source = "family-ideas.md:20"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["owned_state_count"]
+subscription = "stream"
+source = "family-ideas.md:23"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-ideas.md:14"
+previous = false
+[[families.tables]]
+name = "CountryWars"
+fields = ["enemies_read", "enemies"]
+subscription = "stream"
+source = "family-ideas.md:21"
+previous = false
+[[families.tables]]
+name = "HiredAdvisors"
+fields = ["character", "idea", "slot"]
+subscription = "stream"
+source = "family-ideas.md:16"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-ideas.md:18"
+previous = false
+[[families.tables]]
+name = "ModifierDefinitions"
+fields = "all"
+subscription = "stream"
+source = "family-ideas.md:24"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour"]
+subscription = "stream"
+source = "family-ideas.md:22"
+previous = false
+
+[[families]]
+name = "identities"
+origin = "code"
+ordered = true
+declaration = "crates/dashboard/src/prepared/driver/native/identities.rs:35"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "ordered,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream,wake-on-read"
+source = "crates/dashboard/src/prepared/driver/native/identities.rs:35"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = []
+subscription = "ordered,stream"
+source = "crates/dashboard/src/prepared/driver/native/identities.rs:35"
+previous = false
+[[families.tables]]
+name = "CountryExperienceGains"
+fields = []
+subscription = "ordered,stream,wake-on-read"
+source = "crates/dashboard/src/prepared/driver/native/identities.rs:35"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream,wake-on-read"
+source = "crates/dashboard/src/prepared/driver/native/identities.rs:35"
+previous = false
+read_rule = "supplied"
+
+[[families]]
+name = "intel-network-coverage"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-intel-network-coverage.md:15"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-intel-network-coverage.md:16"
+previous = false
+[[families.tables]]
+name = "IntelNetworkSummaries"
+fields = ["covered_core_states", "covered_controlled_states", "covered_worth", "controlled_strength_sum", "core_strength_sum", "max_state_strength"]
+subscription = "stream,wake-on-read"
+source = "family-intel-network-coverage.md:14"
+previous = false
+read_rule = "supplied"
+
+[[families]]
+name = "intelligence"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "AgencyUpgradeLevels"
+fields = "all"
+subscription = "stream"
+source = "family-intelligence.md:30"
+previous = false
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "family-intelligence.md:39"
+previous = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-intelligence.md:20"
+previous = false
+[[families.tables]]
+name = "CharacterOperatives"
+fields = ["reference", "resolved", "category"]
+subscription = "stream"
+source = "family-intelligence.md"
+previous = false
+[[families.tables]]
+name = "CharacterPortraits"
+fields = "all"
+subscription = "stream"
+source = "family-intelligence.md:28"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-intelligence.md:21"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "leader_ideology", "overlord"]
+subscription = "stream"
+source = "family-intelligence.md:35"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-intelligence.md:22"
+previous = false
+[[families.tables]]
+name = "Cryptology"
+fields = "all"
+subscription = "stream"
+source = "family-intelligence.md:23"
+previous = false
+[[families.tables]]
+name = "IntelligenceAgencies"
+fields = ["defense_raw", "active_count", "unknown_f0", "name", "created"]
+subscription = "stream"
+source = "family-intelligence.md:29"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "family-intelligence.md:31"
+previous = false
+[[families.tables]]
+name = "OperationAssignments"
+fields = ["operative"]
+subscription = "stream"
+source = "family-intelligence.md:33"
+previous = false
+[[families.tables]]
+name = "OperationCompletions"
+fields = ["id", "target", "definition_token", "completion_hour", "bonus", "detected", "description_error", "description_required"]
+subscription = "stream"
+source = "family-intelligence.md"
+previous = false
+[[families.tables]]
+name = "Operations"
+fields = ["owner", "target", "definition_token", "preparation_current", "preparation_required", "flag_40", "auto_repeat", "terminal", "start_hour", "duration_days", "phase_count", "assigned_slots", "bonus", "detected", "effect_description"]
+subscription = "stream"
+source = "family-intelligence.md"
+previous = false
+[[families.tables]]
+name = "OperativeMemberships"
+fields = "all"
+subscription = "stream"
+source = "family-intelligence.md:26"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "family-intelligence.md:38"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "family-intelligence.md:37"
+previous = false
+[[families.tables]]
+name = "RaidIntelInputs"
+fields = ["crypto_strength"]
+subscription = "stream"
+source = "family-intelligence.md:24"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"]
+subscription = "stream"
+source = "family-intelligence.md:36"
+previous = false
+[[families.tables]]
+name = "SimulationFeatures"
+fields = ["dlc_mask"]
+subscription = "stream"
+source = "family-intelligence.md:25"
+previous = false
+
+[[families]]
+name = "land"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-land-battles/src/products/land_battles/facts.rs:32"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-land-battles/src/products/land_battles/facts.rs:32"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-land-battles/src/products/land_battles/facts.rs:32"
+previous = false
+[[families.tables]]
+name = "LandCombatProgress"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LandCombatResults"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LandCombatSides"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LandCombats"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LandEventCoverage"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "land-owners"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "family-land-owners.md:56"
+previous = false
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-land-owners.md:51"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "leader_ideology", "overlord"]
+subscription = "stream"
+source = "family-land-owners.md:53"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,reverse,stream"
+source = "family-land-owners.md:52"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "family-land-owners.md:55"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "family-land-owners.md:54"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"]
+subscription = "stream"
+source = "family-land-owners.md:57"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner"]
+subscription = "reverse,stream"
+source = "family-land-owners.md:12"
+previous = false
+[[families.reverse]]
+chain = ["States.owner", "CountryLinks.canonical_slot"]
+
+[[families]]
+name = "leaders"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "CharacterPortraits"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "Characters"
+fields = ["name_token_id", "template_present", "template_tag"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "Clock"
+fields = ["seed"]
+subscription = "stream"
+source = "family-leaders.md:62"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "Fleets"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "LandCombatDetails"
+fields = ["sides"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "LandCombatResults"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "NavalCombatDetails"
+fields = ["sides"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "NavalCombatResultDetails"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "NavalMissionTaskForces"
+fields = ["leader"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "NavalResultSources"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "NavalResults"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "OrdersGroupPlans"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "OrdersGroups"
+fields = ["is_army_group", "leader", "name"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = ["fleet"]
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "UnitLeaderTraitExperience"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "UnitLeaderTraits"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+[[families.tables]]
+name = "UnitLeaders"
+fields = "all"
+subscription = "stream"
+source = "family-leaders.md"
+previous = false
+
+[[families]]
+name = "lend_lease_balance"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-lend_lease_balance.md:15"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-lend_lease_balance.md:16"
+previous = false
+[[families.tables]]
+name = "WarLendLeaseHistories"
+fields = ["industry_sent", "fuel_sent", "industry_received", "fuel_received"]
+subscription = "stream"
+source = "family-lend_lease_balance.md:13"
+previous = false
+[[families.tables]]
+name = "WarOwnedRelations"
+fields = ["first_country", "second_country"]
+subscription = "stream"
+source = "family-lend_lease_balance.md:14"
+previous = false
+
+[[families]]
+name = "manpower"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-manpower/src/products/country_people/facts.rs:35"
+[[families.tables]]
+name = "AirWings"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-manpower/src/products/country_people/facts.rs:35"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-manpower/src/products/country_people/facts.rs:35"
+previous = false
+[[families.tables]]
+name = "CountryStabilityInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionLandInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionStatus"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionTemplateIcons"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Divisions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Fleets"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "ModifierDefinitions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SentVolunteers"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Ships"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SimulationFeatures"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "StateCores"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "StateResourceInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "States"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "market"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-market.md:27"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-market.md:28"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag"]
+subscription = "stream"
+source = "family-market.md:40"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-market.md:29"
+previous = false
+[[families.tables]]
+name = "CountryMarket"
+fields = ["inventory", "prices"]
+subscription = "stream"
+source = "family-market.md:30"
+previous = false
+[[families.tables]]
+name = "LendLeaseAgreements"
+fields = "all"
+subscription = "stream"
+source = "family-market.md:32"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-market.md:39"
+previous = false
+[[families.tables]]
+name = "MarketContractTerms"
+fields = ["buyer", "speed", "equipment", "prices", "price_levels"]
+subscription = "stream"
+source = "family-market.md:31"
+previous = false
+[[families.tables]]
+name = "MarketEvents"
+fields = ["occurrence", "hour", "agreement", "country", "receiver", "kind", "mode", "ordinal", "variant", "amount_raw", "total_raw"]
+subscription = "stream"
+source = "family-market.md:34"
+previous = false
+[[families.tables]]
+name = "PurchaseContracts"
+fields = ["seller", "buyer", "convoys_assigned", "convoys_total", "collected_raw", "completed_deliveries"]
+subscription = "stream"
+source = "family-market.md:33"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "stream"
+source = "family-market.md:38"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = ["equipment_token", "creator_link", "origin_link", "append_variant_name", "display_name", "variant_name"]
+subscription = "stream"
+source = "family-market.md:35"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = "all"
+subscription = "stream"
+source = "family-market.md:36"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = "all"
+subscription = "stream"
+source = "family-market.md:37"
+previous = false
+
+[[families]]
+name = "measure"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag", "political_power_raw", "command_power_raw"]
+subscription = "lookup,stream"
+source = "family-measure.md:10"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-measure.md:11"
+previous = false
+
+[[families]]
+name = "minefields"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,reverse,stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "NavalRegionalMines"
+fields = "all"
+subscription = "stream,wake-on-read"
+source = "family-naval-regions.md"
+previous = false
+read_rule = "supplied"
+[[families.reverse]]
+chain = ["CountryLinks.canonical_slot"]
+
+[[families]]
+name = "naval"
+origin = "undeclared"
+ordered = false
+declaration = "crates/dashboard-naval/src/products/naval_battles.rs:1475"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-naval/src/products/naval_battles/columnar.rs:49 Needs.countries"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-naval/src/products/naval_battles/columnar.rs:49 Needs.countries"
+previous = false
+[[families.tables]]
+name = "Fleets"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalCombatDetails"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalCombatParticipants"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalCombatResultDetails"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalCombats"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalResultCountries"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalResultMembers"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalResultSources"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalResults"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "ProvinceNames"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "States"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SunkConvoys"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SunkShips"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "naval-refits"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-naval-yards/src/products/yards/management.rs:5"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:178"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:179"
+previous = false
+[[families.tables]]
+name = "CountryFactories"
+fields = ["naval_total_raw"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:197"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalBases"
+fields = ["country"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:198"
+previous = false
+[[families.tables]]
+name = "NavalRefitProgress"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRefitShips"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairBases"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairChildren"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairCountries"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairQueue"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairTaskForces"
+fields = ["repair_mode", "repair_split", "repair_target", "refit_variant", "refit_after_repair", "merge_after_repair"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:187"
+previous = false
+[[families.tables]]
+name = "ProductionLines"
+fields = ["variant", "active_factories", "cost_raw"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:199"
+previous = false
+[[families.tables]]
+name = "ProvinceNames"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["state"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:200"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:182"
+previous = false
+[[families.tables]]
+name = "ShipModels"
+fields = ["variant", "counter", "subunit_index"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:186"
+previous = false
+[[families.tables]]
+name = "Ships"
+fields = ["task_force", "strength", "class_id", "name", "naming"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:185"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner", "custom_name", "owner_name"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:201"
+previous = false
+[[families.tables]]
+name = "TaskForceCounterInputs"
+fields = ["name"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:196"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = ["roster_owner"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:195"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "naval-repairs"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-naval-yards/src/products/yards/management.rs:5"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:178"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:179"
+previous = false
+[[families.tables]]
+name = "CountryFactories"
+fields = ["naval_total_raw"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:197"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalBases"
+fields = ["country"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:198"
+previous = false
+[[families.tables]]
+name = "NavalRefitProgress"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRefitShips"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairBases"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairChildren"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairCountries"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairQueue"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "NavalRepairTaskForces"
+fields = ["repair_mode", "repair_split", "repair_target", "refit_variant", "refit_after_repair", "merge_after_repair"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:187"
+previous = false
+[[families.tables]]
+name = "ProductionLines"
+fields = ["variant", "active_factories", "cost_raw"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:199"
+previous = false
+[[families.tables]]
+name = "ProvinceNames"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["state"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:200"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:182"
+previous = false
+[[families.tables]]
+name = "ShipModels"
+fields = ["variant", "counter", "subunit_index"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:186"
+previous = false
+[[families.tables]]
+name = "Ships"
+fields = ["task_force", "strength", "class_id", "name", "naming"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:185"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner", "custom_name", "owner_name"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:201"
+previous = false
+[[families.tables]]
+name = "TaskForceCounterInputs"
+fields = ["name"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:196"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = ["roster_owner"]
+subscription = "stream"
+source = "crates/dashboard-naval-yards/src/products/yards.rs:195"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "naval-supremacy"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "AirCountryRelations"
+fields = "all"
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["forward_visibility", "directed_wars"]
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = "all"
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "NavalSupremacy"
+fields = ["region_slot", "current"]
+subscription = "stream,wake-on-read"
+source = "family-naval-regions.md"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "RelationTuples"
+fields = ["first_country", "second_country"]
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "faction", "reverse_visibility"]
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "Subjects"
+fields = []
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = []
+subscription = "stream"
+source = "family-naval-regions.md"
+previous = false
+
+[[families]]
+name = "navy"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-navy.md:9"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-navy.md:10"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-navy.md:14"
+previous = false
+[[families.tables]]
+name = "ShipModels"
+fields = ["counter"]
+subscription = "reverse,stream"
+source = "family-navy.md:13"
+previous = false
+[[families.tables]]
+name = "Ships"
+fields = ["task_force", "strength", "class_id"]
+subscription = "reverse,stream"
+source = "family-navy.md:12"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = ["roster_owner", "logical_owner"]
+subscription = "stream"
+source = "family-navy.md:11"
+previous = false
+[[families.reverse]]
+chain = ["Ships.task_force"]
+[[families.reverse]]
+chain = ["ShipModels.$key"]
+[[families.reverse]]
+chain = ["Ships.class_id"]
+
+[[families]]
+name = "nukes"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-country-nukes/src/products/country_nukes/facts.rs:29"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-country-nukes/src/products/country_nukes/facts.rs:29"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-country-nukes/src/products/country_nukes/facts.rs:29"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Nukes"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "occupation"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-occupation.md:29"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-occupation.md"
+previous = false
+[[families.tables]]
+name = "CountryCollaboration"
+fields = ["progress"]
+subscription = "stream"
+source = "family-occupation.md:27"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-occupation.md"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "lookup"
+source = "family-occupation.md"
+previous = false
+[[families.tables]]
+name = "OccupationSettings"
+fields = ["default_law_present", "law", "group_laws", "fallback_law"]
+subscription = "stream"
+source = "family-occupation.md:25"
+previous = false
+[[families.tables]]
+name = "StateAssignedManpower"
+fields = ["occupied", "amount"]
+subscription = "stream"
+source = "family-occupation.md:26"
+previous = false
+[[families.tables]]
+name = "StateGarrisons"
+fields = ["occupied", "required_manpower", "garrison_required", "serialized_flag", "equipment"]
+subscription = "stream"
+source = "family-occupation.md:23"
+previous = false
+[[families.tables]]
+name = "StateOccupationLaws"
+fields = ["name"]
+subscription = "stream"
+source = "family-occupation.md:24"
+previous = false
+[[families.tables]]
+name = "StateResistance"
+fields = ["country", "level", "speed", "compliance", "compliance_speed", "active"]
+subscription = "lookup"
+source = "family-occupation.md"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner", "controller", "custom_name", "owner_name"]
+subscription = "lookup"
+source = "family-occupation.md"
+previous = false
+
+[[families]]
+name = "occupation-reserve"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-occupation-reserve.md:16"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-occupation-reserve.md:17"
+previous = false
+[[families.tables]]
+name = "CountryOccupationReserveManpower"
+fields = "all"
+subscription = "stream,wake-on-read"
+source = "family-occupation-reserve.md:14"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "OccupationSettings"
+fields = []
+subscription = "stream"
+source = "family-occupation-reserve.md:15"
+previous = false
+
+[[families]]
+name = "parties"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "CharacterPortraits"
+fields = ["portraits"]
+subscription = "stream"
+source = "family-parties.md:21"
+previous = false
+[[families.tables]]
+name = "Characters"
+fields = ["name_token_id", "token"]
+subscription = "stream"
+source = "family-parties.md:20"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-parties.md:15"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["leader_ideology", "leader_character", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "family-parties.md:18"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-parties.md:16"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-parties.md:22"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["popularity", "is_ruling", "token", "tag", "name_default", "name"]
+subscription = "stream"
+source = "family-parties.md:17"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["last_election"]
+subscription = "stream"
+source = "family-parties.md:19"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "family-parties.md:23"
+previous = false
+
+[[families]]
+name = "parts"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Characters"
+fields = ["name_token_id", "token", "template_present", "template_tag", "template_file", "template_line", "template_generated"]
+subscription = "reverse,stream"
+source = "family-parts.md:15"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-parts.md:10"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "family-parts.md:17"
+previous = false
+[[families.tables]]
+name = "CountryCivilWars"
+fields = ["target"]
+subscription = "stream"
+source = "family-parts.md:19"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["owned_state_count"]
+subscription = "stream"
+source = "family-parts.md:20"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-parts.md:11"
+previous = false
+[[families.tables]]
+name = "CountryStabilityInputs"
+fields = "all"
+subscription = "stream"
+source = "family-parts.md:12"
+previous = false
+[[families.tables]]
+name = "CountryStabilityLines"
+fields = "all"
+subscription = "stream"
+source = "family-parts.md:13"
+previous = false
+[[families.tables]]
+name = "CountryWars"
+fields = ["enemies_read", "enemies"]
+subscription = "stream"
+source = "family-parts.md:21"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-parts.md:16"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "family-parts.md:18"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = ["sample_hour"]
+subscription = "stream"
+source = "family-parts.md:14"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour"]
+subscription = "reverse,stream"
+source = "family-parts.md:22"
+previous = false
+[[families.reverse]]
+chain = ["Characters.name_token_id"]
+[[families.reverse]]
+chain = ["Characters.template_tag"]
+[[families.reverse]]
+chain = ["WarRelations.end_hour"]
+
+[[families]]
+name = "peace"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-peace.md:18"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["leader_ideology"]
+subscription = "stream"
+source = "family-peace.md:28"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["owned_state_count"]
+subscription = "stream"
+source = "family-peace.md:29"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-peace.md:19"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "family-peace.md:30"
+previous = false
+[[families.tables]]
+name = "PeaceConferences"
+fields = ["current_turn", "finalized"]
+subscription = "stream"
+source = "family-peace.md:23"
+previous = false
+[[families.tables]]
+name = "PeaceSettlements"
+fields = "all"
+subscription = "stream"
+source = "family-peace.md:24"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "family-peace.md:27"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "family-peace.md:26"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["state", "victory_points"]
+subscription = "stream"
+source = "family-peace.md:21"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner"]
+subscription = "stream"
+source = "family-peace.md:20"
+previous = false
+[[families.tables]]
+name = "Subjects"
+fields = ["start_hour", "end_hour", "cancel", "state"]
+subscription = "stream"
+source = "family-peace.md:25"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour"]
+subscription = "stream"
+source = "family-peace.md:22"
+previous = false
+
+[[families]]
+name = "place_names"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-place-names/src/products/place_names/facts.rs:44"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+[[families.tables]]
+name = "ProvinceNames"
+fields = ["name"]
+subscription = "stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["state"]
+subscription = "stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = ["tag", "original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner", "custom_name", "owner_name"]
+subscription = "stream"
+source = "crates/dashboard-place-names/src/products/place_names/facts.rs:19 FIELDS / Needs.frame"
+previous = false
+
+[[families]]
+name = "politics_ledger"
+origin = "note"
+ordered = true
+[[families.tables]]
+name = "AdvisorRoles"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "Autonomy"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-politics_ledger.md"
+previous = false
+[[families.tables]]
+name = "CharacterPortraits"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "Characters"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "family-politics_ledger.md"
+previous = true
+[[families.tables]]
+name = "CountryAppearance"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "CountryCivilWars"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "CountryCommandPower"
+fields = ["allocated_command_power_raw"]
+subscription = "lookup,ordered"
+source = "family-politics_ledger.md"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream"
+source = "family-politics_ledger.md"
+previous = true
+[[families.tables]]
+name = "CountryPowerChanges"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-politics_ledger.md:132"
+previous = false
+[[families.tables]]
+name = "CountryPowerDaily"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-politics_ledger.md:134"
+previous = false
+[[families.tables]]
+name = "CountryPowerDailyCosts"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-politics_ledger.md:135"
+previous = false
+[[families.tables]]
+name = "CountryWars"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "GovernmentChanges"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-politics_ledger.md:133"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisations"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "lookup,ordered"
+source = "family-politics_ledger.md"
+previous = true
+[[families.tables]]
+name = "ModifierDefinitions"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "PoliticalParties"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "Politics"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "PoliticsCaptureCoverage"
+fields = ["epoch", "since_hour", "through_hour", "streams", "instance"]
+subscription = "ordered,stream"
+source = "family-politics_ledger.md:136"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "States"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "UnitLeaders"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+[[families.tables]]
+name = "WarRelations"
+fields = "all"
+subscription = "lookup,ordered"
+source = "undeclared"
+previous = true
+
+[[families]]
+name = "politics_state"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-politics_state.md:28"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-politics_state.md:17"
+previous = false
+[[families.tables]]
+name = "CountryCivilWars"
+fields = ["target"]
+subscription = "stream"
+source = "family-politics_state.md:25"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["owned_state_count"]
+subscription = "stream"
+source = "family-politics_state.md:20"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-politics_state.md:18"
+previous = false
+[[families.tables]]
+name = "CountryStabilityInputs"
+fields = ["exile_host", "exile_legitimacy", "exile_leaders", "exile_manpower", "exile_manpower_cap"]
+subscription = "stream"
+source = "family-politics_state.md:21"
+previous = false
+[[families.tables]]
+name = "CountryWars"
+fields = ["enemies_read", "enemies"]
+subscription = "stream"
+source = "family-politics_state.md:26"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["last_election", "has_elections", "election_interval", "next_election_cache"]
+subscription = "stream"
+source = "family-politics_state.md:19"
+previous = false
+[[families.tables]]
+name = "PowerBalanceMembers"
+fields = ["country"]
+subscription = "stream"
+source = "family-politics_state.md:24"
+previous = false
+[[families.tables]]
+name = "PowerBalances"
+fields = ["value_raw", "balance", "trending", "active_range"]
+subscription = "stream"
+source = "family-politics_state.md:23"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = ["sample_hour"]
+subscription = "stream"
+source = "family-politics_state.md:22"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour"]
+subscription = "stream"
+source = "family-politics_state.md:27"
+previous = false
+
+[[families]]
+name = "production"
+origin = "note"
+ordered = true
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "ordered,stream"
+source = "family-production.md:21"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "family-production.md:22"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag"]
+subscription = "ordered,stream"
+source = "family-production.md:32"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream"
+source = "family-production.md:23"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "ordered,stream"
+source = "family-production.md:31"
+previous = false
+[[families.tables]]
+name = "ProductionLineOutput"
+fields = ["country", "variant", "units", "since_hour", "ended", "exact", "spent_raw", "purpose"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-production.md"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "ProductionLines"
+fields = ["country"]
+subscription = "ordered,stream"
+source = "family-production.md:24"
+previous = false
+[[families.tables]]
+name = "RocketProductionOutput"
+fields = "all"
+subscription = "ordered,stream,wake-on-read"
+source = "family-production.md:26"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "ordered,stream"
+source = "family-production.md:30"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = ["equipment_token", "creator_link", "origin_link", "append_variant_name", "display_name", "variant_name"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-production.md:27"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "VariantModules"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-production.md:28"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-production.md:29"
+previous = false
+
+[[families]]
+name = "production-lines"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-production-lines.md:28"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-production-lines.md:29"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d"]
+subscription = "stream"
+source = "family-production-lines.md:44"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-production-lines.md:30"
+previous = false
+[[families.tables]]
+name = "CountryProductionModifiers"
+fields = ["power_raw", "base_start", "base_cap", "gain_raw", "balance_raw", "factory_speed", "trees", "retention", "conversion_raw"]
+subscription = "stream"
+source = "family-production-lines.md:33"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = ["faction", "ordinal"]
+subscription = "stream"
+source = "family-production-lines.md:48"
+previous = false
+[[families.tables]]
+name = "Factions"
+fields = []
+subscription = "stream"
+source = "family-production-lines.md:47"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisationDetails"
+fields = ["country", "state.funds_raw", "state.size", "state.points", "state.task_capacity", "state.upgrades", "state.queue_index", "state.policy", "state.cooldown_hour", "unlocked", "queued", "tasks"]
+subscription = "stream"
+source = "family-production-lines.md:37"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisationPolicies"
+fields = ["policies"]
+subscription = "stream"
+source = "family-production-lines.md:38"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisations"
+fields = ["country", "owner", "token", "name", "icon"]
+subscription = "stream"
+source = "family-production-lines.md:36"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "lookup"
+source = "family-production-lines.md:43"
+previous = false
+[[families.tables]]
+name = "ModifierDefinitions"
+fields = ["token"]
+subscription = "stream"
+source = "family-production-lines.md:39"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["is_ruling", "token"]
+subscription = "stream"
+source = "family-production-lines.md:45"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["capital", "original_capital"]
+subscription = "stream"
+source = "family-production-lines.md:46"
+previous = false
+[[families.tables]]
+name = "ProductionLineModifiers"
+fields = ["organisation_dirty", "resource_penalty_raw", "bonuses", "factory_efficiencies", "naval_efficiency", "naval_output", "licensed", "conversion_output", "refit_output"]
+subscription = "stream"
+source = "family-production-lines.md"
+previous = false
+[[families.tables]]
+name = "ProductionLineOutput"
+fields = ["country", "units", "exact", "since_hour", "observed_since_creation", "ended", "variant", "mio"]
+subscription = "stream"
+source = "family-production-lines.md"
+previous = false
+[[families.tables]]
+name = "ProductionLines"
+fields = ["country", "kind", "variant", "mio", "active_factories", "requested_factories", "cost_raw", "speed_raw", "max_factories", "priority", "amount", "efficiency_raw"]
+subscription = "stream"
+source = "family-production-lines.md"
+previous = false
+[[families.tables]]
+name = "States"
+fields = []
+subscription = "lookup"
+source = "family-production-lines.md:49"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "stream"
+source = "family-production-lines.md:42"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "stream"
+source = "family-production-lines.md:40"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = "all"
+subscription = "stream"
+source = "family-production-lines.md:41"
+previous = false
+[[families.tables]]
+name = "VariantStats"
+fields = ["organisation", "organisation_trait_count", "organisation_bonuses"]
+subscription = "stream"
+source = "family-production-lines.md:35"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = "all"
+subscription = "stream"
+source = "family-production-lines.md:41"
+previous = false
+
+[[families]]
+name = "production_catalogue"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "stream"
+source = "family-production_catalogue.md:29"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-production_catalogue.md:17"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag"]
+subscription = "stream"
+source = "family-production_catalogue.md:19"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-production_catalogue.md:18"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisationDetails"
+fields = ["country", "state.funds_raw", "state.size", "state.points", "state.policy", "state.cooldown_hour", "unlocked"]
+subscription = "stream"
+source = "family-production_catalogue.md:23"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisationPolicies"
+fields = ["policies"]
+subscription = "stream"
+source = "family-production_catalogue.md:24"
+previous = false
+[[families.tables]]
+name = "IndustrialOrganisations"
+fields = ["country", "owner", "token", "name", "icon"]
+subscription = "stream"
+source = "family-production_catalogue.md:22"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-production_catalogue.md:20"
+previous = false
+[[families.tables]]
+name = "ProductionLicenseRecords"
+fields = ["giver", "lended_cic", "required_cic", "start_date", "equipment"]
+subscription = "stream"
+source = "family-production_catalogue.md:21"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "stream"
+source = "family-production_catalogue.md:28"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = ["equipment_token", "creator_link", "origin_link", "append_variant_name", "obsolete", "display_name", "variant_name"]
+subscription = "stream"
+source = "family-production_catalogue.md:25"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = ["slot", "definition_token", "definition_active"]
+subscription = "stream"
+source = "family-production_catalogue.md:26"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = ["definition_token", "level"]
+subscription = "stream"
+source = "family-production_catalogue.md:27"
+previous = false
+
+[[families]]
+name = "projects"
+origin = "note"
+ordered = true
+[[families.tables]]
+name = "Campaign"
+fields = []
+subscription = "lookup"
+source = "family-projects.md"
+previous = false
+[[families.tables]]
+name = "CharacterPortraits"
+fields = "all"
+subscription = "ordered,stream"
+source = "family-projects.md:24"
+previous = false
+[[families.tables]]
+name = "Characters"
+fields = ["name_token_id", "token"]
+subscription = "lookup,ordered"
+source = "family-projects.md"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,ordered,stream"
+source = "family-projects.md"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,ordered,stream"
+source = "family-projects.md"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "lookup,ordered"
+source = "family-projects.md"
+previous = false
+[[families.tables]]
+name = "ProjectHistory"
+fields = ["prototype_reward_handle", "option_handle", "date"]
+subscription = "ordered,stream,wake-on-read"
+source = "family-projects.md:21"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "ProjectPrograms"
+fields = ["scientist"]
+subscription = "ordered,stream"
+source = "family-projects.md:22"
+previous = false
+[[families.tables]]
+name = "Projects"
+fields = ["definition_id", "program_reference", "started", "state.current_offset", "state.not_completed", "state.prototype_progress"]
+subscription = "lookup,ordered,wake-on-read"
+source = "family-projects.md"
+previous = false
+read_rule = "supplied"
+
+[[families]]
+name = "raids"
+origin = "note"
+ordered = false
+declaration = "crates/dashboard-raids/src/products/raids/segment.rs:21"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["original_tag", "original_tag_reference"]
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["state", "controller"]
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "RaidCountries"
+fields = ["country", "eligible_types"]
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "RaidTargets"
+fields = "all"
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "Raids"
+fields = ["parent_slot", "phase", "outcome", "travelled", "preparation_hours"]
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = "all"
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner", "controller", "custom_name", "owner_name"]
+subscription = "stream"
+source = "crates/dashboard-raids/src/products/raids/segment.rs:43 Segmented::fields"
+previous = false
+
+[[families]]
+name = "regional-weather"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "WeatherProvinces"
+fields = ["temperature.temperature", "temperature.drift", "temperature.staged", "temperature.working", "temperature_pass"]
+subscription = "stream,wake-on-read"
+source = "family-regional-weather.md:19"
+previous = false
+read_rule = "supplied"
+[[families.tables]]
+name = "WeatherRegions"
+fields = ["light_rain", "heavy_rain", "snow", "blizzard", "sandstorm", "arctic_water", "combat", "air_detection", "map_modifiers_known", "naval_detection", "air_attack", "air_defence"]
+subscription = "stream"
+source = "family-regional-weather.md:18"
+previous = false
+
+[[families]]
+name = "repairs"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-repairs.md:150"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["name_tag"]
+subscription = "stream"
+source = "family-repairs.md:162; crates/dashboard-base/src/products/equipment/columnar.rs:266; equipment.rs:989"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,reverse,stream"
+source = "family-repairs.md:151"
+previous = false
+[[families.tables]]
+name = "CountryProductionModifiers"
+fields = ["power_raw", "factory_speed", "trees"]
+subscription = "stream"
+source = "family-repairs.md:153"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = "all"
+subscription = "stream"
+source = "family-repairs.md:161"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-repairs.md:162; crates/dashboard-base/src/products/equipment/columnar.rs:266; equipment.rs:989"
+previous = false
+[[families.tables]]
+name = "NavalBases"
+fields = ["country", "countries", "countries_unreadable"]
+subscription = "reverse,stream"
+source = "family-repairs.md:154"
+previous = false
+[[families.tables]]
+name = "NavalRepairBases"
+fields = ["allocated_dockyards"]
+subscription = "stream"
+source = "family-repairs.md:155"
+previous = false
+[[families.tables]]
+name = "NavalRepairCountries"
+fields = ["num_used_dockyards"]
+subscription = "stream"
+source = "family-repairs.md:152"
+previous = false
+[[families.tables]]
+name = "NavalRepairQueue"
+fields = ["ship"]
+subscription = "reverse,stream"
+source = "family-repairs.md:156"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["controller"]
+subscription = "stream"
+source = "family-repairs.md:160"
+previous = false
+[[families.tables]]
+name = "RelationLinks"
+fields = "all"
+subscription = "stream"
+source = "family-repairs.md:161"
+previous = false
+[[families.tables]]
+name = "ShipModels"
+fields = ["variant", "counter", "has_criticals"]
+subscription = "stream"
+source = "family-repairs.md:158"
+previous = false
+[[families.tables]]
+name = "Ships"
+fields = ["task_force", "strength"]
+subscription = "reverse,stream"
+source = "family-repairs.md:157"
+previous = false
+[[families.tables]]
+name = "Subjects"
+fields = "all"
+subscription = "stream"
+source = "family-repairs.md:161"
+previous = false
+[[families.tables]]
+name = "TaskForces"
+fields = ["roster_owner", "province"]
+subscription = "stream"
+source = "family-repairs.md:159"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = []
+subscription = "stream"
+source = "family-repairs.md:162"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = ["equipment_token", "creator_link", "origin_link", "append_variant_name", "display_name", "variant_name"]
+subscription = "stream"
+source = "family-repairs.md:162; crates/dashboard-base/src/products/equipment/columnar.rs:266; equipment.rs:989"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = ["slot", "definition_token", "definition_active"]
+subscription = "stream"
+source = "family-repairs.md:162; crates/dashboard-base/src/products/equipment/columnar.rs:266; equipment.rs:989"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = ["definition_token", "level"]
+subscription = "stream"
+source = "family-repairs.md:162; crates/dashboard-base/src/products/equipment/columnar.rs:266; equipment.rs:989"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = "all"
+subscription = "stream"
+source = "family-repairs.md:161"
+previous = false
+[[families.reverse]]
+chain = ["NavalRepairQueue.ship"]
+[[families.reverse]]
+chain = ["NavalRepairQueue.ship", "Ships.task_force"]
+[[families.reverse]]
+chain = ["NavalBases.$key"]
+[[families.reverse]]
+chain = ["NavalBases.country", "CountryLinks.canonical_slot"]
+[[families.reverse]]
+chain = ["CountryLinks.canonical_slot"]
+
+[[families]]
+name = "research"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-research.md:14"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-research.md:15"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-research.md:21"
+previous = false
+[[families.tables]]
+name = "ResearchAppliedBonuses"
+fields = "all"
+subscription = "stream"
+source = "family-research.md:18"
+previous = false
+[[families.tables]]
+name = "ResearchInputs"
+fields = "all"
+subscription = "stream"
+source = "family-research.md:16"
+previous = false
+[[families.tables]]
+name = "ResearchModifiers"
+fields = "all"
+subscription = "stream"
+source = "family-research.md:19"
+previous = false
+[[families.tables]]
+name = "ResearchTechnologies"
+fields = ["classifier", "level", "researched", "ahead_reduction_years_raw"]
+subscription = "stream"
+source = "family-research.md:17"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = ["sample_hour"]
+subscription = "stream"
+source = "family-research.md:20"
+previous = false
+
+[[families]]
+name = "resources"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-resources.md:19"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-resources.md:20"
+previous = false
+[[families.tables]]
+name = "CountryResources"
+fields = ["produced", "adjustment", "imported", "used", "special_total", "production_demand", "to_export", "exported"]
+subscription = "stream"
+source = "family-resources.md:15"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-resources.md:18"
+previous = false
+[[families.tables]]
+name = "ResourceDefinitions"
+fields = ["token"]
+subscription = "stream"
+source = "family-resources.md:17"
+previous = false
+[[families.tables]]
+name = "ResourceExchanges"
+fields = ["exporter", "importer", "resource", "convoys_assigned", "convoys_required", "delivered", "assigned_factories"]
+subscription = "stream"
+source = "family-resources.md:16"
+previous = false
+
+[[families]]
+name = "stability"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-stability/src/products/country_stability/facts.rs:22"
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-stability/src/products/country_stability/facts.rs:22"
+previous = false
+[[families.tables]]
+name = "CountryCommandPower"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-stability/src/products/country_stability/facts.rs:22"
+previous = false
+[[families.tables]]
+name = "CountryStabilityInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "SliceReads"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "stockpile"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-equipment-stockpile/src/products/equipment_stockpile/columnar.rs:44"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-equipment-stockpile/src/products/equipment_stockpile/columnar.rs:44"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-equipment-stockpile/src/products/equipment_stockpile/columnar.rs:44"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "LogisticsEquipment"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "ProductionLines"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Stockpiles"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantChanges"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantDefinitions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantModules"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "VariantUpgrades"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "subjects"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "family-subjects.md:16"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-subjects.md:13"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-subjects.md:14"
+previous = false
+[[families.tables]]
+name = "Subjects"
+fields = ["start_hour", "end_hour", "cancel"]
+subscription = "stream"
+source = "family-subjects.md:15"
+previous = false
+
+[[families]]
+name = "supply"
+origin = "code"
+ordered = false
+declaration = "crates/dashboard-forces/src/products/supply_health/facts.rs:23"
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "crates/dashboard-forces/src/products/supply_health/facts.rs:23"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "crates/dashboard-forces/src/products/supply_health/facts.rs:23"
+previous = false
+[[families.tables]]
+name = "DivisionLandInputs"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "DivisionStatus"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+[[families.tables]]
+name = "Divisions"
+fields = "all"
+subscription = "stream"
+source = "undeclared"
+previous = false
+
+[[families]]
+name = "tension"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-tension.md:14"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-tension.md:15"
+previous = false
+[[families.tables]]
+name = "ThreatCountryAggregates"
+fields = ["total_raw"]
+subscription = "stream"
+source = "family-tension.md:17"
+previous = false
+[[families.tables]]
+name = "ThreatSources"
+fields = ["country", "second_country", "current_raw", "final_raw", "date", "reason"]
+subscription = "stream"
+source = "family-tension.md:18"
+previous = false
+[[families.tables]]
+name = "WorldTension"
+fields = ["total_raw", "source_count"]
+subscription = "stream"
+source = "family-tension.md:16"
+previous = false
+
+[[families]]
+name = "territory"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-territory.md:14"
+previous = false
+[[families.tables]]
+name = "CountryCounterInputs"
+fields = ["owned_state_count"]
+subscription = "stream"
+source = "family-territory.md:18"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-territory.md:15"
+previous = false
+[[families.tables]]
+name = "Provinces"
+fields = ["owner", "controller", "victory_points"]
+subscription = "stream"
+source = "family-territory.md:17"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["owner", "controller"]
+subscription = "stream"
+source = "family-territory.md:16"
+previous = false
+
+[[families]]
+name = "trade"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-trade.md:17"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = ["canonical_slot"]
+subscription = "lookup,stream"
+source = "family-trade.md:18"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = ["literal"]
+subscription = "stream"
+source = "family-trade.md:16"
+previous = false
+[[families.tables]]
+name = "ResourceDefinitions"
+fields = ["token"]
+subscription = "stream"
+source = "family-trade.md:15"
+previous = false
+[[families.tables]]
+name = "ResourceExchanges"
+fields = ["exporter", "importer", "resource", "convoys_assigned", "convoys_required", "delivered", "assigned_factories"]
+subscription = "stream"
+source = "family-trade.md:14"
+previous = false
+
+[[families]]
+name = "wars"
+origin = "note"
+ordered = false
+[[families.tables]]
+name = "Autonomy"
+fields = ["state"]
+subscription = "stream"
+source = "family-wars.md:34"
+previous = false
+[[families.tables]]
+name = "Campaign"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:17"
+previous = false
+[[families.tables]]
+name = "Capitulation"
+fields = ["capitulated", "capitulated_hour"]
+subscription = "stream"
+source = "family-wars.md:28"
+previous = false
+[[families.tables]]
+name = "Countries"
+fields = ["canonical_slot", "tag"]
+subscription = "lookup,stream"
+source = "family-wars.md:18"
+previous = false
+[[families.tables]]
+name = "CountryAppearance"
+fields = ["cosmetic_tag", "name_tag", "leader_ideology", "overlord"]
+subscription = "stream"
+source = "family-wars.md:30"
+previous = false
+[[families.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup,stream"
+source = "family-wars.md:19"
+previous = false
+[[families.tables]]
+name = "FactionMembers"
+fields = ["faction"]
+subscription = "stream"
+source = "family-wars.md:26"
+previous = false
+[[families.tables]]
+name = "Factions"
+fields = []
+subscription = "stream"
+source = "family-wars.md"
+previous = false
+[[families.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:29"
+previous = false
+[[families.tables]]
+name = "LocalPlayer"
+fields = ["country", "observer_country"]
+subscription = "stream"
+source = "family-wars.md:27"
+previous = false
+[[families.tables]]
+name = "PoliticalParties"
+fields = ["token"]
+subscription = "stream"
+source = "family-wars.md:33"
+previous = false
+[[families.tables]]
+name = "Politics"
+fields = ["ruling_party"]
+subscription = "stream"
+source = "family-wars.md:32"
+previous = false
+[[families.tables]]
+name = "ReservedCountryNaming"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:31"
+previous = false
+[[families.tables]]
+name = "States"
+fields = ["custom_name", "owner_name"]
+subscription = "stream"
+source = "family-wars.md:35"
+previous = false
+[[families.tables]]
+name = "WarLendLeaseHistories"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:37"
+previous = false
+[[families.tables]]
+name = "WarNameRules"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:24"
+previous = false
+[[families.tables]]
+name = "WarOverviewCountries"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:23"
+previous = false
+[[families.tables]]
+name = "WarOwnedRelations"
+fields = "all"
+subscription = "lookup"
+source = "family-wars.md:21"
+previous = false
+[[families.tables]]
+name = "WarParticipation"
+fields = "all"
+subscription = "stream"
+source = "family-wars.md:36"
+previous = false
+[[families.tables]]
+name = "WarRelationGoals"
+fields = ["resolved", "type_token", "state_count", "first_state", "country_count", "first_country"]
+subscription = "stream"
+source = "family-wars.md"
+previous = false
+[[families.tables]]
+name = "WarRelations"
+fields = ["start_hour", "end_hour", "cancel", "first_casualties", "second_casualties", "first_unknown_casualties", "second_unknown_casualties", "first_was_instigator"]
+subscription = "stream"
+source = "family-wars.md:20"
+previous = false
+
+[[shared]]
+name = "trigger-context"
+origin = "code"
+ordered = false
+[[shared.tables]]
+name = "ActiveIdeas"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "AdvisorRoles"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "AdvisorTokens"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ArmyOrderPlans"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ArmyOrders"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Autonomy"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CharacterOperatives"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CharacterRoleTraits"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Characters"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CompletedFocuses"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Countries"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryAppearance"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryBuildingResources"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryCharacters"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryCivilWars"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryCommandPower"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryCounterInputs"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryFactories"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryLeaderRoles"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryLinks"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryResources"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryRetiredCharacters"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryStabilityInputs"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryWargoals"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "CountryWars"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "DivisionStatus"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "DivisionTemplateIcons"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "DivisionTemplates"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Divisions"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "DynamicModifiers"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "FactionAdvisors"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "FactionMembers"
+fields = ["faction"]
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Factions"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Focus"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "GlobalSavedEventTargets"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "HiredAdvisors"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "HumanControllers"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "IndustrialOrganisationDetails"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "IndustrialOrganisations"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "IntelligenceAgencies"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "InvasionPreparations"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "LandTheatres"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "LexicalTokens"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "LocalPlayer"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ModifierDefinitions"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Nukes"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "OrdersGroupPlans"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "OrdersGroups"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "PartyLeaders"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Players"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "PoliticalParties"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Politics"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "PowerBalanceMembers"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "PowerBalanceModifierBreakdowns"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "PowerBalances"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Projects"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ProvinceBuildings"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ProvinceNames"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Provinces"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "RaidCountryInputs"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "RaidTooltipOperands"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Raids"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "RelationOpinions"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ResearchModifiers"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ResearchTechnologies"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ReservedCountryNaming"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ResourceDefinitions"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ScriptFlags"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "ScriptVariables"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "SimulationFeatures"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateBaseResources"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateBuildings"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateCores"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateDynamicModifiers"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateResistance"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateResourceInputs"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "StateResources"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "States"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "Subjects"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "TechSharingGroups"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "TechSharingMembers"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "TechnologyDefinitions"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "UnitLeaderTraits"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "UnitLeaders"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "WarRelations"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false
+[[shared.tables]]
+name = "WargoalTargets"
+fields = "all"
+subscription = "lookup"
+source = "crates/dashboard-text/src/triggers.rs:67 RECORDED_TABLES whole-table upper bound"
+previous = false

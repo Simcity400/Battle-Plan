@@ -24,7 +24,6 @@ test('a new visible-row consumer receives the mounted rows even when their conte
         if (path.endsWith('/charts/WindowedRows.tsx')) return source.replace(/import \{ ([^}]+) \} from 'react';/,
           'const { $1 } = globalThis.__windowedRows;');
         if (path.endsWith('/charts/useRowMotion.ts')) return 'export const useRowMotion = () => globalThis.__windowedRows.rows; export const movingRowClass = () => "";';
-        if (path.endsWith('/charts/memoRows.tsx')) return 'export const useMemoRows = () => (_key, element) => element;';
       },
     }] });
   try {

@@ -8,9 +8,9 @@ use crate::products::equipment::production::{ProductionSpendingUnknown, Purpose}
 use std::io;
 
 /// The section each branch's fact ranges are appended to, as `{FACTS}/{branch}`.
-pub const FACTS: &str = "production-facts-v3";
+pub const FACTS: &str = "production-facts-v4";
 
-const MAGIC: u32 = 0x5046_5033;
+const MAGIC: u32 = 0x5046_5034;
 pub(crate) const PREAMBLE: usize = 4 + 8 + 8 + 8 + 8;
 
 /// Endpoints between two ranking keyframes.
@@ -310,6 +310,7 @@ pub(crate) struct Holder {
     /// Whether the supplying equipment read still had its Rocket read when
     /// published; a later revocation can withdraw it.
     pub rocket_joined: bool,
+    pub absent_since: [Option<i32>; 2],
 }
 
 impl Holder {
@@ -481,6 +482,9 @@ pub(crate) fn write_patch(
             | u8::from(now.rocket.is_some()) << 2
             | u8::from(now.rocket_joined) << 3,
     );
+    for since in now.absent_since {
+        out.opt_i32(since);
+    }
     if let Some(source) = &now.equipment {
         write_source(prev.and_then(|prev| prev.equipment.as_ref()), source, out)?;
     }
@@ -509,6 +513,7 @@ pub(crate) fn apply_holder(slot: &mut Option<Holder>, input: &mut In<'_>) -> io:
     if flags & 1 == 0 || flags > 0b1111 {
         return Err(invalid("unknown holder flags"));
     }
+    let absent_since = [input.opt_i32()?, input.opt_i32()?];
     let (mut equipment, mut rocket) = slot
         .take()
         .map(|previous| (previous.equipment, previous.rocket))
@@ -527,6 +532,7 @@ pub(crate) fn apply_holder(slot: &mut Option<Holder>, input: &mut In<'_>) -> io:
         equipment,
         rocket,
         rocket_joined: flags & 8 != 0,
+        absent_since,
     });
     Ok(())
 }
@@ -700,6 +706,7 @@ mod tests {
             }),
             rocket: None,
             rocket_joined: false,
+            absent_since: [None; 2],
         }
     }
 
@@ -708,6 +715,8 @@ mod tests {
     fn patch(upserts: &[Leaf], removals: &[u32]) -> Vec<u8> {
         let mut out = Out::default();
         out.u8(0b11);
+        out.opt_i32(None);
+        out.opt_i32(None);
         head().write(&mut out);
         out.count(upserts.len()).unwrap();
         for leaf in upserts {
@@ -767,6 +776,36 @@ mod tests {
                 io::ErrorKind::InvalidData,
                 "{upserts:?} {removals:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod absence_tests {
+    use super::*;
+
+    #[test]
+    fn absence_starts_round_trip_in_keyframes_and_patches() {
+        let mut previous = None;
+        for starts in [
+            [Some(120), Some(100)],
+            [Some(120), Some(100)],
+            [Some(140), Some(140)],
+        ] {
+            let now = Holder {
+                equipment: None,
+                rocket: None,
+                rocket_joined: false,
+                absent_since: starts,
+            };
+            let mut out = Out::default();
+            write_patch(0, previous.as_ref(), Some(&now), &mut out).unwrap();
+            let mut decoded = vec![previous.clone()];
+            if !out.0.is_empty() {
+                apply_patch(&mut decoded, &mut In::new(&out.0)).unwrap();
+            }
+            assert_eq!(decoded[0], Some(now.clone()));
+            previous = Some(now);
         }
     }
 }

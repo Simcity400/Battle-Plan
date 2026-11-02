@@ -137,7 +137,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["regional-weather"],
         gates: &["regional-weather"],
         // 3: hours certify against the province temperature witness; older recordings refuse.
-        version: 3,
+        // 4: the observer stores empty regions and unavailable provinces apart, so older state is rebuilt.
+        version: 4,
         ..family("regional-weather")
     },
     Descriptor {
@@ -270,7 +271,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
         ],
-        version: 3,
+        version: 7,
         ..family("production")
     },
     Descriptor {
@@ -645,6 +646,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["unit-leaders"],
         gates: &["unit-leaders"],
         sections: &["unit-leaders"],
+        // 2: replies and saved scans hold per-leader withheld refusals.
+        version: 2,
         ..family("leaders")
     },
     Descriptor {

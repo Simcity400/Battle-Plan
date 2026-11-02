@@ -1087,7 +1087,7 @@ fn old_spending(
             tag: input.tag.clone(),
             refits: input.refits,
         },
-        (&kinds, &eq_scope, &ro_scope),
+        (&kinds, &eq_scope, &ro_scope, None),
         refusal_lines(&diagnostics.variant_refusals),
         &flag,
         purposes,

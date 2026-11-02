@@ -103,7 +103,7 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   else if (data.absent) body = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (data.missing !== null) body = <WidgetState kind="unavailable" message="The training queue wasn’t recorded at this time." detail={nameDetail} />;
   else if (!rows.length) body = <WidgetState kind="empty" message={nameDetail ? 'No divisions in training.' : `${countryName} is not training any divisions.`} detail={nameDetail} />;
-  else body = <Table label="Training queue" rows={rows} columns={columns} rowKey={rowKey} tree={tree} unsorted sort={NO_SORT}
+  else body = <Table rowRevision={row => [row, columns]} label="Training queue" rows={rows} columns={columns} rowKey={rowKey} tree={tree} unsorted sort={NO_SORT}
     cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     tooltip={tooltip} menu={() => data.readHour === null ? [] : [jumpItem(runtime, track.id, data.readHour)]} />;
   return <div className="training-queue" data-detail={countryLabel.nameFailure?.message}>{pill}{country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}{body}</div>;

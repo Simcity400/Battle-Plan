@@ -12,13 +12,13 @@ use installed_content_core::{
 };
 use installed_content_regions::regions::{self, StrategicRegions};
 use replay_data::{
-    rows::tables,
+    rows::{TemperatureRecord, tables},
     temperature::{Content, Memo, Plan, Planned, State},
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
 };
@@ -44,6 +44,31 @@ impl Bound {
         self.layout
             .get_or_init(|| Layout::new(&self.members, self.pass.provinces.len()))
     }
+
+    fn unavailable(&self, frame: &DecodedFrame) -> Vec<u32> {
+        let Ok(rows) = frame.complete::<tables::WeatherProvinces>() else {
+            return Vec::new();
+        };
+        self.members
+            .values()
+            .flatten()
+            .copied()
+            .filter(|&province| {
+                (province as usize) < self.pass.provinces.len()
+                    && !rows
+                        .binary_search_by_key(&province, |row| row.id)
+                        .ok()
+                        .is_some_and(|at| {
+                            matches!(
+                                rows[at].temperature.record(),
+                                Ok(TemperatureRecord::Anchored(_) | TemperatureRecord::AtHour(_))
+                            )
+                        })
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
 }
 
 /// The regions as dense indices, in id order: what aggregating a derivation needs of them.
@@ -56,6 +81,8 @@ struct Layout {
     complete: Vec<bool>,
     /// How many regions never have one.
     missing: u64,
+    empty: Vec<u32>,
+    unavailable: Vec<u32>,
     /// Each province's memberships, by dense region index, once per membership:
     /// `regions[starts[province]..starts[province + 1]]`.
     starts: Vec<u32>,
@@ -76,6 +103,18 @@ impl Layout {
             })
             .collect();
         let missing = complete.iter().filter(|&&complete| !complete).count() as u64;
+        let empty = members
+            .iter()
+            .filter_map(|(&id, members)| members.is_empty().then_some(id))
+            .collect();
+        let unavailable = members
+            .values()
+            .flatten()
+            .copied()
+            .filter(|&id| id as usize >= slots)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let provinces = members
             .values()
             .flatten()
@@ -103,6 +142,8 @@ impl Layout {
             totals,
             complete,
             missing,
+            empty,
+            unavailable,
             starts,
             regions,
         }
@@ -307,6 +348,8 @@ pub(super) struct Observation {
     status: Option<String>,
     content_warnings: Vec<String>,
     refused: BTreeMap<String, u64>,
+    empty_regions: BTreeSet<u32>,
+    unavailable: BTreeMap<u32, Unavailable>,
     #[serde(skip)]
     binding: Option<(
         dashboard_base::SourceKey,
@@ -324,6 +367,12 @@ pub(super) struct Observation {
     aggregates: Option<Aggregates>,
     #[serde(skip)]
     mirror: Option<kept::Mirror>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Unavailable {
+    first_hour: i32,
+    count: u64,
 }
 
 struct RegionSum {
@@ -574,7 +623,35 @@ impl Observation {
         warnings.extend(self.refused.iter().map(|(reason, count)| {
             format!("{count} weather temperature observations not shown: {reason}")
         }));
+        warnings.extend(self.empty_regions.iter().map(|region| {
+            format!(
+                "weather temperature not shown: region {region} has no member provinces (permanent)"
+            )
+        }));
+        warnings.extend(self.unavailable.iter().map(|(province, missing)| {
+            format!(
+                "{} weather temperature observations not shown: province {province}'s temperature unavailable at hour {} (first affected hour)",
+                missing.count, missing.first_hour
+            )
+        }));
         warnings
+    }
+
+    fn note_membership(&mut self, content: &Bound, hour: i32) {
+        let layout = content.layout();
+        self.empty_regions.extend(&layout.empty);
+        self.note_unavailable(hour, &layout.unavailable);
+    }
+
+    fn note_unavailable(&mut self, hour: i32, provinces: &[u32]) {
+        for &province in provinces {
+            let missing = self.unavailable.entry(province).or_insert(Unavailable {
+                first_hour: hour,
+                count: 0,
+            });
+            missing.first_hour = missing.first_hour.min(hour);
+            missing.count += 1;
+        }
     }
 
     /// Reconstruct once from this reached frame's anchored packet. No held
@@ -612,8 +689,7 @@ impl Observation {
             })
         });
         self.refresh_with(
-            frame.branch,
-            frame.hour,
+            frame,
             |memo, content| {
                 let rows = frame
                     .complete::<tables::WeatherProvinces>()
@@ -640,12 +716,11 @@ impl Observation {
 
     fn refresh_with(
         &mut self,
-        branch: u64,
-        hour: i32,
+        frame: &DecodedFrame,
         observe: impl FnOnce(&mut Memo, &Bound) -> Result<(), String>,
         publish: impl FnMut(&str, Option<i128>),
     ) -> io::Result<bool> {
-        let result = self.refresh_inner(branch, hour, observe, publish);
+        let result = self.refresh_inner(frame, observe, publish);
         if result.is_err() {
             self.retire();
         }
@@ -654,8 +729,7 @@ impl Observation {
 
     fn refresh_inner(
         &mut self,
-        branch: u64,
-        hour: i32,
+        frame: &DecodedFrame,
         observe: impl FnOnce(&mut Memo, &Bound) -> Result<(), String>,
         mut publish: impl FnMut(&str, Option<i128>),
     ) -> io::Result<bool> {
@@ -665,6 +739,8 @@ impl Observation {
             }
             return Ok(false);
         };
+        let (branch, hour) = (frame.branch, frame.hour);
+        self.note_membership(&content, hour);
         let previous = self.certified.filter(|&(previous_branch, previous_hour)| {
             previous_branch == branch && previous_hour.checked_add(1) == Some(hour)
         });
@@ -672,6 +748,7 @@ impl Observation {
         let observed = observe(&mut self.memo, &content);
         if let Err(reason) = observed {
             self.certified = None;
+            self.note_unavailable(hour, &content.unavailable(frame));
             *self.refused.entry(reason).or_default() += 1;
             if let Some(aggregates) = &mut self.aggregates {
                 aggregates.point = None;
@@ -739,15 +816,6 @@ impl Observation {
         }
         let aggregates = self.aggregates.as_mut().unwrap();
         aggregates.point = Some((branch, hour));
-        if aggregates.missing > 0 {
-            *self
-                .refused
-                .entry(
-                    "region membership is empty or a member province temperature is unavailable"
-                        .into(),
-                )
-                .or_default() += aggregates.missing;
-        }
         Ok(aggregates.missing < aggregates.regions.len() as u64)
     }
 

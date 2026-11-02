@@ -92,3 +92,5 @@ export function designTypes(reply: ProductionCatalogueReply): { value: string; l
 
 /** The last hour a design was the country's, for the menu's jump. */
 export const lastSeen = (design: DesignHistory, hour: number) => lastRunBy(design.creator, hour)?.[1] ?? null;
+
+export const designRevision = (row: DesignRow) => [row.name, row.type, row.obsolete, row.firstSeen?.hour, row.firstSeen?.context, row.seenObsolete?.hour, row.seenObsolete?.context];

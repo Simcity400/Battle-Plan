@@ -1,4 +1,4 @@
-import { createElement, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -11,10 +11,9 @@ import { movingRowClass, useRowMotion } from '../useRowMotion';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
-import ProgressMeter from '../meter/ProgressMeter.tsx';
-import { sameContent, useEqualContent, useMemoRows } from '../memoRows.tsx';
+import { sameRevision, useRevision, useMemoRows } from '../memoRows.tsx';
+import type { RowEvents, RowRevision } from '../memoRows.tsx';
 import { useTableAppearance } from './useTableAppearance.ts';
-import { defineCellWidth, renderedCellWidth } from './cellWidth.ts';
 import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, treeRows, visibleRange } from './logic.ts';
 import type { ColumnFit, RankChange, Sort, TableGroup, TableTree, TreeRow } from './logic';
 import { cellContent, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
@@ -33,44 +32,16 @@ const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_RANKS: ReadonlyMap<string, RankChange> = new Map();
 /** How long a rank marker shows once its row moves. */
 const RANK_HOLD_MS = 2500;
+interface NaturalCell { key: string; row: string | undefined; revision: RowRevision; padding?: number }
+interface NaturalMeasurement { revision: RowRevision; width: number; padding: number }
 const NO_COLUMNS: readonly TableColumn<never>[] = [];
-const PAINT_STYLES = new Set(['color', 'background', 'backgroundColor', 'backgroundImage', 'borderColor', 'borderTopColor', 'borderRightColor',
-  'borderBottomColor', 'borderLeftColor', 'outlineColor', 'textDecorationColor', 'fill', 'fillOpacity', 'stroke', 'strokeOpacity', 'opacity', 'boxShadow', 'textShadow',
-  'cursor', 'pointerEvents', 'userSelect', 'caretColor', 'backgroundPosition', 'backgroundSize', 'backgroundRepeat']);
-const PAINT_PROPS = new Set(['ref', 'title', 'role', 'tabIndex', 'data-tooltip', 'color', 'fill', 'stroke', 'src', 'srcSet', 'alt', 'loading', 'decoding', 'crossOrigin']);
-
-function widthContent(content: ReactNode): ReactNode {
-  if (content == null || typeof content === 'boolean' || content === '') return null;
-  if (typeof content === 'number' || typeof content === 'bigint') return String(content);
-  if (Array.isArray(content)) return content.map(widthContent);
-  if (!isValidElement<Record<string, unknown>>(content)) return content;
-  const rendered = renderedCellWidth(content.type, content.props);
-  if (rendered) return widthContent(rendered.content);
-  const native = typeof content.type === 'string';
-  const props: Record<string, unknown> = Object.fromEntries(Object.entries(content.props).filter(([key]) => key !== 'ref'
-    && (!native || (!PAINT_PROPS.has(key) && !key.startsWith('aria-') && !/^on[A-Z]/.test(key)))));
-  if (content.type === CellBar) { props.value = null; props.maximum = 0; }
-  if (content.type === ProgressMeter && !(content.props.marks as readonly unknown[] | undefined)?.length) {
-    props.value = null; props.state = 'idle'; props.sweep = false; props.label = undefined; props.marks = undefined; props.markProps = undefined;
-  }
-  if (content.props.style) props.style = Object.fromEntries(Object.entries(content.props.style).filter(([key, value]) => !PAINT_STYLES.has(key)
-    && (key !== 'visibility' || value === 'collapse')));
-  if ('children' in content.props) props.children = widthContent(content.props.children as ReactNode);
-  return createElement(content.type, props);
-}
-
-interface WidthColumn {
-  key: string; width: string | undefined; numeric: boolean | undefined; align: TableColumn<unknown>['align']; header: ReactNode;
-  cells: readonly { key: string; content: ReactNode }[];
-}
-const sameWidthColumn = (before: WidthColumn | undefined, next: WidthColumn) => before != null && before.key === next.key && before.width === next.width
-  && before.numeric === next.numeric && before.align === next.align && sameContent(before.header, next.header, true) && before.cells.length === next.cells.length
-  && before.cells.every((cell, index) => cell.key === next.cells[index].key && sameContent(cell.content, next.cells[index].content, true));
 /** Unchanged markers keep their state, so new row objects in the same order do not re-render the table. */
 const sameRanks = (before: ReadonlyMap<string, RankChange>, next: ReadonlyMap<string, RankChange>) => before.size === next.size
   && [...next].every(([key, change]) => { const held = before.get(key); return held?.rank === change.rank && held.delta === change.delta && held.until === change.until; });
 export interface TableProps<T> {
   label: string; rows: readonly T[]; columns: readonly TableColumn<T>[]; rowKey: (row: T) => string;
+  /** Data operands that determine every displayed cell, including failed reads and content. */
+  rowRevision?: (row: T) => RowRevision;
   /** Current recorded tag order may differ from a country's stable motion key. */
   tieKey?: (row: T) => string;
   /** Optional grouping keeps the same row identities, geometry and exact values. */
@@ -99,7 +70,7 @@ export interface TableProps<T> {
 }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
-export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, tree, unsorted = false, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
+export default function Table<T>({ label, rows, columns, rowKey, rowRevision, tieKey = rowKey, groupBy, tree, unsorted = false, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
   tooltip, onVisibleRows, parity, hoursPerSecond, narrow = 'hide' }: TableProps<T>) {
   const owner = useId();
@@ -134,7 +105,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const sort = { column: sortedColumn?.key ?? '', direction: sortedColumn?.direction ?? requestedSort.direction };
   // The row's identity (the first column) and the column it is sorted by never hide;
   // rows kept in their given order have no sort column.
-  const order = useEqualContent(narrow === 'hide' ? hideOrder(columns).filter(key => (unsorted || key !== sort.column) && key !== columns[0]?.key) : []);
+  const order = useRevision(narrow === 'hide' ? hideOrder(columns).filter(key => (unsorted || key !== sort.column) && key !== columns[0]?.key) : []);
   const [fit, setFit] = useState<{ scope: string; fit: ColumnFit }>({ scope: '', fit: FULL_FIT });
   // Widths each column needed hold only for the same tracks and typography.
   // The rank track takes width from the other columns too.
@@ -233,7 +204,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     const measure = () => {
       const top = element.scrollTop, height = element.clientHeight, width = element.clientWidth;
       const next = { top, height, width, rowHeight: measuredHeight, headerHeight };
-      if (!sameContent(currentView.current, next)) { currentView.current = next; setView(next); }
+      if (!sameRevision(Object.values(currentView.current), Object.values(next))) { currentView.current = next; setView(next); }
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -242,7 +213,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   }, [density, rowHeight, tableSize, comfortable, compact, headerMinimum]);
   const count = moving.reduce((count, row) => tokens.reducedMotion && row.phase === 'leaving' ? count : Math.max(count, row.slot + 1), ordered.length);
   const leavingSlots = JSON.stringify(moving.filter(row => row.phase === 'leaving' && row.slot >= items.length).map(row => [row.slot, row.key]));
-  const slotKeys = useEqualContent(useMemo(() => {
+  const slotKeys = useRevision(useMemo(() => {
     const keys = Array.from({ length: count }, (_, slot) => items[slot]?.key ?? '');
     for (const [slot, key] of JSON.parse(leavingSlots) as [number, string][]) keys[slot] = key;
     return keys;
@@ -272,23 +243,24 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const memoRow = useMemoRows();
   const maxima = useMemo(() => new Map(columns.filter(column => column.bar != null).map(column => [column.key,
     column.bar === 'visible' ? barMaximum(ordered, column.value) : column.bar as number | bigint])), [columns, ordered]);
-  const cells = new Map(mounted.map(row => [row.key, shownColumns.map((column, index) => {
-    const value = column.value(row.item.value), missing = isMissing(value), node = nesting?.get(row.key);
-    const cell = cellContent(column, row.item.value, value);
-    const content = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={node.count} open={node.open}>{cell}</TreeCell> : cell;
-    const key = column.widthKey ? column.widthKey(row.item.value) : widthContent(cell);
-    const width = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={0} open={false}>{key}</TreeCell> : key;
-    return column.bar != null ? { content: <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
-      maximum={maxima.get(column.key) ?? 0}>{content}</CellBar>, width: <CellBar value={null} maximum={0}>{width}</CellBar> } : { content, width };
-  })]));
+  const barRevision = useRevision(shownColumns.filter(column => column.bar != null).flatMap(column => [column.key, maxima.get(column.key)]));
+  const update = {};
+  const revisions = new Map(mounted.map(row => [row.key, rowRevision?.(row.item.value) ?? [update]]));
   const headers = shownColumns.map(column => column.sortable === false || unsorted ? column.header
     : <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true"
-      style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>);
-  const widthRows = mounted.map(row => row.key).sort();
-  const layoutColumns = useEqualContent(shownColumns.map((column, index): WidthColumn => ({ key: column.key, width: column.width, numeric: column.numeric,
-    align: column.align, header: widthContent(headers[index]), cells: widthRows.map(key => ({ key, content: cells.get(key)![index].width })) })),
-  (before, next) => before.length === next.length && before.every((column, index) => sameWidthColumn(column, next[index])));
-  const mountedKeys = useEqualContent(mounted.map(row => row.key));
+      style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '\u25be' : '\u25b4'}</span>}</>);
+  const layoutKeys = useRevision(shownColumns.flatMap(column => [column.key, column.width, column.numeric, column.align, column.label, column.headerRevision, column.renderMissing,
+    column.sortable === false || unsorted]));
+  const headerKeys = useRevision([layoutKeys, sort.column, sort.direction]);
+  const widthColumns = shownColumns.filter(column => column.width === 'max-content');
+  const widthKeys = new Map<string, ReadonlyMap<string, RowRevision>>(widthColumns.length ? mounted.map(row => [row.key, new Map<string, RowRevision>(widthColumns.map(column => {
+    const key = column.widthKey?.(row.item.value) ?? revisions.get(row.key)!;
+    const node = column === shownColumns[0] ? nesting?.get(row.key) : undefined;
+    return [column.key, [column.key, column.numeric, column.align, ...(typeof key === 'string' ? [key] : key), node?.level, node?.group]];
+  }))]) : []);
+  const naturalRevision = useRevision([headerKeys, ...[...widthKeys].flatMap(([key, columns]) =>
+    [key, columns.size, ...[...columns.values()].flatMap(revision => [revision.length, ...revision])])]);
+  const mountedKeys = useRevision(mounted.map(row => row.key));
   useLayoutEffect(() => {
     const before = committedWindow.current;
     committedWindow.current = { items, keys: new Set(items.slice(start, end).map(row => row.key)),
@@ -307,11 +279,12 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     reported.current = { rows: visible, callback: onVisibleRows };
     onVisibleRows?.(visible);
   }, [visible, onVisibleRows]);
-  const naturalCells = useRef<{ observer: ResizeObserver; observed: Map<Element, { key: string; padding?: number }>;
-    columns: ReadonlyMap<string, typeof layoutColumns[number]> } | null>(null);
+  const naturalCells = useRef<{ observer: ResizeObserver; observed: Map<Element, NaturalCell>;
+    measurements: Map<string | undefined, Map<string, NaturalMeasurement>> } | null>(null);
   useLayoutEffect(() => {
     const pending = new Map<Element, { key: string; width: number }>();
-    const observed = new Map<Element, { key: string; padding?: number }>();
+    const observed = new Map<Element, NaturalCell>();
+    const measurements = new Map<string | undefined, Map<string, NaturalMeasurement>>();
     let frame = 0;
     const observer = new ResizeObserver(entries => {
       for (const { target, contentRect } of entries) {
@@ -324,6 +297,13 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
           cell.padding = parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
         }
         const width = contentRect.width + cell.padding;
+        let rowMeasurements = measurements.get(cell.row);
+        if (!rowMeasurements) measurements.set(cell.row, rowMeasurements = new Map());
+        const cached = rowMeasurements.get(cell.key);
+        const applied = currentNatural.current;
+        if (cached && sameRevision(cached.revision, cell.revision) && cached.width === width && applied.scope === widthScope
+          && (applied.widths.get(cell.key) ?? 0) >= Math.ceil(width)) continue;
+        rowMeasurements.set(cell.key, { revision: cell.revision, width, padding: cell.padding });
         pending.set(target, { key: cell.key, width: Math.max(pending.get(target)?.width ?? 0, width) });
       }
       if (frame) return;
@@ -341,21 +321,31 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
         flushSync(() => setNatural(next));
       });
     });
-    naturalCells.current = { observer, observed, columns: new Map() };
+    naturalCells.current = { observer, observed, measurements };
     return () => { observer.disconnect(); cancelAnimationFrame(frame); naturalCells.current = null; };
   }, [widthScope]);
   useLayoutEffect(() => {
     const held = naturalCells.current!;
+    if (!widthColumns.length) return;
     const { observer, observed } = held;
-    const changed = new Set(layoutColumns.filter(column => !sameWidthColumn(held.columns.get(column.key), column)).map(column => column.key));
-    held.columns = new Map(layoutColumns.map(column => [column.key, column]));
     for (const element of observed.keys()) if (!element.isConnected) { observer.unobserve(element); observed.delete(element); }
-    for (const element of scroll.current?.querySelectorAll('[data-table-natural]') ?? []) {
-      const key = (element as HTMLElement).dataset.tableNatural!;
-      if (!observed.has(element)) { observed.set(element, { key }); observer.observe(element); }
-      else if (changed.has(key)) { observer.unobserve(element); observer.observe(element); }
+    for (const element of scroll.current?.querySelectorAll<HTMLElement>('[data-table-natural]') ?? []) {
+      const key = element.dataset.tableNatural!;
+      const row = element.closest<HTMLElement>('[data-table-row]')?.dataset.tableRow;
+      const revision = row === undefined ? headerKeys : widthKeys.get(row)?.get(key) ?? layoutKeys;
+      const cached = held.measurements.get(row)?.get(key);
+      const previous = observed.get(element);
+      observed.set(element, { key, row, revision, padding: previous?.padding ?? cached?.padding });
+      if (!previous) observer.observe(element);
+      else if (!sameRevision(previous.revision, revision)) { observer.unobserve(element); observer.observe(element); }
     }
-  }, [layoutColumns, widthScope]);
+  }, [naturalRevision, widthScope]);
+  useEffect(() => {
+    const held = naturalCells.current;
+    if (!held?.measurements.size) return;
+    const live = new Set(moving.map(row => row.key));
+    for (const key of held.measurements.keys()) if (key !== undefined && !live.has(key)) held.measurements.delete(key);
+  }, [moving]);
   const measuredRows = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);
   // Measure only mounted rows. Prefix geometry uses the last measured height of
   // each identity; new rows use the minimum until they enter the viewport.
@@ -445,7 +435,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     const focused = focusedKey === null ? undefined : ordered.find(row => rowKey(row) === focusedKey);
     const content = focused === undefined ? null : contentFor(focused);
     const next = content && focusedKey !== null ? { key: focusedKey, text: tooltipText(content) } : null;
-    if (!sameContent(description, next)) setDescription(next);
+    if (description?.key !== next?.key || description?.text !== next?.text) setDescription(next);
   }, [ordered, rowKey, focusedKey, contentFor, owner, description]);
   const open = (row: T, x: number, y: number) => {
     const items = rowMenu?.(row);
@@ -464,7 +454,8 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     scroll.current?.scrollTo({ top });
     requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`tr[aria-rowindex="${slot + 2}"]:not([aria-hidden="true"])`)?.focus());
   };
-  const tracks = useEqualContent(shownColumns.map(column => ({ key: column.key, width: column.width })));
+  const trackKeys = useRevision(shownColumns.flatMap(column => [column.key, column.width]));
+  const tracks = useMemo(() => shownColumns.map(column => ({ key: column.key, width: column.width })), [trackKeys]);
   const grid = useMemo(() => tableGrid(tracks, rank, natural.scope === widthScope ? natural.widths : new Map()),
     [tracks, rank, natural, widthScope]);
   // Hide or restore one prioritised column per pass before paint, until the table itself fits (the scroller's padding masks a little overflow).
@@ -474,7 +465,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     const held = fit.scope === fitScope ? fit.fit : FULL_FIT;
     const next = fitColumns(held, order, element.clientWidth, element.scrollWidth);
     if (next !== held || fit.scope !== fitScope) setFit({ scope: fitScope, fit: next });
-  }, [order, fitScope, fit, grid, view.width, layoutColumns, rowHeight, fonts]);
+  }, [order, fitScope, fit, grid, view.width, headerKeys, rowHeight, fonts]);
   const naturalContent = (column: TableColumn<T>, content: ReactNode) => column.width === 'max-content'
     ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
   return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
@@ -495,26 +486,22 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
         const change = ranks.get(row.key)?.delta ?? 0;
         const node = nesting?.get(row.key);
         const opens = node?.group === true && node.count > 0;
-        return memoRow(row.key, <tr data-table-row={row.key} className={`${movingRowClass(row)}${muted?.(row.item.value) ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
-          aria-hidden={row.phase === 'leaving' || undefined} aria-rowindex={row.slot + 2}
-          aria-level={node?.level} aria-setsize={node?.size} aria-posinset={node?.position} aria-expanded={opens ? node.open : undefined}
-          aria-describedby={description?.key === row.key ? `${owner}-description` : undefined}
-          style={{ transform: `translateY(${offsets[row.slot] - view.headerHeight}px)` }}
-          onPointerMove={event => show(row.key, row.item.value, 'pointer', event.clientX, event.clientY)}
-          onFocus={event => {
+        const events: RowEvents = {
+          onPointerMove: event => show(row.key, row.item.value, 'pointer', event.clientX, event.clientY),
+          onFocus: event => {
             if (event.target !== event.currentTarget) return;
             focusAnchor.current = true;
             setFocusedKey(row.key);
             const point = pointAt(event.currentTarget); const content = show(row.key, row.item.value, 'keyboard', point.x, point.y);
             setDescription(content ? { key: row.key, text: tooltipText(content) } : null);
-          }}
-          onBlur={() => { if (activeTip.current?.origin === 'keyboard') clearTip(); setFocusedKey(null); setDescription(null); }}
-          onClick={() => { if (!node?.group) onRowClick?.(row.item.value); else if (opens) toggle(row.item.value, !node.open); }}
-          onContextMenu={event => {
+          },
+          onBlur: () => { if (activeTip.current?.origin === 'keyboard') clearTip(); setFocusedKey(null); setDescription(null); },
+          onClick: () => { if (!node?.group) onRowClick?.(row.item.value); else if (opens) toggle(row.item.value, !node.open); },
+          onContextMenu: event => {
             if (keyboardMenu.current) { event.preventDefault(); keyboardMenu.current = false; }
             else if (open(row.item.value, event.clientX, event.clientY)) event.preventDefault();
-          }}
-          onKeyDown={event => {
+          },
+          onKeyDown: event => {
             if (event.target !== event.currentTarget) return;
             if ((event.key === 'PageUp' || event.key === 'PageDown') && scrollTooltip(owner, event.key === 'PageUp' ? -1 : 1, true)) {
               event.preventDefault(); return;
@@ -540,14 +527,31 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
               event.preventDefault();
               focusSlot(event.key === 'Home' ? 0 : event.key === 'End' ? ordered.length - 1 : Math.max(0, Math.min(ordered.length - 1, row.slot + (event.key === 'ArrowDown' ? 1 : -1))));
             }
-          }} onPointerDown={() => { keyboardMenu.current = false; }}>
+          },
+          onPointerDown: () => { keyboardMenu.current = false; },
+        };
+        const isMuted = muted?.(row.item.value);
+        const revision = [...revisions.get(row.key)!, layoutKeys, cellBars, rank, rankMarkers, row.item.rank, change,
+          barRevision, row.phase, row.slot, offsets[row.slot] - view.headerHeight,
+          node?.level, node?.size, node?.position, node?.group, node?.count, node?.open, description?.key === row.key,
+          isMuted, !!onRowClick];
+        return memoRow(row.key, revision, handlers => <tr data-table-row={row.key} className={`${movingRowClass(row)}${isMuted ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
+          aria-hidden={row.phase === 'leaving' || undefined} aria-rowindex={row.slot + 2}
+          aria-level={node?.level} aria-setsize={node?.size} aria-posinset={node?.position} aria-expanded={opens ? node.open : undefined}
+          aria-describedby={description?.key === row.key ? `${owner}-description` : undefined}
+          style={{ transform: `translateY(${offsets[row.slot] - view.headerHeight}px)` }}
+          {...handlers}>
           {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
           {shownColumns.map((column, index) => {
+            const value = column.value(row.item.value), missing = isMissing(value);
+            const cell = cellContent(column, row.item.value, value);
+            const content = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={node.count} open={node.open}>{cell}</TreeCell> : cell;
             return <td key={column.key} className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`}>
-              {naturalContent(column, cells.get(row.key)![index].content)}
+              {naturalContent(column, column.bar != null ? <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
+                maximum={maxima.get(column.key) ?? 0}>{content}</CellBar> : content)}
             </td>;
           })}
-        </tr>);
+        </tr>, events);
       })}</tbody>
     </table>
     {description && <span id={`${owner}-description`} className="sr-only">{description.text}</span>}
@@ -577,5 +581,3 @@ export function CountryCell({ name, nameFailure, flag, flagReason, flagDetail, f
   return <span className="table-country" data-detail={nameFailure?.message} title={name}><CountryFlagUrl className="table-country-flag"
     url={flag} detail={flagDetail} reason={flagReason} pending={flagPending} fixedSize /><span>{name}</span></span>;
 }
-
-defineCellWidth(CountryCell, ({ name }) => <span className="table-country"><span className="table-country-flag" /><span>{name}</span></span>);

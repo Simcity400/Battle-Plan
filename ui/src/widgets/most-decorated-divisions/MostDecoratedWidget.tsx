@@ -90,7 +90,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   else if (!data) main = <WidgetState kind="loading" label="Loading divisions…" />;
   else if (data.missing) main = <WidgetState kind="unavailable" message="Divisions weren’t recorded at this time." />;
   else if (!rows.length) main = selection.known ? <WidgetState kind="empty" message="No divisions at this date." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  else main = <Table label="Most decorated divisions" rows={rows} columns={columns} rowKey={rowKey} rank rowHeight={40}
+  else main = <Table rowRevision={row => [row, columns]} label="Most decorated divisions" rows={rows} columns={columns} rowKey={rowKey} rank rowHeight={40}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip}
     onVisibleRows={setVisible} hoursPerSecond={hoursPerSecond} menu={row => [{ label: 'Open service record', run: () => open(row) }]} />;

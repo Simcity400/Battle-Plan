@@ -201,7 +201,7 @@ impl Current {
 }
 
 /// Prepared state's layout; another is refused rather than read.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 7;
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct ProductionAccumulator {
@@ -234,7 +234,8 @@ pub struct ProductionAccumulator {
     #[serde(default)]
     class_changed: Vec<u64>,
     pending: Option<Pending>,
-    spending_continuity: Option<(i32, BTreeMap<String, [Option<SpendingContinuity>; 2]>)>,
+    // Source records hold through last_frame, including hours advanced without projection.
+    spending_sources: BTreeMap<String, [Option<SpendingSource>; 2]>,
     /// The latest complete variant read: names it dates take its hour.
     names_hour: Option<i32>,
     segments: BTreeMap<String, u64>,
@@ -279,7 +280,6 @@ pub struct ProductionAccumulator {
     /// The hour's countries: none while Countries is not complete.
     #[serde(skip)]
     countries: Option<Arc<CountryHolders>>,
-    #[serde(skip)]
     variants: ProductionVariants,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
@@ -532,39 +532,48 @@ fn spending_identity(head: SourceHead) -> SpendingIdentity {
 }
 
 #[derive(Deserialize, Serialize)]
-struct SpendingContinuity {
-    identity: SpendingIdentity,
+struct SpendingSource {
+    identity: Option<SpendingIdentity>,
     since: i32,
-    amounts: Vec<(u64, Purpose, i128, Option<ProductionSpendingUnknown>, i128)>,
+    #[serde(with = "map_pairs")]
+    amounts: BTreeMap<Entry, (i128, Option<ProductionSpendingUnknown>, i128)>,
 }
 
-impl SpendingContinuity {
-    fn of(source: &SourceEndpoint) -> Self {
-        Self {
-            identity: spending_identity(SourceHead::of(source)),
-            since: source.spending_since,
-            amounts: source.amounts.iter().map(Self::amount).collect(),
-        }
+impl SpendingSource {
+    fn absent(saved: &mut Option<Self>, hour: i32, consecutive: bool) {
+        let since = saved
+            .as_ref()
+            .filter(|saved| consecutive && saved.identity.is_none())
+            .map_or(hour, |saved| saved.since);
+        *saved = Some(Self {
+            identity: None,
+            since,
+            amounts: BTreeMap::new(),
+        });
     }
 
-    fn amount(amount: &Amount) -> (u64, Purpose, i128, Option<ProductionSpendingUnknown>, i128) {
-        (
-            amount.variant,
-            amount.purpose,
-            amount.spent,
-            amount.spending_reason,
-            amount.unproven,
-        )
+    fn value(amount: &Amount) -> (i128, Option<ProductionSpendingUnknown>, i128) {
+        (amount.spent, amount.spending_reason, amount.unproven)
     }
 
-    fn holds(&self, head: SourceHead, amounts: &[Amount]) -> bool {
-        self.identity == spending_identity(head)
-            && self.amounts.len() == amounts.len()
-            && self
-                .amounts
-                .iter()
-                .copied()
-                .eq(amounts.iter().map(Self::amount))
+    fn whole(saved: &mut Option<Self>, head: &mut SourceHead, amounts: &[Amount], consecutive: bool) {
+        let identity = spending_identity(*head);
+        let amounts = amounts
+            .iter()
+            .map(|amount| ((amount.variant, amount.purpose), Self::value(amount)))
+            .collect();
+        let since = saved
+            .as_ref()
+            .filter(|saved| {
+                consecutive && saved.identity == Some(identity) && saved.amounts == amounts
+            })
+            .map_or(head.spending_since, |saved| saved.since);
+        head.spending_since = since;
+        *saved = Some(Self {
+            identity: Some(identity),
+            since,
+            amounts,
+        });
     }
 }
 
@@ -591,6 +600,7 @@ enum RowEdit {
         held: usize,
         sources: [SourceEdit; 2],
         joined: bool,
+        absent_since: [Option<i32>; 2],
     },
 }
 
@@ -606,6 +616,7 @@ struct HolderChange {
 struct HolderNow {
     sources: [SourceChange; 2],
     joined: bool,
+    absent_since: [Option<i32>; 2],
 }
 
 enum SourceChange {
@@ -715,29 +726,34 @@ struct SpentHolder {
     active: BTreeSet<u64>,
 }
 
-/// The latest complete variant read, used only at another complete read.
-/// Production takes names from one frame, rather than a catalogue's history: equal
-/// operands keep their strings but every selected name takes this read's date.
-#[derive(Default)]
+/// Current naming operands; a definitions census dates every selected name anew.
+#[derive(Default, Deserialize, Serialize)]
 struct ProductionVariants {
+    #[serde(skip)]
     reads: VariantReads,
     catalogue: VariantCatalogue,
-    classified: HashSet<u64>,
+    classified: BTreeSet<u64>,
+    invalidated: BTreeSet<u64>,
+    #[serde(skip)]
+    changed: Vec<u64>,
     inventory: [BTreeMap<String, VariantInventory>; 2],
     members: BTreeMap<u64, VariantMembers>,
     #[cfg(test)]
+    #[serde(skip)]
     inventory_visits: usize,
     #[cfg(test)]
+    #[serde(skip)]
     classifications: usize,
 }
 
 /// Inventory versions authenticate the keys used by presentation independently
 /// of quantities, supplying dates and country names.
+#[derive(Deserialize, Serialize)]
 struct VariantInventory {
     versions: [Option<(Identity, u64)>; 2],
     members: BTreeMap<u64, [bool; SEEN]>,
 }
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct VariantMembers {
     seen: [usize; SEEN],
     selected: usize,
@@ -770,6 +786,8 @@ impl ProductionVariants {
                     && tracks.contains_key(tag);
                 if !kept {
                     change_members(members, &old.members, source, false);
+                    // Another holder may still select these: their selection changed.
+                    changed.extend(old.members.keys().copied());
                 }
                 kept
             });
@@ -844,7 +862,13 @@ impl ProductionVariants {
                     kept.entry(variant).or_default()[measure + purpose.index()] = true;
                 }
                 change_members(members, &kept, source, true);
-                changed.extend(kept.keys().copied());
+                let old = held.get(tag).map(|old| &old.members);
+                changed.extend(kept.iter().filter_map(|(&variant, seen)| {
+                    (old.and_then(|old| old.get(&variant)) != Some(seen)).then_some(variant)
+                }));
+                if let Some(old) = old {
+                    changed.extend(old.keys().filter(|id| !kept.contains_key(id)).copied());
+                }
                 let rebuilt = VariantInventory {
                     versions,
                     members: kept,
@@ -872,13 +896,15 @@ impl ProductionVariants {
             reads,
             catalogue,
             classified,
+            changed,
             ..
         } = self;
+        changed.clear();
         match variants {
             Variants::Frame(frame) => {
                 let built = reads.build(frame, false);
                 let live = |id| reads.contains(id);
-                name_variants(catalogue, classified, hour, built, live, refusals);
+                name_variants(catalogue, classified, changed, hour, built, live, refusals);
             }
             Variants::Read(pending) => {
                 let built = std::mem::take(&mut pending.built);
@@ -886,6 +912,7 @@ impl ProductionVariants {
                 name_variants(
                     catalogue,
                     classified,
+                    changed,
                     hour,
                     built,
                     |id| present.contains(&id),
@@ -893,19 +920,36 @@ impl ProductionVariants {
                 );
             }
         }
+        changed.extend(std::mem::take(&mut self.invalidated));
+        changed.sort_unstable();
+        changed.dedup();
     }
 }
 
 /// Names `built`'s definitions as read at `hour`, and forgets those `live` no longer holds.
 fn name_variants(
     catalogue: &mut VariantCatalogue,
-    classified: &mut HashSet<u64>,
+    classified: &mut BTreeSet<u64>,
+    changed: &mut Vec<u64>,
     hour: i32,
     built: impl IntoIterator<Item = (u64, RawVariant)>,
     live: impl Fn(u64) -> bool,
     refusals: &mut BTreeMap<String, BTreeSet<u64>>,
 ) {
-    for (id, raw) in built {
+    for (id, mut raw) in built {
+        if let Some(previous) = catalogue
+            .versions
+            .get(&id)
+            .and_then(|versions| versions.last())
+            && let Some(previous) = &previous.raw
+        {
+            raw.first_hour = previous.first_hour;
+            if &raw == previous {
+                continue;
+            }
+        }
+        raw.first_hour = hour;
+        changed.push(id);
         for (_, reason) in &raw.refusals {
             refusals.entry(reason.clone()).or_default().insert(id);
         }
@@ -918,8 +962,17 @@ fn name_variants(
             }],
         );
     }
-    catalogue.versions.retain(|id, _| live(*id));
-    classified.retain(|id| live(*id));
+    catalogue.versions.retain(|id, _| {
+        if live(*id) {
+            true
+        } else {
+            changed.push(*id);
+            classified.remove(id);
+            false
+        }
+    });
+    changed.sort_unstable();
+    changed.dedup();
 }
 
 fn change_members(
@@ -1425,6 +1478,7 @@ impl ProductionAccumulator {
     fn forget_names(&mut self, hour: i32) {
         self.variants.classified.clear();
         for (&variant, kind) in &mut self.classifications {
+            self.variants.invalidated.insert(variant);
             if kind.names.last().is_some_and(|name| name.raw.is_none()) {
                 continue;
             }
@@ -2274,6 +2328,7 @@ pub struct CountryEndpoint {
     pub rocket: Option<SourceEndpoint>,
     /// Whether the equipment supplying read still has its independent Rocket read.
     pub rocket_joined: bool,
+    pub absent_since: [Option<i32>; 2],
 }
 
 /// One endpoint as preparation holds it: another begins wherever any of it
@@ -2490,7 +2545,8 @@ fn source_edit(
     (units_known, spending_known): (bool, bool),
     (tainted, first, restart, rocket): Scope<'_>,
     held: Option<&SourceEndpoint>,
-    continuity: Option<&SpendingContinuity>,
+    continuity: &mut Option<SpendingSource>,
+    consecutive: bool,
     entries: &mut Vec<Entry>,
     edits: &mut Vec<(Entry, Option<Amount>)>,
 ) -> io::Result<(Option<SourceHead>, SourceEdit)> {
@@ -2500,6 +2556,7 @@ fn source_edit(
         SourceEdit::Same
     };
     let Some(track) = track else {
+        SpendingSource::absent(continuity, hour, consecutive);
         return Ok((None, gone));
     };
     let whole = track.edits.take(ROWS_READER, entries);
@@ -2513,6 +2570,7 @@ fn source_edit(
         spending_known,
     )?
     else {
+        SpendingSource::absent(continuity, hour, consecutive);
         return Ok((None, gone));
     };
     head.campaign_spending_reason = spending_reason(
@@ -2524,25 +2582,12 @@ fn source_edit(
         rocket,
         hour,
     );
-    let Some(held) = held else {
+    if whole || held.is_none() || continuity.is_none() {
         let amounts = amounts_of(track);
-        if let Some(continuity) = continuity.filter(|saved| saved.holds(head, &amounts)) {
-            head.spending_since = continuity.since;
-        }
-        return Ok((Some(head), SourceEdit::Whole(head.source(amounts))));
-    };
-    let same_head = spending_identity(head) == spending_identity(SourceHead::of(held));
-    let spending = |amount: &Amount| (amount.spent, amount.spending_reason, amount.unproven);
-    if whole {
-        let amounts = amounts_of(track);
-        if same_head
-            && amounts.len() == held.amounts.len()
-            && amounts.iter().zip(&held.amounts).all(|(a, b)| {
-                (a.variant, a.purpose, spending(a)) == (b.variant, b.purpose, spending(b))
-            })
-        {
-            head.spending_since = held.spending_since;
-        }
+        SpendingSource::whole(continuity, &mut head, &amounts, consecutive);
+        let Some(held) = held else {
+            return Ok((Some(head), SourceEdit::Whole(head.source(amounts))));
+        };
         let source = head.source(amounts);
         let edit = if source == *held {
             SourceEdit::Same
@@ -2551,21 +2596,34 @@ fn source_edit(
         };
         return Ok((Some(head), edit));
     }
+    let held = held.expect("an incremental source's held page");
+    let saved = continuity
+        .as_mut()
+        .expect("an incremental source's spending record");
+    let identity = spending_identity(head);
     let first = edits.len();
-    let mut same_spending = same_head;
+    let mut same_spending = consecutive && saved.identity == Some(identity);
     for &entry in entries.iter() {
         let now = amount_of(track, entry);
         let before = held_amount(&held.amounts, entry)
             .ok()
             .map(|at| &held.amounts[at]);
-        same_spending &= now.as_ref().map(&spending) == before.map(&spending);
+        let value = now.as_ref().map(SpendingSource::value);
+        same_spending &= value == saved.amounts.get(&entry).copied();
+        if let Some(value) = value {
+            saved.amounts.insert(entry, value);
+        } else {
+            saved.amounts.remove(&entry);
+        }
         if now.as_ref() != before {
             edits.push((entry, now));
         }
     }
-    if same_spending {
-        head.spending_since = held.spending_since;
+    if !same_spending {
+        saved.since = head.spending_since;
     }
+    saved.identity = Some(identity);
+    head.spending_since = saved.since;
     let edit = if first == edits.len() && head == SourceHead::of(held) {
         SourceEdit::Same
     } else {
@@ -2621,11 +2679,12 @@ fn apply_rows(
                 held,
                 sources,
                 joined,
+                absent_since,
             } = edit
             else {
                 unreachable!("only changes");
             };
-            edited[held] = modify(&mut rows[held], sources, joined, amounts, entries);
+            edited[held] = modify(&mut rows[held], sources, joined, absent_since, amounts, entries);
         }
         return;
     }
@@ -2648,12 +2707,15 @@ fn apply_rows(
             }
             Some(RowEdit::Modify { held, .. }) if *held == at => {
                 let Some(RowEdit::Modify {
-                    sources, joined, ..
+                    sources,
+                    joined,
+                    absent_since,
+                    ..
                 }) = edits.next()
                 else {
                     unreachable!("a peeked change");
                 };
-                edited.push(modify(&mut row, sources, joined, amounts, entries));
+                edited.push(modify(&mut row, sources, joined, absent_since, amounts, entries));
                 spare.push(row);
             }
             _ => {
@@ -2677,6 +2739,7 @@ fn modify(
     row: &mut CountryEndpoint,
     sources: [SourceEdit; 2],
     joined: bool,
+    absent_since: [Option<i32>; 2],
     amounts: &[(Entry, Option<Amount>)],
     entries: &mut Vec<Entry>,
 ) -> Edited {
@@ -2713,6 +2776,7 @@ fn modify(
         }
     }
     row.rocket_joined = joined;
+    row.absent_since = absent_since;
     edit
 }
 
@@ -2825,6 +2889,8 @@ struct ClassEdits<'a> {
     held: &'a mut BTreeMap<u64, Classification>,
     moved: &'a mut bool,
     changed: &'a mut Vec<u64>,
+    /// The last definitions census, which read every held name.
+    census: Option<i32>,
 }
 
 impl ClassEdits<'_> {
@@ -2833,11 +2899,14 @@ impl ClassEdits<'_> {
         self.changed.push(variant);
     }
 
-    /// Dates every name of `variant` at `hour`.
-    fn redate(&mut self, variant: u64, hour: i32) {
+    /// Dates every name of `variant` at the read it came from by `at`: its own date or the
+    /// census after it. A design-edit or output read does not read names it did not change.
+    fn redate(&mut self, variant: u64, at: i32) {
         let Some(kind) = self.held.get_mut(&variant) else {
             return;
         };
+        let own = kind.names.iter().map(|name| name.first_hour).max();
+        let hour = own.max(self.census).map_or(at, |hour| hour.min(at));
         if kind.names.iter().all(|name| name.first_hour == hour) {
             return;
         }
@@ -2899,7 +2968,7 @@ impl ClassEdits<'_> {
 #[allow(clippy::too_many_arguments)]
 fn classify(
     classes: &mut ClassEdits<'_>,
-    classified: &mut HashSet<u64>,
+    classified: &mut BTreeSet<u64>,
     tables: &mut Tables,
     catalogue: &VariantCatalogue,
     created: &mut Vec<u64>,
@@ -3256,19 +3325,20 @@ impl ProductionAccumulator {
             return Ok(());
         }
         let cpu = ::replay_frame::cpu::scope_phase("production:presentation");
-        // A fresh hourly catalogue is empty outside a complete variant read.
-        // At a complete read only changed operands need building again.
+        // Mutations refresh operands; only a definitions census dates every selected name.
         let complete_names = names_read && named && complete.definitions;
         if complete_names {
             self.variants
                 .read(at, hour.variants, &mut self.variant_refusals);
-            self.names_hour = Some(at);
+            if hour.reads.variants {
+                self.names_hour = Some(at);
+            }
         }
-        self.present(at, complete_names, names_read, moved);
+        self.present(at, complete_names, hour.reads.variants, moved);
         drop(cpu);
         let cpu = ::replay_frame::cpu::scope_phase("production:endpoint_projection");
         let rows_moved = if moved || self.pending.is_none() {
-            self.project_rows(at, cancelled)?
+            self.project_rows(at, consecutive, cancelled)?
         } else {
             self.scratch.rows.clear();
             self.scratch.amount_edits.clear();
@@ -3430,10 +3500,8 @@ impl ProductionAccumulator {
         Ok(())
     }
 
-    /// Presentation at `at`: each holder's inventory keys, then the classifications of the
-    /// variants they select. Outside a complete variant read only variants whose inventories
-    /// changed can need classifying.
-    fn present(&mut self, at: i32, complete_names: bool, names_read: bool, moved: bool) {
+    /// Updates selected classifications from inventory edits, naming edits or a definitions census.
+    fn present(&mut self, at: i32, complete_names: bool, census: bool, moved: bool) {
         let Self {
             variants,
             result,
@@ -3443,6 +3511,7 @@ impl ProductionAccumulator {
             classes_moved,
             class_changed,
             tables,
+            names_hour,
             ..
         } = self;
         let Current { tags, rocket, .. } = result;
@@ -3470,6 +3539,7 @@ impl ProductionAccumulator {
             catalogue: read,
             classified,
             members,
+            changed: naming_changed,
             #[cfg(test)]
                 classifications: built,
             ..
@@ -3480,10 +3550,11 @@ impl ProductionAccumulator {
             held: classifications,
             moved: classes_moved,
             changed: class_changed,
+            census: *names_hour,
         };
         created.clear();
         let mut builds = 0usize;
-        if complete_names {
+        if complete_names && census {
             // A classified design keeps its token, as its definition was not read anew: it
             // only takes this read's date. The rest are classified after, in order, so their
             // raw operands take table places as a single pass gives them.
@@ -3527,7 +3598,11 @@ impl ProductionAccumulator {
                 ));
             }
         } else {
-            for &variant in changed.iter() {
+            for &variant in changed
+                .iter()
+                .chain(naming_changed.iter().filter(|_| complete_names))
+            {
+                // A renamed design left `classified` in `name_variants`; an inventory change still redates.
                 if let Some(count) = members.get(&variant) {
                     builds += usize::from(classify(
                         &mut classes,
@@ -3554,7 +3629,20 @@ impl ProductionAccumulator {
                 classes.see(variant, &count.seen);
             }
         }
-        if names_read {
+        if complete_names && !census {
+            for &variant in naming_changed.iter() {
+                if !catalogue.versions.contains_key(&variant)
+                    && let Some(kind) = classes.held.get_mut(&variant)
+                {
+                    kind.names = vec![VariantName {
+                        first_hour: at,
+                        raw: None,
+                    }];
+                    classes.mark(variant);
+                }
+            }
+        }
+        if census {
             classes.forget_unread(at, &catalogue.versions);
         }
     }
@@ -3619,7 +3707,7 @@ impl ProductionAccumulator {
     /// How the open page's rows change at `at`, in [`Scratch::rows`] with the amount edits
     /// they name; true where any does. Binds each equipment read's Rocket read as a whole
     /// projection does, withdrawing the open page's joins it ends.
-    fn project_rows(&mut self, at: i32, cancelled: &AtomicBool) -> io::Result<bool> {
+    fn project_rows(&mut self, at: i32, consecutive: bool, cancelled: &AtomicBool) -> io::Result<bool> {
         let countries = self.countries.clone();
         let Self {
             result,
@@ -3631,7 +3719,7 @@ impl ProductionAccumulator {
             rocket_restart,
             joins,
             pending,
-            spending_continuity,
+            spending_sources,
             scratch,
             ..
         } = self;
@@ -3647,10 +3735,6 @@ impl ProductionAccumulator {
             Some(pending) => &mut pending.page.countries,
             None => &mut [],
         };
-        let continuity = spending_continuity
-            .as_ref()
-            .filter(|(last, _)| last.checked_add(1) == Some(at))
-            .map(|(_, rows)| rows);
         let Current {
             tags,
             rocket,
@@ -3684,6 +3768,7 @@ impl ProductionAccumulator {
                     .get(&identity.2)
                     .is_none_or(|(from, _)| at < *from)
             });
+            let sources = spending_sources.entry(tag.clone()).or_default();
             let equipment = source_edit(
                 track,
                 at,
@@ -3698,9 +3783,8 @@ impl ProductionAccumulator {
                     false,
                 ),
                 row.and_then(|row| held[row].equipment.as_ref()),
-                continuity
-                    .and_then(|rows| rows.get(tag))
-                    .and_then(|sources| sources[0].as_ref()),
+                &mut sources[0],
+                consecutive,
                 entries,
                 amount_edits,
             )?;
@@ -3718,9 +3802,8 @@ impl ProductionAccumulator {
                     true,
                 ),
                 row.and_then(|row| held[row].rocket.as_ref()),
-                continuity
-                    .and_then(|rows| rows.get(tag))
-                    .and_then(|sources| sources[1].as_ref()),
+                &mut sources[1],
+                consecutive,
                 entries,
                 amount_edits,
             )?;
@@ -3750,6 +3833,13 @@ impl ProductionAccumulator {
                 }
                 None => false,
             };
+            let absent_since = sources.each_ref().map(|source| {
+                source
+                    .as_ref()
+                    .filter(|source| source.identity.is_none())
+                    .map(|source| source.since)
+            });
+            // A row lives while a source does; its missing source keeps its absence start.
             let live = equipment.0.is_some() || rocket_source.0.is_some();
             match row {
                 None if live => edits.push(RowEdit::Insert(
@@ -3759,6 +3849,7 @@ impl ProductionAccumulator {
                         equipment: whole_source(equipment.1),
                         rocket: whole_source(rocket_source.1),
                         rocket_joined: joined,
+                        absent_since,
                     },
                 )),
                 None => {}
@@ -3767,11 +3858,13 @@ impl ProductionAccumulator {
                     if !matches!(equipment.1, SourceEdit::Same)
                         || !matches!(rocket_source.1, SourceEdit::Same)
                         || held[row].rocket_joined != joined
+                        || held[row].absent_since != absent_since
                     {
                         edits.push(RowEdit::Modify {
                             held: row,
                             sources: [equipment.1, rocket_source.1],
                             joined,
+                            absent_since,
                         });
                     }
                 }
@@ -3790,7 +3883,7 @@ impl ProductionAccumulator {
         joins
             .bounds
             .retain(|tag, _| present.binary_search(&tag.as_str()).is_ok());
-        *spending_continuity = None;
+        spending_sources.retain(|tag, _| present.binary_search(&tag.as_str()).is_ok());
         Ok(!edits.is_empty())
     }
 
@@ -3987,7 +4080,7 @@ pub(crate) fn spent_section(branch: u64) -> String {
 }
 
 /// The section a test's saved accumulator is kept in, as `{STATE}/{branch}`.
-pub const STATE: &str = "production-state-v4";
+pub const STATE: &str = "production-state-v7";
 
 /// One holder's leaf events in a batch (P3), in groups that each begin with
 /// its whole state.
@@ -4212,6 +4305,7 @@ impl ProductionAccumulator {
                     equipment,
                     rocket,
                     rocket_joined: row.rocket_joined,
+                    absent_since: row.absent_since,
                 },
             );
         }
@@ -4296,7 +4390,10 @@ impl ProductionAccumulator {
             let holder = tables.holder(&row.tag);
             ids.push(holder);
             let previous = batch.holders.get(&holder);
-            let mut moved = previous.is_none_or(|previous| previous.rocket_joined != row.rocket_joined);
+            let mut moved = previous.is_none_or(|previous| {
+                previous.rocket_joined != row.rocket_joined
+                    || previous.absent_since != row.absent_since
+            });
             let mut sources = [SourceChange::Absent, SourceChange::Absent];
             for (slot, (source, read)) in [
                 (row.equipment.as_ref(), page.equipment_read),
@@ -4348,6 +4445,7 @@ impl ProductionAccumulator {
                     now: Some(HolderNow {
                         sources,
                         joined: row.rocket_joined,
+                        absent_since: row.absent_since,
                     }),
                     patch: (0, 0),
                 });
@@ -4390,9 +4488,11 @@ impl ProductionAccumulator {
                     equipment: None,
                     rocket: None,
                     rocket_joined: false,
+                    absent_since: [None; 2],
                 }
             });
             state.rocket_joined = now.joined;
+            state.absent_since = now.absent_since;
             for (slot, source) in now.sources.into_iter().enumerate() {
                 let held = state.source_mut(slot);
                 match source {
@@ -4457,6 +4557,9 @@ fn write_change(
     };
     let present = |slot: usize| !matches!(now.sources[slot], SourceChange::Absent);
     out.u8(1 | u8::from(present(0)) << 1 | u8::from(present(1)) << 2 | u8::from(now.joined) << 3);
+    for since in now.absent_since {
+        out.opt_i32(since);
+    }
     for (slot, source) in now.sources.iter().enumerate() {
         let previous = before.and_then(|before| before.source(slot));
         match source {
@@ -4481,23 +4584,6 @@ impl ProductionAccumulator {
         self.seal_holders();
         if let Some(pending) = self.pending.take() {
             self.complete(&pending)?;
-            self.spending_continuity = Some((
-                pending.page.last_hour,
-                pending
-                    .page
-                    .countries
-                    .iter()
-                    .map(|row| {
-                        (
-                            row.tag.clone(),
-                            [
-                                row.equipment.as_ref().map(SpendingContinuity::of),
-                                row.rocket.as_ref().map(SpendingContinuity::of),
-                            ],
-                        )
-                    })
-                    .collect(),
-            ));
             self.classes_moved = false;
         }
         self.spent

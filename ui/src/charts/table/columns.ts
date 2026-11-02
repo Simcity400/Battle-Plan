@@ -9,14 +9,16 @@ import type { SortValue, SortDirection } from './logic';
 export interface TableColumn<T> {
   key: string;
   header: ReactNode;
+  /** Content revision for a composed header whose geometry changes independently of its label. */
+  headerRevision?: unknown;
   /** Accessible header name and the settings' Sort by text, even if header is empty. */
   label: string;
   /** Header hint, including why a requested measure is unavailable. */
   hint?: string;
   value: (row: T) => SortValue;
   render?: (row: T) => ReactNode;
-  /** Rendered-width key for composed cells with independent paint inputs. */
-  widthKey?: (row: T) => string;
+  /** Data key for a cell's width when its paint changes independently. */
+  widthKey?: (row: T) => string | readonly unknown[];
   renderMissing?: boolean;
   align?: 'start' | 'end';
   numeric?: boolean;

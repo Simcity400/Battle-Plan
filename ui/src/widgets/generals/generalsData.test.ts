@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { LeaderRow, UnitLeadersData } from './generalsData';
-import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, topLeader, validateUnitLeadersReply } from './generalsData.ts';
+import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, topLeader, validateUnitLeadersReply, withheldLeadersAt } from './generalsData.ts';
 import { leaderChoices } from '../general-career/choicesData.ts';
 import { subjectHandle, subjectToken } from '../../dashboard/chosen.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
@@ -24,13 +24,48 @@ function fixture(): UnitLeadersData {
     traits: [{ token: 'extra_trait', name: 'Mod trait', icon: null, missing: null }],
     leaders: [{ reference: '21474841193', runs: [{ firstHour: 101, lastHour: 106, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [{ hour: 101, token: 0, date: 'gained' }], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null }],
-    observed: [{ firstHour: 100, lastHour: 106, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
+    withheld: [], observed: [{ firstHour: 100, lastHour: 106, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Battle results not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
 }
 function wire(data: UnitLeadersData) {
   return { ...data, leaders: data.leaders.map(l => ({ ...l, runs: l.runs.map(r => [r.firstHour, r.lastHour, r.value.person, r.value.role, r.value.skill, r.value.components, r.value.traits, r.value.progress]),
     traitGains: l.traitGains.map(g => [g.hour, g.token, g.date === 'heldBefore' ? 0 : g.date === 'gained' ? 1 : 2]) })) };
 }
+
+test('withheld leaders validate their identities, reasons and disjoint spans and follow the selected hour and owners', () => {
+  const data = fixture();
+  data.withheld = [
+    { reference: '1', owner: 'country with spaces', kind: 1, name: 'Refused general', reason: 'Template missing', detail: null, spans: [{ firstHour: 101, lastHour: 103 }] },
+    { reference: '2', owner: null, kind: 1, name: null, reason: 'Owner missing', detail: 'raw owner 0', spans: [{ firstHour: 102, lastHour: 104 }] },
+    { reference: '3', owner: 'other', kind: 2, name: 'Other admiral', reason: 'Visibility unknown', detail: null, spans: [{ firstHour: 101, lastHour: 103 }] },
+    { reference: '4', owner: 'country with spaces', kind: 2, name: 'Refused admiral', reason: 'Template missing', detail: null, spans: [{ firstHour: 101, lastHour: 103 }] },
+    { reference: '1', owner: 'country with spaces', kind: 2, name: 'Refused general', reason: 'Template missing', detail: null, spans: [{ firstHour: 104, lastHour: 104 }] },
+    { reference: '2', owner: null, kind: 1, name: null, reason: 'Owner missing', detail: 'raw owner 42 has no CountryLinks row', spans: [{ firstHour: 105, lastHour: 105 }] },
+  ];
+  const accepted = validateUnitLeadersReply(wire(data));
+  assert.deepEqual(withheldLeadersAt(accepted, 102, new Set(['country with spaces']), 'land').map(leader => leader.reference), ['1', '2']);
+  assert.deepEqual(withheldLeadersAt(accepted, 102, new Set(['country with spaces']), 'navy').map(leader => leader.reference), ['4']);
+  assert.equal(withheldLeadersAt(accepted, 106, null, 'all').length, 0);
+  assert.equal(withheldLeadersAt(accepted, 102, null, 'all').length, 4);
+  for (const mutate of [
+    (d: UnitLeadersData) => { d.withheld = undefined as never; },
+    (d: UnitLeadersData) => { d.withheld[0].reference = '18446744073709551616'; },
+    (d: UnitLeadersData) => { d.withheld[0].owner = ''; },
+    (d: UnitLeadersData) => { d.withheld[0].kind = 3; },
+    (d: UnitLeadersData) => { d.withheld[0].name = 3 as never; },
+    (d: UnitLeadersData) => { d.withheld[0].reason = ''; },
+    (d: UnitLeadersData) => { d.withheld[0].detail = undefined as never; },
+    (d: UnitLeadersData) => { d.withheld[0].detail = 3 as never; },
+    (d: UnitLeadersData) => { d.withheld[0].spans = []; },
+    (d: UnitLeadersData) => { d.withheld[0].spans[0].firstHour = 99; },
+    (d: UnitLeadersData) => { d.withheld[0].spans[0].lastHour = 100; },
+    (d: UnitLeadersData) => { d.withheld.push(structuredClone(d.withheld[0])); },
+    (d: UnitLeadersData) => { d.withheld.push({ ...structuredClone(d.withheld[0]), reason: 'Overlapping refusal' }); },
+  ]) {
+    const bad = structuredClone(data); mutate(bad);
+    assert.throws(() => validateUnitLeadersReply(wire(bad)), /malformed/);
+  }
+});
 /** The first leader as a leaderboard sends it: visible hours instead of battle records. */
 function asLeaderboard(data: UnitLeadersData, hours: Pick<UnitLeadersData['leaders'][number], 'foughtHours' | 'wonHours' | 'lostHours'>) {
   for (const key of ['battleStarts', 'battleStartReadHours', 'unknownBattleStarts', 'battleWon', 'battleResultHours', 'battleResultReadHours'] as const) delete data.leaders[0][key];

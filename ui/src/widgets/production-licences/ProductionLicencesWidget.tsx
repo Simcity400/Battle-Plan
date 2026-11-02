@@ -1,3 +1,4 @@
+import { licenceRevision } from './licencesData.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -198,7 +199,8 @@ function CountryLicences({ data, holders, tag, hour, runtime, track, active, nar
   if (tag === null) return <p className="drill-empty">This country was not recorded at this date.</p>;
   if (!rosterKnown(data, hour)) return <p className="drill-empty">Licences were not recorded at this date.</p>;
   if (!rows.length) return <p className="drill-empty">{held.unattributed ? "Some licences' licensors were not recorded at this date." : 'No licences at this date.'}</p>;
-  return <div className="production-licences-table"><Table label={`Licences of ${tag}`} rows={rows} columns={columns} rowKey={row => row.key}
+  return <div className="production-licences-table"><Table rowRevision={row => [...licenceRevision(row), row.licensor === null ? null : labelAt(hour)(row.licensor),
+    row.licensee === null ? null : labelAt(hour)(row.licensee)]} label={`Licences of ${tag}`} rows={rows} columns={columns} rowKey={row => row.key}
     sort={{ column: 'since', direction: 'descending' }} narrow={narrow}
     tooltip={row => fitTooltip([{ title: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED,
       rows: [{ label: 'Civilian factories lent', value: row.lent === null ? '—' : row.lent.toString() }, { label: 'Required', value: row.required === null ? '—' : row.required.toString() },

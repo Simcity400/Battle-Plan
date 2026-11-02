@@ -6,7 +6,6 @@ import { leaderName } from './generalsData';
 import type { UnitLeaderPortrait } from '../../generated/dashboard';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { compactSkill } from './skillDisplay';
-import { defineCellWidth } from '../../charts/table/cellWidth.ts';
 import type { ReactNode } from 'react';
 
 export function SkillStars({ level, maximum }: { level: number | null; maximum: number | null }) {
@@ -71,8 +70,3 @@ function identityContent({ name, rank, hasOwner, level, maximum, countryName, na
 export function LeaderIdentity(props: IdentityProps) {
   return identityContent(props, <LeaderPortrait art={props.portraitFailure ?? { image: props.image ?? null, missing: props.portraitMissing ?? null }} />);
 }
-
-defineCellWidth(LeaderIdentity, props => identityContent(props, <span className="leader-portrait" />));
-// Both star presentations fill the same clipped cell track.
-defineCellWidth(SkillStars, ({ level, maximum }) => level == null ? <span className="leader-missing">Not recorded</span>
-  : maximum == null ? <span>{level}</span> : <span className="leader-stars" />);

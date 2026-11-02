@@ -192,5 +192,5 @@ const previewColumns: TableColumn<(typeof previewRows)[number]>[] = [
 ];
 const previewKey = (row: (typeof previewRows)[number]) => row.key;
 function TypographyTablePreview() {
-  return <Table label="Typography table preview" rows={previewRows} columns={previewColumns} rowKey={previewKey} sort={{ column: 'label', direction: 'ascending' }} />;
+  return <Table rowRevision={row => [row, previewColumns]} label="Typography table preview" rows={previewRows} columns={previewColumns} rowKey={previewKey} sort={{ column: 'label', direction: 'ascending' }} />;
 }

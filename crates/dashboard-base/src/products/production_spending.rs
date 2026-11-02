@@ -68,7 +68,7 @@ pub struct ProductionSpendingLeaf {
     pub runs: Vec<ProductionSpendingRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionPresenceRun {
     pub first_hour: i32,
@@ -289,13 +289,105 @@ fn rocket_coverage(scanned: &ScannedProduced, track: &TagHistory) -> Vec<Coverag
         .collect()
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct CombinedSample {
+    equipment_since: Option<i32>,
+    rocket_since: Option<i32>,
+    combined_since: Option<i32>,
+    last: i32,
+}
+
+impl CombinedSample {
+    pub(crate) fn new(equipment_since: Option<i32>, rocket_since: Option<i32>, last: i32) -> Self {
+        let combined_since = equipment_since.into_iter().chain(rocket_since).max();
+        Self {
+            equipment_since,
+            rocket_since,
+            combined_since,
+            last,
+        }
+    }
+}
+
 /// Both independent sources must cover a combined total.
 fn combined(
     equipment: &[ProductionSpendingRun],
     rocket: &[ProductionSpendingRun],
     equipment_observations: &[i32],
     rocket_observations: &[i32],
+    samples: Option<&[CombinedSample]>,
 ) -> io::Result<Vec<ProductionSpendingRun>> {
+    if let Some(samples) = samples {
+        let mut result: Vec<ProductionSpendingRun> = Vec::new();
+        let (mut eq, mut ro) = (0, 0);
+        for sample in samples {
+            let CombinedSample {
+                equipment_since,
+                rocket_since,
+                combined_since: first,
+                last,
+            } = *sample;
+            let Some(first) = first else { continue };
+            let at = |runs: &[ProductionSpendingRun],
+                      cursor: &mut usize,
+                      since: Option<i32>,
+                      missing| {
+                while runs.get(*cursor).is_some_and(|run| run.last_hour < last) {
+                    *cursor += 1;
+                }
+                since
+                    .and_then(|_| runs.get(*cursor))
+                    .filter(|run| run.first_hour <= last && run.last_hour >= last)
+                    .map(|run| {
+                        let mut run = run.clone();
+                        run.first_hour = first;
+                        run.last_hour = last;
+                        run
+                    })
+                    .or_else(|| {
+                        since.map(|_| ProductionSpendingRun {
+                            first_hour: first,
+                            last_hour: last,
+                            total_raw: None,
+                            reason: Some(missing),
+                        })
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            };
+            let equipment = at(
+                equipment,
+                &mut eq,
+                equipment_since,
+                ProductionSpendingUnknown::NotRecorded,
+            );
+            let rocket = at(
+                rocket,
+                &mut ro,
+                rocket_since,
+                ProductionSpendingUnknown::RocketTableUnavailable,
+            );
+            for mut run in combined(
+                &equipment,
+                &rocket,
+                equipment_observations,
+                rocket_observations,
+                None,
+            )? {
+                if let Some(previous) = result.last_mut()
+                    && previous.last_hour >= run.first_hour
+                {
+                    if previous.total_raw == run.total_raw && previous.reason == run.reason {
+                        previous.last_hour = previous.last_hour.max(run.last_hour);
+                        continue;
+                    }
+                    run.first_hour = previous.last_hour.checked_add(1).ok_or_else(budget)?;
+                }
+                append(&mut result, run);
+            }
+        }
+        return Ok(result);
+    }
     let boundaries: BTreeSet<i64> = equipment
         .iter()
         .chain(rocket)
@@ -439,20 +531,8 @@ fn cached_rocket_name(source: &Source, catalogue: &Arc<crate::catalogue::Catalog
 fn production_presence(
     equipment: Option<&TagHistory>,
     rocket: Option<&TagHistory>,
+    samples: Option<&[CombinedSample]>,
 ) -> Vec<ProductionPresenceRun> {
-    let boundaries: Vec<_> = equipment
-        .into_iter()
-        .chain(rocket)
-        .flat_map(|track| {
-            track
-                .hours
-                .iter()
-                .zip(&track.last_hours)
-                .flat_map(|(first, last)| [i64::from(*first), i64::from(*last) + 1])
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
     fn at(track: Option<&TagHistory>, hour: i32) -> Option<(&TagHistory, usize)> {
         let track = track?;
         let index = track
@@ -461,36 +541,95 @@ fn production_presence(
             .checked_sub(1)?;
         (track.last_hours[index] >= hour).then_some((track, index))
     }
+    let tracks = || equipment.into_iter().chain(rocket);
+    // Each span's run boundaries: per prepared sample from its combined start (an earlier
+    // sample's hours are not read again), else every source sample's.
+    let mut spans: Vec<Vec<i64>> = Vec::new();
+    match samples {
+        Some(samples) => {
+            let mut after = i64::MIN;
+            for sample in samples {
+                let Some(first) = sample.combined_since else {
+                    continue;
+                };
+                let first = i64::from(first).max(after);
+                let last = i64::from(sample.last);
+                if first > last {
+                    continue;
+                }
+                let mut boundaries = vec![first, last + 1];
+                for track in tracks() {
+                    for (&start, &end) in track.hours.iter().zip(&track.last_hours) {
+                        let (start, end) = (i64::from(start).max(first), i64::from(end).min(last));
+                        if start <= end {
+                            boundaries.extend([start, end + 1]);
+                        }
+                    }
+                }
+                boundaries.sort_unstable();
+                boundaries.dedup();
+                spans.push(boundaries);
+                after = last + 1;
+            }
+        }
+        None => spans.push(
+            tracks()
+                .flat_map(|track| {
+                    track
+                        .hours
+                        .iter()
+                        .zip(&track.last_hours)
+                        .flat_map(|(first, last)| [i64::from(*first), i64::from(*last) + 1])
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        ),
+    }
     let mut result: Vec<ProductionPresenceRun> = Vec::new();
-    for pair in boundaries.windows(2) {
-        let hour = pair[0] as i32;
-        let equipment_at = at(equipment, hour);
-        let presence = |sample: Option<(&TagHistory, usize)>| {
-            sample.and_then(|(track, index)| track.presence.get(index).copied().flatten())
-        };
-        let present = match (presence(equipment_at), presence(at(rocket, hour))) {
-            (Some(true), _) | (_, Some(true)) => Some(true),
-            (Some(false), Some(false)) => Some(false),
-            _ => None,
-        };
-        let empty_census_hour = equipment_at.and_then(|(track, index)| {
-            // False presence already requires a complete equipment census/output read.
-            (present == Some(false)).then_some(track.hours[index])
-        });
-        let last = (pair[1] - 1) as i32;
+    let mut push = |first: i32, last: i32, present: Option<bool>, census: Option<i32>| {
         if let Some(previous) = result.last_mut()
-            && previous.last_hour.checked_add(1) == Some(hour)
+            && previous.last_hour.checked_add(1) == Some(first)
             && previous.present == present
-            && previous.empty_census_hour == empty_census_hour
+            && previous.empty_census_hour == census
         {
             previous.last_hour = last;
         } else {
             result.push(ProductionPresenceRun {
-                first_hour: hour,
+                first_hour: first,
                 last_hour: last,
                 present,
-                empty_census_hour,
+                empty_census_hour: census,
             });
+        }
+    };
+    let mut end: Option<i64> = None;
+    for boundaries in &spans {
+        // Hours between two spans were not read: unknown, never left out.
+        if let (Some(end), Some(&first)) = (end, boundaries.first())
+            && end < first
+        {
+            push(end as i32, (first - 1) as i32, None, None);
+        }
+        if let Some(&last) = boundaries.last() {
+            end = Some(last);
+        }
+        for pair in boundaries.windows(2) {
+            let hour = pair[0] as i32;
+            let equipment_at = at(equipment, hour);
+            let presence = |sample: Option<(&TagHistory, usize)>| {
+                sample.and_then(|(track, index)| track.presence.get(index).copied().flatten())
+            };
+            let present = match (presence(equipment_at), presence(at(rocket, hour))) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            };
+            let empty_census_hour = equipment_at.and_then(|(track, index)| {
+                // False presence already requires a complete equipment census/output read.
+                (present == Some(false)).then_some(track.hours[index])
+            });
+            push(hour, (pair[1] - 1) as i32, present, empty_census_hour);
         }
     }
     result
@@ -593,6 +732,7 @@ type PreparedOperands<'a> = (
     &'a BTreeMap<u64, crate::prepared_production::read::Kind>,
     &'a BTreeMap<i32, Option<ProductionSpendingUnknown>>,
     &'a BTreeMap<i32, Option<ProductionSpendingUnknown>>,
+    Option<&'a [CombinedSample]>,
 );
 
 #[cfg(any(test, feature = "test-support"))]
@@ -651,7 +791,7 @@ fn reply_inner(
         .collect();
     let variants: BTreeSet<u64> = entries.iter().map(|(variant, _)| *variant).collect();
     let classify = |variants: Vec<u64>| {
-        if let Some((classes, _, _)) = prepared {
+        if let Some((classes, _, _, _)) = prepared {
             let types = variants
                 .iter()
                 .filter_map(|variant| {
@@ -686,19 +826,19 @@ fn reply_inner(
     };
     let type_name = |variant, key: &str| {
         prepared
-            .and_then(|(classes, _, _)| classes.get(&variant))
+            .and_then(|(classes, _, _, _)| classes.get(&variant))
             .map_or_else(|| named.type_name(key), |kind| kind.name.clone())
     };
     let names = |variant| {
         prepared
-            .and_then(|(classes, _, _)| classes.get(&variant))
+            .and_then(|(classes, _, _, _)| classes.get(&variant))
             .map_or_else(
                 || scanned.variants.names(variant, named.texts),
                 |kind| kind.names.clone(),
             )
     };
     let scope = |track: &TagHistory, rocket: bool| {
-        if let Some((_, equipment, rockets)) = prepared {
+        if let Some((_, equipment, rockets, _)) = prepared {
             let reasons = if rocket { rockets } else { equipment };
             track
                 .hours
@@ -865,6 +1005,7 @@ fn reply_inner(
         &rocket_total,
         &scanned.observations,
         &scanned.rocket.observations,
+        prepared.and_then(|(_, _, _, samples)| samples),
     )?;
     let reads = scanned
         .reads
@@ -898,7 +1039,11 @@ fn reply_inner(
         total,
         equipment_total,
         rocket_total,
-        production: production_presence(track, scanned.rocket.tags.get(&params.tag)),
+        production: production_presence(
+            track,
+            scanned.rocket.tags.get(&params.tag),
+            prepared.and_then(|(_, _, _, samples)| samples),
+        ),
         warnings,
     };
     serde_json::to_writer(Counter { bytes: 0, cancel }, &result)

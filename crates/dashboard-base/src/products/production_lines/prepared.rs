@@ -3825,7 +3825,7 @@ pub fn directory(
     key: &store::SourceKey,
     branch: u64,
 ) -> io::Result<Option<Directory>> {
-    crate::prepared::series::read_reply(store, key, &directory_section(branch), 0)
+    crate::prepared::series::read_branch_reply(store, key, &directory_section(branch), 0, branch)
 }
 
 /// Whether the store holds a commit in this layout.

@@ -121,11 +121,11 @@ const forms: Record<string, () => ReactNode> = {
     <ButterflyChart label="Lend-lease" items={butterfly} slots={10} leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel="" showRatio={false} active /></div></div>,
   'lend-lease-agreements': () => <div className="lend-lease-agreements-host"><div className="lend-lease-agreements">
     {caption('Direction', 'sent', [{ value: 'sent', label: 'Sent' }, { value: 'received', label: 'Received' }])}
-    <div className="lend-lease-agreements-table"><Table label="Agreements" rows={agreements} columns={agreementColumns} rowKey={row => row.key}
+    <div className="lend-lease-agreements-table"><Table rowRevision={row => [row]} label="Agreements" rows={agreements} columns={agreementColumns} rowKey={row => row.key}
       sort={{ column: 'delivered', direction: 'descending' }} rowHeight={48} muted={row => row.key === 'a3'} /></div></div></div>,
-  'international-market': () => <div className="international-market"><div className="international-market-table"><Table label="Contracts" rows={contracts} columns={contractColumns}
+  'international-market': () => <div className="international-market"><div className="international-market-table"><Table rowRevision={row => [row]} label="Contracts" rows={contracts} columns={contractColumns}
     rowKey={row => row.key} sort={{ column: 'collected', direction: 'descending' }} rowHeight={48} /></div></div>,
-  'international-market-inventory': () => <div className="international-market"><div className="international-market-table"><Table label="Inventory" rows={offers} columns={offerColumns}
+  'international-market-inventory': () => <div className="international-market"><div className="international-market-table"><Table rowRevision={row => [row]} label="Inventory" rows={offers} columns={offerColumns}
     rowKey={row => row.key} sort={{ column: 'amount', direction: 'descending' }} rowHeight={48} /></div></div>,
   'market-ledger': () => <div className="market-ledger-host"><div className="log-widget market-ledger">
     <div className="log-chips"><ChipSet label="Kinds" chips={['New contracts', 'Requests posted', 'Deliveries', 'Payments', 'Contracts removed'].map(label => ({ value: label, label }))}
@@ -136,13 +136,13 @@ const forms: Record<string, () => ReactNode> = {
         <span className="market-ledger-figure">{row.item.figure}</span></>} /></div></div>,
   'production-licences': () => <div className="production-licences-host"><div className="production-licences">
     <FlowDiagram label="Licences" nodes={flowNodes} links={flowLinks} stretch={1} active /></div></div>,
-  'industrial-organisations': () => <div className="industrial-organisations"><Table label="Organisations" rows={mios} columns={mioColumns} rowKey={row => row.key}
+  'industrial-organisations': () => <div className="industrial-organisations"><Table rowRevision={row => [row]} label="Organisations" rows={mios} columns={mioColumns} rowKey={row => row.key}
     sort={{ column: 'size', direction: 'descending' }} rowHeight={48} /></div>,
   'equipment-designs': () => <div className="equipment-designs"><div className="equipment-designs-body">
-    <div className="equipment-designs-table" style={{ height: 200 }}><Table label="Current" rows={designRows.slice(0, 10)} columns={designColumns(false)} rowKey={row => row.key}
+    <div className="equipment-designs-table" style={{ height: 200 }}><Table rowRevision={row => [row]} label="Current" rows={designRows.slice(0, 10)} columns={designColumns(false)} rowKey={row => row.key}
       sort={{ column: 'firstSeen', direction: 'descending' }} rowHeight={48} /></div>
     <details className="equipment-designs-obsolete" open><summary>Obsolete designs (20)</summary>
-      <div className="equipment-designs-table" style={{ height: 200 }}><Table label="Obsolete" rows={designRows.slice(10)} columns={designColumns(true)} rowKey={row => row.key}
+      <div className="equipment-designs-table" style={{ height: 200 }}><Table rowRevision={row => [row]} label="Obsolete" rows={designRows.slice(10)} columns={designColumns(true)} rowKey={row => row.key}
         sort={{ column: 'seenObsolete', direction: 'descending' }} rowHeight={48} /></div></details></div></div>,
   'convoy-health': () => <div className="convoy-health-host"><div className="air-timeline convoy-health">
     <div className="air-pattern-key"><span><i style={{ background: '#fff' }} />No bad route</span><span><i />Not recorded</span><span><i />Efficiency not recorded</span></div>

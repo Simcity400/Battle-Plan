@@ -826,6 +826,495 @@ fn reply(files: &Fixture) -> UnitLeadersReply {
 }
 
 #[test]
+fn individual_refusals_keep_recorded_coverage_and_match_scan_projection_and_restarts() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/unit_leader/synthetic.txt",
+            "leader_skills={1={type=corps_commander cost=1}} leader_traits={}",
+        ),
+    ]);
+    let catalogue = Arc::new(catalogue);
+    let content = Arc::new(
+        Content::load(
+            catalogue.clone(),
+            Arc::new(politics_content::PoliticsContent::load(catalogue).unwrap()),
+        )
+        .unwrap(),
+    );
+    let mut frames: Vec<_> = (100..109).map(|hour| frame(hour, 3)).collect();
+    let owner = frames[0].complete::<tables::Countries>().unwrap()[0]
+        .tag
+        .clone();
+    for input in &mut frames {
+        for table in [TableId::Provinces, TableId::States] {
+            set(input, TableRows::empty(table));
+        }
+        if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *input.tables[TableId::UnitLeaders.index()]
+        {
+            rows[0].visibility_choice = 1;
+            rows[1].owner = u32::MAX;
+            if input.hour >= 102 {
+                rows[2].skill_level = 4;
+            }
+        }
+    }
+    frames[4].metrics.table_ns[TableId::UnitLeaders.index()] = 0;
+    let rows = frames[5]
+        .complete::<tables::UnitLeaders>()
+        .unwrap()
+        .to_vec();
+    *frames[5].tables[TableId::UnitLeaders.index()] = TableView::Truncated {
+        rows: TableRows::UnitLeaders(rows),
+        missing: 1,
+    };
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let params = prepared::full_params("1");
+    let scanned = scan(&replay, &params, Some(&content), &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.leaders.len(), 1);
+    assert_eq!(scanned.leaders[0].reference, reference(2).to_string());
+    for hour in 100..109 {
+        assert_eq!(
+            scanned
+                .observed
+                .iter()
+                .find(|span| span.first_hour <= hour && hour <= span.last_hour)
+                .unwrap()
+                .leaders,
+            ![104, 105].contains(&hour)
+        );
+    }
+    assert_eq!(scanned.withheld.len(), 2);
+    for (index, withheld) in scanned.withheld.iter().enumerate() {
+        assert_eq!(withheld.reference, reference(index as u32).to_string());
+        assert_eq!(withheld.kind, 1);
+        assert_eq!(
+            withheld.detail.as_deref(),
+            (index == 1).then_some("raw owner 4294967295 has no CountryLinks row")
+        );
+        assert_eq!(
+            withheld.owner,
+            (index == 0).then(|| String::from_utf8(owner.clone()).unwrap())
+        );
+        assert_eq!(
+            withheld.name.as_deref(),
+            Some(format!("Synthetic commander {index}").as_str())
+        );
+        assert_eq!(
+            withheld.spans,
+            vec![
+                HourSpan {
+                    first_hour: 100,
+                    last_hour: 103
+                },
+                HourSpan {
+                    first_hour: 106,
+                    last_hour: 108
+                }
+            ]
+        );
+        assert!(
+            scanned
+                .warnings
+                .iter()
+                .any(|warning| warning.contains(&withheld.reason)
+                    && warning.contains(&withheld.reference))
+        );
+    }
+    assert!(scanned.withheld[0].reason.contains("template"));
+    assert_eq!(
+        scanned.withheld[1].reason,
+        "Leader owner has no resolved recorded country tag"
+    );
+    dashboard_text::triggers::inputs::reusing(|| {
+        let (_, files) = projected_with_content(
+            &[frames[..3].to_vec(), frames[3..].to_vec()],
+            Some(content.clone()),
+        );
+        let projected = reply(&files);
+        assert_eq!(projected.withheld, scanned.withheld);
+        assert_eq!(projected.observed, scanned.observed);
+        assert_eq!(
+            projected
+                .leaders
+                .iter()
+                .map(|leader| &leader.reference)
+                .collect::<Vec<_>>(),
+            scanned
+                .leaders
+                .iter()
+                .map(|leader| &leader.reference)
+                .collect::<Vec<_>>()
+        );
+        for hour in 100..109 {
+            let from = project_at(
+                &projected,
+                &UnitLeadersParams {
+                    view: LeaderView::Leaderboard,
+                    ..params.clone()
+                },
+                None,
+                Some(hour),
+                None,
+            );
+            let counted = project(
+                &projected,
+                &UnitLeadersParams {
+                    view: LeaderView::Leaderboard,
+                    ..params.clone()
+                },
+                None,
+            );
+            assert_eq!(from.withheld, leaderboard_from(&counted, hour).withheld);
+            assert_eq!(
+                from.withheld.len(),
+                if [104, 105].contains(&hour) { 0 } else { 2 }
+            );
+        }
+        restarted_everywhere(&[frames], &[0], Some(content));
+    });
+}
+
+#[test]
+fn deleted_refusals_end_before_quiet_or_battle_hours_and_reappear_with_the_recorded_kind() {
+    for battles in [false, true] {
+        let frames: Vec<_> = (100..=108)
+            .map(|hour| {
+                let mut input = frame(hour, 2);
+                if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                    &mut *input.tables[TableId::UnitLeaders.index()]
+                {
+                    rows[1].owner = u32::MAX;
+                    if hour == 107 {
+                        rows[1].kind = 2;
+                    }
+                    if (101..105).contains(&hour) || hour == 108 {
+                        rows.pop();
+                    }
+                }
+                if battles && hour >= 101 {
+                    set(
+                        &mut input,
+                        TableRows::LandCombatDetails(vec![
+                            replay_data::rows::LandCombatDetailsRow {
+                                combat: 91,
+                                sides: [
+                                    replay_data::rows::LandCombatSideDetails {
+                                        commander: reference(0),
+                                        ..Default::default()
+                                    },
+                                    Default::default(),
+                                ],
+                                ..Default::default()
+                            },
+                        ]),
+                    );
+                }
+                input
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let scanned = scan(
+            &replay,
+            &prepared::full_params("1"),
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let (_, files) = projected(&[frames.clone()]);
+        let projected = reply(&files);
+        assert_eq!(projected.withheld, scanned.withheld);
+        assert_eq!(projected.withheld.len(), 2);
+        assert_eq!(projected.withheld[0].kind, 1);
+        assert_eq!(
+            projected.withheld[0].spans,
+            vec![
+                HourSpan {
+                    first_hour: 100,
+                    last_hour: 100
+                },
+                HourSpan {
+                    first_hour: 105,
+                    last_hour: 106
+                },
+            ]
+        );
+        assert_eq!(projected.withheld[1].kind, 2);
+        assert_eq!(
+            projected.withheld[1].spans,
+            vec![HourSpan {
+                first_hour: 107,
+                last_hour: 107
+            }]
+        );
+        assert!(projected.observed.iter().all(|span| span.leaders));
+        restarted_everywhere(&[frames[..4].to_vec(), frames[4..].to_vec()], &[0, 0], None);
+    }
+}
+
+#[test]
+fn withheld_names_renamed_while_visible_match_fresh_reads_at_restarts_and_resume() {
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut input = frame(hour, 2);
+            if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *input.tables[TableId::UnitLeaders.index()]
+            {
+                if hour != 101 {
+                    rows[1].owner = u32::MAX;
+                }
+            }
+            if let TableView::Complete(TableRows::Characters(rows)) =
+                &mut *input.tables[TableId::Characters.index()]
+            {
+                rows[1].token = if hour == 100 {
+                    b"Before".to_vec()
+                } else {
+                    b"After".to_vec()
+                };
+            }
+            input
+        })
+        .collect();
+    assert_withheld_rename_parity(&frames);
+}
+
+#[test]
+fn withheld_names_renamed_while_deleted_match_fresh_reads_at_restarts_and_resume() {
+    for full_deletion in [false, true] {
+        let frames: Vec<_> = (100..=106)
+            .map(|hour| {
+                let mut input = frame(hour, 2);
+                if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                    &mut *input.tables[TableId::UnitLeaders.index()]
+                {
+                    rows[1].owner = u32::MAX;
+                    if (101..104).contains(&hour) {
+                        rows.pop();
+                    }
+                }
+                if let TableView::Complete(TableRows::Characters(rows)) =
+                    &mut *input.tables[TableId::Characters.index()]
+                {
+                    rows[1].token = if hour < 102 {
+                        b"Before".to_vec()
+                    } else {
+                        b"After".to_vec()
+                    };
+                }
+                if full_deletion && hour >= 101 {
+                    if let TableView::Complete(TableRows::Countries(rows)) =
+                        &mut *input.tables[TableId::Countries.index()]
+                    {
+                        rows[0].tag = b"REN".to_vec();
+                    }
+                }
+                input
+            })
+            .collect();
+        assert_withheld_rename_parity(&frames);
+    }
+}
+
+fn assert_withheld_rename_parity(frames: &[DecodedFrame]) {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/unit_leader/synthetic.txt",
+            "leader_skills={1={type=corps_commander cost=1}} leader_traits={}",
+        ),
+    ]);
+    let catalogue = Arc::new(catalogue);
+    let content = Arc::new(
+        Content::load(
+            catalogue.clone(),
+            Arc::new(politics_content::PoliticsContent::load(catalogue).unwrap()),
+        )
+        .unwrap(),
+    );
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
+    let params = prepared::full_params("1");
+    let cancelled = AtomicBool::new(false);
+    let fresh: Vec<_> = frames
+        .iter()
+        .map(|input| {
+            let replay =
+                Replay::from_records(CAMPAIGN.into(), &[records(1, vec![input.clone()])]).unwrap();
+            let reply = scan(&replay, &params, Some(&content), &cancelled).unwrap();
+            assert_eq!(
+                reply.withheld.len(),
+                input
+                    .complete::<tables::UnitLeaders>()
+                    .unwrap()
+                    .iter()
+                    .filter(|row| row.owner == u32::MAX)
+                    .count(),
+            );
+            for withheld in &reply.withheld {
+                assert_eq!(withheld.reference, reference(1).to_string());
+                assert_eq!(
+                    withheld.name.as_deref(),
+                    Some(if input.hour == 100 { "Before" } else { "After" }),
+                );
+            }
+            reply
+        })
+        .collect();
+    let check = |reply: &UnitLeadersReply| {
+        for (input, fresh) in frames.iter().zip(&fresh) {
+            let names = |reply: &UnitLeadersReply| {
+                withheld_at(&reply.withheld, Some(input.hour), |_| true)
+                    .into_iter()
+                    .map(|row| (row.reference, row.name))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                names(reply),
+                names(fresh),
+                "withheld names at {}",
+                input.hour
+            );
+        }
+    };
+    dashboard_text::triggers::inputs::reusing(|| {
+        let scanned = scan(&replay, &params, Some(&content), &cancelled).unwrap();
+        check(&scanned);
+        let (_, files) = projected_with_content(&[frames.to_vec()], Some(content.clone()));
+        let projected = reply(&files);
+        check(&projected);
+        assert_eq!(projected.withheld, scanned.withheld);
+        restarted_everywhere(&[frames.to_vec()], &[0], Some(content.clone()));
+        for split in 1..frames.len() {
+            for projected in [false, true] {
+                let files = Fixture::new();
+                let mut state = Prepared::new(&replay, 1);
+                let mut tracker = FrameChangeTracker::new();
+                for (at, inputs) in [&frames[..split], &frames[split..]].into_iter().enumerate() {
+                    if projected {
+                        state
+                            .observe_projected(segment(inputs, Some(content.clone())))
+                            .unwrap();
+                    } else {
+                        for input in inputs {
+                            let changes = tracker.observe(input, replay.format);
+                            state
+                                .observe(input, &replay, Some(&content), &changes)
+                                .unwrap();
+                        }
+                    }
+                    flush(&mut state, &files, Some(&content));
+                    if at == 0 {
+                        state = Prepared::resumed(
+                            state.saved_bytes().unwrap().as_slice(),
+                            &state.saved_catalogue().unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+                let resumed = reply(&files);
+                check(&resumed);
+                assert_eq!(resumed.withheld, scanned.withheld);
+            }
+        }
+    });
+}
+
+#[test]
+fn owner_refusal_steps_and_raw_values_match_scan_projection_and_restarts() {
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut input = frame(hour, 2);
+            if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *input.tables[TableId::UnitLeaders.index()]
+            {
+                rows[1].owner = if hour == 100 { 0 } else { 100_001 };
+            }
+            if hour == 101 {
+                if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut *input.tables[TableId::CountryLinks.index()]
+                {
+                    rows.retain(|row| row.id != 100_001);
+                }
+            }
+            if hour == 102 {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *input.tables[TableId::Countries.index()]
+                {
+                    rows.pop();
+                }
+            }
+            if hour >= 103 {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *input.tables[TableId::Countries.index()]
+                {
+                    rows[1].tag = if hour == 103 { Vec::new() } else { vec![0xff] };
+                }
+            }
+            input
+        })
+        .collect();
+    let slot = frames[0]
+        .complete::<tables::CountryLinks>()
+        .unwrap()
+        .iter()
+        .find(|row| row.id == 100_001)
+        .unwrap()
+        .canonical_slot;
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let scanned = scan(
+        &replay,
+        &prepared::full_params("1"),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let (_, files) = projected(&[frames.clone()]);
+    let projected = reply(&files);
+    assert_eq!(projected.withheld, scanned.withheld);
+    assert_eq!(projected.withheld.len(), 5);
+    let details = [
+        "raw owner 0".to_owned(),
+        "raw owner 100001 has no CountryLinks row".to_owned(),
+        format!("raw owner 100001 links to slot {slot}, which has no Countries row"),
+        format!("raw owner 100001 links to slot {slot}, whose Countries row has no tag"),
+        format!(
+            "raw owner 100001 links to slot {slot}, whose Countries row has a tag that isn't UTF-8"
+        ),
+    ];
+    for (at, detail) in details.iter().enumerate() {
+        let row = projected
+            .withheld
+            .iter()
+            .find(|row| row.detail.as_ref() == Some(detail))
+            .unwrap();
+        assert_eq!(row.owner, None);
+        assert_eq!(
+            row.reason,
+            "Leader owner has no resolved recorded country tag"
+        );
+        assert_eq!(
+            row.spans,
+            vec![HourSpan {
+                first_hour: 100 + at as i32,
+                last_hour: if at == 4 { 105 } else { 100 + at as i32 },
+            }]
+        );
+    }
+    restarted_everywhere(&[frames], &[0], None);
+}
+
+#[test]
 fn a_1500_country_hour_resolves_only_the_changed_leader_and_extends_other_runs() {
     let first = frame(100, 1500);
     let mut next = frame(101, 1500);

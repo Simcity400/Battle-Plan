@@ -111,7 +111,7 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   else if (!data) main = <WidgetState kind="loading" label="Loading templates…" />;
   else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (!rows.length) main = <WidgetState kind="empty" message={nameDetail ? 'No division templates at this date.' : `${countryName} has no division templates at this date.`} detail={nameDetail} />;
-  else main = <Table label="Division templates" rows={rows} columns={columns} rowKey={rowKey} tree={TREE}
+  else main = <Table rowRevision={row => [row, columns]} label="Division templates" rows={rows} columns={columns} rowKey={rowKey} tree={TREE}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true}
     rankMarkers={false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     onRowClick={snapshot ? open : undefined} tooltip={tooltip} hoursPerSecond={hoursPerSecond} />;

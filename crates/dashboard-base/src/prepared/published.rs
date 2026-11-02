@@ -52,7 +52,19 @@ fn pinned<'s>(
 }
 
 impl Opened {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_snapshot(
+        snapshot: store::Snapshot,
+        section: String,
+        root: u64,
+        identity: Identity,
+        schema: u64,
+        through: Option<i32>,
+    ) -> io::Result<Option<Self>> {
+        Self::new(snapshot, section, root, identity, schema, through)
+    }
+
+    fn new(
         snapshot: store::Snapshot,
         section: String,
         root: u64,
@@ -156,6 +168,9 @@ pub fn open_through(
     let Some(published) = roots::read(&mut &snapshot, family, branch)? else {
         return Ok(None);
     };
+    if !coverage::accepts_publication(family, &published) {
+        return Ok(None);
+    }
     let section = roots::root_section(family, branch);
     let hole = coverage::declared()
         .before
@@ -164,7 +179,7 @@ pub fn open_through(
         (Some(hole), Some(limit)) => Some(hole.min(limit)),
         (hole, limit) => hole.or(limit),
     };
-    Opened::from_snapshot(
+    Opened::new(
         snapshot,
         section,
         published.root,

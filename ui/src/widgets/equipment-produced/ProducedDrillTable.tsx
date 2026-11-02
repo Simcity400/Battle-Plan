@@ -1,3 +1,4 @@
+import { typeRowRevision } from './producedView.ts';
 import { failureText } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import { productionEndpointReply } from './preparedProducedView';
@@ -75,10 +76,10 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
           <span><b>{row.label}</b>{row.models && <small>{row.models}</small>}</span>
         </span>;
       } },
-    { key: 'units', header: 'Units', label: 'Units delivered', numeric: true, width: 'max-content', priority: 1, value: row => row.units,
+    { key: 'units', header: 'Units', label: 'Units delivered', numeric: true, width: 'max-content', priority: 1, widthKey: row => [row.units, row.recorded.units], value: row => row.units,
       text: row => !row.recorded.units ? 'Not recorded' : row.units == null ? 'Not known' : formatRaw(row.units, 0),
       render: row => !row.recorded.units ? 'Not recorded' : row.units == null ? 'Not known' : formatRaw(row.units, 0), renderMissing: true },
-    ...(icModel ? [{ key: 'ic', header: 'IC', label: 'IC put in', numeric: true, width: 'max-content', bar: 'visible' as const, value: (row: TypeRow) => row.ic,
+    ...(icModel ? [{ key: 'ic', header: 'IC', label: 'IC put in', numeric: true, width: 'max-content', bar: 'visible' as const, widthKey: (row: TypeRow) => [row.ic, row.share, row.recorded.ic, icDecimals], value: (row: TypeRow) => row.ic,
       render: (row: TypeRow) => !row.recorded.ic ? 'Not recorded' : row.ic == null ? 'Not known' : <>{formatRaw(row.ic, icDecimals)} <small className="produced-share">{row.share}</small></>,
       renderMissing: true }] : []),
   ], [pictures, chartType, icModel, icDecimals]);
@@ -99,7 +100,7 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
           {!rows ? <p className="drill-empty">{producedWindowUnavailable(measure)}</p>
             : rows.length === 0 ? <p className="drill-empty">Nothing delivered {window}.</p>
             : <div className="produced-table" style={{ height: Math.min(rows.length * ROW_HEIGHT + 28, 320) }}>
-              <Table label="Equipment produced by type" rows={rows} columns={columns} rowKey={row => row.type} rowHeight={ROW_HEIGHT} narrow={narrow}
+              <Table rowRevision={row => [...typeRowRevision(row), row.type === chartType, icDecimals, !!icModel, pictures.get(`type:${row.type}`)?.icon, pictures.get(`type:${row.type}`)?.name]} label="Equipment produced by type" rows={rows} columns={columns} rowKey={row => row.type} rowHeight={ROW_HEIGHT} narrow={narrow}
                 sort={{ column: count === 'ic' && icModel ? 'ic' : 'units', direction: 'descending' }} onRowClick={row => onChart(row.type)} />
             </div>}
         </>;

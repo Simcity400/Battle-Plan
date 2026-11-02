@@ -155,7 +155,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
       : !detail ? <WidgetState kind="loading" label="Loading this moment…" />
         : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
           ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {dayLabel(detailHour)}.</p>
-          : <>{summary(details)}<div className="casualty-breakdown-table"><Table label="Recorded casualty lifetimes" rows={details.rows}
+          : <>{summary(details)}<div className="casualty-breakdown-table"><Table rowRevision={row => [row, columns]} label="Recorded casualty lifetimes" rows={details.rows}
             columns={columns} rowKey={rowKey} sort={SORT}
             cellBars={false} rankMarkers={false} hoursPerSecond={speed} onVisibleRows={setVisible} narrow={narrowTableOf(options)}
             menu={row => [jumpItem(runtime, track.id, row.readHour)]}

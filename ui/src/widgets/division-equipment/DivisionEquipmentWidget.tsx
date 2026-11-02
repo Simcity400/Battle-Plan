@@ -156,10 +156,10 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   else main = <>{data.poolHour !== null && <p className="division-equipment-caption">Equipment as of {formatDateTime(data.poolHour)}{data.unknownDivisions > 0
       ? ` · ${usNumber.format(data.unknownDivisions)} ${data.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : ''}</p>}
     {view === 'equipment'
-      ? <Table key="equipment" label="Division equipment by type" rows={data.types} columns={typeColumns} rowKey={typeKey} sort={MISSING_SORT}
+      ? <Table rowRevision={row => [row, typeColumns]} key="equipment" label="Division equipment by type" rows={data.types} columns={typeColumns} rowKey={typeKey} sort={MISSING_SORT}
         cellBars={bars} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         onRowClick={row => setDrill({ kind: 'type', key: typeKey(row) })} tooltip={typeTip} menu={menu} />
-      : <Table key="template" label="Division equipment by template" rows={data.templates} columns={templateColumns} rowKey={templateKey} sort={FILL_SORT}
+      : <Table rowRevision={row => [row, templateColumns]} key="template" label="Division equipment by template" rows={data.templates} columns={templateColumns} rowKey={templateKey} sort={FILL_SORT}
         cellBars={bars} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         onRowClick={row => setDrill({ kind: 'template', template: row.template })} tooltip={templateTip} menu={menu} />}</>;
   const type = drill?.kind === 'type' ? data?.types.find(row => typeKey(row) === drill.key) : undefined;
@@ -169,7 +169,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const drillHour = drill && drill.kind !== 'type' ? drillData?.hour : data?.hour;
   let body = null;
   if (drill?.kind === 'type') body = type ? <div className="division-equipment-drill">
-    <Table label={`${typeName(type)} models`} rows={type.variants} columns={[
+    <Table rowRevision={row => [row]} label={`${typeName(type)} models`} rows={type.variants} columns={[
       { key: 'model', header: 'Model', label: 'Model', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? 'Design name unavailable',
         render: row => <span data-tooltip={row.variant}>{row.name ?? 'Design name unavailable'}</span> },
       { key: 'held', header: 'In divisions', label: 'In divisions', numeric: true, width: 'max-content', bar: 'visible', value: row => BigInt(row.heldRaw), render: row => items(row.heldRaw) },
@@ -178,7 +178,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   else if (drill && detail.error) body = <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />;
   else if (drill && !drillData) body = <WidgetState kind="loading" label="Loading…" />;
   else if (drill?.kind === 'template' && drillData) body = <div className="division-equipment-drill">
-    <Table label="Divisions of this template" rows={drillData.divisionRows ?? []} columns={divisionColumns} rowKey={divisionKey} sort={FILL_SORT}
+    <Table rowRevision={row => [row, divisionColumns]} label="Divisions of this template" rows={drillData.divisionRows ?? []} columns={divisionColumns} rowKey={divisionKey} sort={FILL_SORT}
       cellBars={bars} narrow={narrowTableOf(options)} onRowClick={row => setDrill({ kind: 'division', division: row.division, template: drill.template })}
       tooltip={row => ({ title: divisionName(row), rows: [
         { label: 'Equipment', value: row.poolKnown ? `${items(row.heldRaw) ?? '—'} of ${items(row.neededRaw) ?? '—'}` : 'Not recorded' },
@@ -189,7 +189,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
     <p><b>{divisionName(drillData.pool)}</b> · {drillData.pool.templateName ?? 'Template name unavailable'}</p>
     {!drillData.pool.poolKnown && <WidgetState kind="unavailable" message="This division's equipment was not recorded at this date." />}
     {(drillData.pool.poolKnown || drillData.pool.types.length > 0)
-      && <Table label={drillData.pool.poolKnown ? 'Equipment in this division' : 'Equipment this division needs'} rows={drillData.pool.types} columns={poolColumns}
+      && <Table rowRevision={row => [row, poolColumns]} label={drillData.pool.poolKnown ? 'Equipment in this division' : 'Equipment this division needs'} rows={drillData.pool.types} columns={poolColumns}
         rowKey={poolKey} sort={MISSING_SORT} cellBars={bars} narrow={narrowTableOf(options)} menu={drillMenu}
         tooltip={row => ({ title: typeName(row), rows: row.variants.map(variant => ({ label: variant.name ?? 'Design name unavailable', value: items(variant.heldRaw) ?? '—' })) })} />}</div>
     : <WidgetState kind="unavailable" message="This division is not in service at this date." />;

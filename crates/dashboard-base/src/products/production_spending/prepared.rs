@@ -409,6 +409,7 @@ pub(crate) fn read_pages(
     }
     let mut eq_scope = BTreeMap::new();
     let mut ro_scope = BTreeMap::new();
+    let mut total_samples = Vec::with_capacity(unique.len());
     for &ordinal in unique.keys() {
         cancelled(cancel)?;
         let page = index.endpoint(ordinal);
@@ -422,10 +423,14 @@ pub(crate) fn read_pages(
                 .into_iter()
                 .flatten(),
         );
+        let mut starts = unique[&ordinal]
+            .as_ref()
+            .map_or([None; 2], |row| row.absent_since);
         for rocket in [false, true] {
             let Some(at) = source_of(index, &unique, ordinal, rocket)? else {
                 continue;
             };
+            starts[usize::from(rocket)] = Some(at.head.spending_since);
             if let Some(origin) = at.head.observation {
                 if rocket {
                     scanned.rocket.observations.push(origin);
@@ -481,6 +486,11 @@ pub(crate) fn read_pages(
                     .push((sample, value));
             }
         }
+        total_samples.push(super::CombinedSample::new(
+            starts[0],
+            starts[1],
+            page.last_hour,
+        ));
     }
     for reads in [&mut scanned.reads, &mut scanned.rocket.reads] {
         reads.sort_unstable();
@@ -538,7 +548,7 @@ pub(crate) fn read_pages(
     let mut reply = reply_prepared(
         &scanned,
         &params,
-        (&kinds, &eq_scope, &ro_scope),
+        (&kinds, &eq_scope, &ro_scope, Some(&total_samples)),
         index.variant_warnings(),
         cancel,
         purposes,

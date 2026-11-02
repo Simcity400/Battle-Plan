@@ -82,7 +82,12 @@ export default function RefitsWidget({ widget, runtime, active, onDiagnostics }:
     </div>
     {!rows.length ? censusComplete(at, 'censusComplete') ? <WidgetState kind="empty" message="No refits at this date." />
       : <WidgetState kind="unavailable" message="Refits were not fully recorded at this date." />
-      : <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Refit lines" rows={rows} columns={columns}
+      : <Table rowRevision={row => {
+        const group = at.groups.get(row.line), ship = group?.ships.get(row.ship!);
+        const label = shipLabel(data, ship);
+        return row.kind === 'line' ? [lineName(data, at, row.line), lineProgress(at, row.line), group?.measures.get('dockyards')]
+          : [label.name, label.source, hullShare(ship)];
+      }} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} label="Refit lines" rows={rows} columns={columns}
         rowKey={rowKey} sort={{ column: 'name', direction: 'ascending' }} unsorted tree={{ children }}
         density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
         hoursPerSecond={hoursPerSecond} parity={{ complete: true, item: row => row }} />}

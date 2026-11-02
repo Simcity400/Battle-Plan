@@ -45,6 +45,6 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
   if (!data) return <WidgetState kind="loading" label="Loading campaign clock…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Playing and paused time were not recorded in this campaign." />;
   if (data.recordedSeconds === null) return <WidgetState kind="unavailable" message="Overlapping recordings prevent a unique campaign clock total." />;
-  return <Table label="Recorded campaign clock times" rows={rows} columns={COLUMNS} rowKey={rowKey} unsorted
+  return <Table rowRevision={row => [row, COLUMNS]} label="Recorded campaign clock times" rows={rows} columns={COLUMNS} rowKey={rowKey} unsorted
     sort={SORT} cellBars={false} tooltip={row => ({ title: row.name, rows: [{ label: 'Real time', value: row.text ?? clockText(row.seconds) }], note: row.note })} />;
 }

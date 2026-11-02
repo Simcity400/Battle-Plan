@@ -23,7 +23,7 @@ import CareerView from '../general-career/CareerView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { attributeCells, attributesHeader } from './Attributes.tsx';
 import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps, SkillStars } from './LeaderIdentity.tsx';
-import { firstSeenHour, leaderKey as rowKey, leadersAt, leaderName, leaderSkill as skillValue, leaderTooltip, pinnedCareer, attributeNames, recordedSince } from './generalsData';
+import { firstSeenHour, leaderKey as rowKey, leadersAt, leaderName, leaderSkill as skillValue, leaderTooltip, pinnedCareer, attributeNames, recordedSince, withheldLeadersAt, withheldLeaderState } from './generalsData';
 import type { LeaderRow } from './generalsData';
 import { useLeaderCountries, useLeaders } from './useLeaders';
 import './generals.css';
@@ -79,16 +79,17 @@ export default function GeneralsWidget(props: WidgetProps) {
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
   // An open career reports its own warnings; closing it sends the leaderboard's again.
   useDiagnostics(onDiagnostics, drill.breakdown == null ? diagnostics : null);
+  const attributeLabels = useMemo(() => attributeMaxima.map((_, i) =>
+    [...new Set(rows.map(row => attributeNames(row.value)[i]))].join(' / ') || 'Name not recorded'), [rows, attributeMaxima]);
   const columns = useMemo<readonly TableColumn<LeaderRow>[]>(() => {
     return [
       { key: 'leader', header: 'Leader', label: 'Leader', sortable: false, width: 'minmax(190px, 2fr)', value: leaderName,
         render: row => data && <LeaderIdentity {...leaderIdentityProps(row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })} {...leaderPortraitProps(portraits.at(row))} /> },
       { key: 'skill', header: 'Skill', label: 'Skill', width: '92px', value: skillValue,
         renderMissing: true, render: r => <SkillStars level={r.value.skill} maximum={r.value.maximumSkill} /> },
-      { key: 'attributes', header: attributesHeader({ names: attributeMaxima.map((_, i) =>
-          [...new Set(rows.map(row => attributeNames(row.value)[i]))].join(' / ') || 'Name not recorded') }),
+      { key: 'attributes', headerRevision: JSON.stringify(attributeLabels), header: attributesHeader({ names: attributeLabels }),
         label: 'Attributes', sortable: false, width: '150px', priority: 4, inTooltip: true, value: () => null, renderMissing: true,
-        widthKey: row => JSON.stringify([row.value.components, attributeNames(row.value)]),
+        widthKey: row => [...row.value.components, ...attributeNames(row.value)],
         render: row => attributeCells({ values: row.value.components, maxima: attributeMaxima, names: attributeNames(row.value), bars: options.cellBars === true }) },
       { key: 'traits', header: 'Traits', label: 'Traits', sortable: false, width: '1.1fr', priority: 5, inTooltip: true, value: r => r.value.traits?.length,
         renderMissing: true, render: r => <span className="leader-traits">{r.value.traits == null ? <span className="leader-missing">Not recorded</span> : r.value.traits.map(token => {
@@ -108,7 +109,7 @@ export default function GeneralsWidget(props: WidgetProps) {
       { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: winRateValue, renderMissing: true,
         render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : r.won == null ? "Result not recorded" : "No battles with known results."}>—</span> : <span data-tooltip={r.foughtPartial ? "Win rate among the decided battles recorded; some battles were not recorded." : "Win rate among decided battles"}>{Math.round(r.winRate)}%</span> },
     ];
-  }, [data, labelAt, portraits, attributeMaxima, options.cellBars, rows]);
+  }, [data, labelAt, portraits, attributeMaxima, attributeLabels, options.cellBars, rows]);
   const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })], viewportHeight), [labelAt, viewportHeight]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see its leaders." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -117,13 +118,16 @@ export default function GeneralsWidget(props: WidgetProps) {
   if (display.selectionReason) return <WidgetState kind="unavailable" message={display.selectionReason} />;
   if (!data) return <WidgetState kind="loading" label="Loading leaders…" />;
   const observed = data.observed.find(r => r.firstHour <= shown && shown <= r.lastHour);
+  const withheld = display.countries === undefined ? [] : withheldLeadersAt(data, shown, display.countries, String(options.leaders));
+  const withheldState = withheldLeaderState(withheld);
   const preparing = data.preparing?.includes('battles') === true;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const countsSort = ['won', 'lost', 'unresolved', 'fought', 'winRate'].includes(sort.column);
   const main = preparing && countsSort ? <WidgetState kind="loading" label="This range is still being prepared." /> : display.countries === undefined ? <WidgetState kind="unavailable" message="Country group membership was not recorded at this hour." />
     : !rows.length && !observed?.leaders ? <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." />
+    : !rows.length && display.known && withheld.length ? <WidgetState kind="unavailable" {...withheldState} />
     : !rows.length ? display.known ? <WidgetState kind="empty" message="No leaders for these countries at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
-    : <div className="leader-table">{preparing && <p className="chart-line-key" role="status">Battle counts and earlier leaders are still being prepared.</p>}<Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
+    : <div className="leader-table">{preparing && <p className="chart-line-key" role="status">Battle counts and earlier leaders are still being prepared.</p>}<Table rowRevision={row => [row, columns]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}
       {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, reads: { traitCatalogue: data.traits },
@@ -135,7 +139,7 @@ export default function GeneralsWidget(props: WidgetProps) {
       menu={r => { const first = firstSeenHour(r.career);
         return r.preparing || first === undefined ? [] : [{ ...jumpItem(runtime, track.id, first), label: `Jump to first seen ${formatDateTime(first)}` }, { label: 'Open career', run: () => open(r) }]; }}
       hoursPerSecond={hoursPerSecond} />
-      {!observed?.leaders && <p className="career-note">Some leaders are missing.</p>}
+      {withheld.length > 0 && <details className="career-note"><summary>Some leaders are missing.</summary><p className="leader-withheld-detail">{withheldState.detail}</p></details>}
     </div>;
   const clockHour = Math.floor(playback) + track.axisOffset;
   const pickedHour = drillHour(drill, clockHour) ?? hour;

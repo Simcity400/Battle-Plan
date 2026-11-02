@@ -75,11 +75,11 @@ const choices = Array.from({ length: 20 }, (_, i) => ({ key: `c${i}`, hour: 4000
 const plain = (value: number) => String(value);
 
 const forms: Record<string, { kind: string; render: () => ReactNode }> = {
-  'next-elections': { kind: 'next-elections', render: () => <div className="next-elections"><Table label="Next elections" rows={elections} rowKey={row => row.key}
+  'next-elections': { kind: 'next-elections', render: () => <div className="next-elections"><Table rowRevision={row => [row]} label="Next elections" rows={elections} rowKey={row => row.key}
     columns={electionColumns(sortName, label, true)} sort={{ column: 'days', direction: 'ascending' }} rank rowHeight={36} /></div> },
-  'governments-in-exile': { kind: 'governments-in-exile', render: () => <div className="governments-in-exile"><Table label="Governments in exile" rows={exiles}
+  'governments-in-exile': { kind: 'governments-in-exile', render: () => <div className="governments-in-exile"><Table rowRevision={row => [row]} label="Governments in exile" rows={exiles}
     rowKey={row => row.key} columns={exileColumns(sortName, label, true, row => row.leaders)} sort={{ column: 'manpower', direction: 'descending' }} rank rowHeight={36} /></div> },
-  'balance-of-power-table': { kind: 'balance-of-power', render: () => <div className="balance-of-power"><Table label="Balances of power" rows={balanceRows}
+  'balance-of-power-table': { kind: 'balance-of-power', render: () => <div className="balance-of-power"><Table rowRevision={row => [row]} label="Balances of power" rows={balanceRows}
     rowKey={row => row.key} columns={balanceColumns(sortName, label, () => 'A middle range with a long name', () => 'The right side with a long name')}
     sort={{ column: 'value', direction: 'descending' }} rank rowHeight={36} /></div> },
   'balance-of-power-country': { kind: 'balance-of-power', render: () => <div className="balance-of-power"><BalanceCountryView runtime={runtime} track={track} active

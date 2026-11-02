@@ -1010,9 +1010,163 @@ fn incremental_region_sums_keep_duplicate_and_overlapping_membership_exact() {
             .collect::<Vec<_>>(),
         [71, 72]
     );
+    assert_eq!(observation.empty_regions, BTreeSet::from([73]));
+    assert_eq!(observation.unavailable[&9].first_hour, 10);
+    assert_eq!(observation.unavailable[&9].count, 13);
+    assert!(observation.refused.is_empty());
+}
+
+fn missing_reason_publication(
+    content: Bound,
+    frames: &[DecodedFrame],
+    warnings: &[Vec<&str>],
+) -> Vec<BTreeMap<String, i128>> {
+    let mut frames = frames.to_vec();
+    for frame in &mut frames {
+        for table in block::Observer::TABLES {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+    }
+    let source = source(frames.clone());
+    let options = install_cached(&source, content);
+    let mut whole = block::Observer::default();
+    whole
+        .bind(&source, Some(&options), &AtomicBool::new(false))
+        .unwrap();
+    let mut expected = Vec::new();
+    let mut observers = Vec::new();
+    for (at, frame) in frames.iter().enumerate() {
+        let mut values = Values::default();
+        whole
+            .observe(FormatVersion::CURRENT, frame, &mut values)
+            .unwrap();
+        expected.push(
+            values
+                .iter()
+                .filter(|(name, _)| name.ends_with("|temp"))
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        );
+        assert_eq!(whole.temperature_warnings(), warnings[at]);
+        observers.push(serde_json::to_value(&whole).unwrap());
+    }
+    let binding = Binding::<block::Observer>::new(&source, Some(&options)).unwrap();
+    let first = frames[0].hour;
+    let cuts: Vec<_> = frames.iter().map(|frame| frame.hour).collect();
+    for (starts, resume) in [(&[][..], None), (&[1, 3][..], Some(cuts[2]))] {
+        let hours =
+            operate_bound::<block::Observer>(&frames, starts, walked_weather, Some(&binding));
+        let published = publish_bound(hours, 1, &cuts, resume, Some(&binding));
+        for (at, published) in published.iter().enumerate() {
+            let (scan, window) = published.read::<block::Observer>(first, cuts[at], None);
+            assert_eq!(scan.observer.temperature_warnings(), warnings[at]);
+            assert_eq!(serde_json::to_value(&scan.observer).unwrap(), observers[at]);
+            for hour in 0..=at {
+                assert_eq!(
+                    held_at(&window, cuts[hour])
+                        .into_iter()
+                        .filter(|(name, _)| name.ends_with("|temp"))
+                        .collect::<BTreeMap<_, _>>(),
+                    expected[hour]
+                );
+            }
+        }
+    }
+    expected
+}
+
+#[test]
+fn empty_regions_are_named_once_through_hours_segments_and_resume() {
+    let content = bound(&[(71, vec![1]), (73, vec![]), (74, vec![])], 2);
+    let frames: Vec<_> = (10..=13)
+        .map(|hour| {
+            temperatures(
+                1,
+                10,
+                hour,
+                &states(&[0, 100_000]),
+                vec![None; (hour - 10) as usize],
+                &content.pass,
+            )
+        })
+        .collect();
+    let warnings = vec![
+        vec![
+            "weather temperature not shown: region 73 has no member provinces (permanent)",
+            "weather temperature not shown: region 74 has no member provinces (permanent)",
+        ];
+        frames.len()
+    ];
+    let means = missing_reason_publication(content, &frames, &warnings);
     assert_eq!(
-        observation.refused["region membership is empty or a member province temperature is unavailable"],
-        26
+        means,
+        vec![BTreeMap::from([("71|temp".into(), 100_000)]); 4]
+    );
+}
+
+#[test]
+fn unavailable_members_name_each_province_first_hour_and_count_without_partial_means() {
+    let content = bound(
+        &[(71, vec![1, 2]), (72, vec![2, 9, 9, 10]), (73, vec![9])],
+        3,
+    );
+    let mut frames: Vec<_> = (10..=13)
+        .map(|hour| {
+            temperatures(
+                1,
+                10,
+                hour,
+                &states(&[0, 100_000, 300_000]),
+                vec![None; (hour - 10) as usize],
+                &content.pass,
+            )
+        })
+        .collect();
+    for (at, missing) in [(1, vec![1, 2]), (2, vec![2])] {
+        if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
+            &mut *frames[at].tables[TableId::WeatherProvinces.index()]
+        {
+            for province in missing {
+                rows[province].temperature = ProvinceTemperature::NOT_RECORDED;
+            }
+        }
+    }
+    let warnings = [
+        vec![
+            "1 weather temperature observations not shown: province 9's temperature unavailable at hour 10 (first affected hour)",
+            "1 weather temperature observations not shown: province 10's temperature unavailable at hour 10 (first affected hour)",
+        ],
+        vec![
+            "1 weather temperature observations not shown: WeatherProvinces temperature not recorded",
+            "1 weather temperature observations not shown: province 1's temperature unavailable at hour 11 (first affected hour)",
+            "1 weather temperature observations not shown: province 2's temperature unavailable at hour 11 (first affected hour)",
+            "2 weather temperature observations not shown: province 9's temperature unavailable at hour 10 (first affected hour)",
+            "2 weather temperature observations not shown: province 10's temperature unavailable at hour 10 (first affected hour)",
+        ],
+        vec![
+            "2 weather temperature observations not shown: WeatherProvinces temperature not recorded",
+            "1 weather temperature observations not shown: province 1's temperature unavailable at hour 11 (first affected hour)",
+            "2 weather temperature observations not shown: province 2's temperature unavailable at hour 11 (first affected hour)",
+            "3 weather temperature observations not shown: province 9's temperature unavailable at hour 10 (first affected hour)",
+            "3 weather temperature observations not shown: province 10's temperature unavailable at hour 10 (first affected hour)",
+        ],
+        vec![
+            "2 weather temperature observations not shown: WeatherProvinces temperature not recorded",
+            "1 weather temperature observations not shown: province 1's temperature unavailable at hour 11 (first affected hour)",
+            "2 weather temperature observations not shown: province 2's temperature unavailable at hour 11 (first affected hour)",
+            "4 weather temperature observations not shown: province 9's temperature unavailable at hour 10 (first affected hour)",
+            "4 weather temperature observations not shown: province 10's temperature unavailable at hour 10 (first affected hour)",
+        ],
+    ];
+    let means = missing_reason_publication(content, &frames, &warnings);
+    assert_eq!(
+        means,
+        [
+            BTreeMap::from([("71|temp".into(), 200_000)]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::from([("71|temp".into(), 200_000)]),
+        ]
     );
 }
 

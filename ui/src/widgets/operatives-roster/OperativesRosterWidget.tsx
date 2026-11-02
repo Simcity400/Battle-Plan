@@ -163,7 +163,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." />;
   else if (!rows.length && !match.known(hour)) body = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
-  else body = <Table label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
+  else body = <Table rowRevision={row => [row, columns]} label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
       sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
       cellBars={options.cellBars === true} rank={options.showRank === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} muted={muted}

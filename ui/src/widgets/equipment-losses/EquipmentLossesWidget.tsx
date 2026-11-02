@@ -204,7 +204,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
     {selected && <button type="button" className="button small" onClick={() => setPicked(null)}>View all losses</button>}
     <DrillParts parts={parts} format={value => formatLosses(value * scale, null, scale)} positiveBars virtual active={active && open}
       showShares={!rows.some(row => row.incomplete || row.exact === null || row.exact < 0n)} onPick={id => { const part = parts.find(part => part.id === id); if (part) setPicked(part.keys); }} />
-    <div className="equipment-losses-table"><Table label="Equipment losses" rows={rows} columns={columns} rowKey={rowKey} narrow={narrowTableOf(options)}
+    <div className="equipment-losses-table"><Table rowRevision={row => [row, columns]} label="Equipment losses" rows={rows} columns={columns} rowKey={rowKey} narrow={narrowTableOf(options)}
       sort={{ column: 'amount', direction: 'descending' }} cellBars={false} rankMarkers={false} hoursPerSecond={speed} onRowClick={row => setPicked([row.id])}
       menu={row => row.readHour === null ? [] : [jumpItem(runtime, track.id, row.readHour)]}
       tooltip={row => fitTooltip([{ title: `${row.cause} / ${row.type} / ${row.design}`, rows: [{ label: 'Losses', value: rowText(row) }], note: row.note }], height)} /></div>

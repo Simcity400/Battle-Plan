@@ -21,6 +21,9 @@ use std::{
     time::Instant,
 };
 
+#[path = "support/shader_compiler.rs"]
+mod shader_compiler;
+
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -123,6 +126,7 @@ fn record(
     recording: &Path,
     folder: &Path,
     content: Option<ContentOptions>,
+    shader_compiler: &str,
 ) -> io::Result<bool> {
     let family = required(options.family.as_deref())?;
     let out = required(options.out.as_deref())?;
@@ -163,6 +167,7 @@ fn record(
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
+            "shaderCompiler": shader_compiler,
             "family": family,
             "seconds": started.elapsed().as_secs_f64(),
             "branches": branches.len(),
@@ -178,6 +183,7 @@ fn check(
     recording: &Path,
     folder: &Path,
     content: Option<ContentOptions>,
+    shader_compiler: &str,
 ) -> io::Result<bool> {
     let reference = required(options.reference.as_deref())?;
     let path = required(options.report.as_deref())?;
@@ -216,6 +222,7 @@ fn check(
     std::fs::write(
         path,
         serde_json::to_vec_pretty(&json!({
+            "shaderCompiler": shader_compiler,
             "family": &header.family,
             "seconds": started.elapsed().as_secs_f64(),
             "report": &report,
@@ -250,13 +257,14 @@ fn run() -> io::Result<bool> {
     let recording = required(options.recording.as_deref())?;
     let folder = required(options.store.as_deref())?;
     let work = required(options.work.as_deref())?;
+    let shader_compiler = shader_compiler::configure();
     // Set before any other thread starts: the store is read under it.
     unsafe { std::env::set_var("LOCALAPPDATA", served_check::store_root(folder)?) };
     std::fs::create_dir_all(work)?;
     let content = options.content(work)?;
     match mode.to_str() {
-        Some("record") => record(&options, recording, folder, content),
-        Some("check") => check(&options, recording, folder, content),
+        Some("record") => record(&options, recording, folder, content, shader_compiler),
+        Some("check") => check(&options, recording, folder, content, shader_compiler),
         _ => Err(invalid(USAGE)),
     }
 }

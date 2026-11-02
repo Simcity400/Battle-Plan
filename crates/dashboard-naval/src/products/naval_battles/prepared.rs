@@ -747,11 +747,12 @@ pub fn prefix_query(
     let windows = windows(source.replay_ref(), branch);
     let mut data = match product {
         "naval-battles-manifest" => {
-            let available = series::read_reply::<bool>(
+            let available = series::read_branch_reply::<bool>(
                 store,
                 key,
                 &format!("naval-battle-availability-{branch}"),
                 0,
+                branch,
             )?
             .unwrap_or(false);
             serde_json::to_value(NavalBattlesManifestReply {
@@ -768,11 +769,12 @@ pub fn prefix_query(
                 .get(params.window)
                 .ok_or_else(|| dashboard_core::invalid("Battle window not in this recording"))?;
             let reply = if window.last_hour <= prefix.coverage.last_hour {
-                series::read_reply::<NavalBattlesReply>(
+                series::read_branch_reply::<NavalBattlesReply>(
                     store,
                     key,
                     &format!("naval-battles-{branch}"),
                     params.window as u64,
+                    branch,
                 )?
             } else {
                 None

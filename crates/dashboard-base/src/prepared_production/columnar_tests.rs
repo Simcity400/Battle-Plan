@@ -224,6 +224,15 @@ fn prepare(
     cuts: &[i32],
     resume: Option<i32>,
 ) -> (Vec<(EndpointPage, Option<i32>)>, Fixture) {
+    prepare_resumes(hours, starts, cuts, &resume.into_iter().collect::<Vec<_>>())
+}
+
+fn prepare_resumes(
+    hours: &[Tables],
+    starts: &[i32],
+    cuts: &[i32],
+    resumes: &[i32],
+) -> (Vec<(EndpointPage, Option<i32>)>, Fixture) {
     let format = FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
@@ -355,7 +364,7 @@ fn prepare(
             let label = format!("published through {}", tables.hour);
             assert_payloads_equal(&fixtures[1].payloads(), &fixtures[0].payloads(), &label);
             assert_eq!(native.accumulator().completed, row.completed, "{label}");
-            if resume == Some(tables.hour) {
+            if resumes.contains(&tables.hour) {
                 let saved = |state: &ProductionAccumulator| -> ProductionAccumulator {
                     serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap()
                 };
@@ -400,9 +409,9 @@ fn design_witness_keeps_the_empty_census_country_run_first_hour() {
         }
     }
     let (completed, fixture) = prepare(&hours, &[], &[], None);
-    assert!(completed.iter().any(|(page, _)| page.first_hour == edit));
+    assert!(!completed.iter().any(|(page, _)| page.first_hour == edit));
     let page = &completed.last().unwrap().0;
-    assert_eq!((page.first_hour, page.last_hour), (edit, census + 13));
+    assert_eq!(page.last_hour, census + 13);
     let empty = page.countries.iter().find(|row| row.tag == "CCC").unwrap();
     let equipment = empty.equipment.as_ref().unwrap();
     assert_eq!(equipment.read_hour, census);
@@ -478,6 +487,54 @@ fn own_spending_change_starts_a_new_country_run() {
         assert_eq!(source.spending_since, next);
         let data = spending(&fixture, &hours, "AAA", Some(next + 2));
         assert_eq!(data["equipmentTotal"][0]["firstHour"], next);
+    }
+}
+
+#[test]
+fn spending_stretches_match_across_repeated_flushes_and_resumes() {
+    let census = start() + 8;
+    let hours: Vec<_> = scenario()
+        .into_iter()
+        .filter(|tables| (census..census + 29).contains(&tables.hour))
+        .collect();
+    let (expected, uninterrupted) = prepare(&hours, &[], &[], None);
+    let cuts = [census + 3, census + 7, census + 13, census + 25, census + 27];
+    let (actual, resumed) = prepare_resumes(&hours, &[], &cuts, &cuts);
+    for (page, _) in &actual {
+        let expected = &expected
+            .iter()
+            .find(|(held, _)| (held.first_hour..=held.last_hour).contains(&page.last_hour))
+            .unwrap()
+            .0;
+        for row in &page.countries {
+            let held = expected
+                .countries
+                .iter()
+                .find(|held| held.tag == row.tag)
+                .unwrap();
+            assert_eq!(row.absent_since, held.absent_since);
+            for (source, held) in [
+                (&row.equipment, &held.equipment),
+                (&row.rocket, &held.rocket),
+            ] {
+                assert_eq!(
+                    source.as_ref().map(|source| source.spending_since),
+                    held.as_ref().map(|source| source.spending_since),
+                    "{} at {}",
+                    row.tag,
+                    page.last_hour,
+                );
+            }
+        }
+    }
+    for tag in ["AAA", "BBB", "CCC"] {
+        for from in [None, Some(census + 14), Some(census + 26)] {
+            assert_eq!(
+                spending(&resumed, &hours, tag, from),
+                spending(&uninterrupted, &hours, tag, from),
+                "{tag} from {from:?}",
+            );
+        }
     }
 }
 
@@ -660,5 +717,153 @@ fn quiet_hours_carry_nothing_but_their_flags() {
             dated,
             "hour {offset} carries facts only where it is read or starts the walk"
         );
+    }
+}
+
+#[test]
+fn naming_mutations_only_date_changed_selected_operands() {
+    let census = crate::test_fixtures::slot_hour(TableId::VariantDefinitions);
+    let edit = census + 2;
+    let cold = edit + 1;
+    let next = census + 24;
+    for (selected, rename) in [(false, false), (false, true), (true, true)] {
+        let mut hours: Vec<_> = scenario()
+            .into_iter()
+            .filter(|tables| (census..=next).contains(&tables.hour))
+            .collect();
+        let baseline = &hours[0];
+        let countries = baseline.countries.clone();
+        let links = baseline.links.clone();
+        let lines = baseline.lines.clone();
+        let output = baseline.output.clone();
+        let rocket = baseline.rocket.clone();
+        let definitions = baseline.definitions.clone();
+        for tables in &mut hours {
+            tables.countries = countries.clone();
+            tables.links = links.clone();
+            tables.lines = lines.clone();
+            tables.output = output.clone();
+            tables.rocket = rocket.clone();
+            tables.definitions = definitions.clone();
+            tables.definitions.push(VariantDefinitionRow {
+                id: 99,
+                equipment_token: 1,
+                creator_link: 1,
+                display_name: b"unselected".to_vec(),
+                ..Default::default()
+            });
+            let variant = if selected { 1 } else { 99 };
+            if rename && tables.hour >= edit {
+                tables
+                    .definitions
+                    .iter_mut()
+                    .find(|row| row.id == variant)
+                    .unwrap()
+                    .display_name = b"changed name".to_vec();
+            }
+            tables.changes = (tables.hour == edit || tables.hour == cold)
+                .then(|| VariantChangeRow {
+                    sequence: 1,
+                    hour: tables.hour,
+                    variant,
+                    flags: (tables.hour == edit && rename).then_some([1, 1, 1]),
+                    ..Default::default()
+                })
+                .into_iter()
+                .collect();
+        }
+        let (pages, _) = prepare(&hours, &[cold], &[], None);
+        assert_eq!(
+            pages.iter().any(|(page, _)| page.first_hour == edit),
+            selected
+        );
+        assert!(!pages.iter().any(|(page, _)| page.first_hour == cold));
+        for (page, _) in &pages {
+            let date = if page.first_hour >= next {
+                next
+            } else {
+                census
+            };
+            for (&variant, kind) in &page.classifications {
+                let expected =
+                    if selected && variant == 1 && (edit..next).contains(&page.first_hour) {
+                        edit
+                    } else {
+                        date
+                    };
+                assert!(
+                    kind.names.iter().all(|name| name.first_hour == expected),
+                    "selected={selected}, variant={variant}, page={}, expected={expected}",
+                    page.first_hour
+                );
+            }
+        }
+        assert!(pages.iter().any(|(page, _)| page.first_hour == next));
+    }
+}
+
+#[test]
+fn combined_absence_survives_unrelated_cuts_flushes_and_resume() {
+    let census = start() + 8;
+    let absent = census + 24;
+    let cut = absent + 3;
+    let mut hours: Vec<_> = scenario()
+        .into_iter()
+        .filter(|tables| (census..absent + 10).contains(&tables.hour))
+        .collect();
+    let countries = hours[0].countries.clone().unwrap();
+    // Rocket holds unchanged, so only equipment's absence sets the combined start.
+    let rocket = hours[0].rocket.clone();
+    for tables in &mut hours {
+        if tables.countries.is_none() {
+            tables.countries = Some(countries.clone());
+        }
+        tables.rocket = rocket.clone();
+        if tables.hour >= absent {
+            tables.output = None;
+        }
+        if tables.hour >= cut {
+            tables.definitions[0].display_name = b"unrelated name".to_vec();
+        }
+        tables.changes = (tables.hour == cut)
+            .then(|| VariantChangeRow {
+                sequence: 1,
+                hour: cut,
+                variant: 1,
+                flags: Some([1, 1, 1]),
+                ..Default::default()
+            })
+            .into_iter()
+            .collect();
+    }
+    for resume in [None, Some(absent + 1)] {
+        let (pages, fixture) = prepare(&hours, &[], &[absent + 1], resume);
+        for (page, _) in &pages {
+            if page.last_hour >= absent {
+                let row = page.countries.iter().find(|row| row.tag == "AAA").unwrap();
+                assert!(row.equipment.is_none());
+                assert_eq!(row.absent_since[0], Some(absent));
+            }
+        }
+        // From absent + 2 a query reads the endpoint the flush ends at absent + 1 and a later one.
+        for from in [None, Some(census + 2), Some(absent + 2), Some(absent + 5)] {
+            let data = spending(&fixture, &hours, "AAA", from);
+            let missing = data["total"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run["reason"] == "notRecorded")
+                .unwrap();
+            assert_eq!(missing["firstHour"], absent);
+            // Presence combines both sources from the same start, whichever endpoints a query reads.
+            let presence = data["production"].as_array().unwrap();
+            for pair in presence.windows(2) {
+                assert!(pair[0]["lastHour"].as_i64() < pair[1]["firstHour"].as_i64());
+            }
+            if from.is_some_and(|from| from > absent) {
+                assert_eq!(presence.len(), 1);
+                assert_eq!(presence[0]["firstHour"], absent);
+            }
+        }
     }
 }

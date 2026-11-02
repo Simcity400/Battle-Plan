@@ -385,11 +385,12 @@ pub fn parse_save(bytes: &[u8]) -> io::Result<Document> {
     parser.document()
 }
 
-/// The 1-based lines of a block's `{` and `}`, counting only line feeds. A block closed
-/// by EOF ([`parse_unclosed`]) closes on the input's last line.
+/// The 1-based lines of a block's `{`, first token and `}`, counting only line feeds.
+/// A block closed by EOF ([`parse_unclosed`]) closes on the input's last line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BlockLines {
     pub open: u32,
+    pub first_token: u32,
     pub close: u32,
 }
 
@@ -786,9 +787,18 @@ impl<'a> Parser<'a> {
                 "block nesting exceeds the depth limit of 128",
             ));
         }
+        let first_offset = if self.lines.is_some() {
+            self.peek()?.map(|token| token.offset)
+        } else {
+            None
+        };
         let index = self.lines.as_mut().map(|lines| {
             let open = lines.line(offset);
-            lines.blocks.push(BlockLines { open, close: open });
+            lines.blocks.push(BlockLines {
+                open,
+                first_token: lines.line(first_offset.unwrap_or(self.lexer.position)),
+                close: open,
+            });
             lines.blocks.len() - 1
         });
         let items = self.items(depth + 1, true, variable_map)?;

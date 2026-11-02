@@ -145,7 +145,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   else if (!read) body = <WidgetState kind="unavailable" message="Exiles were not recorded at this date." />;
   else if (!rows.length) body = match.known(hour) ? <WidgetState kind="empty" icon="flag" message="No governments in exile at this date." />
     : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  else body = <Table key={`${track.source.id}:${track.branch.id}`} label="Governments in exile" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
+  else body = <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Governments in exile" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
     sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
     tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;

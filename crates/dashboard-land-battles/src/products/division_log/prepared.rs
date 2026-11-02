@@ -55,11 +55,12 @@ pub fn first_view(
     let (store, key) = prepared::files(source, context.content.as_ref())?;
     let mut data = match product {
         "division-log-manifest" => {
-            let mut manifest = series::read_reply::<DivisionLogManifestReply>(
+            let mut manifest = series::read_branch_reply::<DivisionLogManifestReply>(
                 &store,
                 &key,
                 &format!("division-log-manifest-{branch}"),
                 0,
+                branch,
             )?
             .unwrap_or(DivisionLogManifestReply {
                 windows: windows.clone(),

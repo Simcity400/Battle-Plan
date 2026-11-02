@@ -127,7 +127,7 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     formatValue={formatAxisValue}
     tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} /></div>;
   if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}{state}</div>;
-  return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
+  return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<Table rowRevision={row => [row.identity, flagReads.get(nameKey(row.hour, row.tag)), ...SCORE_PARTS.map(part => row.cells[part].raw)]} key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
     rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}
     cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond}

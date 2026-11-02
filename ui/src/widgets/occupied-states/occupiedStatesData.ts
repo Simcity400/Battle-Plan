@@ -198,3 +198,9 @@ export function occupationTooltip(row: OccupiedRow, countryName: (tag: string) =
     ...(v.garrisonAlert ? [{ label: 'Garrison requirement not met.', tone: 'negative' as const }] : []),
   ] };
 }
+
+export const occupiedRevision = (row: OccupiedRow) => [
+  row.value.name, row.value.nameMissing, row.value.owner, row.value.occupier, row.value.resistanceRaw, row.value.complianceRaw,
+  row.value.garrisonRequiredRaw, row.value.garrisonStrengthRaw, row.value.garrisonRed, row.value.garrisonMissing, row.value.law,
+  row.value.lawMissing
+];

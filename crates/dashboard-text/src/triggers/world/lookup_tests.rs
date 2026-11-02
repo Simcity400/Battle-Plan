@@ -180,3 +180,44 @@ fn rows_out_of_country_order_are_scanned_whole() {
         assert!(matches!(world.focus_rows.get(), Some(None)));
     });
 }
+
+#[test]
+fn leader_roles_find_templates_at_the_recorded_first_token_line() {
+    let path = "common/characters/mod.txt";
+    let roles = LeaderRoles::new(
+        installed_content_core::characters::parse_leader_templates(
+            &path.into(),
+            br#"characters = {
+    next = {
+        corps_commander = {}
+    }
+    blank = {
+
+        navy_leader = {}
+    }
+    instanced = {
+        instance = {
+            allowed = {
+                always = yes
+            }
+            field_marshal = {}
+        }
+    }
+}"#,
+        )
+        .unwrap(),
+    );
+    for (line, index) in [(3, 0), (7, 1), (13, 2)] {
+        assert_eq!(
+            roles.by_place.get(&(path.as_bytes().to_vec(), line)),
+            Some(&vec![index])
+        );
+    }
+    for open in [2, 5, 9] {
+        assert!(
+            !roles
+                .by_place
+                .contains_key(&(path.as_bytes().to_vec(), open))
+        );
+    }
+}

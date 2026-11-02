@@ -18,6 +18,9 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+#[path = "support/shader_compiler.rs"]
+mod shader_compiler;
+
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -93,6 +96,7 @@ fn run() -> io::Result<()> {
     std::fs::create_dir(&output)?;
     let local = output.join("local");
     std::fs::create_dir_all(&local)?;
+    let shader_compiler = shader_compiler::configure();
     // Set before any other thread starts: the scratch store lives under it.
     unsafe { std::env::set_var("LOCALAPPDATA", &local) };
     if scopes {
@@ -123,6 +127,7 @@ fn run() -> io::Result<()> {
         .filter(|section| section.error.is_some())
         .collect();
     let report = json!({
+        "shaderCompiler": shader_compiler,
         "recording": recording,
         "columnar": columnar,
         "damage": damage,

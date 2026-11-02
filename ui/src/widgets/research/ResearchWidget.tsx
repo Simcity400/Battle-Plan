@@ -15,7 +15,6 @@ import { VirtualList } from '../../components/VirtualList';
 import { jumpItem, rowJumpProps } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
 import Table from '../../charts/table/Table';
-import { defineCellWidth } from '../../charts/table/cellWidth.ts';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import type { TableColumn } from '../../charts/table/Table';
@@ -62,7 +61,6 @@ function Art({ icon, className }: { icon: string | undefined; className: string 
   return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
-defineCellWidth(Art, ({ className }) => <span className={className} />);
 
 /** Hover and keyboard focus show the same tooltip. */
 function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
@@ -329,7 +327,7 @@ function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort,
     onOpen({ slotIndex: row.slot.index, entry: row.entry }, () => box);
   };
   const body: ReactNode = rows.length
-    ? <Table label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption} narrow={narrow}
+    ? <Table rowRevision={row => [row, columns]} label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption} narrow={narrow}
       {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: (row: ResearchRow) => {
         if (row.kind === 'gap') return row;
         const { slot, ...item } = row;

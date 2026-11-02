@@ -157,7 +157,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   else if (!view) body = <WidgetState kind="unavailable" message="The balance of power was not recorded at this date." />;
   else if (!rows.length) body = match.known(hour) ? <WidgetState kind="empty" icon="sliders" message="No balance of power is active at this date." />
     : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  else body = <Table key={`${track.source.id}:${track.branch.id}`} label="Balances of power" rows={rows} columns={columns} rowKey={rowKey}
+  else body = <Table rowRevision={row => [row, columns]} key={`${track.source.id}:${track.branch.id}`} label="Balances of power" rows={rows} columns={columns} rowKey={rowKey}
     sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
     onRowClick={openRow} menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;

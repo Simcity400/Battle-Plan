@@ -1366,8 +1366,6 @@ pub(super) struct Work {
     pub(super) live: BTreeSet<usize>,
     /// Whether the `live` leaders' careers run on through the frontier, unwritten until sealed.
     pub(super) lazy: bool,
-    /// The roster leaders whose owner or visibility is unknown: coverage holds while none is.
-    pub(super) failing: BTreeSet<usize>,
     /// The leaders read this hour, and those whose formations may bind differently since.
     pub(super) read: Vec<usize>,
     pub(super) relive: BTreeSet<u64>,
@@ -2726,9 +2724,16 @@ fn plan_with(
             }
         }
         for &at in &gone {
+            IdentityChanges::forget(&mut scan.leaders[at]);
             work.roster.forget(at);
             work.registry.remove(at);
-            work.failing.remove(&at);
+            if let Some(index) = scan.withheld_active.remove(&scan.leaders[at].reference) {
+                scan.reply.withheld[index]
+                    .spans
+                    .last_mut()
+                    .expect("an active refusal span")
+                    .last_hour = scan.frontier.expect("a consecutive deletion");
+            }
         }
         for &table in &OWN[1..] {
             if let TableChange::Rows(written, deleted) = changes.table(table) {
@@ -2850,6 +2855,15 @@ fn prepare(scan: &mut Scan, every: bool, leaders: &[usize], gone: &[usize]) {
         return;
     }
     let before = scan.frontier.expect("a consecutive restricted read");
+    for &at in leaders {
+        if let Some(&index) = scan.withheld_active.get(&scan.leaders[at].reference) {
+            scan.reply.withheld[index]
+                .spans
+                .last_mut()
+                .expect("an active refusal span")
+                .last_hour = before;
+        }
+    }
     if let Some(materialized) = scan.materialized {
         if let Some(observed) = scan.reply.observed.last_mut()
             && observed.last_hour == materialized
@@ -2873,6 +2887,7 @@ fn prepare(scan: &mut Scan, every: bool, leaders: &[usize], gone: &[usize]) {
         }
     }
     for &at in gone {
+        scan.withheld_active.remove(&scan.leaders[at].reference);
         if work.live.remove(&at) {
             work.relive.insert(scan.leaders[at].reference);
         }
@@ -2885,11 +2900,19 @@ fn index(scan: &mut Scan, frame: &DecodedFrame, every: bool) {
     let Some(work) = scan.projection.as_mut() else {
         return;
     };
+    let rows = frame.complete::<tables::UnitLeaders>().unwrap_or_default();
     if every {
+        for (&reference, &at) in &work.roster.members {
+            if rows
+                .binary_search_by_key(&u128::from(reference), RowCodec::key)
+                .is_err()
+            {
+                IdentityChanges::forget(&mut scan.leaders[at]);
+            }
+        }
         work.roster.clear();
         work.registry.clear();
     }
-    let rows = frame.complete::<tables::UnitLeaders>().unwrap_or_default();
     let characters = frame.complete::<tables::Characters>().unwrap_or_default();
     let training = frame
         .complete::<tables::UnitLeaderTraitExperience>()
@@ -3201,6 +3224,20 @@ impl Hour {
             let index = scan.leader_indices[&input.leader];
             command(&mut scan.leaders[index], input, &mut scan.pending_bytes);
         }
+        let withheld_offset = scan.reply.withheld.len();
+        let withheld_capacity = scan.reply.withheld.capacity();
+        let withheld_heap = self.scan.withheld_bytes
+            - self.scan.reply.withheld.capacity() * std::mem::size_of::<LeaderWithheld>();
+        scan.reply.withheld.extend(self.scan.reply.withheld);
+        scan.withheld_bytes += (scan.reply.withheld.capacity() - withheld_capacity)
+            * std::mem::size_of::<LeaderWithheld>()
+            + withheld_heap;
+        scan.withheld_active = self
+            .scan
+            .withheld_active
+            .into_iter()
+            .map(|(reference, index)| (reference, index + withheld_offset))
+            .collect();
         for observation in self.scan.reply.observed {
             observe(
                 &mut scan.reply.observed,

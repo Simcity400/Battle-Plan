@@ -430,7 +430,7 @@ function leaderData(): UnitLeadersData {
       firstHour: 110, lastHour: 160, nameReadHour: 110, nameUnknown: [] }],
     battleStarts: [132], battleStartReadHours: [132], unknownBattleStarts: [], battleWon: [true], battleResultHours: [135],
     battleResultReadHours: [135], partialFrom: null }],
-    observed: [{ firstHour: 100, lastHour: 160, leaders: true, landBattles: true, navalBattles: true, landCommands: true, navalCommands: true }],
+    withheld: [], observed: [{ firstHour: 100, lastHour: 160, leaders: true, landBattles: true, navalBattles: true, landCommands: true, navalCommands: true }],
     resultsMissing: '', navyCommandsMissing: '' };
 }
 

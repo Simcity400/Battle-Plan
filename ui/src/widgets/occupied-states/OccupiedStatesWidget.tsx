@@ -1,3 +1,4 @@
+import { occupiedRevision } from './occupiedStatesData.ts';
 import { nameReadText } from '../../dashboard/nameReads.ts';
 import { pendingReplyAt } from '../../dashboard/preparedPrefix';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
@@ -137,7 +138,9 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
     {!current && <p className="occupation-note" role="status">Updating occupied states…</p>}
     {!view.observation.complete && <p className="occupation-note">Some occupied states are missing.</p>}
     {view.selectionUnknown && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}
-    <Table label="Occupied states" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
+    <Table rowRevision={row => [...occupiedRevision(row), options.cellBars, laws.get(row.value.law ?? ''),
+      row.value.owner === null ? null : labelAt(countryHour(row, 'owner', shown))(row.value.owner),
+      row.value.occupier === null ? null : labelAt(countryHour(row, 'occupier', shown))(row.value.occupier)]} label="Occupied states" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
       cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />
   </div>;

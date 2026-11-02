@@ -997,11 +997,18 @@ pub fn prepared_query(
         return Err(dashboard_core::invalid("Unknown casualty branch"));
     }
     let (store, key) = dashboard_base::prepared::files(source, content)?;
-    let (_, catalogue) =
-        series::read_catalogue::<prepared::Catalogue>(&store, &key, "casualty", branch)?
-            .unwrap_or_default();
+    let catalogue =
+        series::read_catalogue::<prepared::Catalogue>(&store, &key, "casualty", branch)?;
     let windows = source.block_windows(branch).to_vec();
-    let available = catalogue.pair_available;
+    if params
+        .window
+        .is_some_and(|ordinal| ordinal >= windows.len())
+    {
+        return Err(dashboard_core::invalid("Unknown casualty window"));
+    }
+    let available = catalogue
+        .as_ref()
+        .is_some_and(|(_, catalogue)| catalogue.pair_available);
     let prefix = |requested: Option<i32>| {
         dashboard_base::prepared::prefix::read_or_empty(
             source,
@@ -1015,7 +1022,6 @@ pub fn prepared_query(
     // While preparation runs, a reply its pages cannot answer yet answers
     // from the prepared prefix, naming the hours after it pending.
     let initial = prefix(None)?;
-    let mut marked = (!initial.coverage.complete && params.window.is_none()).then_some(initial);
     let mut reply = CasualtyPairsReply {
         branch_id: params.branch_id.clone(),
         available,
@@ -1026,10 +1032,13 @@ pub fn prepared_query(
         has_gap: false,
         warnings: Vec::new(),
     };
+    let Some((_, catalogue)) = catalogue else {
+        let mut value = serde_json::to_value(reply)?;
+        initial.mark(&mut value)?;
+        return Ok(value);
+    };
+    let mut marked = (!initial.coverage.complete && params.window.is_none()).then_some(initial);
     if let Some(ordinal) = params.window {
-        if ordinal >= reply.windows.len() {
-            return Err(dashboard_core::invalid("Unknown casualty window"));
-        }
         let section = format!("casualty-pairs-{branch}");
         let window = match series::read_reply::<Window>(&store, &key, &section, ordinal as u64)? {
             Some(window) => window,

@@ -1,3 +1,4 @@
+import { agreementRevision } from './agreementsData.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameReadText, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
@@ -161,7 +162,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const body = !knownAt(data, hour) ? <WidgetState kind="unavailable" message="Lend-lease terms were not recorded." />
     : !rows.length ? listed.unattributed ? <WidgetState kind="unavailable" message={`Some agreements' ${direction === 'sent' ? 'givers' : 'receivers'} were not recorded at this date.`} />
       : <WidgetState kind="empty" icon="link" message={`${subject} ${fallback.length === 1 ? 'has' : 'have'} no ${direction === 'sent' ? 'outgoing' : 'incoming'} lend-lease at this date.`} />
-      : <Table key={`${track.source.id}:${track.branch.id}`} label="Lend-lease agreements" rows={rows} columns={columns} rowKey={rowKey}
+      : <Table rowRevision={row => [...agreementRevision(row), several, direction,
+        ...[row.giver, row.receiver, row.partner].map(tag => tag === null ? null : labelAt(row.at)(tag)),
+        row.items[0]?.variant ? art.get(row.items[0].variant) : null]} key={`${track.source.id}:${track.branch.id}`} label="Lend-lease agreements" rows={rows} columns={columns} rowKey={rowKey}
         sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
         rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} muted={row => row.ended}
         onRowClick={open} menu={menu} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;

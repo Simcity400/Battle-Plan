@@ -257,6 +257,208 @@ fn variant_mutation_between_daily_slots_updates_ordinary_and_prepared_names() {
     );
 }
 
+fn unchanged_naming_witness(frame: &mut DecodedFrame) {
+    use replay_data::rows::{TableRows, VariantChangeRow};
+    frame.hour += 1;
+    frame.metrics.table_ns.fill(0);
+    *frame.tables[TableId::VariantChanges.index()] =
+        TableView::Complete(TableRows::VariantChanges(vec![VariantChangeRow {
+            sequence: frame.hour as u64,
+            hour: frame.hour,
+            variant: 1,
+            flags: Some([1, 1, 1]),
+            ..Default::default()
+        }]));
+}
+
+#[test]
+fn unchanged_naming_witness_matches_across_resume() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let flag = AtomicBool::new(false);
+    let mut frame = naming_frame();
+    let format = observer_format(&frame);
+    let mut state = ProductionAccumulator::new(format.version(), 1, frame.hour);
+    let mut tracker = FrameChangeTracker::new();
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    write_state(&mut writer, &mut state).unwrap();
+    writer.commit().unwrap();
+    let mut resumed = latest_state(&fixture.store, &fixture.key, 1)
+        .unwrap()
+        .unwrap();
+    state.completed.clear();
+    let names = state.classifications.clone();
+    unchanged_naming_witness(&mut frame);
+    // The resumed state holds no countries: both sides take the hour as a fresh observation.
+    tracker.invalidate();
+    let changes = tracker.observe(&frame, format);
+    state
+        .ingest_changed(format, &frame, &flag, &changes)
+        .unwrap();
+    resumed
+        .ingest_changed(format, &frame, &flag, &changes)
+        .unwrap();
+    assert_eq!(state.classifications, names);
+    assert_eq!(resumed.classifications, names);
+    assert_eq!(
+        state.pending.as_ref().unwrap().page,
+        resumed.pending.as_ref().unwrap().page
+    );
+    assert_eq!(state.completed, resumed.completed);
+}
+
+#[test]
+fn a_disappearing_holder_keeps_the_census_date_of_a_design_another_holder_still_selects() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay_data::rows::TableRows;
+    let flag = AtomicBool::new(false);
+    let mut frame = naming_frame();
+    let format = observer_format(&frame);
+    if let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+        &mut *frame.tables[TableId::ProductionLineOutput.index()]
+    {
+        let mut second = rows[0].clone();
+        second.line = 2;
+        second.country = 2;
+        rows.push(second);
+    }
+    let mut state = ProductionAccumulator::new(format.version(), 1, frame.hour);
+    let mut tracker = FrameChangeTracker::new();
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    let census = frame.hour;
+    unchanged_naming_witness(&mut frame);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        rows.retain(|row| row.id != 2);
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.retain(|row| row.id != 2);
+    }
+    if let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+        &mut *frame.tables[TableId::ProductionLineOutput.index()]
+    {
+        rows.retain(|row| row.country != 2);
+    }
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    // Country 2 no longer selects design 1, which country 1 still does: the ledger hour
+    // reads no name, so both keep the census's date.
+    assert_eq!(state.classifications[&1].names[0].first_hour, census);
+    assert_eq!(state.classifications[&2].names[0].first_hour, census);
+    assert!(state.variants.classified.contains(&1));
+}
+
+#[test]
+fn a_selection_change_dates_names_at_the_read_they_came_from() {
+    let name = |first_hour| VariantName {
+        first_hour,
+        raw: Some(1),
+    };
+    let redated = |own: i32, census: Option<i32>, at: i32| {
+        let mut held = BTreeMap::from([(
+            1,
+            Classification {
+                token: "mod_equipment_a".into(),
+                names: vec![name(own)],
+                seen: [false; SEEN],
+            },
+        )]);
+        let (mut moved, mut changed) = (false, Vec::new());
+        let mut classes = ClassEdits {
+            held: &mut held,
+            moved: &mut moved,
+            changed: &mut changed,
+            census,
+        };
+        classes.redate(1, at);
+        (held[&1].names[0].first_hour, moved, changed)
+    };
+    // Unselected at the last census, which still read it: dated by that census.
+    assert_eq!(redated(10, Some(34), 44), (34, true, vec![1]));
+    // Named or renamed after the census: its own read stands, and nothing moves.
+    assert_eq!(redated(40, Some(34), 44), (40, false, Vec::new()));
+    assert_eq!(redated(40, None, 44), (40, false, Vec::new()));
+    // At a census both are that census.
+    assert_eq!(redated(10, Some(44), 44), (44, true, vec![1]));
+}
+
+#[test]
+fn unchanged_naming_witness_restores_forgotten_names_once() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let flag = AtomicBool::new(false);
+    let mut frame = naming_frame();
+    let format = observer_format(&frame);
+    let mut state = ProductionAccumulator::new(format.version(), 1, frame.hour);
+    let mut tracker = FrameChangeTracker::new();
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    let lexical = frame.tables[TableId::LexicalTokens.index()].clone();
+    unchanged_naming_witness(&mut frame);
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "synthetic missing lexical data".into(),
+    };
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    assert!(state.classifications[&1].names[0].raw.is_none());
+    unchanged_naming_witness(&mut frame);
+    frame.tables[TableId::LexicalTokens.index()] = lexical;
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    let restored = state.classifications.clone();
+    assert!(restored[&1].names[0].raw.is_some());
+    assert_eq!(restored[&1].names[0].first_hour, frame.hour);
+    unchanged_naming_witness(&mut frame);
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    assert_eq!(state.classifications, restored);
+}
+
+#[test]
+fn full_inventory_fallback_dates_only_membership_changes() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let flag = AtomicBool::new(false);
+    let frame = naming_frame();
+    let format = observer_format(&frame);
+    let mut state = ProductionAccumulator::new(format.version(), 1, frame.hour);
+    let mut tracker = FrameChangeTracker::new();
+    state
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
+        .unwrap();
+    let names = state.classifications.clone();
+    state.variants.changed.clear();
+    let track = state.result.tags.values_mut().next().unwrap();
+    for _ in 0..4097 {
+        track.edits.note((1, Purpose::New));
+    }
+    track.taken.as_mut().unwrap().1 += 1;
+    state.present(frame.hour + 1, true, false, true);
+    assert_eq!(state.classifications, names);
+    assert!(state.scratch.members.is_empty());
+    let track = state.result.tags.values_mut().next().unwrap();
+    let value = track.current.remove(&(1, Purpose::New)).unwrap();
+    track.current.insert((1, Purpose::Unknown), value);
+    track.taken.as_mut().unwrap().1 += 1;
+    track.edits.replaced();
+    state.present(frame.hour + 2, true, false, true);
+    // The membership change reaches design 1 only, and its names keep the census's date.
+    assert_ne!(state.classifications[&1].seen, names[&1].seen);
+    assert_eq!(state.classifications[&1].names, names[&1].names);
+    assert_eq!(state.classifications[&2], names[&2]);
+}
+
 #[test]
 fn cached_variant_operands_keep_fresh_frame_pages_state_and_publication_across_resume() {
     use crate::prepared::{frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal};
@@ -347,7 +549,7 @@ fn cached_variant_operands_keep_fresh_frame_pages_state_and_publication_across_r
         let changes = tracker.observe(&frame, format);
         for (index, state) in states.iter_mut().enumerate() {
             if index == 1 {
-                state.variants = ProductionVariants::default();
+                state.variants.reads = VariantReads::default();
             }
             state
                 .ingest_changed(format, &frame, &flag, &changes)
@@ -662,6 +864,7 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
             equipment: Some(source(read, amounts)),
             rocket: Some(source(read, Vec::new())),
             rocket_joined: true,
+            absent_since: [None; 2],
         }],
         classifications: BTreeMap::from([
             (1, classified("mod_one")),
@@ -774,6 +977,7 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
             rocket.country_id = index;
             CountryEndpoint {
                 rocket_joined: true,
+                absent_since: [None; 2],
                 tag: format!("M{index:04}"),
                 equipment: Some(equipment),
                 rocket: Some(rocket),
@@ -1272,6 +1476,7 @@ fn expected_holders(index: &read::Index, page: &EndpointPage) -> BTreeMap<u32, f
                         .as_ref()
                         .map(|rocket| source(rocket, page.rocket_read)),
                     rocket_joined: row.rocket_joined,
+                    absent_since: row.absent_since,
                 },
             )
         })
@@ -1306,6 +1511,7 @@ fn published_endpoints_decode_identically_after_two_commits_resume_append_and_re
         }
         if block == 2 {
             current.countries[0].equipment = None;
+            current.countries[0].absent_since[0] = Some(read);
             current.countries[0].rocket_joined = false;
         }
         if block >= 3 {
@@ -1315,6 +1521,7 @@ fn published_endpoints_decode_identically_after_two_commits_resume_append_and_re
             equipment.segment = 2;
             equipment.present = None;
             current.countries[0].rocket = None;
+            current.countries[0].absent_since[1] = Some(72);
             current.countries[0].rocket_joined = false;
         }
         if block == 4 {
@@ -1809,4 +2016,24 @@ fn presentation_inventory_work_follows_changed_holders(count: u32) {
 #[test]
 fn presentation_inventory_carries_keys_and_replaces_only_the_changed_holder() {
     presentation_inventory_work_follows_changed_holders(8);
+}
+
+#[test]
+fn source_absence_continues_through_saved_state_and_resets_on_gap_or_reappearance() {
+    let mut saved = None;
+    let mut head = SourceHead::of(&source(100, Vec::new()));
+    SpendingSource::whole(&mut saved, &mut head, &[], false);
+    SpendingSource::absent(&mut saved, 120, true);
+    assert_eq!(saved.as_ref().unwrap().since, 120);
+    let bytes = serde_json::to_vec(&saved).unwrap();
+    let mut saved: Option<SpendingSource> = serde_json::from_slice(&bytes).unwrap();
+    SpendingSource::absent(&mut saved, 130, true);
+    assert_eq!(saved.as_ref().unwrap().since, 120);
+    SpendingSource::absent(&mut saved, 140, false);
+    assert_eq!(saved.as_ref().unwrap().since, 140);
+    head.spending_since = 150;
+    SpendingSource::whole(&mut saved, &mut head, &[], true);
+    assert_eq!(head.spending_since, 150);
+    SpendingSource::absent(&mut saved, 160, true);
+    assert_eq!(saved.as_ref().unwrap().since, 160);
 }

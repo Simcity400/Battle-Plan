@@ -184,7 +184,7 @@ function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsRe
   if (!reply) return <WidgetState kind="loading" label="Loading reports…" />;
   if (!reply.reports.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="Standing reports in this region were not recorded at this date." />
     : <p className="drill-empty">No standing reports in this region at this date.</p>;
-  return <div className="minefields-reports"><Table label="Standing reports in this region" rows={reply.reports} columns={columns} rowKey={reportKey}
+  return <div className="minefields-reports"><Table rowRevision={row => [row, columns]} label="Standing reports in this region" rows={reply.reports} columns={columns} rowKey={reportKey}
     unsorted sort={{ column: 'ship', direction: 'ascending' }} hoursPerSecond={hoursPerSecond}
     tooltip={row => ({ ...countryNameDetails(country(row.victim), country(row.mineOwner)), title: row.ship ?? 'Ship name unavailable', rows: [
       { label: 'Country', value: country(row.victim).name }, { label: 'Mines of', value: country(row.mineOwner).name },

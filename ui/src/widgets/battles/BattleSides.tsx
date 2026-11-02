@@ -2,7 +2,6 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { BattleSide } from '../../generated/dashboard';
 import { battleFlagCount } from './battleRows';
-import { defineCellWidth } from '../../charts/table/cellWidth.ts';
 import type { BattleCountryLabel, BattleRow, BattleSideSummary } from './battleRows';
 
 function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabel }) {
@@ -67,10 +66,3 @@ export default function BattleSides({ row, country, summary, compact }: {
     {row.sides.slice(1).map((side, index) => <Flags key={index} side={side} country={country} />)}
   </span>;
 }
-
-defineCellWidth(BattleSides, ({ row, summary, compact }) => <span className="battle-sides-summary">
-  <span className="battle-count">{row.sides.map(side => summary.formatCount(side.counts.find(value => value.label === summary.countLabel)
-    ?? { label: summary.countLabel, value: null, unknown: summary.unknown }, compact)).join(` ${summary.separator} `)}</span>
-  {row.sides.map((side, index) => <span key={index} className="battle-flags"><i className="battle-flag-missing" />
-    <span className="battle-flags-more">+{side.countries.length}</span></span>)}
-</span>);

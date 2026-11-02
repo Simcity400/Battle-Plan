@@ -130,7 +130,10 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   if (!rows.length) return <>{groupFailure}<WidgetState kind="unavailable" message="No countries available for this selection." /></>;
   return <div className="scoreboard">{groupFailure}
     <PreparedLogCoverage coverage={preparedPrefix(result.page ?? result.index)?.pending.length ? preparedPrefix(result.page ?? result.index)?.coverage : undefined} />
-    <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
+    <Table rowRevision={row => [shown, labelAt(row.hour)(row.tag), ...shown.flatMap(column => {
+      const cell = row.cells.get(column.key);
+      return [cell?.amount, cell?.atLeast, cell?.readHour !== null, fieldPreparing(result.page, column.key)];
+    })]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
       rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption ? setTableOption : undefined} sortOptionValue={tableSortToken}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
