@@ -49,6 +49,7 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
   type Slot={value?:unknown;deps?:readonly unknown[];cleanup?:()=>void};
   const fixture={cursor:0,slots:[] as Slot[],effects:[] as (()=>void)[],chart:undefined as TimeChartProps|undefined,
     requests:[] as {product:string;params:Record<string,unknown>;signal:AbortSignal}[],pending:[] as {signal:AbortSignal;resolve:(value:unknown)=>void}[]};
+  const reads=(params:Record<string,unknown>)=>fixture.requests.filter(request=>Object.entries(params).every(([key,value])=>JSON.stringify(request.params[key])===JSON.stringify(value)));
   let prepared = false, statuses = 0;
   const statusReplies: (() => void)[] = [];
   const host=globalThis as typeof globalThis & {__partyHook?:(name:string,...args:unknown[])=>unknown;__partyChart?:(props:TimeChartProps)=>void};
@@ -72,6 +73,7 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
     '/dashboard/playback.ts':'export const usePlaybackHour=()=>100;',
     '/charts/TimeChart.tsx':'export default props=>{globalThis.__partyChart(props);return null;};',
     '/charts/Legend.tsx':'export default ()=>null;',
+    '/country-people/CountryPeople.tsx':'export default ()=>null;',
     '/charts/tokens.ts':'export const readTokens=()=>({surface:"#101820"});export const subscribeTokens=()=>()=>{};',
     '/components/ContextMenu.tsx':'export const useContextMenu=()=>({open(){},menu:null});',
   };
@@ -86,7 +88,8 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
     }}]});
   const client={product:()=>{throw new Error('Party history must come from preparation.');},
     preparedQuery:async (_source:unknown,product:string,params:Record<string,unknown>,{signal}:{signal:AbortSignal})=> {
-      fixture.requests.push({product,params,signal});assert.ok(fixture.requests.length <= 19, 'reached party views must not repeat requests');assert.equal(product,'party-history');
+      assert.equal(product,'party-history');fixture.requests.push({product,params,signal});
+      assert.ok(reads(params).length <= (params.tag==='unprepared owner' && prepared ? 2 : 1), 'each party view reads once per accepted coverage');
       if(params.mode==='next')return {hour:102};
       if(params.tag==='departing')return new Promise(resolve=>fixture.pending.push({signal,resolve}));
       const data=reply();data.tag=params.tag as string;
@@ -118,7 +121,8 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
     const render=()=>{fixture.cursor=0;return renderToStaticMarkup(createElement(Widget,props));};
     const commit=async()=>{fixture.effects.splice(0).forEach(run=>run());await new Promise(resolve=>setImmediate(resolve));};
     render();await commit();render();fixture.chart!.onSummaryView!({from:100,to:104,width:200});render();await commit();render();
-    const view=fixture.requests.find(request=>request.params.mode==='summary')!;
+    const views=reads({tag:'opaque / country',mode:'summary'});assert.equal(views.length,1);
+    const view=views[0];
     assert.deepEqual([view.params.from,view.params.to,view.params.width],[100,104,200]);
     const frame=plotFrame(200,200,{left:0,right:0,top:0,bottom:0},[100,104],[0,100],false),tokens={lineWidth:{series:2}} as ChartTokens;
     const path=(draw:(ctx:CanvasRenderingContext2D)=>void)=>{const calls:unknown[][]=[];const ctx=new Proxy({},{get:(_target,key)=>(...args:unknown[])=>calls.push([key,...args]),set:()=>true}) as CanvasRenderingContext2D;draw(ctx);return calls;};
@@ -130,40 +134,60 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
     assert.deepEqual(path(ctx=>fixture.chart!.layers[0].draw(ctx,resized,tokens,{playhead:null})),[],'a departed viewport cannot paint even exact runs');
     assert.deepEqual(preparedPath.filter(call=>call[0]==='moveTo'||call[0]==='lineTo'),plainPath.filter(call=>call[0]==='moveTo'||call[0]==='lineTo'),'exact geometry follows legacy stack paths');
     fixture.chart!.onHover!(101);render();await commit();render();
-    assert.ok(fixture.requests.some(request=>request.params.mode==='events'&&request.params.field==='all'&&request.params.from===101));
+    assert.equal(reads({tag:'opaque / country',mode:'state',hours:[104,101]}).length,1);
+    assert.equal(reads({tag:'opaque / country',mode:'events',field:'all',from:101,to:101}).length,1);
     fixture.chart!.onMarkHover!({firstHour:101,lastHour:101,firstOrdinal:'0',count:'300',tag:'election'});render();await commit();
     assert.match(render(),/Next events/);
+    assert.equal(reads({tag:'opaque / country',mode:'events',field:'election',from:101,to:101,cursor:'0',pageSize:128}).length,1);
     // The widget's shared keyboard pick also reaches the chosen hour's values and events.
     fixture.chart!.onNavigateHour!('ArrowRight',100,[100,104],null);render();await commit();render();assert.equal(fixture.chart!.keyboardHour,102);
+    assert.equal(reads({tag:'opaque / country',mode:'next',navigation:{key:'ArrowRight',from:100,firstHour:100,lastHour:104}}).length,1);
     props.widget.countries={kind:'tags',tags:['departing']};assert.match(render(),/Loading parties/);await commit();
     props.widget.countries={kind:'tags',tags:['next owner']};render();await commit();assert.ok(fixture.pending[0].signal.aborted);
     fixture.pending[0].resolve({coverage:{firstHour:0,lastHour:2000,complete:true},reply:reply(),summaries:[],marks:[],total:'0',cursor:null});await new Promise(resolve=>setImmediate(resolve));
     render();assert.equal(fixture.chart!.label,"Party popularity in next owner");
-    assert.equal(fixture.requests.length,12);
+    const departing=reads({tag:'departing'});
+    assert.equal(reads({tag:'departing',mode:'state',hours:[104,102]}).length,1,'superseded renders share the departing state read');
+    assert.equal(reads({tag:'departing',mode:'events',field:'all',from:102,to:102}).length,1);
+    assert.ok(departing.every(request=>request.signal.aborted),'all departed reads are cancelled');
+    assert.equal(reads({tag:'next owner',mode:'state',hours:[104,102]}).length,1);
+    assert.equal(reads({tag:'next owner',mode:'events',field:'all',from:102,to:102}).length,1);
+    assert.deepEqual(reads({tag:'next owner',mode:'summary'}),[],'a new owner does not inherit the old viewport');
+    assert.deepEqual(reads({tag:'next owner',mode:'events',field:'election'}),[],'a new owner does not inherit the old event page');
     fixture.chart!.onMarkHover!({firstHour:103,lastHour:103,firstOrdinal:'0',count:'300',tag:'election'});render();await commit();
     assert.match(render(),/event cursor did not advance/);
     for (let attempt=0;attempt<3;attempt++) {await commit();assert.match(render(),/event cursor did not advance/);}
     props.active=false;render();await commit();
-    assert.equal(fixture.requests.length,13,'a stalled page is refused without automatic re-requests');
+    const stalled=reads({tag:'next owner',mode:'events',field:'election',from:103,to:103});
+    assert.equal(stalled.length,1,'a stalled page is refused without automatic re-requests');
+    assert.deepEqual([stalled[0].params.cursor,stalled[0].params.pageSize],['0',128]);
     for(const slot of fixture.slots)slot.cleanup?.();fixture.slots=[];fixture.effects=[];
     const {usePreparedParty}=await vite.ssrLoadModule('/ui/src/widgets/ruling-party/preparedParty.ts') as typeof import('./preparedParty');
     const renderHook=()=>{fixture.cursor=0;return usePreparedParty(client as unknown as DashboardClient,props.runtime.tracks[0].source,'1','unprepared owner',104,null,true);};
     renderHook();await commit();let native=renderHook();
     assert.equal(native.data!.parties.length,2,'an unprepared state publishes before its preparation status settles');
+    const partialState={tag:'unprepared owner',mode:'state',hours:[104]};
+    const partialSummary={tag:'unprepared owner',mode:'summary',from:100,to:104,width:2};
+    const partialEvents={tag:'unprepared owner',mode:'events',field:'election',from:100,to:104,cursor:'0',pageSize:128};
+    assert.equal(reads(partialState).length,1);
     native.onSummaryView({from:100,to:104,width:2});renderHook();await commit();native=renderHook();
     assert.equal(native.error,undefined);
     assert.deepEqual(native.summary!.coverage,{firstHour:0,lastHour:99,complete:false});
     assert.deepEqual(native.summary!.summaries[0].summary.approximate,[{firstHour:100,lastHour:104}]);
     assert.deepEqual(summaryStack(native.summary!.summaries.map(line=>line.summary)).approximate,[{firstHour:100,lastHour:104}], 'the hook preserves spans for the one shared stack/drawing path');
-    assert.equal(fixture.requests.length,15,'two partial view requests publish immediately without a cache or retry loop');
+    assert.equal(reads(partialState).length,1,'the partial state waits for accepted coverage without rereading');
+    assert.equal(reads(partialSummary).length,1,'the partial summary publishes once without a retry loop');
+    assert.deepEqual(reads({tag:'unprepared owner',mode:'events'}),[],'unreached event pages are not requested');
     native.onMarkHover({firstHour:100,lastHour:104,firstOrdinal:'0',count:'1',tag:'election'});renderHook();await commit();native=renderHook();
     const {default:EventList}=await vite.ssrLoadModule('/ui/src/widgets/ruling-party/PartyEventList.tsx') as typeof import('./PartyEventList');
     const log=renderToStaticMarkup(createElement(EventList,{prepared:native,badges:[]}));
     assert.equal((log.match(/still being prepared/g) ?? []).length,1,'a reached empty page uses the shared prepared-range note');
+    assert.equal(reads(partialEvents).length,1,'the reached partial event page publishes once');
     prepared=true;statusReplies.splice(0).forEach(resolve=>resolve());await new Promise(resolve=>setImmediate(resolve));native=renderHook();
     assert.equal(native.summary!.coverage!.complete,true);
     assert.deepEqual(native.summary!.summaries[0].summary.approximate,[]);
-    assert.equal(fixture.requests.length,19,'state, summary and the reached event page each reread once when accepted coverage advances');
+    for(const params of [partialState,partialSummary,partialEvents])
+      assert.equal(reads(params).length,2,`${params.mode} rereads once when accepted coverage advances`);
     assert.equal(native.events!.coverage!.complete,true);
     assert.equal(statuses,3);
   } finally {for(const slot of fixture.slots)slot.cleanup?.();await vite.close();delete host.__partyHook;delete host.__partyChart;}
