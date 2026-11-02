@@ -5,12 +5,13 @@ use dashboard_base::prepared::{
     frame_changes::FrameChanges,
     series::{self, Accumulator, Reader},
 };
-use dashboard_base::products::country_groups;
 use dashboard_text::metadata::check_cancel;
-mod newest;
 
+/// The espionage log's reply from its publication through `covered`, the last hour its
+/// coverage accepts (none before any), or all of it once `complete`: a day it does not cover
+/// yet, and the manifest's operations past it, are left to its pending coverage.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn first_view(
+pub(crate) fn reply(
     source: &Source,
     context: &LoadContext,
     store: &store::Store,
@@ -29,6 +30,14 @@ pub(crate) fn first_view(
         .first_hour;
     let last = windows.last().expect("branch windows").last_hour;
     let days = metadata_windows(first, last);
+    let empty = || {
+        Builder::new(source.replay_ref()).reply(
+            branch.to_string(),
+            first,
+            last,
+            source.replay_ref().format.version(),
+        )
+    };
     if let Some(index) = params.window {
         let day = days
             .get(index)
@@ -39,53 +48,13 @@ pub(crate) fn first_view(
             )?)
             .map_err(Into::into);
         }
-        if index + 1 == days.len()
-            && let Some(reply) = newest::reply(source, branch, context, cancelled)?
-        {
-            let mut data = serde_json::to_value(reply)?;
-            data["warningsComplete"] = serde_json::Value::Bool(false);
-            data["exact"] = serde_json::Value::from(day.first_hour);
-            return Ok(data);
-        }
-        let raw = Builder::new(source.replay_ref()).reply(
-            branch.to_string(),
-            first,
-            last,
-            source.replay_ref().format.version(),
-        );
-        return serde_json::to_value(metadata_window(&raw, Some(index))?).map_err(Into::into);
+        return serde_json::to_value(metadata_window(&empty(), Some(index))?).map_err(Into::into);
     }
-    let mut reply =
-        query(source, context, store, key, branch, params, cancelled)?.unwrap_or_else(|| {
-            Builder::new(source.replay_ref()).reply(
-                branch.to_string(),
-                first,
-                last,
-                source.replay_ref().format.version(),
-            )
-        });
+    let mut reply = query(source, context, store, key, branch, params, cancelled)?
+        .unwrap_or_else(empty);
     reply.first_hour = first;
     reply.last_hour = last;
     reply.windows = days;
-    if !complete && let Some(newest) = newest::reply(source, branch, context, cancelled)? {
-        reply.available.extend(newest.available);
-        reply
-            .completions_available
-            .extend(newest.completions_available);
-        for spans in [&mut reply.available, &mut reply.completions_available] {
-            let mut ordered = std::mem::take(spans);
-            ordered.sort_unstable_by_key(|span| span.first_hour);
-            for span in ordered {
-                country_groups::mark_unobserved(spans, span.first_hour, span.last_hour);
-            }
-        }
-        for kind in newest.types {
-            if !reply.types.iter().any(|old| old.key == kind.key) {
-                reply.types.push(kind);
-            }
-        }
-        reply.unavailable = None;
-    }
     serde_json::to_value(reply).map_err(Into::into)
 }
 
@@ -608,22 +577,12 @@ impl Prepared {
             spans.drain(..keep);
         }
     }
+    /// Finishes replay block `ordinal` once its hours are observed: its days are rendered and
+    /// written, with the earlier days a late ending repaired, into `writer`.
     pub fn finish_block(
         &mut self,
         source: &Source,
         writer: &mut store::Writer,
-        branch: u64,
-        ordinal: usize,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.finish_block_into(source, writer, branch, ordinal, cancelled)
-    }
-    /// [`Self::finish_block`], reading and writing the block's day pages
-    /// through `pages`.
-    pub(crate) fn finish_block_into(
-        &mut self,
-        source: &Source,
-        pages: &mut impl DayPages,
         branch: u64,
         ordinal: usize,
         cancelled: &AtomicBool,
@@ -658,11 +617,26 @@ impl Prepared {
                     .map_err(|_| dashboard_core::invalid("Espionage block overflow"))?,
             )
             .or_default();
-        self.repair(source, pages, branch, cancelled)?;
+        self.publish_days(source, writer, branch, cancelled)
+    }
+    /// Writes every day the observed hours complete, with the earlier days a late ending
+    /// repaired, into `writer`: a flush partway through a block publishes the days its coverage
+    /// reaches. The next hour would render the same days first.
+    pub fn publish_days(
+        &mut self,
+        source: &Source,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if let Some(last) = self.last {
+            self.advance(source, branch, i64::from(last), cancelled)?;
+        }
+        self.repair(source, writer, branch, cancelled)?;
         for (ordinal, replies) in std::mem::take(&mut self.replies) {
             check_cancel(cancelled)?;
             let section = format!("espionage-log-{branch}-windows");
-            let mut saved = pages.read(&section, ordinal)?.unwrap_or_default();
+            let mut saved = day_pages(writer, &section, ordinal)?.unwrap_or_default();
             for reply in replies {
                 let window = reply.window.expect("espionage day reply");
                 match saved.binary_search_by_key(&window, |reply| {
@@ -672,7 +646,7 @@ impl Prepared {
                     Err(index) => saved.insert(index, reply),
                 }
             }
-            pages.write(&section, ordinal, saved)?;
+            series::write_reply(writer, &section, ordinal, &saved)?;
         }
         self.reply_bytes = 0;
         Ok(())
@@ -680,7 +654,7 @@ impl Prepared {
     fn repair(
         &mut self,
         source: &Source,
-        pages: &mut impl DayPages,
+        writer: &mut store::Writer,
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -704,7 +678,7 @@ impl Prepared {
                     .saturating_sub(1) as u64;
                 if loaded.insert(ordinal) {
                     let section = format!("espionage-log-{branch}-windows");
-                    if let Some(mut saved) = pages.read(&section, ordinal)? {
+                    if let Some(mut saved) = day_pages(writer, &section, ordinal)? {
                         saved.extend(self.replies.remove(&ordinal).unwrap_or_default());
                         self.replies.insert(ordinal, saved);
                     }
@@ -847,111 +821,17 @@ impl Prepared {
     }
 }
 
-/// Where a finished block's day pages are read and written. Hourly
-/// preparation reads and writes them through the store writer as each block
-/// finishes; the intelligence family prepared on its own finishes its blocks
-/// without a writer, so it stages them until its next commit ([`StagedPages`]).
-pub(crate) trait DayPages {
-    /// The pages of `section`'s range `ordinal` as they stand.
-    fn read(&mut self, section: &str, ordinal: u64) -> io::Result<Option<Vec<EspionageLogReply>>>;
-    /// Replace that range's pages.
-    fn write(
-        &mut self,
-        section: &str,
-        ordinal: u64,
-        pages: Vec<EspionageLogReply>,
-    ) -> io::Result<()>;
-}
-
-impl DayPages for store::Writer {
-    fn read(&mut self, section: &str, ordinal: u64) -> io::Result<Option<Vec<EspionageLogReply>>> {
-        match self.read_at(section, ordinal)? {
-            Some(file) => Ok(Some(serde_json::from_reader(zstd::stream::Decoder::new(
-                file,
-            )?)?)),
-            None => Ok(None),
-        }
-    }
-
-    fn write(
-        &mut self,
-        section: &str,
-        ordinal: u64,
-        pages: Vec<EspionageLogReply>,
-    ) -> io::Result<()> {
-        series::write_reply(self, section, ordinal, &pages)
-    }
-}
-
-/// Day pages finished since the family's last commit, by section and range,
-/// and their serialized size against its batch budget. Each range holds the
-/// pages its latest finishing block left, as the store writer would.
-#[derive(Default)]
-pub(crate) struct StagedPages {
-    pages: BTreeMap<(String, u64), Vec<EspionageLogReply>>,
-    bytes: usize,
-}
-
-impl StagedPages {
-    /// Serialized bytes staged since the last flush.
-    pub(crate) fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    /// The staged pages over the committed store: a range staged since the
-    /// last flush reads as staged, any other as `key` last committed it.
-    pub(crate) fn through<'a>(
-        &'a mut self,
-        store: &'a store::Store,
-        key: &'a store::SourceKey,
-    ) -> impl DayPages + 'a {
-        ThroughStore {
-            staged: self,
-            store,
-            key,
-        }
-    }
-
-    /// Write every staged range, in range order (so each section's ranges
-    /// are appended in turn), with the bytes the store writer would have
-    /// been given as each block finished.
-    pub(crate) fn write(&mut self, writer: &mut store::Writer) -> io::Result<()> {
-        for ((section, ordinal), pages) in std::mem::take(&mut self.pages) {
-            series::write_reply(writer, &section, ordinal, &pages)?;
-        }
-        self.bytes = 0;
-        Ok(())
-    }
-}
-
-struct ThroughStore<'a> {
-    staged: &'a mut StagedPages,
-    store: &'a store::Store,
-    key: &'a store::SourceKey,
-}
-
-impl DayPages for ThroughStore<'_> {
-    fn read(&mut self, section: &str, ordinal: u64) -> io::Result<Option<Vec<EspionageLogReply>>> {
-        if let Some(pages) = self.staged.pages.get(&(section.to_owned(), ordinal)) {
-            return Ok(Some(pages.clone()));
-        }
-        series::read_reply(self.store, self.key, section, ordinal)
-    }
-
-    fn write(
-        &mut self,
-        section: &str,
-        ordinal: u64,
-        pages: Vec<EspionageLogReply>,
-    ) -> io::Result<()> {
-        self.staged.bytes = self
-            .staged
-            .bytes
-            .saturating_add(serde_json::to_vec(&pages)?.len());
-        self.staged
-            .pages
-            .insert((section.to_owned(), ordinal), pages);
-        Ok(())
+/// The day pages of `section`'s range `ordinal` as `writer` holds them.
+fn day_pages(
+    writer: &mut store::Writer,
+    section: &str,
+    ordinal: u64,
+) -> io::Result<Option<Vec<EspionageLogReply>>> {
+    match writer.read_at(section, ordinal)? {
+        Some(file) => Ok(Some(serde_json::from_reader(zstd::stream::Decoder::new(
+            file,
+        )?)?)),
+        None => Ok(None),
     }
 }
 

@@ -282,6 +282,30 @@ fn source(inputs: &[DecodedFrame]) -> Source {
     source
 }
 
+/// Branch 1 of a replay holding `inputs` in as few blocks as it records them in.
+fn one_block(inputs: &[DecodedFrame]) -> Source {
+    let replay = Replay::from_records(
+        dashboard_base::test_fixtures::CAMPAIGN.into(),
+        &[dashboard_base::test_fixtures::records(1, inputs.to_vec())],
+    )
+    .unwrap();
+    let source = Source::from_replay(
+        dashboard_base::source::SourceKey {
+            source_id: "columnar-divisions-block".into(),
+            revision: "1".into(),
+        },
+        "columnar-divisions-block.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(
+        super::super::windows(source.replay_ref(), 1).len() < inputs.len(),
+        "a block holds several hours"
+    );
+    source
+}
+
 /// Every division log section `scan` publishes, one block per hour of `source`, and the
 /// events it kept, with the presentations their names are drawn from.
 fn published(
@@ -305,6 +329,68 @@ fn published(
         fixture.payloads(),
         serde_json::to_value(&scan.events).unwrap(),
     )
+}
+
+/// Every division log section the native emit publishes, keeping `hours` of `source` and saved
+/// and taken up again after every hour.
+fn emitted(
+    source: &Source,
+    hours: Vec<Hour>,
+) -> dashboard_base::prepared::series::tests::PublishedPayloads {
+    use crate::products::division_log::emit::Emit;
+    let (flag, context) = (AtomicBool::new(false), LoadContext { content: None });
+    let fixture = Fixture::new();
+    let replay = source.replay_ref();
+    let names = || crate::products::division_log::names_content(source, &context);
+    let mut emit = Emit::new(replay, 1, names());
+    for hour in hours {
+        let mut writer = fixture.writer();
+        emit.observe(source, &mut writer, hour, &flag).unwrap();
+        writer.commit().unwrap();
+        emit = Emit::load(replay, 1, replay.format, names(), &emit.save().unwrap()).unwrap();
+    }
+    fixture.payloads()
+}
+
+/// The totals the emit publishes over `hours` of one replay block of `source`, flushed, saved
+/// and taken up again after every hour: through each, as the row path counts them.
+fn totals_through_every_flush(source: &Source, hours: Vec<Hour>) {
+    use crate::products::division_log::{DivisionLogTotals, DivisionLogTotalsParams, emit::Emit};
+    use crate::products::land_battles::LandBattleCountryFilter;
+    let (flag, context) = (AtomicBool::new(false), LoadContext { content: None });
+    let fixture = Fixture::new();
+    let replay = source.replay_ref();
+    let names = || crate::products::division_log::names_content(source, &context);
+    let first = hours.first().expect("an hour").hour;
+    let mut emit = Emit::new(replay, 1, names());
+    for hour in hours {
+        let at = hour.hour;
+        let mut writer = fixture.writer();
+        emit.observe(source, &mut writer, hour, &flag).unwrap();
+        emit.flush(source, &mut writer, None, &flag).unwrap();
+        writer.commit().unwrap();
+        emit = Emit::load(replay, 1, replay.format, names(), &emit.save().unwrap()).unwrap();
+        let params = DivisionLogTotalsParams {
+            branch_id: "1".into(),
+            first_hour: first,
+            last_hour: at,
+            countries: LandBattleCountryFilter {
+                tags: None,
+                membership: None,
+                unobserved: Vec::new(),
+            },
+            templates: None,
+        };
+        let published =
+            super::super::prepared::totals(&params, &fixture.store, &fixture.key, 1, &flag)
+                .unwrap();
+        let counted = DivisionLogTotals::load(source, &params, &context, &flag).unwrap();
+        assert_eq!(
+            serde_json::to_value(published).unwrap(),
+            serde_json::to_value(counted).unwrap(),
+            "totals through hour {at}"
+        );
+    }
 }
 
 /// `runs` of branch 1 prepared by the row path and by segment walks restarting before every
@@ -426,6 +512,15 @@ fn parity(runs: &[Vec<DecodedFrame>]) {
             projected.extend(hours);
         }
         assert_eq!(projected.len(), inputs.len(), "restart at hour {split}");
+        if split == 0 {
+            let copy: Vec<Hour> =
+                serde_json::from_value(serde_json::to_value(&projected).unwrap()).unwrap();
+            let (expected, _) = row(0);
+            assert_payloads_equal(&emitted(&source, copy), &expected, "the native emit");
+            let again: Vec<Hour> =
+                serde_json::from_value(serde_json::to_value(&projected).unwrap()).unwrap();
+            totals_through_every_flush(&one_block(&inputs), again);
+        }
         let mut projected = projected.into_iter();
         let (actual, kept) = published(&source, |scan, _| {
             scan.observe_projected(projected.next().expect("a projected hour"))

@@ -25,7 +25,9 @@ use installed_content_raids::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
-use replay_data::{rows::RaidRow, rows::RaidScope, rows::TableId, rows::tables};
+use replay_data::{
+    rows::RaidRow, rows::RaidScope, rows::RaidTargetRow, rows::TableId, rows::tables,
+};
 use replay_frame::frame::DecodedFrame;
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
@@ -33,7 +35,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::{collections::VecDeque, sync::atomic::Ordering};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -41,8 +43,15 @@ use ts_rs::TS;
 
 pub struct Raids;
 
-pub mod kept;
-pub mod prepared;
+/// The warning a branch with an ended victim gives.
+const ENDED_VICTIMS: &str = "Ended victims use the target controller at each raid's first ended read. The saved completion-time country is not recorded, so control changes before that read are unknown.";
+
+#[cfg(test)]
+mod columnar_tests;
+pub mod emit;
+pub mod query;
+pub mod segment;
+mod served;
 
 #[cfg(any(test, feature = "test-support"))]
 const CACHED_BRANCHES: usize = 4;
@@ -502,6 +511,51 @@ fn present_log(
     dashboard_base::products::check_reply_budget(&*reply)
 }
 
+/// A target's icon operands, or why it has none: with content only, its raid type's base sprite
+/// specialised by its building's template.
+fn target_icon(
+    content: Option<&Content>,
+    token: Option<&str>,
+    lexical: Option<&[replay_data::rows::LexicalTokenRow]>,
+    target: &RaidTargetRow,
+) -> (Option<RaidIconChoice>, Option<String>) {
+    let Some(content) = content else {
+        return (None, None);
+    };
+    if !token.is_some_and(|token| content.raids.get(token).is_some()) {
+        return (
+            None,
+            Some(format!(
+                "raid type {} is unavailable or refused",
+                token.unwrap_or("unknown")
+            )),
+        );
+    }
+    let template = lexical
+        .and_then(|rows| {
+            rows.binary_search_by_key(&target.scope.building_type, |r| r.token)
+                .ok()
+                .map(|at| &rows[at])
+        })
+        .and_then(|row| std::str::from_utf8(&row.literal).ok());
+    if target.scope.building_type != 0 && template.is_none() {
+        (
+            None,
+            Some(format!(
+                "raid target building token {} is not recorded",
+                target.scope.building_type
+            )),
+        )
+    } else {
+        (
+            Some(RaidIconChoice {
+                template: template.map(str::to_owned),
+            }),
+            None,
+        )
+    }
+}
+
 fn target_name(
     frame: &DecodedFrame,
     scope: &RaidScope,
@@ -602,9 +656,47 @@ struct Scan {
     parents_changed: bool,
     #[serde(skip)]
     changed_tallies: BTreeSet<String>,
+    /// Each live raid's target facts as a read derived them, while nothing they read changed.
+    #[serde(skip)]
+    targets: HashMap<(u32, u32), TargetFacts>,
+    /// Each phase and outcome label the content gave, and what localising it refused.
+    #[serde(skip)]
+    labels: HashMap<&'static str, (Option<String>, catalogue::OwnRefusals)>,
+    /// The content the labels were given by.
+    #[serde(skip)]
+    labelled: Option<usize>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+}
+
+/// What a raid's target gives its runs, derived from the target row and the tables it reaches:
+/// its state, its country (once asked), its name and icon (with content).
+struct TargetFacts {
+    target: RaidTargetRow,
+    state: Result<Option<u32>, String>,
+    country: Option<Result<Option<u32>, String>>,
+    name: Option<Result<String, String>>,
+    icon: (Option<RaidIconChoice>, Option<String>),
+}
+
+/// Whether two runs hold the same facts, whatever their hours.
+fn same_facts(a: &RaidRun, b: &RaidRun) -> bool {
+    a.raider == b.raider
+        && a.victim == b.victim
+        && a.raid_type == b.raid_type
+        && a.province == b.province
+        && a.state == b.state
+        && a.target_name == b.target_name
+        && a.icon == b.icon
+        && a.icon_choice == b.icon_choice
+        && a.icon_missing == b.icon_missing
+        && a.phase == b.phase
+        && a.phase_name == b.phase_name
+        && a.outcome == b.outcome
+        && a.outcome_name == b.outcome_name
+        && a.launched == b.launched
+        && a.succeeded == b.succeeded
 }
 
 impl Default for Scan {
@@ -640,6 +732,9 @@ impl Scan {
             parent_tags: BTreeMap::new(),
             parents_changed: false,
             changed_tallies: BTreeSet::new(),
+            targets: HashMap::new(),
+            labels: HashMap::new(),
+            labelled: None,
             #[cfg(test)]
             work: Default::default(),
         }
@@ -704,6 +799,11 @@ impl Scan {
         let hour = frame.hour;
         self.parents_changed = false;
         self.changed_tallies.clear();
+        let labelled = content.map(|content| std::ptr::from_ref(content) as usize);
+        if self.labelled != labelled {
+            self.labels.clear();
+            self.labelled = labelled;
+        }
         let continuous = self.last_frame.is_some_and(|(branch, last)| {
             branch == frame.branch && last.checked_add(1) == Some(hour)
         });
@@ -789,6 +889,24 @@ impl Scan {
                 self.by_slot.insert(slot, tag.clone());
             }
             self.identity_ready = true;
+        }
+        // A target's facts read these tables and the identities, at every hour they change,
+        // read or not; the walk's oracle, given no change facts, derives them at every hour.
+        if identity_changed
+            || changes.is_none_or(|changes| {
+                [
+                    TableId::RaidTargets,
+                    TableId::LexicalTokens,
+                    TableId::Provinces,
+                    TableId::States,
+                    TableId::CountryAppearance,
+                    TableId::ReservedCountryNaming,
+                ]
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+            })
+        {
+            self.targets.clear();
         }
         self.presence_through = Some(hour);
         if !changes.map_or_else(
@@ -953,59 +1071,61 @@ impl Scan {
                 } else {
                     None
                 };
-                match target_state(frame, &target.scope) {
-                    Ok(value) => state = value,
-                    Err(reason) => self.refusals.note(reason, &id),
+                let facts = match self.targets.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(held)
+                        if held.get().target == *target =>
+                    {
+                        held.into_mut()
+                    }
+                    entry => {
+                        let name = content.map(|content| {
+                            #[cfg(test)]
+                            {
+                                self.work.interpreter_calls += 1;
+                            }
+                            target_name(frame, &target.scope, content)
+                        });
+                        let facts = TargetFacts {
+                            target: target.clone(),
+                            state: target_state(frame, &target.scope),
+                            country: None,
+                            name,
+                            icon: target_icon(content, token.as_deref(), lexical, target),
+                        };
+                        match entry {
+                            std::collections::hash_map::Entry::Occupied(mut held) => {
+                                held.insert(facts);
+                                held.into_mut()
+                            }
+                            std::collections::hash_map::Entry::Vacant(free) => free.insert(facts),
+                        }
+                    }
+                };
+                match &facts.state {
+                    Ok(value) => state = *value,
+                    Err(reason) => self.refusals.note(reason.clone(), &id),
                 }
                 if row.phase != native::PHASE_ENDED || !self.ended_victims.contains_key(&key) {
-                    match target_country(frame, &target.scope) {
-                        Ok(Some(raw)) => match self.tags.get(raw) {
+                    let country = facts
+                        .country
+                        .get_or_insert_with(|| target_country(frame, &target.scope));
+                    match country {
+                        Ok(Some(raw)) => match self.tags.get(*raw) {
                             Some(tag) => victim = Some(tag.clone()),
                             None => self
                                 .refusals
                                 .note(format!("raid target country {raw} is unresolved"), &id),
                         },
                         Ok(None) => {}
-                        Err(reason) => self.refusals.note(reason, &id),
+                        Err(reason) => self.refusals.note(reason.clone(), &id),
                     }
                 }
-                if let Some(content) = content {
-                    #[cfg(test)]
-                    {
-                        self.work.interpreter_calls += 1;
-                    }
-                    match target_name(frame, &target.scope, content) {
-                        Ok(text) => name = Some(text),
-                        Err(reason) => self.refusals.note(reason, &id),
-                    }
-                    if token
-                        .as_ref()
-                        .is_some_and(|token| content.raids.get(token).is_some())
-                    {
-                        let template = lexical
-                            .and_then(|rows| {
-                                rows.binary_search_by_key(&target.scope.building_type, |r| r.token)
-                                    .ok()
-                                    .map(|at| &rows[at])
-                            })
-                            .and_then(|row| std::str::from_utf8(&row.literal).ok());
-                        if target.scope.building_type != 0 && template.is_none() {
-                            icon_missing = Some(format!(
-                                "raid target building token {} is not recorded",
-                                target.scope.building_type
-                            ));
-                        } else {
-                            icon_choice = Some(RaidIconChoice {
-                                template: template.map(str::to_owned),
-                            });
-                        }
-                    } else {
-                        icon_missing = Some(format!(
-                            "raid type {} is unavailable or refused",
-                            token.as_deref().unwrap_or("unknown")
-                        ));
-                    }
+                match &facts.name {
+                    Some(Ok(text)) => name = Some(text.clone()),
+                    Some(Err(reason)) => self.refusals.note(reason.clone(), &id),
+                    None => {}
                 }
+                (icon_choice, icon_missing) = facts.icon.clone();
             }
             // Ending saves the victim. Feedback renders its flag from the saved
             // positive country first, else the live scope resolver. This format lacks
@@ -1056,11 +1176,14 @@ impl Scan {
                 }
             }
             let noted = &mut self.result.noted;
-            let mut localise = |key| {
+            let labels = &mut self.labels;
+            let mut localise = |key: &'static str| {
                 content.and_then(|c| {
-                    let (label, own) = catalogue::capture(|| localised_label(&c.catalogue, key));
-                    noted.merge(&own);
-                    label
+                    let (label, own) = labels.entry(key).or_insert_with(|| {
+                        catalogue::capture(|| localised_label(&c.catalogue, key))
+                    });
+                    noted.merge(own);
+                    label.clone()
                 })
             };
             if !(0..=native::PHASE_ENDED).contains(&row.phase) {
@@ -1137,11 +1260,7 @@ impl Scan {
             // dates unchanged successful reads. Country looks use hovered hour.
             if let Some(last) = runs.last_mut()
                 && last.last_hour.checked_add(1) == Some(hour)
-                && (RaidRun {
-                    first_hour: run.first_hour,
-                    last_hour: run.last_hour,
-                    ..last.clone()
-                }) == run
+                && same_facts(last, &run)
             {
                 last.last_hour = hour;
             } else {
@@ -1197,7 +1316,7 @@ impl Scan {
             .warnings
             .extend(self.refusals.lines("raid facts"));
         if !self.ended_victims.is_empty() {
-            self.result.warnings.push("Ended victims use the target controller at each raid's first ended read. The saved completion-time country is not recorded, so control changes before that read are unknown.".into());
+            self.result.warnings.push(ENDED_VICTIMS.into());
         }
         self.result
     }
@@ -1682,6 +1801,7 @@ fn reply(
 impl Product for Raids {
     const KEY: &'static str = "raids";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = RaidsParams;
     type Reply = RaidsReply;
     fn types() -> Vec<String> {

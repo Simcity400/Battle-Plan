@@ -15,7 +15,10 @@ use replay_data::{
     scope::CaptureMode,
 };
 use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
-use std::{cell::RefCell, io};
+use std::{
+    io,
+    sync::{Mutex, PoisonError},
+};
 
 mod changes;
 mod countries;
@@ -166,7 +169,8 @@ pub struct World {
     owners: Option<Owners>,
     divisions: Option<Divisions>,
     naming: Option<Naming>,
-    frame: RefCell<frame::Frame>,
+    /// Asked by the walk's operators on whichever workers run them.
+    frame: Mutex<frame::Frame>,
     /// How [`Self::identity`] asks for its tables.
     identity: Vec<(TableId, Hold)>,
 }
@@ -202,7 +206,7 @@ impl World {
                 .then(|| Divisions::new(format))
                 .transpose()?,
             naming: needs.naming.then(|| Naming::new(format)).transpose()?,
-            frame: RefCell::new(frame::Frame::new(&needs.frame, format, mode)?),
+            frame: Mutex::new(frame::Frame::new(&needs.frame, format, mode)?),
             identity: identity()?,
         })
     }
@@ -313,7 +317,10 @@ impl World {
         frame.branch = self.branch;
         frame.hour = self.hour;
         frame.metrics.clone_from(&self.metrics);
-        self.frame.borrow_mut().frame(state, asks, self.hour, frame)
+        self.frame
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .frame(state, asks, self.hour, frame)
     }
 
     /// The frame of the countries' identity tables ([`IDENTITY`]), as [`identity`] holds them.
@@ -386,6 +393,9 @@ impl segments::World for World {
         if let (Some(naming), Some(roster)) = (&mut self.naming, &self.countries) {
             naming.hour(state, &facts, roster)?;
         }
-        self.frame.get_mut().note(state, manifest, &facts)
+        self.frame
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .note(state, manifest, &facts)
     }
 }

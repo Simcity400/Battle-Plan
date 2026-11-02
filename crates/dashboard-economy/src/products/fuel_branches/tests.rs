@@ -1,6 +1,9 @@
-use super::*;
+//! The row census's own scenarios ([`super::row`]), the oracle the columnar path is held to.
+use super::{row::{Prepared, reply}, *};
 use crate::products::{keyed::EconomyRun, test_support::*};
 use replay_data::rows::*;
+use replay_frame::frame::DecodedFrame;
+use std::sync::atomic::AtomicBool;
 
 fn consumer(country: u32, index: u32, requested: i64, received: i64) -> CountryFuelConsumerRow {
     CountryFuelConsumerRow {
@@ -27,7 +30,7 @@ fn ask(state: &mut Prepared, tags: &[&str], through: i32) -> FuelBranchesReply {
     let mut writer = fixture.writer();
     state.flush(&mut writer, 1, &flag).unwrap();
     writer.commit().unwrap();
-    query(
+    reply(
         &fixture.store,
         &fixture.key,
         &FuelBranchesParams {

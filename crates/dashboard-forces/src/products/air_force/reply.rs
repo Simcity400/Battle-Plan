@@ -63,6 +63,11 @@ fn equipment_part(
     }
 }
 
+/// The part key a recorded "variant/token" part's planes count under, as replies name it.
+pub(super) fn part_key(raw: &str, units: Option<&installed_content_core::equipment::Database>) -> String {
+    equipment_part(raw, units, &|_: &str| None, &mut BTreeSet::new()).key
+}
+
 fn wing_part(keys: &[String], parts: &BTreeMap<String, AirForcePart>) -> AirForcePart {
     let resolved: BTreeMap<_, _> = keys
         .iter()

@@ -1,4 +1,4 @@
-use super::prepared::Prepared;
+use super::harness::{Fixture, Walked};
 use super::*;
 use dashboard_base::{
     Source, SourceKey,
@@ -6,7 +6,6 @@ use dashboard_base::{
         coverage::{Coverage, SCHEMA},
         frame_changes::FrameChanges,
         prefix::Prefix,
-        series::tests::Fixture,
     },
     test_fixtures as fixtures,
 };
@@ -101,7 +100,7 @@ fn source(frames: Vec<DecodedFrame>) -> Source {
     )
     .unwrap()
 }
-fn observe(state: &mut Prepared, source: &Source, frame: &DecodedFrame) {
+fn observe(state: &mut Walked, source: &Source, frame: &DecodedFrame) {
     state
         .observe(
             source,
@@ -112,13 +111,8 @@ fn observe(state: &mut Prepared, source: &Source, frame: &DecodedFrame) {
         )
         .unwrap();
 }
-fn publish(state: &mut Prepared, files: &Fixture) {
-    let mut writer = files.writer();
-    state
-        .flush(&mut writer, 1, &AtomicBool::new(false))
-        .unwrap();
-    state.save(&mut writer, 1).unwrap();
-    writer.commit().unwrap();
+fn publish(state: &mut Walked, files: &Fixture) {
+    files.publish(state);
 }
 fn reply(
     source: &Source,
@@ -138,16 +132,15 @@ fn reply(
         },
         None,
     );
-    prepared::query(
-        source,
-        &params,
-        &LoadContext { content: None },
-        &files.store,
-        &files.key,
-        prefix,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
+    files
+        .reply(
+            source,
+            &params,
+            &LoadContext { content: None },
+            prefix,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
 }
 fn influence(source: &Source, files: &Fixture, faction: &str, last: i32) -> FactionInfluenceReply {
     match reply(
@@ -174,7 +167,7 @@ fn faction_influence_matches_existing_detail_and_preserves_native_zero_denominat
         rows[0].influence_denominator_raw = 0;
     }
     let source = source(vec![first.clone(), second.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &first);
     observe(&mut state, &source, &second);
     let files = Fixture::new();
@@ -229,7 +222,7 @@ fn retained_accounts_need_provenance_and_do_not_leak_into_other_factions() {
         }]));
     let source = source(vec![first.clone(), second.clone(), third.clone()]);
     let files = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     for frame in [&first, &second, &third] {
         observe(&mut state, &source, frame);
     }
@@ -254,7 +247,7 @@ fn unknown_membership_and_recording_gaps_are_not_zero_or_membership_events() {
     let third = frame(103);
     let source = source(vec![first.clone(), second.clone(), third.clone()]);
     let files = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     for frame in [&first, &second, &third] {
         observe(&mut state, &source, frame);
     }
@@ -283,7 +276,7 @@ fn unknown_membership_and_recording_gaps_are_not_zero_or_membership_events() {
 fn manpower_keeps_repeated_alias_occurrences_and_signed_wrapping_total() {
     let frame = frame(100);
     let source = source(vec![frame.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &frame);
     let files = Fixture::new();
     publish(&mut state, &files);
@@ -343,7 +336,7 @@ fn native_country_replacement_splits_member_lanes_even_when_the_tag_and_slot_are
         rows[0].id = 102;
     }
     let source = source(vec![first.clone(), second.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &first);
     observe(&mut state, &source, &second);
     let files = Fixture::new();
@@ -433,19 +426,18 @@ fn cold_prefix_is_pending_not_empty_known_and_cancellation_never_returns_a_reply
         None,
     );
     assert!(
-        prepared::query(
-            &source,
-            &FactionStateParams::Influence {
-                branch_id: "1".into(),
-                faction: "9".into()
-            },
-            &LoadContext { content: None },
-            &files.store,
-            &files.key,
-            prefix,
-            &AtomicBool::new(true)
-        )
-        .is_err()
+        files
+            .reply(
+                &source,
+                &FactionStateParams::Influence {
+                    branch_id: "1".into(),
+                    faction: "9".into()
+                },
+                &LoadContext { content: None },
+                prefix,
+                &AtomicBool::new(true)
+            )
+            .is_err()
     );
 }
 #[test]
@@ -460,20 +452,15 @@ fn continuation_and_append_publish_the_same_observations_as_uninterrupted_prepar
     let source = source(vec![first.clone(), second.clone()]);
     let full_files = Fixture::new();
     let resumed_files = Fixture::new();
-    let mut full = Prepared::default();
+    let mut full = Walked::default();
     observe(&mut full, &source, &first);
     observe(&mut full, &source, &second);
     publish(&mut full, &full_files);
-    let mut resumed = Prepared::default();
+    let mut resumed = Walked::default();
     observe(&mut resumed, &source, &first);
     publish(&mut resumed, &resumed_files);
-    let file = resumed_files
-        .store
-        .read(&resumed_files.key, &prepared::state_section(1), 0)
-        .unwrap()
-        .unwrap();
-    let mut resumed: Prepared =
-        serde_json::from_reader(zstd::stream::Decoder::new(file).unwrap()).unwrap();
+    resumed_files.reload();
+    let mut resumed = Walked::default();
     observe(&mut resumed, &source, &second);
     publish(&mut resumed, &resumed_files);
     assert_eq!(
@@ -554,7 +541,7 @@ fn unavailable_rules_do_not_hide_programmes_minimums_or_doctrines_and_refusals_a
     };
     let source = source(vec![first.clone(), second.clone()]);
     let files = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &first);
     observe(&mut state, &source, &second);
     publish(&mut state, &files);
@@ -638,7 +625,7 @@ fn balance_only_hours_reuse_country_joins_and_project_only_changed_account_heade
         rows[0].influence_numerator_raw = 2;
     }
     let source = source(vec![first.clone(), second.clone(), third.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     let mut tracker = FrameChangeTracker::new();
     for frame in [&first, &second] {
         let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
@@ -683,7 +670,7 @@ fn disappeared_accounts_or_missing_identity_do_not_keep_a_stale_faction_associat
         rows[0].influence_faction = 0;
     }
     let source = source(vec![first.clone(), second.clone(), third.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     for frame in [&first, &second, &third] {
         observe(&mut state, &source, frame);
     }
@@ -709,7 +696,7 @@ fn owner_witnesses_are_independent_but_an_unproven_empty_manpower_pool_is_never_
     *second.tables[TableId::FactionManpower.index()] =
         TableView::Complete(TableRows::FactionManpower(Vec::new()));
     let source = source(vec![first.clone(), second.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &first);
     observe(&mut state, &source, &second);
     let files = Fixture::new();
@@ -741,7 +728,7 @@ fn a_short_query_prefix_cannot_leak_a_later_selection_or_its_warning() {
             token: 999,
         }]));
     let source = source(vec![first.clone(), second.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &first);
     observe(&mut state, &source, &second);
     let files = Fixture::new();
@@ -759,21 +746,16 @@ fn an_unknown_manpower_span_can_cover_many_hours_without_numeric_bucket_overflow
     *second.tables[TableId::FactionManpower.index()] = TableView::Unavailable {
         reason: "synthetic".into(),
     };
-    let source = source(
-        std::iter::once(first.clone())
-            .chain((101..=200).map(|hour| {
-                let mut held = second.clone();
-                held.hour = hour;
-                held
-            }))
-            .collect(),
-    );
-    let mut state = Prepared::default();
-    observe(&mut state, &source, &first);
-    observe(&mut state, &source, &second);
-    state
-        .quiet(102, 200, [true; prepared::CHANNELS.len()])
-        .unwrap();
+    let frames: Vec<_> = std::iter::once(first.clone())
+        .chain((101..=200).map(|hour| {
+            let mut held = second.clone();
+            held.hour = hour;
+            held
+        }))
+        .collect();
+    let source = source(frames.clone());
+    let mut state = Walked::default();
+    observe_continuing(&mut state, &source, &LoadContext { content: None }, &frames);
     let files = Fixture::new();
     publish(&mut state, &files);
     let FactionStateReply::Manpower(history) = reply(
@@ -792,138 +774,6 @@ fn an_unknown_manpower_span_can_cover_many_hours_without_numeric_bucket_overflow
     assert_eq!(history.total.last().unwrap().last_hour, 200);
 }
 
-#[test]
-fn shared_changes_only_block_fold_matches_hourly_observation_without_query_decodes() {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay::container::BlockChange;
-    let frames: Vec<_> = (100..110)
-        .map(|hour| {
-            let mut f = frame(hour);
-            // Complete optional inputs let this fixture prove genuinely quiet
-            // balance-only reads, rather than repeated unavailable acquisitions.
-            for &table in block::TABLES {
-                if table != TableId::Campaign
-                    && !matches!(*f.tables[table.index()], TableView::Complete(_))
-                {
-                    *f.tables[table.index()] = TableView::Complete(match table {
-                        TableId::ReservedCountryNaming => {
-                            TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow {
-                                tag: b"mod_reserved".to_vec(),
-                                ..Default::default()
-                            }])
-                        }
-                        TableId::LocalPlayer => TableRows::LocalPlayer(vec![Default::default()]),
-                        _ => TableRows::empty(table),
-                    });
-                }
-            }
-            if let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *f.tables[TableId::Countries.index()]
-            {
-                rows[0].political_power_raw = Some(hour as i64);
-            }
-            f
-        })
-        .collect();
-    let source = source(frames);
-    let replay = source.replay_ref();
-    let index = &replay.index[0];
-    let flag = AtomicBool::new(false);
-    let mut hourly = Prepared::default();
-    let mut tracker = FrameChangeTracker::new();
-    replay
-        .read_block_alone(
-            index,
-            block::TABLES,
-            |raw, frame| {
-                let changes = tracker.observe_updates(frame, raw, replay.format);
-                hourly.observe(
-                    &source,
-                    &LoadContext { content: None },
-                    frame,
-                    &changes,
-                    &flag,
-                )
-            },
-            || Ok(()),
-        )
-        .unwrap();
-    let mut extract = (block::FAMILY.start)(replay.format);
-    extract.read_by_changes();
-    let fields = (block::FAMILY.fields.unwrap())().unwrap();
-    let mut previous: Option<i32> = None;
-    let mut kept = 0;
-    replay
-        .read_block_changes(
-            index,
-            &fields,
-            |change| match change {
-                BlockChange::Changed { frame, rebuilt, .. } => {
-                    kept += 1;
-                    let continues = previous.and_then(|h| h.checked_add(1)) == Some(frame.hour);
-                    previous = Some(frame.hour);
-                    let changes = FrameChanges::rebuilt(frame, replay.format, continues, |table| {
-                        rebuilt.contains(&table)
-                    });
-                    extract.observe(replay, frame, &changes)
-                }
-                BlockChange::Quiet(hours) => {
-                    previous = Some(hours.last());
-                    extract.quiet(replay, hours, 0..hours.hours().len())
-                }
-            },
-            || Ok(()),
-        )
-        .unwrap();
-    assert_eq!(kept, 1, "balance-only hours are quiet for this family");
-    let mut folded = Prepared::default();
-    let (how, reached) = block::fold(
-        &mut folded,
-        extract.finish().unwrap(),
-        &source,
-        &LoadContext { content: None },
-        replay,
-        index,
-        &mut |_, result| result.map(|_| true),
-        &mut || Ok(()),
-        &flag,
-    )
-    .unwrap();
-    assert!(matches!(
-        how,
-        dashboard_base::prepared::prepass::Folded::Fast
-    ));
-    assert_eq!(reached, Some(109));
-    let a = Fixture::new();
-    let b = Fixture::new();
-    publish(&mut hourly, &a);
-    publish(&mut folded, &b);
-    for params in [
-        FactionStateParams::Influence {
-            branch_id: "1".into(),
-            faction: "9".into(),
-        },
-        FactionStateParams::Rules {
-            branch_id: "1".into(),
-            faction: "9".into(),
-        },
-        FactionStateParams::Manpower {
-            branch_id: "1".into(),
-            faction: "9".into(),
-        },
-    ] {
-        let expected = reply(&source, &a, params.clone(), 109, true);
-        let (actual, decoded) =
-            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
-                reply(&source, &b, params, 109, true)
-            });
-        assert!(!decoded);
-        assert_eq!(
-            serde_json::to_value(expected).unwrap(),
-            serde_json::to_value(actual).unwrap()
-        );
-    }
-}
 #[test]
 fn programme_references_use_only_their_existing_daily_supplier_and_match_the_detail_join() {
     let reference =
@@ -951,7 +801,7 @@ fn programme_references_use_only_their_existing_daily_supplier_and_match_the_det
         })
         .collect();
     let source = source(frames.clone());
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
     for frame in &frames {
         let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
@@ -1039,7 +889,7 @@ fn programme_hours_walk_each_supplying_read_once_and_publish_as_read_alone_every
     let prepare = |alone: bool| {
         // A source each, so neither finds the other's reads in its frame cache.
         let source = source(frames.clone());
-        let mut state = Prepared::default();
+        let mut state = Walked::default();
         state.runtime.point_seeks = alone;
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
         let mut supplying = super::prepared::Supplying::new(&source, 1);
@@ -1065,11 +915,7 @@ fn programme_hours_walk_each_supplying_read_once_and_publish_as_read_alone_every
     assert_eq!(walked_reads, 3, "one reconstruction for each supplying read");
     assert_eq!(walked_seeks, 0, "walked supplying reads seek no hour on its own");
     assert!(every_seeks > 0, "point reads seek their hours");
-    dashboard_base::prepared::series::tests::assert_payloads_equal(
-        &kept.payloads(),
-        &every.payloads(),
-        "faction-state",
-    );
+    assert_eq!(kept.dump(), every.dump());
     for last in [101, 123, 124, 135, 147, 148, 160] {
         assert_eq!(
             serde_json::to_value(rules(&source, &kept, "9", last)).unwrap(),
@@ -1086,28 +932,18 @@ fn an_oversized_faction_reply_refuses_instead_of_truncating_lanes() {
             ordinal: 0,
             token: 1,
         }]));
+    // The rule's token spells a name past the reply budget alone.
+    *f.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 1,
+            literal: "x"
+                .repeat(dashboard_base::products::MAX_PRODUCT_REPLY_BYTES)
+                .into_bytes(),
+        }]));
     let source = source(vec![f.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &f);
-    // The hour's runs are committed before the saved state is edited (the edit
-    // round-trips the state, which keeps only what a commit saves); a second commit
-    // then writes the catalogue with the oversized name.
     let files = Fixture::new();
-    let mut writer = files.writer();
-    state
-        .flush(&mut writer, 1, &AtomicBool::new(false))
-        .unwrap();
-    writer.commit().unwrap();
-    let mut saved = serde_json::to_value(&state).unwrap();
-    let lane = saved["catalogue"]["lanes"]
-        .as_object_mut()
-        .unwrap()
-        .values_mut()
-        .find(|lane| lane["kind"] == "rule")
-        .unwrap();
-    lane["choices"][0]["name"] =
-        serde_json::Value::String("x".repeat(dashboard_base::products::MAX_PRODUCT_REPLY_BYTES));
-    let mut state: Prepared = serde_json::from_value(saved).unwrap();
     publish(&mut state, &files);
     let prefix = Prefix::new(
         &source,
@@ -1120,19 +956,18 @@ fn an_oversized_faction_reply_refuses_instead_of_truncating_lanes() {
         },
         None,
     );
-    let error = prepared::query(
-        &source,
-        &FactionStateParams::Rules {
-            branch_id: "1".into(),
-            faction: "9".into(),
-        },
-        &LoadContext { content: None },
-        &files.store,
-        &files.key,
-        prefix,
-        &AtomicBool::new(false),
-    )
-    .unwrap_err();
+    let error = files
+        .reply(
+            &source,
+            &FactionStateParams::Rules {
+                branch_id: "1".into(),
+                faction: "9".into(),
+            },
+            &LoadContext { content: None },
+            prefix,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
     assert!(error.to_string().contains("transport reply budget"));
 }
 
@@ -1162,7 +997,7 @@ fn manpower_negative_values_and_the_zero_country_keep_the_native_total_and_reser
             },
         ]));
     let source = source(vec![frame.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &frame);
     let files = Fixture::new();
     publish(&mut state, &files);
@@ -1228,7 +1063,7 @@ fn manpower_negative_values_and_the_zero_country_keep_the_native_total_and_reser
 
 /// Observes `frames` as continuing hours: a table changed only where its view did.
 fn observe_continuing(
-    state: &mut Prepared,
+    state: &mut Walked,
     source: &Source,
     context: &LoadContext,
     frames: &[DecodedFrame],
@@ -1299,7 +1134,7 @@ fn a_reserved_naming_read_alone_closes_and_restores_the_reserved_manpower_member
     fourth.hour = 103;
     let frames = [first, second, third, fourth];
     let source = source(frames.to_vec());
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe_continuing(&mut state, &source, &LoadContext { content: None }, &frames);
     let files = Fixture::new();
     publish(&mut state, &files);
@@ -1372,7 +1207,7 @@ fn an_owner_witnessed_again_or_first_witnessed_gets_its_empty_pool_and_closes_un
     fourth.hour = 103;
     let frames = [first, second, third, fourth];
     let source = source(frames.to_vec());
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe_continuing(&mut state, &source, &LoadContext { content: None }, &frames);
     let files = Fixture::new();
     publish(&mut state, &files);
@@ -1480,7 +1315,7 @@ fn a_scripted_programme_name_reads_its_supplying_hours_world_as_the_faction_deta
     let shown = &detail.programmes.unwrap()[0];
     assert_eq!(shown.project.as_deref(), Some("Mod party programme"));
     for alone in [false, true] {
-        let mut state = Prepared::default();
+        let mut state = Walked::default();
         state.runtime.point_seeks = alone;
         let changes = FrameChanges::alone(&f, replay_data::format::FormatVersion::CURRENT);
         state.observe(&source, &context, &f, &changes, &flag).unwrap();
@@ -1509,7 +1344,7 @@ fn an_unrelated_unresolved_membership_does_not_erase_a_witnessed_account_share()
         });
     }
     let source = source(vec![f.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     observe(&mut state, &source, &f);
     let files = Fixture::new();
     publish(&mut state, &files);
@@ -1544,7 +1379,7 @@ fn a_recovered_rule_starts_a_new_segment_after_an_unavailable_read() {
     let mut third = first.clone();
     third.hour = 102;
     let source = source(vec![first.clone(), second.clone(), third.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     for frame in [&first, &second, &third] {
         observe(&mut state, &source, frame);
     }
@@ -1583,7 +1418,7 @@ fn an_intervening_native_holder_cannot_restore_an_old_departed_account_owner() {
         rows[0].id = 101;
     }
     let source = source(vec![first.clone(), second.clone(), third.clone()]);
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     for frame in [&first, &second, &third] {
         observe(&mut state, &source, frame);
     }
@@ -1623,16 +1458,9 @@ fn goals_reply(
         },
         None,
     );
-    match prepared::query(
-        source,
-        &params,
-        context,
-        &files.store,
-        &files.key,
-        prefix,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
+    match files
+        .reply(source, &params, context, prefix, &AtomicBool::new(false))
+        .unwrap()
     {
         FactionStateReply::Goals(reply) => reply,
         _ => unreachable!(),
@@ -1741,61 +1569,32 @@ fn details_at(source: &Source, context: &LoadContext, faction: &str, hour: i32) 
         "cancelled": reply.cancelled.iter().map(shown).collect::<Vec<_>>(),
     }))
 }
-/// Prepares each block through the family's change pre-pass and fold, with `restore` continuing from saved state.
+/// Prepares each block's hours, each block's first reading every input anew, publishing at its
+/// end; with `restore`, each block after goes on from what was published, its projection cold.
 fn prepare_by_blocks(source: &Source, context: &LoadContext, restore: bool) -> Fixture {
-    use replay::container::BlockChange;
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let replay = source.replay_ref();
     let files = Fixture::new();
     let flag = AtomicBool::new(false);
-    let fields = (block::FAMILY.fields.unwrap())().unwrap();
-    let mut state = Prepared::default();
-    let mut previous: Option<i32> = None;
+    let mut state = Walked::default();
+    let mut tracker = FrameChangeTracker::new();
     for index in &replay.index {
-        let mut extract = (block::FAMILY.start)(replay.format);
-        extract.read_by_changes();
+        tracker.invalidate();
         replay
-            .read_block_changes(
+            .read_block_alone(
                 index,
-                &fields,
-                |change| match change {
-                    BlockChange::Changed { frame, rebuilt, .. } => {
-                        let continues =
-                            previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-                        previous = Some(frame.hour);
-                        let changes =
-                            FrameChanges::rebuilt(frame, replay.format, continues, |table| {
-                                rebuilt.contains(&table)
-                            });
-                        extract.observe(replay, frame, &changes)
-                    }
-                    BlockChange::Quiet(hours) => {
-                        previous = Some(hours.last());
-                        extract.quiet(replay, hours, 0..hours.hours().len())
-                    }
+                columnar::tables(),
+                |raw, frame| {
+                    let changes = tracker.observe_updates(frame, raw, replay.format);
+                    state.observe(source, context, frame, &changes, &flag)
                 },
                 || Ok(()),
             )
             .unwrap();
-        block::fold(
-            &mut state,
-            extract.finish().unwrap(),
-            source,
-            context,
-            replay,
-            index,
-            &mut |_, result| result.map(|_| true),
-            &mut || Ok(()),
-            &flag,
-        )
-        .unwrap();
         publish(&mut state, &files);
         if restore {
-            let file = files
-                .store
-                .read(&files.key, &prepared::state_section(1), 0)
-                .unwrap()
-                .unwrap();
-            state = serde_json::from_reader(zstd::stream::Decoder::new(file).unwrap()).unwrap();
+            files.reload();
+            state = Walked::default();
         }
     }
     files
@@ -1994,7 +1793,7 @@ fn a_goal_prefix_names_later_hours_pending_and_leaks_no_later_list() {
         goal_frame(101, vec![held(9, 1, 0, 1, 0, 0)]),
     ];
     let source = source(hours.clone());
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     for frame in &hours {
         observe(&mut state, &source, frame);
     }
@@ -2035,7 +1834,7 @@ fn a_refused_table_keeps_one_reason_across_a_block_start() {
         };
     }
     let source = source(frames.clone());
-    let mut state = Prepared::default();
+    let mut state = Walked::default();
     let mut tracker = FrameChangeTracker::new();
     for frame in &frames {
         // A row block starts at 102: its first hour reads every input again.
@@ -2067,4 +1866,26 @@ fn a_refused_table_keeps_one_reason_across_a_block_start() {
         refused[0].reason.as_deref(),
         Some("FactionRules is unavailable: named refusal")
     );
+}
+#[test]
+fn a_window_clipping_a_goal_run_starts_no_segment_at_its_first_hour() {
+    let hours: Vec<_> = (100..104)
+        .map(|hour| goal_frame(hour, vec![held(9, 0, 0, 1, 0, 25_000)]))
+        .collect();
+    let source = source(hours.clone());
+    let mut state = Walked::default();
+    let files = Fixture::new();
+    for frame in &hours {
+        observe(&mut state, &source, frame);
+        // Each hour its own publication: the run goes on across every cut.
+        publish(&mut state, &files);
+    }
+    let context = LoadContext { content: None };
+    let whole = goals_reply(&source, &files, &context, goals_params("9", None, None), 103, true);
+    assert_eq!((whole.runs.len(), whole.runs[0].starts_segment), (1, true));
+    let clipped = goals_reply(&source, &files, &context, goals_params("9", Some(101), None), 103, true);
+    assert_eq!(clipped.runs.len(), 1);
+    assert_eq!(clipped.runs[0].first_hour, 101);
+    assert!(!clipped.runs[0].starts_segment);
+    assert!(clipped.progress.iter().all(|lane| !lane.runs[0].starts_segment));
 }

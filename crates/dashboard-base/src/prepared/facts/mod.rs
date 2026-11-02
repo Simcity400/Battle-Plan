@@ -1,7 +1,6 @@
 mod budget;
 mod directory;
 mod index;
-mod map;
 mod pages;
 mod reader;
 mod saved;
@@ -11,7 +10,6 @@ mod tests;
 use crate::invalid;
 pub use budget::{Credit, DecodeBudget, MemoryBudget, Resident};
 use directory::Root;
-pub use map::{MapCheckpoint, MapCursor, MapEntry, MapRef, PagedMap, Records};
 pub use pages::ReadPages;
 pub use reader::{Cursor, FactRef, KeyCursor, KeyRef, ReadPhase, Reader};
 pub use saved::Checkpoint;

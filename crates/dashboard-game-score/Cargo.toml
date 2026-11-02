@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 # The product's test oracles, for the dashboard's pipeline and query tests.
-test-support = ["dashboard-base/test-support", "dashboard-wars/test-support"]
+test-support = ["dashboard-base/test-support", "dashboard-wars/test-support", "dep:store"]
 
 [dependencies]
 replay.workspace = true
@@ -22,11 +22,13 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
+dashboard-series.workspace = true
 dashboard-text.workspace = true
 dashboard-wars.workspace = true
+dashboard-world.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
-store = { path = "../store" }
+store = { path = "../store", optional = true }
 ts-rs = "11.1"
 
 [dev-dependencies]

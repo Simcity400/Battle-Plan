@@ -932,6 +932,8 @@ pub mod prepared;
 impl Product for EspionageLog {
     const KEY: &'static str = "espionage-log";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::intelligence_prepared::served::PLAN);
     type Params = EspionageLogParams;
     type Reply = EspionageLogReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

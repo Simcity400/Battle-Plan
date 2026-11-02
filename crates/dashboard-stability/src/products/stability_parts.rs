@@ -9,10 +9,16 @@
 //! inputs (`observed`); there a part without a run is zero. Elsewhere nothing
 //! is known, never zero. A run never bridges an unrecorded hour or a change of
 //! country identity.
+//!
+//! Preparation projects each hour's countries whose parts or naming may have changed
+//! ([`facts`]), keeps each part as runs with its holder evidence on the family's series
+//! publication with each country's part names ([`emit`]), and the series family
+//! `stability-parts` answers from it ([`query`]).
 
-use super::country_stability::{self, BreakdownLine, FormulaBreakdown, StabilityBreakdown};
+use super::country_stability::{
+    self, BreakdownLine, FormulaBreakdown, ModifierBreakdown, StabilityBreakdown,
+};
 
-use dashboard_base::prepared::query::progressive::Samples;
 use dashboard_base::{Source, products::country_measure::FixedRun};
 use dashboard_base::{
     products::CountryParams,
@@ -21,11 +27,8 @@ use dashboard_base::{
     products::country_groups::HourSpan,
     products::politics_content::{PoliticsContent, politics_content},
 };
-use dashboard_text::{
-    identity::NamingCountry,
-    metadata::{mapped_slot, validate_campaign},
-};
-use replay::container::{Replay, SeekResult};
+use dashboard_text::{identity::NamingCountry, metadata::validate_campaign};
+use replay::container::Replay;
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
@@ -40,7 +43,9 @@ use std::{
 use ts_rs::TS;
 
 pub struct StabilityParts;
-mod progressive;
+pub mod emit;
+pub mod facts;
+pub mod query;
 pub mod served;
 
 /// Runs kept per country before the scan refuses.
@@ -91,15 +96,15 @@ pub struct StabilityPartsReply {
 
 /// A character line's character as recorded: script token, saved name and
 /// template.
-type Character = (
+pub type Character = (
     Option<String>,
     String,
     Result<(String, Vec<u8>, i32, bool), String>,
 );
 
 /// One part's value at a read.
-#[derive(Clone, Serialize, Deserialize)]
-struct Value {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Value {
     id: String,
     term: Option<String>,
     line: Option<BreakdownLine>,
@@ -107,10 +112,148 @@ struct Value {
     raw: i64,
 }
 
+/// What an addend's part id is made of: the whole id, or a character line's id before the
+/// character its read recorded completes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum Name {
+    Id(String),
+    Character(String),
+}
+
+/// One addend of a measure's parts at a read, in tree order, its character not named yet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Addend {
+    name: Name,
+    term: Option<String>,
+    line: Option<BreakdownLine>,
+    raw: i64,
+}
+
+impl Addend {
+    /// The bytes it owns on the heap.
+    fn heap(&self) -> usize {
+        let name = match &self.name {
+            Name::Id(id) | Name::Character(id) => id.capacity(),
+        };
+        name + self.term.as_ref().map_or(0, String::capacity)
+            + self.line.as_ref().map_or(0, line_heap)
+    }
+}
+
+fn line_heap(line: &BreakdownLine) -> usize {
+    std::mem::size_of::<BreakdownLine>()
+        + line.kind.capacity()
+        + line.identity.capacity()
+        + line.secondary_raw.capacity()
+        + line.value_raw.capacity()
+        + line.text.as_ref().map_or(0, String::capacity)
+}
+
+/// A measure's addends at one read, or None when its parts are not all known: `modifier` is
+/// its lines' modifier, None when the read recorded no lines with it.
+/// Refused labels identify separate parts by recorded bytes, not their display text.
+fn addends(
+    formula: &FormulaBreakdown,
+    modifier: Option<&ModifierBreakdown>,
+    lines_term: &str,
+    refused_label: &dyn Fn(&BreakdownLine, Option<u32>) -> Option<String>,
+) -> Option<Vec<Addend>> {
+    let mut addends = Vec::new();
+    for term in &formula.terms {
+        let raw: i64 = term.value_raw.as_deref()?.parse().ok()?;
+        if term.term == lines_term {
+            // The modifier term is its lines, or nothing is known of its parts.
+            let modifier = modifier?;
+            for line in &modifier.lines {
+                let base = || {
+                    format!(
+                        "line:{}:{}:{}:{}",
+                        line.kind, line.identity, line.identity_id, line.secondary_raw
+                    )
+                };
+                let name = match &*line.kind {
+                    "unpaired" => Name::Id(match &line.text {
+                        Some(text) => format!("unpaired:{text}"),
+                        None => format!(
+                            "unpaired-refused:{}",
+                            refused_label(line, modifier.index)?
+                        ),
+                    }),
+                    "advisor" | "countryLeader" => Name::Character(base()),
+                    _ => Name::Id(base()),
+                };
+                addends.push(Addend {
+                    name,
+                    term: None,
+                    line: Some(line.clone()),
+                    raw: line.value_raw.parse().ok()?,
+                });
+            }
+            if let Some(remainder) = &modifier.remainder_raw {
+                addends.push(Addend {
+                    name: Name::Id("remainder".into()),
+                    term: None,
+                    line: None,
+                    raw: remainder.parse().ok()?,
+                });
+            }
+            continue;
+        }
+        addends.push(Addend {
+            name: Name::Id(format!("term:{}", term.term)),
+            term: Some(term.term.clone()),
+            line: None,
+            raw,
+        });
+    }
+    if let Some(clamp) = &formula.clamp_raw {
+        addends.push(Addend {
+            name: Name::Id("clamp".into()),
+            term: None,
+            line: None,
+            raw: clamp.parse().ok()?,
+        });
+    }
+    formula.value_raw.as_ref()?;
+    Some(addends)
+}
+
+/// A measure's parts of its `addends`, each character line's character as `character` names
+/// it at the read: a renamed character is its own part, named as it was.
+pub(crate) fn assemble(
+    addends: &[Addend],
+    character: &dyn Fn(&BreakdownLine) -> Option<Character>,
+) -> Vec<Value> {
+    let mut values: Vec<Value> = Vec::new();
+    for addend in addends.iter().filter(|addend| addend.raw != 0) {
+        let (id, recorded) = match (&addend.name, &addend.line) {
+            (Name::Character(base), Some(line)) => match character(line) {
+                Some(found) => (
+                    format!("{base}:{}:{}", found.0.as_deref().unwrap_or_default(), found.1),
+                    Some(found),
+                ),
+                None => (base.clone(), None),
+            },
+            (Name::Id(id) | Name::Character(id), _) => (id.clone(), None),
+        };
+        match values.iter_mut().find(|value| value.id == id) {
+            // Two lines of one source add up, as the game's total does.
+            Some(value) => value.raw = value.raw.wrapping_add(addend.raw),
+            None => values.push(Value {
+                id,
+                term: addend.term.clone(),
+                line: addend.line.clone(),
+                character: recorded,
+                raw: addend.raw,
+            }),
+        }
+    }
+    values
+}
+
 /// A measure's parts at one read, or None when they are not all known. A
 /// character line's character is read from the frame the read is first seen
 /// at, and a renamed character is its own part, named as it was.
-/// Refused labels identify separate parts by recorded bytes, not their display text.
 fn parts_of(
     formula: &FormulaBreakdown,
     breakdown: &StabilityBreakdown,
@@ -119,94 +262,16 @@ fn parts_of(
     character: &dyn Fn(&BreakdownLine) -> Option<Character>,
     refused_label: &dyn Fn(&BreakdownLine, Option<u32>) -> Option<String>,
 ) -> Option<Vec<Value>> {
-    let mut values: Vec<Value> = Vec::new();
-    let mut add = |id: String,
-                   term: Option<String>,
-                   line: Option<BreakdownLine>,
-                   character: Option<Character>,
-                   raw: i64| {
-        if raw == 0 {
-            return;
-        }
-        match values.iter_mut().find(|value| value.id == id) {
-            // Two lines of one source add up, as the game's total does.
-            Some(value) => value.raw = value.raw.wrapping_add(raw),
-            None => values.push(Value {
-                id,
-                term,
-                line,
-                character,
-                raw,
-            }),
-        }
-    };
     let modifier = breakdown
         .modifiers
         .iter()
-        .find(|modifier| modifier.key == lines_key);
-    for term in &formula.terms {
-        let raw: i64 = term.value_raw.as_deref()?.parse().ok()?;
-        if term.term == lines_term {
-            // The modifier term is its lines, or nothing is known of its parts.
-            let modifier = modifier.filter(|_| breakdown.lines_available)?;
-            for line in &modifier.lines {
-                let recorded = character(line);
-                let id = match (&*line.kind, &recorded) {
-                    ("unpaired", _) => match &line.text {
-                        Some(text) => format!("unpaired:{text}"),
-                        None => format!(
-                            "unpaired-refused:{}",
-                            refused_label(line, modifier.index)?
-                        ),
-                    },
-                    (_, Some((script, saved, _))) => format!(
-                        "line:{}:{}:{}:{}:{}:{saved}",
-                        line.kind,
-                        line.identity,
-                        line.identity_id,
-                        line.secondary_raw,
-                        script.as_deref().unwrap_or_default()
-                    ),
-                    _ => format!(
-                        "line:{}:{}:{}:{}",
-                        line.kind, line.identity, line.identity_id, line.secondary_raw
-                    ),
-                };
-                add(
-                    id,
-                    None,
-                    Some(line.clone()),
-                    recorded,
-                    line.value_raw.parse().ok()?,
-                );
-            }
-            if let Some(remainder) = &modifier.remainder_raw {
-                add(
-                    "remainder".into(),
-                    None,
-                    None,
-                    None,
-                    remainder.parse().ok()?,
-                );
-            }
-            continue;
-        }
-        add(
-            format!("term:{}", term.term),
-            Some(term.term.clone()),
-            None,
-            None,
-            raw,
-        );
-    }
-    if let Some(clamp) = &formula.clamp_raw {
-        add("clamp".into(), None, None, None, clamp.parse().ok()?);
-    }
-    formula.value_raw.as_ref()?;
-    Some(values)
+        .find(|modifier| modifier.key == lines_key)
+        .filter(|_| breakdown.lines_available);
+    let addends = addends(formula, modifier, lines_term, refused_label)?;
+    Some(assemble(&addends, character))
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Part {
     term: Option<String>,
     line: Option<BreakdownLine>,
@@ -217,17 +282,32 @@ struct Part {
 }
 
 impl Part {
-    fn update(&mut self, value: &Value, country: &NamingCountry) {
-        self.term.clone_from(&value.term);
-        if value.line.is_some() {
-            self.line.clone_from(&value.line);
-            self.character.clone_from(&value.character);
-            self.country.clone_from(country);
+    /// Takes `value`'s names, and a line's country; whether any changed.
+    fn update(&mut self, value: &Value, country: &NamingCountry) -> bool {
+        let mut changed = false;
+        if self.term != value.term {
+            self.term.clone_from(&value.term);
+            changed = true;
         }
+        if value.line.is_some() {
+            if self.line != value.line {
+                self.line.clone_from(&value.line);
+                changed = true;
+            }
+            if self.character != value.character {
+                self.character.clone_from(&value.character);
+                changed = true;
+            }
+            if self.country != *country {
+                self.country.clone_from(country);
+                changed = true;
+            }
+        }
+        changed
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct Measure {
     parts: BTreeMap<String, Part>,
     observed: Vec<HourSpan>,
@@ -284,7 +364,7 @@ impl Measure {
 type ReadParts = ((u32, u32), i32, [Option<Vec<Value>>; 2]);
 
 /// One country's parts over a branch, before lines are named.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct Scanned {
     measures: [Measure; 2],
     warnings: Vec<String>,
@@ -364,53 +444,37 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
     Ok(result)
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct Track {
     last: Option<((u32, u32), i32)>,
     current: Option<ReadParts>,
     unlined: BTreeSet<i32>,
     lined: BTreeSet<i32>,
-    /// How many retired reads recorded no lines ([`Scan::retire_reads`]).
-    unlined_before: usize,
     available: bool,
     naming: Option<NamingCountry>,
     refused: dashboard_text::catalogue::Refusals,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct Scan {
     #[cfg(test)]
     calculated_reads: usize,
     tracks: BTreeMap<String, Track>,
-    recent_names: RecentNames,
+    recent_names: VecDeque<(i32, SharedView, SharedView)>,
     hour: Option<i32>,
     active: BTreeSet<String>,
-    #[serde(skip)]
     native: country_stability::Native,
-    #[serde(skip)]
     lines: Option<BTreeMap<u32, Vec<replay_data::rows::CountryStabilityLineRow>>>,
     /// The last complete SliceReads read, held as the frame's own view.
-    #[serde(skip)]
     reads: Option<SharedView>,
-    /// The last complete SliceReads read at an hour whose inputs were read
-    /// whole ([`Self::admit_reads`]).
-    #[serde(skip)]
-    admitted: Option<SharedView>,
-    #[serde(skip)]
     removed: Vec<String>,
-    #[serde(skip)]
     clock_names: BTreeSet<u32>,
     #[cfg(test)]
-    #[serde(skip)]
     naming_ticks: usize,
-    #[serde(skip)]
     appearances: BTreeMap<u32, replay_data::rows::CountryAppearanceRow>,
-    /// Whether `appearances` is this scan's own read. A new or restored scan
-    /// knows no earlier appearance, so its first read renames every country.
-    #[serde(skip)]
+    /// Whether `appearances` is this scan's own read. A new scan knows no
+    /// earlier appearance, so its first read renames every country.
     appearances_read: bool,
-    #[serde(skip)]
     appearances_complete: bool,
-    #[serde(skip)]
     line_dates: BTreeMap<u32, i32>,
 }
 fn appearance(
@@ -426,147 +490,7 @@ fn appearance(
     }
 }
 
-/// The recorded hours whose character tables name a read's characters, each
-/// with its Characters and LexicalTokens views. Saved as each hour and which
-/// hours share each view; a restored scan reads the views again from the
-/// recording ([`Scan::restore_names`]).
-#[derive(Default)]
-struct RecentNames {
-    views: VecDeque<(i32, SharedView, SharedView)>,
-    /// Restored hours not yet read again, each with its two views' indices.
-    pending: Vec<(i32, usize, usize)>,
-}
-
-impl std::ops::Deref for RecentNames {
-    type Target = VecDeque<(i32, SharedView, SharedView)>;
-    fn deref(&self) -> &Self::Target {
-        &self.views
-    }
-}
-
-impl std::ops::DerefMut for RecentNames {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.views
-    }
-}
-
-impl Serialize for RecentNames {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if !self.pending.is_empty() {
-            return self.pending.serialize(serializer);
-        }
-        let mut indices: [BTreeMap<*const TableView, usize>; 2] = Default::default();
-        let mut index = |table: usize, view: &SharedView| {
-            let next = indices[table].len();
-            *indices[table].entry(view.as_ptr()).or_insert(next)
-        };
-        self.views
-            .iter()
-            .map(|(hour, characters, lexical)| (*hour, index(0, characters), index(1, lexical)))
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for RecentNames {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self {
-            views: VecDeque::new(),
-            pending: Vec::deserialize(deserializer)?,
-        })
-    }
-}
-
 impl Scan {
-    /// Read again from the recording the naming views a restored scan
-    /// saved by hour: each view once, at the first hour holding it, whose
-    /// tables are the ones the scan held there.
-    fn restore_names(&mut self, replay: &Replay, branch: u64) -> io::Result<()> {
-        let pending = std::mem::take(&mut self.recent_names.pending);
-        let mut views: [BTreeMap<usize, SharedView>; 2] = Default::default();
-        for &(hour, characters, lexical) in &pending {
-            if views[0].contains_key(&characters) && views[1].contains_key(&lexical) {
-                continue;
-            }
-            let frame = match replay.seek_selected(
-                branch,
-                hour,
-                Some(&[
-                    TableId::Campaign,
-                    TableId::Characters,
-                    TableId::LexicalTokens,
-                ]),
-            )? {
-                SeekResult::Frame(frame) => frame,
-                SeekResult::Gap { reason, .. } => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Stability naming hour {hour} is not in the recording: {reason}"),
-                    ));
-                }
-            };
-            views[0]
-                .entry(characters)
-                .or_insert_with(|| frame.tables[TableId::Characters.index()].clone());
-            views[1]
-                .entry(lexical)
-                .or_insert_with(|| frame.tables[TableId::LexicalTokens.index()].clone());
-        }
-        self.recent_names.views = pending
-            .into_iter()
-            .map(|(hour, characters, lexical)| {
-                (
-                    hour,
-                    views[0][&characters].clone(),
-                    views[1][&lexical].clone(),
-                )
-            })
-            .collect();
-        Ok(())
-    }
-
-    /// Keep the hour's SliceReads as the admitted reads when its inputs are
-    /// complete. A truncated read dates the countries it returned at its own
-    /// hour in its frame only; the hours after it date them by their earlier
-    /// complete reads again.
-    fn admit_reads(&mut self, decoded: &replay_frame::frame::DecodedFrame) {
-        if decoded.complete::<tables::CountryStabilityInputs>().is_ok()
-            && decoded.complete::<tables::SliceReads>().is_ok()
-        {
-            self.admitted = Some(decoded.tables[TableId::SliceReads.index()].clone());
-        }
-    }
-
-    /// Retire each track's read hours below the earliest read the admitted
-    /// reads date any country's inputs by, keeping how many recorded no
-    /// lines. A complete read's hour only moves on, and a truncated read's
-    /// is its own hour, so no later hour reads a retired one again.
-    fn retire_reads(&mut self) {
-        let floor = self
-            .admitted
-            .as_deref()
-            .and_then(|view| match view {
-                TableView::Complete(rows) => rows.rows::<tables::SliceReads>(),
-                _ => None,
-            })
-            .and_then(|rows| {
-                rows.iter()
-                    .filter(|row| row.table == TableId::CountryStabilityInputs as u32)
-                    .map(|row| row.sample_hour)
-                    .min()
-            });
-        let Some(floor) = floor else {
-            return;
-        };
-        for track in self.tracks.values_mut() {
-            let unlined = track.unlined.split_off(&floor);
-            let lined = track.lined.split_off(&floor);
-            track.unlined_before += track.unlined.difference(&track.lined).count();
-            track.unlined = unlined;
-            track.lined = lined;
-        }
-    }
-
     /// The naming projection of changed appearance rows. Other appearance
     /// fields do not rename a part; a new row still enters the projection.
     fn apply_appearances(
@@ -687,12 +611,6 @@ impl Scan {
         ) -> io::Result<()>,
     ) -> io::Result<()> {
         let cpu = ::replay_frame::cpu::scope_phase("stability:observe_apply");
-        if !self.recent_names.pending.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Stability naming views were not read again after a restore",
-            ));
-        }
         let hour = decoded.hour;
         let previous = self.hour;
         let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(hour);
@@ -753,7 +671,6 @@ impl Scan {
                 .is_some()
                 .then(|| decoded.tables[TableId::SliceReads.index()].clone());
         }
-        self.admit_reads(decoded);
         if changed(TableId::CountryStabilityLines)
             && !self.apply_lines(decoded, delta(TableId::CountryStabilityLines), &mut dirty)
         {
@@ -1036,7 +953,7 @@ impl Scan {
     fn warnings(&self, tag: &str) -> Vec<String> {
         let track = self.tracks.get(tag);
         let missing = track.map_or(0, |track| {
-            track.unlined_before + track.unlined.difference(&track.lined).count()
+            track.unlined.difference(&track.lined).count()
         });
         let mut warnings = Vec::new();
         if missing != 0 {
@@ -1054,8 +971,18 @@ impl Scan {
 /// Names each line part from content, a character as it was recorded for that
 /// part, as the hover breakdown names it.
 fn named(measure: &Measure, content: Option<&PoliticsContent>, tag: &str) -> MeasureParts {
-    let mut parts = Vec::with_capacity(measure.parts.len());
-    for (id, part) in &measure.parts {
+    named_parts(&measure.parts, &measure.observed, content, tag)
+}
+
+/// [`named`] of `parts` by id, known over `observed`.
+fn named_parts(
+    parts_by_id: &BTreeMap<String, Part>,
+    observed: &[HourSpan],
+    content: Option<&PoliticsContent>,
+    tag: &str,
+) -> MeasureParts {
+    let mut parts = Vec::with_capacity(parts_by_id.len());
+    for (id, part) in parts_by_id {
         let mut line = part.line.clone();
         if let (Some(line), Some(content)) = (line.as_mut(), content) {
             let character = part.character.as_ref().map(|(script, saved, template)| {
@@ -1087,7 +1014,7 @@ fn named(measure: &Measure, content: Option<&PoliticsContent>, tag: &str) -> Mea
     }
     MeasureParts {
         parts,
-        observed: measure.observed.clone(),
+        observed: observed.to_vec(),
     }
 }
 
@@ -1207,362 +1134,6 @@ pub(crate) fn scan_parts(
 }
 
 #[cfg(test)]
+mod columnar_tests;
+#[cfg(test)]
 mod tests;
-
-#[derive(Default, Serialize, Deserialize)]
-pub struct Prepared {
-    scan: Scan,
-    countries: BTreeMap<String, Scanned>,
-    actors: BTreeMap<String, crate::prepared_stability::Actor>,
-    last: i32,
-    batch: dashboard_base::prepared::series::Accumulator,
-    open: BTreeMap<String, BTreeSet<String>>,
-    #[cfg(any(test, feature = "test-support"))]
-    #[serde(skip)]
-    pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
-    #[cfg(test)]
-    #[serde(skip)]
-    sampled_projection: bool,
-}
-impl Prepared {
-    /// The table rows its scan visited, counted in tests.
-    #[cfg(test)]
-    pub(crate) fn row_visits(&self) -> usize {
-        self.scan.native.work.row_visits
-    }
-    #[cfg(test)]
-    pub(crate) fn calculated_reads(&self) -> usize {
-        self.scan.calculated_reads
-    }
-    pub fn bytes(&self) -> usize {
-        self.batch.bytes()
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn observe(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
-        let changes = self
-            .test_changes
-            .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, replay_data::format::FormatVersion::CURRENT);
-        self.observe_changes(frame, &changes)
-    }
-    pub fn observe_changes(
-        &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
-        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
-    ) -> io::Result<()> {
-        let cpu = ::replay_frame::cpu::scope_phase("stability:series_observe");
-        self.last = frame.hour;
-        self.batch.advance(frame.hour)?;
-        drop(cpu);
-        let cpu = ::replay_frame::cpu::scope_phase("stability:parts_projection_series");
-        let mut project = |tag: &str,
-                           identity: (u32, u32),
-                           read: i32,
-                           joined: bool,
-                           index: usize,
-                           values: Option<&[Value]>,
-                           naming: &NamingCountry,
-                           _samples: Option<&Samples>| {
-            let _cpu = ::replay_frame::cpu::scope_phase("stability:parts_publish");
-            let scanned = self.countries.entry(tag.into()).or_default();
-            let measure = &mut scanned.measures[index];
-            let field = ["stability", "warSupport"][index];
-            let open = self
-                .open
-                .entry(dashboard_base::prepared::series::field_key(tag, field))
-                .or_default();
-            let next: BTreeSet<_> = values
-                .into_iter()
-                .flatten()
-                .map(|value| value.id.clone())
-                .chain(values.map(|_| String::new()))
-                .collect();
-            for id in open.difference(&next) {
-                let key = serde_json::to_string(&(tag, id))?;
-                if let Some(actor) = self
-                    .actors
-                    .get_mut(&dashboard_base::prepared::series::field_key(&key, field))
-                {
-                    self.batch.observe(actor.key, frame.hour, None, false);
-                    actor.holder = None;
-                }
-            }
-            *open = next;
-            if let Some(values) = values {
-                for value in values {
-                    measure
-                        .parts
-                        .entry(value.id.clone())
-                        .or_default()
-                        .update(value, naming);
-                }
-                for (id, carried) in std::iter::once(("", None))
-                    .chain(values.iter().map(|value| (value.id.as_str(), Some(value))))
-                {
-                    let key = serde_json::to_string(&(tag, id))?;
-                    // The scan already resolved every raw part, including characters
-                    // named from the supplying read. The empty part dates that read.
-                    let raw = Some(carried.map_or(i128::from(read), |value| i128::from(value.raw)));
-                    #[cfg(test)]
-                    let raw = if let Some(samples) = _samples {
-                        if carried.is_some_and(|value| {
-                            progressive::needs_earlier_names(value, read, frame.hour)
-                        }) {
-                            carried.map(|value| i128::from(value.raw))
-                        } else {
-                            samples
-                                .get(&(key.clone(), field.into()))
-                                .and_then(|sample| sample.1)
-                        }
-                    } else {
-                        raw
-                    };
-                    crate::prepared_stability::record(
-                        &mut self.actors,
-                        &mut self.batch,
-                        &key,
-                        field,
-                        frame.hour,
-                        raw,
-                        joined,
-                        (identity.0, identity.1, read),
-                        false,
-                        None,
-                    )?;
-                }
-            }
-            Ok(())
-        };
-        #[cfg(not(test))]
-        let sampled = false;
-        #[cfg(test)]
-        let sampled = self.sampled_projection;
-        if sampled {
-            progressive::sample(
-                &mut self.scan,
-                frame,
-                None,
-                Some(changes),
-                |tag, identity, read, joined, index, values, naming, samples| {
-                    project(
-                        tag,
-                        identity,
-                        read,
-                        joined,
-                        index,
-                        values,
-                        naming,
-                        Some(samples),
-                    )
-                },
-            )?;
-        } else {
-            self.scan.step(
-                frame,
-                None,
-                Some(changes),
-                |tag, identity, read, joined, measures, naming| {
-                    for (index, values) in measures.iter().enumerate() {
-                        project(
-                            tag,
-                            identity,
-                            read,
-                            joined,
-                            index,
-                            values.as_deref(),
-                            naming,
-                            None,
-                        )?;
-                    }
-                    Ok(())
-                },
-            )?;
-        }
-        drop(cpu);
-        let _cpu = ::replay_frame::cpu::scope_phase("stability:pruning");
-        for tag in &self.scan.removed {
-            for field in ["stability", "warSupport"] {
-                if let Some(open) = self
-                    .open
-                    .remove(&dashboard_base::prepared::series::field_key(tag, field))
-                {
-                    for id in open {
-                        let name = serde_json::to_string(&(tag, id))?;
-                        if let Some(actor) = self
-                            .actors
-                            .get_mut(&dashboard_base::prepared::series::field_key(&name, field))
-                        {
-                            self.batch.observe(actor.key, frame.hour, None, false);
-                            actor.holder = None;
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-    /// Read again from the recording what a restored state saved by hour.
-    pub fn restore(&mut self, replay: &Replay, branch: u64) -> io::Result<()> {
-        self.scan.restore_names(replay, branch)
-    }
-    pub fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.scan.retire_reads();
-        crate::prepared_stability::flush(
-            &self.actors,
-            &mut self.batch,
-            writer,
-            ("parts", branch, self.last, 5),
-            cancelled,
-        )?;
-        for (tag, scanned) in &mut self.countries {
-            scanned.warnings = self.scan.warnings(tag);
-        }
-        writer.write_at(
-            &format!("parts-{branch}-names"),
-            0,
-            serde_json::to_vec(&self.countries)?.as_slice(),
-        )
-    }
-}
-
-/// The generic series adapter owns raw values, summaries, navigation and event pages.
-#[allow(clippy::too_many_arguments)]
-pub fn prepared_query(
-    source: &Source,
-    content: Option<&dashboard_core::config::ContentOptions>,
-    product: &str,
-    mut params: serde_json::Value,
-    store: &store::Store,
-    source_key: &store::SourceKey,
-    coverage: Option<&dashboard_base::prepared::coverage::Coverage>,
-    cancelled: &AtomicBool,
-) -> io::Result<serde_json::Value> {
-    use serde_json::{Value, json};
-    let branch = params["branchId"]
-        .as_str()
-        .and_then(|branch| branch.parse::<u64>().ok())
-        .ok_or_else(|| dashboard_core::invalid("Invalid parts branch"))?;
-    let index = match params["family"]["measure"].as_str() {
-        Some("stability") => 0,
-        Some("warSupport") => 1,
-        _ => return Err(dashboard_core::invalid("Unknown parts measure")),
-    };
-    let mut countries: BTreeMap<String, Scanned> = if coverage.is_some() {
-        let file = store
-            .read(source_key, &format!("parts-{branch}-names"), 0)?
-            .ok_or_else(|| dashboard_core::invalid("Missing parts names"))?;
-        serde_json::from_reader(io::BufReader::new(file))?
-    } else {
-        BTreeMap::new()
-    };
-    if product == "series-summary" {
-        params["from"] = json!(params["from"].as_f64().map(f64::floor));
-        params["to"] = json!(params["to"].as_f64().map(f64::ceil));
-    }
-    let sampled = progressive::read(
-        source,
-        coverage,
-        product,
-        &params,
-        &mut countries,
-        cancelled,
-    )?;
-    let content = content
-        .map(|options| politics_content(source, options))
-        .transpose();
-    let mut warnings = match &content {
-        Ok(Some(content)) => content.warnings.clone(),
-        Err(error) => vec![format!("Breakdown lines are not named: {error}")],
-        _ => Vec::new(),
-    };
-    let content = content.ok().flatten();
-    let field = if product == "series-state" {
-        "reads"
-    } else {
-        "tags"
-    };
-    let requests = params[field]
-        .as_array()
-        .ok_or_else(|| dashboard_core::invalid("Missing parts selection"))?;
-    let mut expanded = Vec::new();
-    let mut within = serde_json::Map::new();
-    let mut metadata = BTreeMap::new();
-    for request in requests {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let tag = request
-            .as_str()
-            .or_else(|| request["tag"].as_str())
-            .ok_or_else(|| dashboard_core::invalid("Invalid parts tag"))?;
-        dashboard_core::protocol::validate_tag(tag).map_err(dashboard_core::invalid)?;
-        let empty = Scanned::default();
-        let scanned = countries.get(tag).unwrap_or(&empty);
-        warnings.extend(scanned.warnings.iter().cloned());
-        let parts = named(&scanned.measures[index], content.as_deref(), tag);
-        for id in std::iter::once("").chain(parts.parts.iter().map(|part| part.id.as_str())) {
-            let key = serde_json::to_string(&(tag, id))?;
-            if let Some(spans) = params["within"].get(tag) {
-                within.insert(key.clone(), spans.clone());
-            }
-            expanded.push(if product == "series-state" {
-                json!({"tag":key,"hour":request["hour"]})
-            } else {
-                json!(key)
-            });
-        }
-        metadata.insert(tag.to_owned(), parts);
-    }
-    params[field] = Value::Array(expanded);
-    params["within"] = Value::Object(within);
-    let tail = (!coverage.is_some_and(|coverage| coverage.complete)).then(|| {
-        let start = source
-            .replay_ref()
-            .branches
-            .iter()
-            .find(|start| start.id == branch)
-            .unwrap();
-        (
-            dashboard_text::metadata::branch_bounds(source.replay_ref(), start),
-            &sampled.0,
-            sampled.1.as_slice(),
-            &sampled.2,
-            coverage.is_some(),
-        )
-    });
-    let mut reply = dashboard_base::prepared_measure::query::query(
-        product, params, store, source_key, tail, cancelled,
-    )?;
-    if let Some(states) = reply["states"].as_array_mut() {
-        for state in states {
-            let (tag, id): (String, String) = serde_json::from_str(
-                state["tag"]
-                    .as_str()
-                    .ok_or_else(|| dashboard_core::invalid("Missing part state tag"))?,
-            )?;
-            let hour = state["hour"].as_i64().unwrap() as i32;
-            if id.is_empty() && sampled.3.contains(&(tag, hour)) {
-                state["pending"] = json!(true);
-            }
-        }
-    }
-    for (tag, _) in &sampled.3 {
-        let warning = format!(
-            "{tag}: advisor and country-leader parts need their supplying read's earlier character names; still being prepared."
-        );
-        if !warnings.contains(&warning) {
-            warnings.push(warning);
-        }
-    }
-    if let Some(content) = &content {
-        warnings.extend(content.catalogue.refusal_lines());
-    }
-    if product != "series-next-change" {
-        reply["parts"] = serde_json::to_value(metadata)?;
-        reply["warnings"] = json!(warnings);
-    }
-    Ok(reply)
-}

@@ -9,9 +9,9 @@ pub(crate) use dashboard_base::prepared::query::progressive;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
-mod factions_tests;
-#[cfg(test)]
 mod forces_tests;
+#[cfg(test)]
+mod kept_tests;
 #[cfg(test)]
 mod presentation_tests;
 #[cfg(test)]
@@ -199,7 +199,7 @@ fn stored_answer(
     });
     let mut pages = Vec::new();
     for branch in branches {
-        pages.extend(super::pipeline::published_pages(published, branch)?);
+        pages.extend(super::pipeline::published_pages(published, branch));
     }
     let executable = engine_executable::executable_tables::is_initialized().then(|| {
         let identity = engine_executable::executable_tables::get().identity();
@@ -418,8 +418,7 @@ fn yards_reply(
     let params: at::YardsAtParams = serde_json::from_value(params.clone())?;
     params.validate().map_err(crate::invalid)?;
     let branch = branch(source, &params.branch_id)?;
-    let Some(opened) = published::open(source, content, product, layout::SCHEMA, branch)?
-    else {
+    let Some(opened) = published::open(source, content, product, layout::SCHEMA, branch)? else {
         return Ok(Value::Null);
     };
     // An unloaded catalogue is the reply's warning, never names silently missing.
@@ -429,7 +428,10 @@ fn yards_reply(
         .map_err(|why| why.to_string());
     let refits = product == "naval-refits";
     let Some(reply) = opened.read(cancelled, |snapshot, directory| {
-        let catalogue = catalogue.as_ref().map(Option::as_ref).map_err(String::as_str);
+        let catalogue = catalogue
+            .as_ref()
+            .map(Option::as_ref)
+            .map_err(String::as_str);
         at::query(snapshot, directory, refits, &params, catalogue)
     })?
     else {
@@ -462,7 +464,9 @@ fn names_reply(
         content: content.cloned(),
     };
     let reply = opened.read(cancelled, |snapshot, directory| {
-        query::reply(source, &context, snapshot, directory, branch, &params, cancelled)
+        query::reply(
+            source, &context, snapshot, directory, branch, &params, cancelled,
+        )
     })?;
     Ok(match reply {
         Some(reply) => serde_json::to_value(reply)?,
@@ -472,7 +476,7 @@ fn names_reply(
 
 /// A country's manpower view at an hour: its operands from the manpower family, its holder's
 /// elections and exiles from `politics_state`, and each exile card's air crews from the family;
-/// null past what the family has accepted.
+/// null past what either family has accepted.
 fn people_reply(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -506,8 +510,10 @@ fn people_reply(
     };
     let (operands, (slot, _)) =
         found.ok_or_else(|| crate::invalid("Country unavailable at this hour"))?;
-    let (store, key) = super::files(source, content)?;
-    let politics = history::at_hour(source, &store, &key, branch, slot, hour, cancelled)?;
+    let Some(politics) = history::at_hour(source, content, branch, slot, hour, cancelled)? else {
+        return Ok(Value::Null);
+    };
+    let politics = Some(politics);
     let air = opened.read(cancelled, |snapshot, directory| {
         politics
             .iter()
@@ -821,6 +827,81 @@ fn volunteers_reply(
     Ok(serde_json::to_value(aid::finish(source, branch, reply)?)?)
 }
 
+/// A tag's resource balance from the resources family's publication, pinned through its
+/// accepted coverage; null before it publishes the branch, and past that coverage while it is
+/// not complete.
+fn balance_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::resource_balance::{self, emit, query};
+    let id = params["branchId"]
+        .as_str()
+        .ok_or_else(|| crate::invalid("Invalid resource branch"))?;
+    let branch = branch(source, id)?;
+    let input: query::Params = serde_json::from_value(params.clone())?;
+    dashboard_core::protocol::validate_tag(&input.tag).map_err(crate::invalid)?;
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "resource-balance",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let start = source
+        .replay_ref()
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .ok_or_else(|| crate::invalid("Unknown resource branch"))?;
+    let bounds = crate::metadata::branch_bounds(source.replay_ref(), start);
+    let complete = accepted.as_ref().is_some_and(|coverage| coverage.complete);
+    if input.require_complete && !complete {
+        return Ok(Value::Null);
+    }
+    let Some(coverage) = accepted.clone() else {
+        return Ok(Value::Null);
+    };
+    // The viewport is checked before the publication is read, as the row pages checked it.
+    input.check_view(bounds.1)?;
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        resource_balance::NAME,
+        emit::SCHEMA,
+        branch,
+        (!coverage.complete).then_some(coverage.last_hour),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    let reply = opened.read(cancelled, |snapshot, directory| {
+        query::reply(
+            source, &context, snapshot, directory, input, params, &coverage, cancelled,
+        )
+    })?;
+    let Some(mut value) = reply else {
+        return Ok(Value::Null);
+    };
+    value["coverage"] = serde_json::json!(super::prefix::extent(source, branch, accepted)?);
+    // Present as the row pages presented it: a navigation reply gains a null `resources`.
+    dashboard_base::products::resources::present_stored_json(
+        source,
+        content,
+        &mut value["resources"],
+        cancelled,
+    )?;
+    Ok(value)
+}
+
 /// A `country-nukes` series request answered from the nukes family's publication, named through
 /// the identity history; null before the family publishes the branch.
 fn nukes_series(
@@ -885,47 +966,737 @@ fn nukes_series(
     })
 }
 
-/// The event feed's view of the nukes family's publication on `branch`, read once per
-/// publication; none before the family publishes the branch.
-fn nukes_feed(
+/// A `territory` series request answered from the family's publication, named through the
+/// identity history and pinned through the coverage the two share; null before it publishes
+/// the branch, but for its metadata, which the content gives meanwhile.
+fn territory_series(
     source: &Source,
     content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
     branch: u64,
     cancelled: &AtomicBool,
-) -> io::Result<Option<Arc<crate::products::country_nukes::query::Feed>>> {
-    use crate::products::country_nukes;
-    type Kept = std::collections::BTreeMap<u64, (([u64; 3], u64), Arc<country_nukes::query::Feed>)>;
-    #[derive(Default)]
-    struct Feeds(Kept);
-    let Some(opened) = published::open(
+) -> io::Result<Value> {
+    use crate::products::territory;
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    let unpublished = || {
+        if territory::query::metadata_only(params) {
+            territory::query::unpublished_metadata(source, &context, params, cancelled)
+        } else {
+            Ok(Value::Null)
+        }
+    };
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
         source,
         content,
-        "nukes",
-        country_nukes::emit::SCHEMA,
         branch,
+        <territory::Territory as crate::products::Product>::KEY,
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = accepted.clone() else {
+        return unpublished();
+    };
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        "territory",
+        territory::emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
     )?
     else {
+        return unpublished();
+    };
+    let (store, key) = super::files(source, content)?;
+    // The identities prepared through the accepted coverage, never read from the recording.
+    let history = dashboard_base::products::country_history::read_prepared_histories(
+        &store,
+        &key,
+        branch,
+        Some(shared.last_hour),
+    )?
+    .unwrap_or_default();
+    let mut data = opened.read(cancelled, |snapshot, directory| {
+        territory::query::series(
+            product,
+            params.clone(),
+            snapshot,
+            directory,
+            &history,
+            &shared,
+            cancelled,
+        )
+    })?;
+    // Every series reply names the prepared extent it was read through, as the row reply did.
+    if let Some(reply) = data.as_object_mut() {
+        reply.insert(
+            "coverage".into(),
+            serde_json::to_value(dashboard_base::prepared::prefix::extent(
+                source, branch, accepted,
+            )?)?,
+        );
+    }
+    Ok(data)
+}
+
+/// A `game-score` series request answered from the game score family's publication, pinned
+/// through its coverage; null before it publishes the branch, and for a state read past it.
+fn score_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::game_score;
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "game-score",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = &accepted else {
+        return Ok(Value::Null);
+    };
+    let reach = (!shared.complete).then_some(shared.last_hour);
+    if product == "series-state"
+        && reach.is_some_and(|reach| game_score::query::state_hour(params).is_ok_and(|hour| hour > reach))
+    {
+        return Ok(Value::Null);
+    }
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        "game_score",
+        game_score::emit::SCHEMA,
+        branch,
+        reach,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let mut data = opened.read(cancelled, |snapshot, directory| {
+        game_score::query::series(product, params, snapshot, directory, reach, cancelled)
+    })?;
+    // Every series reply names the prepared extent it was read through, as the row reply did.
+    if let Some(reply) = data.as_object_mut() {
+        reply.insert(
+            "coverage".into(),
+            serde_json::to_value(dashboard_base::prepared::prefix::extent(
+                source, branch, accepted,
+            )?)?,
+        );
+    }
+    Ok(data)
+}
+
+/// A `world-tension` series request answered from the tension family's publication, its
+/// contributors named through the identity history; null before both cover an hour.
+fn tension_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::world_tension::{emit, query};
+    type Kept = std::collections::BTreeMap<u64, (([u64; 3], u64), Arc<query::Published>)>;
+    #[derive(Default)]
+    struct Read(Kept);
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "world-tension",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = accepted else {
+        return Ok(Value::Null);
+    };
+    // Pinned through the coverage the tension shares with the identities: no read passes it.
+    let opened = published::open_through(
+        source,
+        content,
+        "tension",
+        emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
+    )?;
+    // The hours the opened publication answers, which may end at an earlier segment's end.
+    let mut reached = None;
+    let mut data = match &opened {
+        None if product == "series-next-change" => return Ok(Value::Null),
+        None => query::unpublished(params)?,
+        Some(opened) => {
+            let (store, key) = super::files(source, content)?;
+            let history = dashboard_base::products::country_history::read_prepared_histories(
+                &store,
+                &key,
+                branch,
+                Some(shared.last_hour),
+            )?
+            .unwrap_or_default();
+            let state = source.state::<Read>();
+            let kept = state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .0
+                .get(&branch)
+                .filter(|(stamp, _)| *stamp == opened.stamp())
+                .map(|(_, read)| Arc::clone(read));
+            opened.read(cancelled, |snapshot, directory| {
+                reached = Some(snapshot.publication().accepted.last);
+                let read = match kept {
+                    Some(read) => read,
+                    None => {
+                        let read = Arc::new(query::published(snapshot, directory)?);
+                        state
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0
+                            .insert(branch, (opened.stamp(), Arc::clone(&read)));
+                        read
+                    }
+                };
+                query::series(
+                    source, product, params, snapshot, directory, &read, &history, cancelled,
+                )
+            })?
+        }
+    };
+    let last = reached.map_or(shared.last_hour, |reached| reached.min(shared.last_hour));
+    let answered = match &opened {
+        Some(_) if shared.first_hour <= last => Some(dashboard_base::prepared::coverage::Coverage {
+            last_hour: last,
+            complete: shared.complete && last == shared.last_hour,
+            ..shared.clone()
+        }),
+        None if shared.complete => Some(shared.clone()),
+        _ => None,
+    };
+    let coverage = super::prefix::extent(source, branch, answered)?;
+    if let Some(reply) = data.as_object_mut() {
+        if product != "series-next-change" && !coverage.complete {
+            let through = params["to"].as_f64().map(|hour| hour.floor() as i32);
+            reply.insert(
+                "pending".into(),
+                serde_json::to_value(super::prefix::pending(
+                    source,
+                    branch,
+                    coverage.last_hour,
+                    through,
+                ))?,
+            );
+        }
+        reply.insert("coverage".into(), serde_json::to_value(coverage)?);
+    }
+    Ok(data)
+}
+
+/// A `party-history` request answered from the parties family's publication, never past the
+/// coverage it accepted; null before there is any, and a whole history before it is complete.
+fn party_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::party_history::{self, query};
+    let params: query::Params = serde_json::from_value(params.clone())?;
+    let branch = branch(source, &params.branch_id)?;
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "party-history",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = &accepted else {
+        return Ok(Value::Null);
+    };
+    // The whole history names every catalogue entry, some first seen past what is accepted.
+    if params.history() && !shared.complete {
+        return Ok(Value::Null);
+    }
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        party_history::NAME,
+        party_history::emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        query::query(
+            source, params, &context, snapshot, directory, accepted, cancelled,
+        )
+    })
+}
+
+/// The military air ledger from its family's publication, pinned through its accepted
+/// coverage; a cold ledger, every recorded hour pending, before it publishes the branch.
+fn air_ledger_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    context: &crate::products::LoadContext,
+    params: Value,
+    branch: u64,
+    coverage: Option<&dashboard_base::prepared::coverage::Coverage>,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::military_air_ledger;
+    let opened = match coverage {
+        Some(coverage) => published::open_through(
+            source,
+            content,
+            "air_ledger",
+            military_air_ledger::emit::SCHEMA,
+            branch,
+            (!coverage.complete).then_some(coverage.last_hour),
+        )?,
+        None => None,
+    };
+    match opened {
+        Some(opened) => opened.read(cancelled, |snapshot, directory| {
+            military_air_ledger::query::reply(
+                source, context, params, snapshot, directory, cancelled,
+            )
+        }),
+        None => military_air_ledger::query::empty(source, context, params, cancelled),
+    }
+}
+
+/// An `air-force-size` series request answered from the air family's publication, named through
+/// the identity history; null before the family publishes the branch.
+fn air_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::air_force;
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "air-force-size",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = &accepted else {
+        return Ok(Value::Null);
+    };
+    // Pinned through the coverage the wings share with the identities: no read passes it.
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        "air",
+        air_force::emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let (store, key) = super::files(source, content)?;
+    // The identities prepared through the accepted coverage, never read from the recording.
+    let history = dashboard_base::products::country_history::read_prepared_histories(
+        &store,
+        &key,
+        branch,
+        Some(shared.last_hour),
+    )?
+    .unwrap_or_default();
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        let reach = (!shared.complete)
+            .then(|| shared.last_hour.min(snapshot.publication().accepted.last));
+        air_force::query::series(
+            source, product, params, &context, snapshot, directory, &history, reach, cancelled,
+        )
+    })
+}
+
+/// A `navy-size` series request answered from the navy family's publication, named through
+/// the identity history; null before the family publishes the branch.
+fn navy_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::navy;
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "navy-size",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = &accepted else {
+        return Ok(Value::Null);
+    };
+    // Pinned through the coverage the ships share with the identities: no read passes it.
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        "navy",
+        navy::emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let (store, key) = super::files(source, content)?;
+    // The identities prepared through the accepted coverage, never read from the recording.
+    let history = dashboard_base::products::country_history::read_prepared_histories(
+        &store,
+        &key,
+        branch,
+        Some(shared.last_hour),
+    )?
+    .unwrap_or_default();
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        let reach = (!shared.complete)
+            .then(|| shared.last_hour.min(snapshot.publication().accepted.last));
+        navy::query::series(
+            source, product, params, &context, snapshot, directory, &history, reach, cancelled,
+        )
+    })
+}
+
+/// A `country-factories` series request answered from the factories family's publication,
+/// named through the identity history; null before the family publishes the branch.
+fn factories_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::country_factories;
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "country-factories",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = &accepted else {
+        return Ok(Value::Null);
+    };
+    // Pinned through the coverage the factories share with the identities: no read passes it.
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        "factories",
+        country_factories::emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let (store, key) = super::files(source, content)?;
+    // The identities prepared through the accepted coverage, never read from the recording.
+    let history = dashboard_base::products::country_history::read_prepared_histories(
+        &store,
+        &key,
+        branch,
+        Some(shared.last_hour),
+    )?
+    .unwrap_or_default();
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        country_factories::query::series(
+            source, product, params, &context, snapshot, directory, &history, accepted.clone(),
+            cancelled,
+        )
+    })
+}
+
+/// Each branch's view of a family's publication, kept with the stamp of the publication read.
+struct Kept<T>(std::collections::BTreeMap<u64, (([u64; 3], u64), Arc<T>)>);
+
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Self(std::collections::BTreeMap::new())
+    }
+}
+
+/// `read` of `family`'s publication on `branch`, its keys spelled under `schema`, read once per
+/// publication and kept; none before the family publishes the branch.
+fn kept_view<T: Send + Sync + 'static>(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    (family, schema): (&str, u64),
+    branch: u64,
+    read: impl FnOnce(&published::Opened) -> io::Result<T>,
+) -> io::Result<Option<Arc<T>>> {
+    let Some(opened) = published::open(source, content, family, schema, branch)? else {
         return Ok(None);
     };
-    let state = source.state::<Feeds>();
-    if let Some((stamp, feed)) = state
+    let state = source.state::<Kept<T>>();
+    if let Some((stamp, view)) = state
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .0
         .get(&branch)
         && *stamp == opened.stamp()
     {
-        return Ok(Some(Arc::clone(feed)));
+        return Ok(Some(Arc::clone(view)));
     }
-    let feed = Arc::new(opened.read(cancelled, |snapshot, directory| {
-        country_nukes::query::feed(snapshot, directory)
-    })?);
+    let view = Arc::new(read(&opened)?);
     state
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .0
-        .insert(branch, (opened.stamp(), Arc::clone(&feed)));
-    Ok(Some(feed))
+        .insert(branch, (opened.stamp(), Arc::clone(&view)));
+    Ok(Some(view))
+}
+
+/// The event feed's views of the families the segment driver prepares, each read once per
+/// publication of its family.
+struct FeedFamilies {
+    nukes: Arc<crate::products::country_nukes::query::Feed>,
+    subjects: Arc<crate::products::subjects::Feed>,
+    focus: Arc<crate::prepared_focus::query::Feed>,
+    ideas: Arc<crate::products::idea_history::Feed>,
+    projects: Arc<crate::products::special_projects::query::Feed>,
+}
+
+impl FeedFamilies {
+    /// The views on `branch`; none before every one of these families publishes it.
+    fn read(
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Self>> {
+        use crate::products::{country_nukes, ideas, special_projects, subjects};
+        let Some(nukes) = kept_view(
+            source,
+            content,
+            ("nukes", country_nukes::emit::SCHEMA),
+            branch,
+            |opened| {
+                opened.read(cancelled, |snapshot, directory| {
+                    country_nukes::query::feed(snapshot, directory)
+                })
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(subjects) = kept_view(
+            source,
+            content,
+            ("subjects", subjects::emit::SCHEMA),
+            branch,
+            |opened| {
+                opened.read(cancelled, |snapshot, directory| {
+                    subjects::query::feed(snapshot, directory)
+                })
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(focus) = kept_view(
+            source,
+            content,
+            ("focus", crate::prepared_focus::emit::SCHEMA),
+            branch,
+            |opened| {
+                opened.read(cancelled, |snapshot, directory| {
+                    crate::prepared_focus::query::feed(snapshot, directory)
+                })
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(ideas) = kept_view(
+            source,
+            content,
+            (ideas::NAME, ideas::emit::SCHEMA),
+            branch,
+            |opened| {
+                opened.read(cancelled, |snapshot, directory| {
+                    ideas::query::feed(snapshot, directory)
+                })
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(projects) = kept_view(
+            source,
+            content,
+            ("projects", special_projects::emit::SCHEMA),
+            branch,
+            |opened| {
+                opened.read(cancelled, |snapshot, directory| {
+                    special_projects::query::feed(snapshot, directory, cancelled)
+                })
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            nukes,
+            subjects,
+            focus,
+            ideas,
+            projects,
+        }))
+    }
+
+    fn families(&self) -> crate::products::event_feed::prepared::query::Families<'_> {
+        crate::products::event_feed::prepared::query::Families {
+            nukes: &self.nukes,
+            subjects: &self.subjects,
+            focus: &self.focus,
+            ideas: &self.ideas,
+            projects: &self.projects,
+        }
+    }
+}
+
+/// The focus family's publication on `branch`, pinned through `product`'s accepted coverage;
+/// none before that covers `hour`, or the whole branch when `hour` is none.
+fn focus_published(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    branch: u64,
+    hour: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<published::Opened>> {
+    let Some(coverage) =
+        super::pipeline::product_coverage(source, content, branch, product, cancelled)?
+    else {
+        return Ok(None);
+    };
+    if !coverage.complete && hour.is_none_or(|hour| hour > coverage.last_hour) {
+        return Ok(None);
+    }
+    published::open_through(
+        source,
+        content,
+        "focus",
+        crate::prepared_focus::emit::SCHEMA,
+        branch,
+        (!coverage.complete).then_some(coverage.last_hour),
+    )
+}
+
+/// A country's special projects through `through`, the last hour of the family's admitted
+/// prefix, from its publication pinned there; nothing read before it publishes the branch.
+fn projects_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &crate::products::special_projects::SpecialProjectsParams,
+    branch: u64,
+    through: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<crate::products::special_projects::SpecialProjectsReply> {
+    use crate::products::special_projects::{emit, query};
+    let opened = published::open_through(
+        source,
+        content,
+        "projects",
+        emit::SCHEMA,
+        branch,
+        Some(through),
+    )?;
+    match opened {
+        Some(opened) => opened.read(cancelled, |snapshot, directory| {
+            query::reply(snapshot, directory, params, through, cancelled)
+        }),
+        None => Ok(query::unprepared(params)),
+    }
 }
 
 /// A `country-stability` series request answered from the stability family's publication;
@@ -951,6 +1722,92 @@ fn stability_series(
     };
     opened.read(cancelled, |snapshot, directory| {
         country_stability::query::query(product, params.clone(), snapshot, directory, cancelled)
+    })
+}
+
+/// A `country-measure` series request answered from the balances' publication; null before it
+/// publishes the branch.
+fn measure_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::country_balances;
+    let Some(opened) = published::open(
+        source,
+        content,
+        country_balances::NAME,
+        country_balances::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        country_balances::query::query(product, params.clone(), snapshot, directory, cancelled)
+    })
+}
+
+/// A `country-experience` series request answered from the experience family's publication;
+/// null before it publishes the branch.
+fn experience_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::experience;
+    let Some(opened) = published::open(
+        source,
+        content,
+        "experience",
+        experience::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        experience::query::query(product, params.clone(), snapshot, directory, cancelled)
+    })
+}
+
+/// A `stability-parts` series request answered from the parts family's publication; null
+/// before it publishes the branch.
+fn parts_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::stability_parts;
+    let Some(opened) = published::open(
+        source,
+        content,
+        "parts",
+        stability_parts::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        stability_parts::query::query(
+            source,
+            content,
+            product,
+            params.clone(),
+            snapshot,
+            directory,
+            cancelled,
+        )
     })
 }
 
@@ -994,25 +1851,6 @@ fn coverage(
         return Ok(false);
     }
     Ok(true)
-}
-
-/// Whether an experience series request names banked measures alone: its
-/// measure, and each of the measures it navigates by.
-fn banked_experience(params: &Value) -> bool {
-    let banked = |measure: Option<&str>| {
-        measure.is_some_and(|measure| {
-            crate::products::country_experience::SAMPLED_MEASURES.contains(&measure)
-        })
-    };
-    banked(
-        params
-            .get("family")
-            .and_then(|family| family.get("measure"))
-            .and_then(Value::as_str),
-    ) && params
-        .get("measures")
-        .and_then(Value::as_array)
-        .is_none_or(|measures| measures.iter().all(|measure| banked(measure.as_str())))
 }
 
 fn series_coverage(product: &str, params: &Value) -> io::Result<(Option<i32>, bool)> {
@@ -1424,8 +2262,8 @@ fn casualty_reads_through(params: &Value, prefix: &super::prefix::Prefix) -> Val
 /// The query of a keyed family's product ([`dashboard_keyed`]).
 fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::Result<Value> {
     use crate::products::{
-        air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_supremacy,
-        occupation_reserve, regional_weather,
+        air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields,
+        naval_supremacy, occupation_reserve, regional_weather,
     };
     match product {
         "air-missions" => air_missions::query(query),
@@ -1438,6 +2276,54 @@ fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::
         "intel-network-coverage" => intel_coverage::query(query),
         _ => Err(crate::invalid("Unknown keyed product")),
     }
+}
+
+/// `read` of the market family's publication on `branch` with its catalogue, read once per
+/// publication; of none before the family publishes the branch.
+fn market_read<T>(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    cancelled: &AtomicBool,
+    read: impl FnOnce(
+        Option<(
+            &mut dashboard_series::Snapshot<'_, dashboard_series::StoreRead<'_>>,
+            &crate::products::market::query::Catalogue,
+        )>,
+    ) -> io::Result<T>,
+) -> io::Result<T> {
+    use crate::products::market::{self, query::Catalogue};
+    type Kept = std::collections::BTreeMap<u64, (([u64; 3], u64), Arc<Catalogue>)>;
+    #[derive(Default)]
+    struct Catalogues(Kept);
+    let Some(opened) =
+        published::open(source, content, market::FAMILY, market::emit::SCHEMA, branch)?
+    else {
+        return read(None);
+    };
+    let state = source.state::<Catalogues>();
+    let kept = state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .get(&branch)
+        .filter(|(stamp, _)| *stamp == opened.stamp())
+        .map(|(_, catalogue)| Arc::clone(catalogue));
+    let catalogue = match kept {
+        Some(catalogue) => catalogue,
+        None => {
+            let catalogue = Arc::new(opened.read(cancelled, |_, directory| {
+                Catalogue::read(directory)
+            })?);
+            state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .0
+                .insert(branch, (opened.stamp(), Arc::clone(&catalogue)));
+            catalogue
+        }
+    };
+    opened.read(cancelled, |snapshot, _| read(Some((snapshot, &catalogue))))
 }
 
 /// The economy families' whole-branch histories and ledger pages, through
@@ -1488,9 +2374,27 @@ fn economy(
             let params: fuel_branches::FuelBranchesParams =
                 serde_json::from_value(request.params.clone())?;
             let labels = fuel_branches::labels(source, &context, &mut warnings);
-            serde_json::to_value(fuel_branches::query(
-                store, key, &params, through, labels, warnings, cancelled,
-            )?)?
+            // Pinned through the prefix: no read passes it.
+            let opened = match through {
+                Some(through) => published::open_through(
+                    source,
+                    content,
+                    fuel_branches::FAMILY,
+                    fuel_branches::emit::SCHEMA,
+                    branch,
+                    (through != i32::MAX).then_some(through),
+                )?,
+                None => None,
+            };
+            let reply = match (opened, through) {
+                (Some(opened), Some(through)) => opened.read(cancelled, |snapshot, directory| {
+                    fuel_branches::query::reply(
+                        snapshot, directory, &params, through, labels, warnings, cancelled,
+                    )
+                })?,
+                _ => fuel_branches::query::unpublished(&params, through, warnings),
+            };
+            serde_json::to_value(reply)?
         }
         "market-history" => {
             let params: market::MarketHistoryParams =
@@ -1499,9 +2403,10 @@ fn economy(
             let texts = catalogue
                 .as_deref()
                 .map(|catalogue| catalogue as &dyn Texts);
-            serde_json::to_value(market::history(
-                store, key, &params, through, texts, warnings, cancelled,
-            )?)?
+            let reply = market_read(source, content, branch, cancelled, |read| {
+                market::query::history(read, &params, through, texts, warnings, cancelled)
+            })?;
+            serde_json::to_value(reply)?
         }
         "market-ledger" => {
             let params: market::MarketLedgerParams =
@@ -1510,16 +2415,31 @@ fn economy(
             let texts = catalogue
                 .as_deref()
                 .map(|catalogue| catalogue as &dyn Texts);
-            serde_json::to_value(market::ledger(
-                store, key, &params, through, texts, warnings, cancelled,
-            )?)?
+            let reply = market_read(source, content, branch, cancelled, |read| {
+                market::query::ledger(read, &params, through, texts, warnings, cancelled)
+            })?;
+            serde_json::to_value(reply)?
         }
         "lend-lease-balance" => {
             let params: lend_lease_balance::LendLeaseBalanceParams =
                 serde_json::from_value(request.params.clone())?;
-            serde_json::to_value(lend_lease_balance::query(
-                store, key, &params, through, cancelled,
-            )?)?
+            let opened = match through {
+                Some(_) => published::open(
+                    source,
+                    content,
+                    lend_lease_balance::FAMILY,
+                    lend_lease_balance::emit::SCHEMA,
+                    branch,
+                )?,
+                None => None,
+            };
+            let reply = match opened {
+                Some(opened) => opened.read(cancelled, |snapshot, directory| {
+                    lend_lease_balance::query::reply(snapshot, directory, &params, through, cancelled)
+                })?,
+                None => lend_lease_balance::query::unpublished(&params, through)?,
+            };
+            serde_json::to_value(reply)?
         }
         "production-catalogue" => {
             let params: production_catalogue::ProductionCatalogueParams =
@@ -1547,9 +2467,27 @@ fn economy(
                 units: units.as_deref(),
                 icon: &icon,
             };
-            serde_json::to_value(production_catalogue::query(
-                store, key, &params, through, &naming, warnings, cancelled,
-            )?)?
+            // The family's publication, never past the gate's prefix.
+            let opened = match through {
+                Some(through) => published::open_through(
+                    source,
+                    content,
+                    production_catalogue::FAMILY,
+                    production_catalogue::emit::SCHEMA,
+                    branch,
+                    Some(through),
+                )?,
+                None => None,
+            };
+            let reply = match (opened, through) {
+                (Some(opened), Some(through)) => opened.read(cancelled, |snapshot, directory| {
+                    production_catalogue::query(
+                        snapshot, directory, &params, through, &naming, warnings, cancelled,
+                    )
+                })?,
+                _ => production_catalogue::query::unpublished(&params, through, warnings),
+            };
+            serde_json::to_value(reply)?
         }
         "convoy-health" => {
             let params: convoy_health::ConvoyHealthParams =
@@ -1703,7 +2641,10 @@ fn query_data(
                 prefix = super::prefix::Prefix::new(source, branch, prefix.coverage, None);
             }
             // Opinions past the prefix wait for their hour to be prepared.
-            if params.hour().is_some_and(|hour| hour > prefix.coverage.last_hour) {
+            if params
+                .hour()
+                .is_some_and(|hour| hour > prefix.coverage.last_hour)
+            {
                 return Ok(Value::Null);
             }
             let reply = match published::open(
@@ -1746,42 +2687,7 @@ fn query_data(
             };
             serde_json::to_value(reply)?
         }
-        "party-history" => {
-            let id = request
-                .params
-                .get("branchId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::invalid("Missing party branch"))?;
-            let branch = branch(source, id)?;
-            let accepted = match super::pipeline::product_coverage(
-                source,
-                content,
-                branch,
-                &request.product,
-                cancelled,
-            ) {
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
-                other => other?,
-            };
-            // The full parity history includes catalogues first seen later. Native
-            // popularity and prepared event pages can answer during preparation.
-            if request.params.get("mode").and_then(Value::as_str) == Some("history")
-                && !accepted.as_ref().is_some_and(|coverage| coverage.complete)
-            {
-                return Ok(Value::Null);
-            }
-            crate::products::party_history::prepared::query(
-                source,
-                serde_json::from_value(request.params.clone())?,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                &store,
-                &key,
-                accepted.as_ref(),
-                cancelled,
-            )?
-        }
+        "party-history" => party_reply(source, content, &request.params, cancelled)?,
 
         product @ ("fuel-branches"
         | "market-history"
@@ -1812,14 +2718,24 @@ fn query_data(
                 )?,
                 None => Vec::new(),
             };
-            let mut data = serde_json::to_value(civil_wars::query(
-                &store,
-                &key,
-                &params,
-                through,
-                &annexations,
-                cancelled,
-            )?)?;
+            let opened = match through {
+                Some(through) => published::open_through(
+                    source,
+                    content,
+                    crate::products::politics_state::history::FAMILY,
+                    crate::products::politics_state::history::emit::SCHEMA,
+                    branch,
+                    Some(through),
+                )?,
+                None => None,
+            };
+            let reply = match opened {
+                Some(opened) => opened.read(cancelled, |snapshot, directory| {
+                    civil_wars::query(snapshot, directory, &params, through, &annexations, cancelled)
+                })?,
+                None => civil_wars::unpublished(&params, through)?,
+            };
+            let mut data = serde_json::to_value(reply)?;
             prefix.mark(&mut data)?;
             data
         }
@@ -1843,9 +2759,24 @@ fn query_data(
                 content: content.cloned(),
             };
             let catalogue = history::presentation_catalogue(source, &params, &context);
-            let mut data = serde_json::to_value(history::query(
-                &store, &key, &params, through, catalogue, cancelled,
-            )?)?;
+            let opened = match through {
+                Some(through) => published::open_through(
+                    source,
+                    content,
+                    history::FAMILY,
+                    history::emit::SCHEMA,
+                    branch,
+                    Some(through),
+                )?,
+                None => None,
+            };
+            let reply = match opened {
+                Some(opened) => opened.read(cancelled, |snapshot, directory| {
+                    history::query(snapshot, directory, &params, through, catalogue, cancelled)
+                })?,
+                None => history::unpublished(&params, through)?,
+            };
+            let mut data = serde_json::to_value(reply)?;
             prefix.mark(&mut data)?;
             data
         }
@@ -1981,9 +2912,18 @@ fn query_data(
             } else {
                 None
             };
-            let mut data = if prefix.as_ref().is_some_and(|prefix| {
-                requested.is_none_or(|hour| hour <= prefix.coverage.last_hour)
-            }) {
+            // Its pages are published a row window at a time: through the last window covered.
+            let published = prefix.as_ref().and_then(|prefix| {
+                source
+                    .block_windows(branch)
+                    .iter()
+                    .map(|window| window.last_hour)
+                    .take_while(|&last| last <= prefix.coverage.last_hour)
+                    .last()
+            });
+            let mut data = if published
+                .is_some_and(|published| requested.is_none_or(|hour| hour <= published))
+            {
                 crate::products::ships_sunk::prepared::query(
                     source,
                     product,
@@ -2143,7 +3083,7 @@ fn query_data(
                 live = kept;
             }
             params.last_hour = live;
-            let nukes = nukes_feed(source, content, branch, cancelled)?;
+            let families = FeedFamilies::read(source, content, branch, cancelled)?;
             let mut data = serde_json::to_value(crate::products::event_feed::prepared::query(
                 source,
                 params,
@@ -2152,7 +3092,7 @@ fn query_data(
                 },
                 &store,
                 &key,
-                nukes.as_deref(),
+                families.as_ref().map(FeedFamilies::families),
                 cancelled,
             )?)?;
             super::prefix::Prefix {
@@ -2270,15 +3210,10 @@ fn query_data(
         "land-owners" => {
             let _: crate::products::land_owners::LandOwnersParams =
                 serde_json::from_value(request.params.clone())?;
-            let Some(file) = store.read(&key, "land-owners", 0)? else {
-                return Ok(Value::Null);
-            };
-            let scan = crate::products::land_owners::Scan::read(io::BufReader::new(file))?;
-            if !scan.complete {
-                return Ok(Value::Null);
-            }
-            check_cancel(cancelled)?;
-            serde_json::to_value(scan.reply())?
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                crate::products::land_owners::NOT_PREPARED,
+            ));
         }
         "country-identities" => {
             let id = request
@@ -2296,13 +3231,11 @@ fn query_data(
                 crate::invalid("Choose the game and user folders in Settings first")
             })?;
             let content = crate::products::politics_content::politics_content(source, options)?;
-            crate::products::idea_history::progressive::query(
+            crate::products::ideas::query::reply(
                 source,
                 &content,
                 options,
                 &request.params,
-                &store,
-                &key,
                 cancelled,
             )?
         }
@@ -2349,7 +3282,7 @@ fn query_data(
             },
             cancelled,
         )?,
-        "raids" => crate::products::raids::prepared::query(
+        "raids" => crate::products::raids::query::query(
             source,
             request.params.clone(),
             &crate::products::LoadContext {
@@ -2380,23 +3313,15 @@ fn query_data(
             let context = crate::products::LoadContext {
                 content: content.cloned(),
             };
-            let mut data = if prefix.is_some() {
-                crate::products::military_air_ledger::prepared::query(
-                    source,
-                    &store,
-                    &key,
-                    request.params.clone(),
-                    &context,
-                    cancelled,
-                )?
-            } else {
-                crate::products::military_air_ledger::prepared::empty(
-                    source,
-                    request.params.clone(),
-                    &context,
-                    cancelled,
-                )?
-            };
+            let mut data = air_ledger_reply(
+                source,
+                content,
+                &context,
+                request.params.clone(),
+                branch,
+                prefix.as_ref().map(|prefix| &prefix.coverage),
+                cancelled,
+            )?;
             match prefix {
                 Some(prefix) => prefix.mark(&mut data)?,
                 None => super::prefix::mark_unprepared(source, branch, None, &mut data)?,
@@ -2421,7 +3346,7 @@ fn query_data(
                 .as_str()
                 .ok_or_else(|| crate::invalid("Invalid construction branch"))?;
             branch(source, id)?;
-            crate::products::construction_log::prepared::query(
+            crate::products::construction_log::query::query(
                 source,
                 product,
                 request.params.clone(),
@@ -2430,31 +3355,18 @@ fn query_data(
             )?
             .unwrap_or(Value::Null)
         }
-        "resource-balance" => {
-            let id = request.params["branchId"]
-                .as_str()
-                .ok_or_else(|| crate::invalid("Invalid resource branch"))?;
-            branch(source, id)?;
-            crate::products::resource_balance::prepared::query(
-                source,
-                request.params.clone(),
-                content,
-                cancelled,
-            )?
-            .unwrap_or(Value::Null)
-        }
+        "resource-balance" => balance_reply(source, content, &request.params, cancelled)?,
         "trade-flows" => {
             let id = request.params["branchId"]
                 .as_str()
                 .ok_or_else(|| crate::invalid("Invalid trade branch"))?;
             branch(source, id)?;
-            crate::products::trade_flows::prepared::query(
+            crate::products::trade_flows::query::query(
                 source,
                 request.params.clone(),
                 content,
                 cancelled,
             )?
-            .unwrap_or(Value::Null)
         }
         "production-spending" => crate::products::production_spending::prepared::query(
             source,
@@ -2499,16 +3411,14 @@ fn query_data(
                 cancelled,
             )?;
             let through = (!prefix.coverage.complete).then_some(prefix.coverage.last_hour);
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let wars = crate::products::war_casualties::breakdown::prepared::published_wars(
+                source, &context, &key, branch, through, cancelled,
+            )?;
             let reply = crate::products::war_casualties::breakdown::prepared::query_through(
-                source,
-                &params,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                &store,
-                &key,
-                through,
-                cancelled,
+                source, &params, &context, &store, &key, through, &wars, cancelled,
             )?;
             let reply = match reply {
                 Some(reply) => reply,
@@ -2535,12 +3445,10 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Missing prepared wars branch"))?;
             let branch = branch(source, id)?;
-            // App continuity numbers groups across consecutive observed hours,
-            // so the lanes are the walk of the prepared prefix's change inputs;
-            // the walk's hours after its last input are pending, not
-            // unobserved. Requested `current` hours list native groups and
-            // contributions from each hour's frame alone, independently of
-            // the prefix's progress.
+            // App continuity numbers groups across consecutive observed hours, so the lanes are
+            // the walk of the published change inputs; the walk's hours after its last input
+            // are pending, not unobserved. Requested `current` hours list native groups and
+            // contributions from the published tables there.
             let prefix = super::prefix::read_or_empty(
                 source,
                 content,
@@ -2552,36 +3460,21 @@ fn query_data(
             let context = crate::products::LoadContext {
                 content: content.cloned(),
             };
-            // Read first: a prepared attempt needing the hours' frames is refused before it
-            // walks. Any other failure is told after the walk's, as before.
-            let current = match crate::products::wars::prepared::current(
+            let opened = published::open(
+                source,
+                content,
+                "wars",
+                crate::products::wars::emit::SCHEMA,
+                branch,
+            )?;
+            let mut data = crate::products::wars::query::query(
                 source,
                 &request.params,
-                &context,
-                cancelled,
-            ) {
-                Err(error)
-                    if error.kind() == io::ErrorKind::WouldBlock
-                        && progressive::block_decodes_disabled() =>
-                {
-                    return Err(error);
-                }
-                current => current,
-            };
-            let mut data = crate::products::wars::prepared::query(
-                source,
-                &request.params,
-                &store,
+                opened.as_ref(),
                 &key,
                 &context,
                 cancelled,
             )?;
-            let current = current?;
-            if !current.is_empty()
-                && let Some(reply) = data.as_object_mut()
-            {
-                reply.insert("current".into(), serde_json::to_value(current)?);
-            }
             if !prefix.coverage.complete
                 && let Some(reply) = data.as_object_mut()
             {
@@ -2600,15 +3493,12 @@ fn query_data(
             data
         }
         "subjects" => {
-            let params: crate::products::subjects::SubjectParams =
-                serde_json::from_value(request.params.clone())?;
+            use crate::products::subjects;
+            let params: subjects::SubjectParams = serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            // The subject scan is the family's continuation, saved with each
-            // commit of its coverage, so before completion it answers the
-            // prepared prefix. Each later block's keyframe supplies its
-            // relations and levels, marked approximate; a block it cannot
-            // sample stays pending.
-            let mut prefix = super::prefix::read_or_empty(
+            // Before completion the reply answers the publication through the family's prepared
+            // prefix, and the hours after it are pending.
+            let prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
@@ -2616,41 +3506,40 @@ fn query_data(
                 None,
                 cancelled,
             )?;
-            let scan: crate::products::subjects::Scan =
-                match store.read(&key, &format!("subjects-{branch}"), 0)? {
-                    Some(file) => serde_json::from_reader(zstd::stream::Decoder::new(file)?)?,
-                    None => crate::products::subjects::Scan::new(source.replay_ref(), branch),
-                };
-            check_cancel(cancelled)?;
-            let mut scan = scan.finish(source.replay_ref(), branch);
-            let approximate = if prefix.coverage.complete {
-                None
-            } else {
-                Some(scan.sample_tail(source, branch, prefix.coverage.last_hour, cancelled)?)
+            let complete = prefix.coverage.complete;
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
             };
-            let mut reply = scan.reply(
+            let opened = published::open_through(
                 source,
-                &params.branch_id,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
+                content,
+                "subjects",
+                subjects::emit::SCHEMA,
+                branch,
+                (!complete).then_some(prefix.coverage.last_hour),
             )?;
-            if let Some(approximate) = approximate {
-                prefix.clip(&mut reply.unobserved);
-                // Recorded gaps after the prefix are unobserved however far
-                // preparation has gone.
-                let after = prefix.coverage.last_hour;
-                let gaps = super::prefix::gaps_after(source, branch, after);
-                for gap in gaps {
-                    crate::products::country_groups::mark_unobserved(
-                        &mut reply.unobserved,
-                        gap.first_hour.max(after.saturating_add(1)),
-                        gap.last_hour,
-                    );
-                }
-                prefix.sampled(&approximate);
-                reply.approximate = Some(approximate);
-            }
+            let mut reply = match opened {
+                Some(opened) => opened.read(cancelled, |snapshot, directory| {
+                    subjects::query::reply(
+                        snapshot,
+                        directory,
+                        source,
+                        branch,
+                        &params.branch_id,
+                        &context,
+                        complete,
+                        cancelled,
+                    )
+                })?,
+                None => subjects::query::unpublished(
+                    source,
+                    branch,
+                    &params.branch_id,
+                    &context,
+                    complete,
+                )?,
+            };
+            prefix.clip(&mut reply.unobserved);
             let mut data = serde_json::to_value(reply)?;
             prefix.mark(&mut data)?;
             data
@@ -2702,57 +3591,57 @@ fn query_data(
                 .and_then(Value::as_u64)
                 .and_then(|value| usize::try_from(value).ok())
                 .ok_or_else(|| crate::invalid("Invalid occupied states window"))?;
-            let last_hour = source
+            let interval = *source
                 .block_windows(branch)
                 .get(window)
-                .ok_or_else(|| crate::invalid("Occupied states window not in this recording"))?
-                .last_hour;
-            if accepted
-                .as_ref()
-                .is_some_and(|coverage| coverage.complete || last_hour <= coverage.last_hour)
-            {
-                crate::products::occupied_states::prepared::window_query(
+                .ok_or_else(|| crate::invalid("Occupied states window not in this recording"))?;
+            let last_hour = interval.last_hour;
+            let reached = accepted.as_ref().map(|coverage| {
+                (
+                    coverage.complete || last_hour <= coverage.last_hour,
+                    coverage.last_hour >= interval.first_hour,
+                )
+            });
+            let mut data = match reached {
+                Some((true, _)) | Some((_, true)) => {
+                    crate::products::occupied_states::prepared::window_query(
+                        source,
+                        &context,
+                        product,
+                        request.params.clone(),
+                        cancelled,
+                    )?
+                }
+                _ => Value::Null,
+            };
+            // A window preparation has only partly reached answers its prepared hours, the rest
+            // pending; one it has not reached answers nothing yet.
+            if !matches!(reached, Some((true, _))) {
+                if data.is_null() {
+                    data = serde_json::to_value(
+                        crate::products::occupied_states::OccupiedStatesReply {
+                            branch_id: branch.to_string(),
+                            window,
+                            interval,
+                            texts: Vec::new(),
+                            states: Vec::new(),
+                            observed: Vec::new(),
+                            warnings: Vec::new(),
+                            laws: None,
+                        },
+                    )?;
+                }
+                super::prefix::read_or_empty(
                     source,
-                    &context,
+                    content,
                     product,
-                    request.params.clone(),
+                    branch,
+                    Some(last_hour),
                     cancelled,
                 )?
-            } else {
-                // A window preparation has not reached decodes alone from its
-                // block and a proven look-back, exactly as preparation will
-                // write it; null while a block it needs cannot be read.
-                match crate::products::occupied_states::prepared::look_back_window(
-                    source, &context, branch, window, cancelled,
-                )? {
-                    Some(reply) => serde_json::to_value(reply)?,
-                    None => {
-                        let interval = source.block_windows(branch)[window];
-                        let mut data = serde_json::to_value(
-                            crate::products::occupied_states::OccupiedStatesReply {
-                                branch_id: branch.to_string(),
-                                window,
-                                interval,
-                                texts: Vec::new(),
-                                states: Vec::new(),
-                                observed: Vec::new(),
-                                warnings: Vec::new(),
-                                laws: None,
-                            },
-                        )?;
-                        super::prefix::read_or_empty(
-                            source,
-                            content,
-                            product,
-                            branch,
-                            Some(last_hour),
-                            cancelled,
-                        )?
-                        .mark(&mut data)?;
-                        data
-                    }
-                }
+                .mark(&mut data)?;
             }
+            data
         }
         "unit-leaders" => {
             use crate::products::unit_leaders::{UnitLeaders, UnitLeadersParams};
@@ -2900,10 +3789,9 @@ fn query_data(
             data
         }
         "faction-state" => {
-            let params: crate::products::faction_state::FactionStateParams =
-                serde_json::from_value(request.params.clone())?;
-            crate::products::faction_state::FactionState::validate(&params)
-                .map_err(crate::invalid)?;
+            use crate::products::faction_state::{self, FactionState, FactionStateParams};
+            let params: FactionStateParams = serde_json::from_value(request.params.clone())?;
+            FactionState::validate(&params).map_err(crate::invalid)?;
             let (id, _) = params.identity();
             let branch = branch(source, id)?;
             let prefix = super::prefix::read_or_empty(
@@ -2914,17 +3802,19 @@ fn query_data(
                 None,
                 cancelled,
             )?;
-            serde_json::to_value(crate::products::faction_state::prepared::query(
-                source,
-                &params,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                &store,
-                &key,
-                prefix,
-                cancelled,
-            )?)?
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let schema = faction_state::emit::SCHEMA;
+            let reply = match published::open(source, content, "faction_state", schema, branch)? {
+                Some(opened) => opened.read(cancelled, |snapshot, directory| {
+                    faction_state::query::reply(
+                        source, &context, &params, snapshot, directory, prefix, cancelled,
+                    )
+                })?,
+                None => faction_state::query::unpublished(source, &context, &params, prefix, cancelled)?,
+            };
+            serde_json::to_value(reply)?
         }
         "special-projects" => {
             let params: crate::products::special_projects::SpecialProjectsParams =
@@ -2932,37 +3822,20 @@ fn query_data(
             crate::products::special_projects::SpecialProjects::validate(&params)
                 .map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            // The projects' pages are committed with their family's coverage:
-            // before it is complete they answer the prepared prefix, whose
-            // episodes end at its last hour, and name the hours after pending.
+            // Before the family's coverage is complete the reply answers its
+            // prepared prefix, whose episodes end at its last hour, and names the
+            // hours after pending.
             let prefix =
                 super::prefix::read(source, content, &request.product, branch, None, cancelled)?;
             let context = crate::products::LoadContext {
                 content: content.cloned(),
             };
-            // Their history ends where the admitted prefix does, before any hole its pages go on
-            // after; nothing of it is admitted without one.
+            // Their history ends where the admitted prefix does, before any hole its publication
+            // goes on after; nothing of it is admitted without one.
             let through = prefix
                 .as_ref()
                 .map_or(i32::MIN, |prefix| prefix.coverage.last_hour);
-            let mut reply = crate::products::special_projects::prepared::query(
-                request.params.clone(),
-                &store,
-                &key,
-                through,
-                cancelled,
-            )?;
-            if let Some(hour) = params.hour
-                && prefix.as_ref().is_none_or(|prefix| {
-                    !prefix.coverage.complete && hour > prefix.coverage.last_hour
-                })
-            {
-                reply.current = Some(Box::new(
-                    crate::products::special_projects::prepared::frame_reply(
-                        source, &context, &params, hour, cancelled,
-                    )?,
-                ));
-            }
+            let mut reply = projects_reply(source, content, &params, branch, through, cancelled)?;
             if let Some(hour) = params.hour {
                 reply.details = Some(crate::products::special_projects::details_at_hour(
                     source, &context, &params, hour, cancelled,
@@ -3008,6 +3881,9 @@ fn query_data(
             check_cancel(cancelled)?;
             let approximate = if prefix.coverage.complete {
                 None
+            } else if super::pipeline::native_published(source, content)? {
+                scan.unsampled_tail();
+                Some(Vec::new())
             } else {
                 Some(scan.sample_tail(source, branch, prefix.coverage.last_hour, cancelled)?)
             };
@@ -3112,42 +3988,20 @@ fn query_data(
             let params: FocusPoint = serde_json::from_value(request.params.clone())?;
             crate::products::validate_tag(&params.tag).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
+            let opened = focus_published(
                 source,
                 content,
                 &request.product,
                 branch,
                 Some(params.hour),
-                false,
                 cancelled,
-            )? {
-                let prefix = super::prefix::read_or_empty(
-                    source,
-                    content,
-                    &request.product,
-                    branch,
-                    Some(params.hour),
-                    cancelled,
-                )?;
-                let mut data = serde_json::to_value(crate::prepared_focus::sampled_hour(
-                    source,
-                    branch,
-                    &params.tag,
-                    params.hour,
-                    cancelled,
-                )?)?;
-                prefix.mark(&mut data)?;
-                return Ok(data);
-            }
-            let mut data = serde_json::to_value(crate::prepared_focus::query_hour(
-                source,
-                &store,
-                &key,
-                branch,
-                &params.tag,
-                params.hour,
-                cancelled,
-            )?)?;
+            )?;
+            let mut data = match opened {
+                Some(opened) => serde_json::to_value(opened.read(cancelled, |snapshot, directory| {
+                    crate::prepared_focus::query::hour(snapshot, directory, &params.tag, params.hour)
+                })?)?,
+                None => Value::Null,
+            };
             super::prefix::read_or_empty(
                 source,
                 content,
@@ -3165,25 +4019,15 @@ fn query_data(
             let branch = branch(source, &params.branch_id)?;
             // The whole branch's completions, as the national focus history holds them: only
             // once the family has prepared all of it.
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
+            let Some(opened) =
+                focus_published(source, content, &request.product, branch, None, cancelled)?
+            else {
                 return Ok(Value::Null);
-            }
+            };
             serde_json::json!({
-                "completions": crate::prepared_focus::completions(
-                    &store,
-                    &key,
-                    branch,
-                    &params.tag,
-                    cancelled,
-                )?,
+                "completions": opened.read(cancelled, |snapshot, directory| {
+                    crate::prepared_focus::query::completions(snapshot, directory, &params.tag)
+                })?,
                 // The history's own, which serving joins the content's diagnostics.
                 "warnings": crate::prepared_focus::art::standing_warnings(
                     source,
@@ -3195,24 +4039,20 @@ fn query_data(
         "focus-unavailable" => {
             let params: FocusUnavailable = serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
+            let Some(opened) = focus_published(
                 source,
                 content,
                 &request.product,
                 branch,
                 Some(params.hour),
-                false,
                 cancelled,
-            )? {
+            )?
+            else {
                 return Ok(Value::Null);
-            }
-            serde_json::to_value(crate::prepared_focus::query_unavailable(
-                &store,
-                &key,
-                branch,
-                params.hour,
-                cancelled,
-            )?)?
+            };
+            serde_json::to_value(opened.read(cancelled, |snapshot, directory| {
+                crate::prepared_focus::query::unavailable(snapshot, directory, params.hour)
+            })?)?
         }
         "focus-order-page" => {
             let params: FocusPage = serde_json::from_value(request.params.clone())?;
@@ -3222,37 +4062,27 @@ fn query_data(
                 .page
                 .parse::<u64>()
                 .map_err(|_| crate::invalid("Invalid focus page ordinal"))?;
-            if params.pages.sampled
-                || !coverage(
-                    source,
-                    content,
-                    &request.product,
-                    branch,
-                    Some(params.hour),
-                    false,
-                    cancelled,
-                )?
-            {
-                return crate::prepared_focus::sampled_page(
-                    source,
-                    branch,
+            let Some(opened) = focus_published(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(params.hour),
+                cancelled,
+            )?
+            else {
+                return Ok(Value::Null);
+            };
+            opened.read(cancelled, |snapshot, directory| {
+                crate::prepared_focus::query::order_page(
+                    snapshot,
+                    directory,
                     &params.tag,
                     params.hour,
                     &params.pages,
                     page,
-                    cancelled,
-                );
-            }
-            crate::prepared_focus::order_page(
-                &store,
-                &key,
-                branch,
-                &params.tag,
-                params.hour,
-                &params.pages,
-                page,
-                cancelled,
-            )?
+                )
+            })?
         }
         "production-select" => {
             let params: ProductionSelection = serde_json::from_value(request.params.clone())?;
@@ -3310,7 +4140,7 @@ fn query_data(
                 .and_then(Value::as_str)
                 == Some("autonomy") =>
         {
-            crate::products::autonomy::prepared::progressive_query(
+            crate::products::autonomy::query::series(
                 source,
                 product,
                 &request.params,
@@ -3345,17 +4175,10 @@ fn query_data(
             };
             let (hour, complete) = series_coverage(product, &request.params)?;
             let accepted = admitted.ranges.coverage.clone();
-            if family == Some("game-score") && product == "series-state" {
-                return crate::products::game_score::prepared::state(
-                    source,
-                    request.params.clone(),
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    cancelled,
-                );
-            }
             match family {
+                Some("game-score") => {
+                    return score_series(source, content, product, &request.params, branch, cancelled);
+                }
                 Some("country-fuel") => {
                     return crate::products::country_fuel::query::query(
                         source,
@@ -3366,84 +4189,66 @@ fn query_data(
                     );
                 }
                 Some("country-factories") => {
-                    return crate::products::country_factories::prepared::query(
+                    return factories_series(
                         source,
+                        content,
                         product,
                         &request.params,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
+                        branch,
                         cancelled,
                     );
                 }
                 Some("country-nukes") => {
-                    return nukes_series(source, content, product, &request.params, branch, cancelled);
+                    return nukes_series(
+                        source,
+                        content,
+                        product,
+                        &request.params,
+                        branch,
+                        cancelled,
+                    );
+                }
+                Some("territory") => {
+                    return territory_series(
+                        source,
+                        content,
+                        product,
+                        &request.params,
+                        branch,
+                        cancelled,
+                    );
+                }
+                Some("world-tension") => {
+                    return tension_series(
+                        source,
+                        content,
+                        product,
+                        &request.params,
+                        branch,
+                        cancelled,
+                    );
                 }
                 _ => {}
             }
-            if family == Some("research") && product == "series-state" {
-                return crate::products::research::prepared::state_query(
-                    source,
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    &request.params,
-                    &store,
-                    &key,
-                    cancelled,
-                );
-            }
-            if family == Some("research") && product == "events-page" {
-                let prefix = super::prefix::read_or_empty(
-                    source, content, "research", branch, hour, cancelled,
-                )?;
-                let mut data = crate::products::research::prepared::query(
-                    source,
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    product,
-                    request.params.clone(),
-                    &store,
-                    &key,
-                    cancelled,
-                )?;
-                prefix.mark(&mut data)?;
-                return Ok(data);
-            }
-            // Banked experience is a daily read held until the next: its
-            // sampler carries its own scan from hour to hour, and navigation
-            // samples a long tail at each block's first read. Gains and changes need
-            // every hour of a day, so only preparation answers them.
-            let experience = (family == Some("country-experience")
-                && banked_experience(&request.params))
-            .then(|| crate::products::country_experience::Sampler::new(source.replay_ref().format));
-            // A summary draws the accepted prefix immediately. Sampling every
-            // remaining block would compete with preparation before it can draw.
-            // Reached values still read their own supplying block below.
-            let experience_prefix = experience.is_some() && product == "series-summary";
-            let experience_sample = |frame: &replay_frame::frame::DecodedFrame,
-                                     requested: Option<&[(String, String)]>|
-             -> io::Result<progressive::Samples> {
-                experience
-                    .as_ref()
-                    .ok_or_else(|| crate::invalid("Experience sampler missing"))?
-                    .sample(frame, requested)
-            };
-            // Families whose requests name one measure per tag register here; others
-            // expand their own request shape and call `progressive::tail` themselves.
-            let sampler: Option<(&[replay_data::rows::TableId], progressive::Sample<'_>)> =
-                match family {
-                    Some("country-measure") => Some((
-                        crate::prepared_measure::TABLES,
-                        &crate::prepared_measure::sample,
-                    )),
-                    Some("country-experience") if experience.is_some() => Some((
-                        crate::products::country_experience::SAMPLE_TABLES,
-                        &experience_sample,
-                    )),
-                    _ => None,
+            if family == Some("research") {
+                use crate::products::research::query as research;
+                // Its replies read its publication pinned through its prepared prefix alone.
+                let context = crate::products::LoadContext {
+                    content: content.cloned(),
                 };
+                return match product {
+                    "series-state" => research::state(source, &context, &request.params, cancelled),
+                    "events-page" => research::history_page(
+                        source,
+                        &context,
+                        &request.params,
+                        branch,
+                        hour,
+                        cancelled,
+                    ),
+                    _ => Err(crate::invalid("Unknown research series query")),
+                };
+            }
             let partial_events = matches!(product, "events-page" | "events-clusters");
             // Casualty totals sum lifetime counters through their hour, so no
             // frame samples them: a state read past the prepared prefix answers
@@ -3459,16 +4264,7 @@ fn query_data(
             } else {
                 None
             };
-            // Stability parts expand countries to parts and sample their own tail.
-            let parts_tail = family == Some("stability-parts")
-                && matches!(
-                    product,
-                    "series-state" | "series-summary" | "series-next-change"
-                );
-            if family != Some("territory")
-                && !matches!(family, Some("world-tension" | "occupation-trend"))
-                && sampler.is_none()
-                && !parts_tail
+            if family != Some("occupation-trend")
                 && !partial_events
                 && state_prefix.is_none()
                 && !matches!(
@@ -3482,232 +4278,15 @@ fn query_data(
             {
                 return Ok(Value::Null);
             }
-            let partial = !accepted.as_ref().is_some_and(|coverage| coverage.complete);
-            let mut sampled = (
-                std::collections::BTreeMap::new(),
-                Vec::new(),
-                std::collections::BTreeMap::new(),
-            );
-
-            if let Some((tables, sample)) = sampler
-                && partial
-                && !experience_prefix
-                && matches!(
-                    product,
-                    "series-state" | "series-summary" | "series-next-change"
-                )
-            {
-                let measure = request
-                    .params
-                    .get("family")
-                    .and_then(|family| family.get("measure"))
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| crate::invalid("Missing series measure"))?;
-                let labels: Vec<String> = if product == "series-next-change" {
-                    request
-                        .params
-                        .get("measures")
-                        .and_then(Value::as_array)
-                        .filter(|values| !values.is_empty())
-                        .map(|values| {
-                            values
-                                .iter()
-                                .map(|value| {
-                                    value
-                                        .as_str()
-                                        .map(str::to_owned)
-                                        .ok_or_else(|| crate::invalid("Invalid series measure"))
-                                })
-                                .collect()
-                        })
-                        .transpose()?
-                        .unwrap_or_else(|| vec![measure.to_owned()])
-                } else {
-                    vec![measure.to_owned()]
-                };
-                let mut requested = Vec::new();
-                let mut hours = Vec::new();
-                if product == "series-state" {
-                    for read in request
-                        .params
-                        .get("reads")
-                        .and_then(Value::as_array)
-                        .ok_or_else(|| crate::invalid("Missing series reads"))?
-                    {
-                        let tag = read
-                            .get("tag")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| crate::invalid("Invalid series tag"))?;
-                        let hour = read
-                            .get("hour")
-                            .and_then(Value::as_i64)
-                            .and_then(|hour| i32::try_from(hour).ok())
-                            .ok_or_else(|| crate::invalid("Invalid series hour"))?;
-                        hours.push(hour);
-                        for label in &labels {
-                            requested.push((tag.to_owned(), label.clone()));
-                        }
-                    }
-                } else {
-                    for tag in request
-                        .params
-                        .get("tags")
-                        .and_then(Value::as_array)
-                        .ok_or_else(|| crate::invalid("Missing series tags"))?
-                    {
-                        let tag = tag
-                            .as_str()
-                            .ok_or_else(|| crate::invalid("Invalid series tag"))?;
-                        for label in &labels {
-                            requested.push((tag.to_owned(), label.clone()));
-                        }
-                    }
-                }
-                requested.sort();
-                requested.dedup();
-                for (tag, _) in &requested {
-                    crate::products::validate_tag(tag).map_err(crate::invalid)?;
-                }
-                let mut sampled_requested = requested.clone();
-                if family == Some("country-experience") {
-                    sampled_requested.extend(requested.iter().map(|(tag, _)| {
-                        (
-                            tag.clone(),
-                            crate::prepared_measure::query::READ_HOUR.to_owned(),
-                        )
-                    }));
-                    sampled_requested.sort();
-                    sampled_requested.dedup();
-                }
-                let channels: &[&str] = &["politicalPower", "commandPower"];
-                let mut cached_requested: Vec<_> = requested
-                    .iter()
-                    .flat_map(|(tag, _)| {
-                        channels
-                            .iter()
-                            .map(move |field| (tag.clone(), (*field).to_owned()))
-                    })
-                    .collect();
-                cached_requested.sort();
-                cached_requested.dedup();
-                sampled = if product == "series-state" {
-                    if let Some(sampler) = &experience {
-                        progressive::state_tail_recorded(
-                            source,
-                            "country-experience:exact",
-                            branch,
-                            accepted.as_ref(),
-                            tables,
-                            replay_data::cadence::STAGGER_PERIOD,
-                            &sampled_requested,
-                            &crate::products::country_experience::Sampler::cache_keys(&requested),
-                            &hours,
-                            &|frame, _, requested| sampler.sample(frame, requested),
-                            cancelled,
-                        )?
-                    } else {
-                        progressive::state_tail_cached(
-                            source,
-                            "country-measure:series",
-                            branch,
-                            accepted.as_ref(),
-                            tables,
-                            &sampled_requested,
-                            &cached_requested,
-                            &hours,
-                            sample,
-                            cancelled,
-                        )?
-                    }
-                } else {
-                    let (from, to) = if product == "series-summary" {
-                        super::series::range(
-                            request.params.get("from").and_then(Value::as_f64),
-                            request.params.get("to").and_then(Value::as_f64),
-                        )?
-                    } else {
-                        super::series::range(
-                            request.params.get("firstHour").and_then(Value::as_f64),
-                            request.params.get("lastHour").and_then(Value::as_f64),
-                        )?
-                    };
-                    if product == "series-summary" {
-                        let width = request
-                            .params
-                            .get("width")
-                            .and_then(Value::as_u64)
-                            .and_then(|width| u32::try_from(width).ok())
-                            .filter(|width| *width > 0)
-                            .ok_or_else(|| crate::invalid("Invalid series width"))?;
-                        super::series::summary_budget(from, to, width, requested.len())?;
-                    }
-                    let window = (from.floor() as i32, to.floor() as i32);
-                    if let Some(sampler) = &experience {
-                        progressive::tail_first_read(
-                            source,
-                            "country-experience:exact",
-                            branch,
-                            accepted.as_ref(),
-                            tables,
-                            replay_data::cadence::STAGGER_PERIOD,
-                            &sampled_requested,
-                            &crate::products::country_experience::Sampler::cache_keys(&requested),
-                            window,
-                            &|frame, _, requested| sampler.sample(frame, requested),
-                            &|block| {
-                                crate::products::country_experience::Sampler::first_block(
-                                    source,
-                                    block,
-                                    &sampled_requested,
-                                    cancelled,
-                                )
-                            },
-                            cancelled,
-                        )?
-                    } else {
-                        progressive::tail_cached(
-                            source,
-                            "country-measure:series",
-                            branch,
-                            accepted.as_ref(),
-                            tables,
-                            &sampled_requested,
-                            &cached_requested,
-                            window,
-                            sample,
-                            cancelled,
-                        )?
-                    }
-                };
-            }
-            let tail_context = (sampler.is_some() && partial).then(|| {
-                let start = source
-                    .replay_ref()
-                    .branches
-                    .iter()
-                    .find(|start| start.id == branch)
-                    .unwrap();
-                (
-                    crate::metadata::branch_bounds(source.replay_ref(), start),
-                    &sampled.0,
-                    sampled.1.as_slice(),
-                    &sampled.2,
-                    accepted.is_some(),
-                )
-            });
             let mut data = match family {
                 Some("country-stability") => {
                     stability_series(source, content, product, &request.params, branch, cancelled)?
                 }
-                Some("country-measure" | "country-experience") => {
-                    crate::prepared_measure::query::query(
-                        product,
-                        request.params.clone(),
-                        &store,
-                        &key,
-                        tail_context,
-                        cancelled,
-                    )?
+                Some("country-measure") => {
+                    measure_series(source, content, product, &request.params, branch, cancelled)?
+                }
+                Some("country-experience") => {
+                    experience_series(source, content, product, &request.params, branch, cancelled)?
                 }
                 Some("naval-losses") => crate::products::naval_losses::prepared::query(
                     source,
@@ -3741,17 +4320,6 @@ fn query_data(
                     &key,
                     cancelled,
                 )?,
-                Some("world-tension") => {
-                    crate::products::world_tension::prepared::progressive_query(
-                        source,
-                        content,
-                        product,
-                        &request.params,
-                        &store,
-                        &key,
-                        cancelled,
-                    )?
-                }
                 Some("occupation-trend") => {
                     crate::products::occupied_states::prepared::trend_query(
                         source,
@@ -3763,15 +4331,6 @@ fn query_data(
                         cancelled,
                     )?
                 }
-                Some("territory") => crate::products::territory::prepared::query(
-                    source,
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    product,
-                    request.params.clone(),
-                    cancelled,
-                )?,
                 Some("faction-totals") => crate::products::faction_totals::prepared::query(
                     source,
                     &crate::products::LoadContext {
@@ -3790,14 +4349,11 @@ fn query_data(
                     {
                         return Ok(Value::Null);
                     }
-                    crate::products::peace_deals::prepared::query_through(
+                    // The publication is read through the family's accepted coverage.
+                    crate::products::peace_deals::query::query(
                         source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
+                        content,
                         request.params.clone(),
-                        &store,
-                        &key,
                         (!accepted.as_ref().is_some_and(|coverage| coverage.complete))
                             .then(|| {
                                 super::prefix::extent(source, branch, accepted.clone())
@@ -3807,68 +4363,21 @@ fn query_data(
                         cancelled,
                     )?
                 }
-                Some("research") => {
-                    // Assignment history and carried slot state need the scan:
-                    // its event pages answer the prepared prefix and name the
-                    // later hours pending; its values wait for their hours.
-                    if !partial_events
-                        && !coverage(source, content, gate, branch, hour, complete, cancelled)?
-                    {
-                        return Ok(Value::Null);
-                    }
-                    crate::products::research::prepared::query(
-                        source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        product,
-                        request.params.clone(),
-                        &store,
-                        &key,
-                        cancelled,
-                    )?
+                Some("stability-parts") => {
+                    parts_series(source, content, product, &request.params, branch, cancelled)?
                 }
-                Some("stability-parts") => crate::products::stability_parts::prepared_query(
-                    source,
-                    content,
-                    product,
-                    request.params.clone(),
-                    &store,
-                    &key,
-                    accepted.as_ref(),
-                    cancelled,
-                )?,
                 Some("army-size") => {
                     army_series(source, content, product, &request.params, branch, cancelled)?
                 }
-                Some("navy-size") => crate::products::navy::prepared::query(
-                    source,
-                    product,
-                    &request.params,
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    cancelled,
-                )?,
-                Some("air-force-size") => crate::products::air_force::prepared::query(
-                    source,
-                    product,
-                    &request.params,
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    cancelled,
-                )?,
+                Some("navy-size") => {
+                    navy_series(source, content, product, &request.params, branch, cancelled)?
+                }
+                Some("air-force-size") => {
+                    air_series(source, content, product, &request.params, branch, cancelled)?
+                }
                 Some("supply-health") if product == "series-next-change" => {
                     supply_next_change(source, content, &request.params, cancelled)?
                 }
-                Some("game-score") => crate::products::game_score::prepared::query(
-                    product,
-                    request.params.clone(),
-                    &store,
-                    &key,
-                    cancelled,
-                )?,
                 _ => return Err(crate::invalid("Unknown prepared series family")),
             };
             if let Some(states) = data.get_mut("states").and_then(Value::as_array_mut) {
@@ -3898,7 +4407,7 @@ fn query_data(
             // prefix pending.
             let pending = match state_prefix {
                 Some(prefix) => Some(prefix.pending),
-                None if partial_events || experience_prefix && partial => Some(
+                None if partial_events => Some(
                     super::prefix::Prefix::new(
                         source,
                         branch,
@@ -3910,7 +4419,7 @@ fn query_data(
                 None => None,
             };
             if let Some(reply) = data.as_object_mut() {
-                if !matches!(family, Some("world-tension" | "occupation-trend"))
+                if family != Some("occupation-trend")
                     || !reply.contains_key("coverage")
                 {
                     reply.insert(
@@ -4001,35 +4510,6 @@ fn each_at(value: &mut Value, path: &[&str], visit: &mut dyn FnMut(&mut Value)) 
                 each_at(next, rest, visit);
             }
         }
-    }
-}
-
-/// The content stack's live diagnostics join a reply's content warnings, at
-/// each place the reply keeps them ([`content_warning_paths`]), where it is
-/// served ([`Source::append_stack_warnings`]): published payloads leave them
-/// out, since other consumers' reads add to them at their own pace.
-#[cfg(test)]
-pub(in crate::prepared) fn append_stack_warnings(
-    source: &Source,
-    product: &str,
-    name: &str,
-    data: &mut Value,
-) {
-    for path in content_warning_paths(product, name) {
-        each_at(data, path, &mut |lines| {
-            let Value::Array(lines) = lines else {
-                return;
-            };
-            let mut warnings: Vec<String> = lines
-                .iter()
-                .filter_map(|line| line.as_str().map(str::to_owned))
-                .collect();
-            if warnings.len() != lines.len() {
-                return;
-            }
-            source.append_stack_warnings(&mut warnings);
-            *lines = warnings.into_iter().map(Value::String).collect();
-        });
     }
 }
 
@@ -4341,7 +4821,7 @@ fn answer(
     // or, when it consulted none, the coverage its product waits for.
     let gate = answer.waits.then(|| {
         if answer.short.is_empty() {
-            super::pipeline::published_gate(&published, name)
+            super::pipeline::gate(name)
         } else {
             answer.short.iter().copied().collect()
         }

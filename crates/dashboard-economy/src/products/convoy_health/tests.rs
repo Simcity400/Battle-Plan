@@ -227,3 +227,150 @@ fn a_resource_spelled_only_by_a_later_dictionary_is_learned_by_changes() {
     assert_eq!(reply.resources.len(), 1);
     assert_eq!(reply.resources[0].token, "synthetic_ore");
 }
+
+/// The hour `hour` of a scenario: a deal's convoys and a region's efficiency move, a deal names
+/// an unknown exporter, a region's country has no identity, the regional table is unavailable at
+/// 8, a deal goes at 9, a second country of the importer's slot appears at 10 and names the same
+/// region at 11 and 12, and a lend-lease route turns bad at 11.
+fn scenario(hour: i32) -> DecodedFrame {
+    let mut at = frame(hour);
+    let mut holders = vec![(1, 10, "IMP"), (2, 20, "EXP")];
+    if hour >= 10 {
+        holders.push((3, 10, "IMP"));
+    }
+    countries(&mut at, &holders);
+    let mut regional = vec![
+        (1, 7, if hour >= 6 { 90_000 } else { 100_000 }),
+        (1, 8, 40_000),
+    ];
+    if hour >= 7 {
+        regional.push((50, 7, 10_000));
+    }
+    if (11..=12).contains(&hour) {
+        regional.push((3, 7, 20_000 + i64::from(hour)));
+    }
+    regional.sort_by_key(|&(country, region, _)| (country, region));
+    if hour == 8 {
+        unavailable(&mut at, TableId::RegionalConvoyEfficiency);
+    } else {
+        set(
+            &mut at,
+            TableRows::RegionalConvoyEfficiency(
+                regional
+                    .into_iter()
+                    .map(|(country, region, efficiency)| RegionalConvoyEfficiencyRow {
+                        country,
+                        region,
+                        efficiency,
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    let mut deals = Vec::new();
+    if hour < 9 {
+        deals.push(ResourceExchangeRow {
+            id: 1,
+            exporter: 2,
+            importer: 1,
+            resource: 0,
+            convoys_assigned: if hour >= 6 { 3 } else { 2 },
+            convoys_required: 5,
+            efficiency_a: 80_000,
+            efficiency_b: 90_000,
+            delivered: i64::from(hour),
+            ..Default::default()
+        });
+    }
+    if hour >= 7 {
+        deals.push(ResourceExchangeRow {
+            id: 2,
+            exporter: 99,
+            importer: 1,
+            resource: 0,
+            convoys_assigned: 1,
+            convoys_required: 1,
+            efficiency_a: 100_000,
+            efficiency_b: 100_000,
+            ..Default::default()
+        });
+    }
+    set(&mut at, TableRows::ResourceExchanges(deals));
+    set(
+        &mut at,
+        TableRows::ConvoyClients(vec![ConvoyClientRow {
+            handle: 9,
+            category: LEND_LEASE,
+            owner: 2,
+            other: 1,
+            bad: hour >= 11,
+            convoys_assigned: 4,
+            convoys_required: 4,
+            ..Default::default()
+        }]),
+    );
+    at
+}
+
+/// What `table` changed from `before` to `now` in rows, as an operator hands it on: whole where
+/// either is not complete, else the keys written and deleted.
+fn edit<T: replay_data::rows::TableSchema>(before: &DecodedFrame, now: &DecodedFrame) -> Option<(TableId, Edit)>
+where
+    T::Row: RowCodec + PartialEq,
+{
+    let (Ok(old), Ok(new)) = (before.complete::<T>(), now.complete::<T>()) else {
+        return Some((T::ID, Edit::Whole));
+    };
+    let held: BTreeMap<u128, &T::Row> = old.iter().map(|row| (row.key(), row)).collect();
+    let current: BTreeMap<u128, &T::Row> = new.iter().map(|row| (row.key(), row)).collect();
+    let written: Vec<u128> = current
+        .iter()
+        .filter(|(key, row)| held.get(key) != Some(row))
+        .map(|(&key, _)| key)
+        .collect();
+    let deleted: Vec<u128> = held
+        .keys()
+        .filter(|key| !current.contains_key(key))
+        .copied()
+        .collect();
+    (!written.is_empty() || !deleted.is_empty()).then_some((T::ID, Edit::Rows { written, deleted }))
+}
+
+/// Reading only each hour's changed rows publishes what reading the census whole every hour
+/// does, through value changes, an unavailable table, a deleted row, a holder change and two
+/// countries of one slot naming one field.
+#[test]
+fn reading_only_changed_rows_publishes_what_a_whole_read_does() {
+    // Each reply publishes its state: every view replays the hours.
+    for view in [ConvoyView::Regions, ConvoyView::Trade] {
+        let mut whole = Prepared::default();
+        let mut changed = Prepared::default();
+        let mut before: Option<DecodedFrame> = None;
+        for hour in 5..=13 {
+            let at = scenario(hour);
+            whole.step(&at);
+            let facts = FrameChanges::alone(&at, replay_data::format::FormatVersion::CURRENT);
+            let edits: Option<Vec<(TableId, Edit)>> = before.as_ref().map(|before| {
+                let mut edits = Vec::new();
+                if before.complete::<tables::Countries>().ok()
+                    != at.complete::<tables::Countries>().ok()
+                    || before.complete::<tables::CountryLinks>().ok()
+                        != at.complete::<tables::CountryLinks>().ok()
+                {
+                    edits.push((TableId::Countries, Edit::Whole));
+                }
+                edits.extend(edit::<tables::RegionalConvoyEfficiency>(before, &at));
+                edits.extend(edit::<tables::ResourceExchanges>(before, &at));
+                edits.extend(edit::<tables::ConvoyClients>(before, &at));
+                edits
+            });
+            changed.observe_edits(&at, &facts, edits.as_deref()).unwrap();
+            before = Some(at);
+        }
+        assert_eq!(
+            serde_json::to_value(ask(&mut changed, view, 13)).unwrap(),
+            serde_json::to_value(ask(&mut whole, view, 13)).unwrap(),
+            "{view:?}"
+        );
+    }
+}

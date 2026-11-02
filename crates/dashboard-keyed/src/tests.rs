@@ -12,8 +12,8 @@ use std::{io, sync::atomic::AtomicBool};
 
 /// A test observer: each owner's mines in each region, by name.
 #[derive(Default, Serialize, Deserialize)]
-struct Mines {
-    observed: u32,
+pub(crate) struct Mines {
+    pub(crate) observed: u32,
 }
 
 static FAMILY: Family = crate::block::family::<Mines>(
@@ -63,7 +63,7 @@ impl Observer for Mines {
     }
 }
 
-fn frame(hour: i32, mines: Option<&[(u32, u32, i64)]>) -> DecodedFrame {
+pub(crate) fn frame(hour: i32, mines: Option<&[(u32, u32, i64)]>) -> DecodedFrame {
     let mut frame = world_frame(hour, false);
     *frame.tables[TableId::NavalRegionalMines.index()] = match mines {
         Some(mines) => TableView::Complete(TableRows::NavalRegionalMines(
@@ -281,7 +281,7 @@ fn a_resumption_after_refused_hours_keeps_its_vouched_read_but_never_across_a_ga
 /// Gives each hour after a known one as its changes from the whole values it last returned.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(transparent)]
-struct Changing<O> {
+pub(crate) struct Changing<O> {
     inner: O,
     #[serde(skip)]
     last: Option<std::collections::BTreeMap<String, i128>>,

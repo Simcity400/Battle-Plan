@@ -276,6 +276,8 @@ impl Census {
             ..Self::default()
         }
     }
+    /// Names designs from `source`'s content, as the row census's tests prepare it.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn configure(&mut self, source: &Source, context: &LoadContext) {
         if self.configured {
             return;
@@ -757,13 +759,19 @@ impl Census {
             )?;
             if changed.contains(&index) {
                 let window = &windows[index];
-                series::write_reply(
+                let reply = self
+                    .window_records(window, drawn.as_ref())
+                    .window_reply(index, window);
+                // One serialization is both the size the reply is held to and the page.
+                let json = serde_json::to_vec(&reply)?;
+                if json.len() > MAX_PRODUCT_REPLY_BYTES {
+                    bounded(&reply)?;
+                }
+                series::write_compressed(
                     writer,
                     &format!("land-battles-{branch}"),
                     index as u64,
-                    &self
-                        .window_records(window, drawn.as_ref())
-                        .reply_window(index, window)?,
+                    &series::compress(&json, 3)?,
                 )?;
             }
         }

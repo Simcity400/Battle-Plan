@@ -432,12 +432,12 @@ fn intel_coverage_public_query_shape_and_cancellation() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let cold = super::query(&query).unwrap();
+    let cold = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
     assert!(cold["window"]["series"].as_array().unwrap().is_empty());
     let mut scan = Scan::<IntelCoverageObserver>::default();
     observe(&mut scan, &frame);
     publish(&mut scan, &fixture);
-    let value = super::query(&query).unwrap();
+    let value = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
     assert!(!value["window"]["series"].as_array().unwrap().is_empty());
     let decoded: std::collections::BTreeSet<_> = value
         .as_object()
@@ -886,7 +886,7 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
         prefix: &prefix,
         cancelled: &flag,
     };
-    let cold = super::query(&query).unwrap();
+    let cold = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
     assert_eq!(
         cold,
         serde_json::json!({"window":{"firstHour":100,"lastHour":101,"known":[],"reads":[],"series":[]},"warnings":[]})
@@ -896,7 +896,7 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
         observe(&mut scan, frame);
     }
     publish(&mut scan, &fixture);
-    let value = super::query(&query).unwrap();
+    let value = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
     assert_eq!(
         value
             .as_object()
@@ -940,4 +940,72 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
         super::query(&query).unwrap_err().kind(),
         io::ErrorKind::Interrupted
     );
+}
+
+fn native_tables(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame: &DecodedFrame) {
+    use dashboard_keyed::native::testing::write;
+    use replay_data::rows::tables;
+    write::<tables::IntelNetworkSummaries>(walk, frame);
+    write::<tables::CountryLinks>(walk, frame);
+    write::<tables::Countries>(walk, frame);
+}
+
+/// From 100, the summaries read daily at hours 0 mod 24: networks between three countries whose
+/// caches move at each read, a network from 1 to 3 from the read at 120, the summaries
+/// unavailable at 125 and 126, a gap after 133, and country 2 renamed at 140, before the read
+/// at 144.
+fn native_scenario() -> Vec<DecodedFrame> {
+    (100..=160_i32)
+        .filter(|hour| !(134..137).contains(hour))
+        .map(|hour| {
+            let read = hour - hour.rem_euclid(24);
+            let mut rows = vec![
+                IntelNetworkSummaryRow {
+                    covered_controlled_states: read / 24,
+                    max_state_strength: i64::from(read),
+                    ..network(1, 2)
+                },
+                IntelNetworkSummaryRow {
+                    core_strength_sum: -i64::from(read),
+                    ..network(2, 1)
+                },
+            ];
+            if read >= 120 {
+                rows.insert(
+                    1,
+                    IntelNetworkSummaryRow {
+                        covered_worth: 7,
+                        ..network(1, 3)
+                    },
+                );
+            }
+            let entries = (!(125..127).contains(&hour)).then_some(rows);
+            let mut frame = frame(hour, entries, hour % 24 == 0, 3);
+            if hour >= 140
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows[1].tag = b"Mod X".to_vec();
+            }
+            frame
+        })
+        .collect()
+}
+
+/// The native publication holds what the walk's scan holds of the same hours, its inventory
+/// certified alike, whatever segments start, wherever the publisher cuts and after a resume.
+#[test]
+fn the_native_publication_holds_what_the_walks_scan_holds() {
+    let frames = native_scenario();
+    for (starts, cuts, resume) in [
+        (&[][..], &[160][..], None),
+        (&[7, 20, 34][..], &[110, 126, 133, 160][..], Some(126)),
+        (&[1, 2, 24, 25, 40, 41][..], &[120, 140, 144, 160][..], Some(140)),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (native, walked) = dashboard_keyed::native::testing::assert_published_as_walked::<
+            IntelCoverageObserver,
+        >(&frames, native_tables, starts, cuts, resume, &label);
+        assert_eq!(native.observer.inventory, walked.observer.inventory, "{label}");
+    }
 }

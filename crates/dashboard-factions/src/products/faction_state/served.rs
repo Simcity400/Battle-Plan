@@ -1,6 +1,6 @@
 //! Faction history's served replies: every faction's influence, rules,
-//! manpower and goals, and some factions' goals over each span. The factions
-//! are those the country groups name.
+//! manpower and goals, some factions' goals over each span, and their details
+//! at each hour. The factions are those the country groups name.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -35,6 +35,12 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                 ask.ask(
                     "faction-state",
                     json!({ "view": "goals", "branchId": id, "faction": faction, "firstHour": from, "lastHour": to }),
+                )?;
+            }
+            for hour in branch.hours() {
+                ask.ask(
+                    "faction-details",
+                    json!({ "branchId": id, "hour": hour, "faction": faction }),
                 )?;
             }
         }

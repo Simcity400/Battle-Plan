@@ -581,6 +581,40 @@ fn undated(frame: &DecodedFrame, why: impl ToString) -> String {
 }
 
 impl IconHour {
+    /// The bytes it holds on the heap, about.
+    pub fn heap(&self) -> usize {
+        let text = |text: &String| std::mem::size_of::<String>() + text.len();
+        let optional = |text: &Option<String>| text.as_ref().map_or(0, String::len);
+        self.links.len() * 2 * std::mem::size_of::<u32>()
+            + self
+                .countries
+                .values()
+                .map(|country| {
+                    std::mem::size_of::<(u32, ModelCountry)>()
+                        + country.tag.len()
+                        + country.cosmetic.len()
+                        + optional(&country.graphical_culture)
+                        + optional(&country.original_tag)
+                        + optional(&country.original_graphical_culture)
+                        + country
+                            .ruling_ideology
+                            .as_ref()
+                            .and_then(Option::as_ref)
+                            .map_or(0, String::len)
+                })
+                .sum::<usize>()
+            + self.tags.values().map(text).sum::<usize>()
+            + self.slots_by_tag.keys().map(text).sum::<usize>()
+            + match &self.culture_2d {
+                Ok(cultures) => cultures.values().map(text).sum(),
+                Err(why) => why.len(),
+            }
+            + match &self.prepared {
+                Ok(prepared) => prepared.heap(),
+                Err(why) => why.len(),
+            }
+    }
+
     pub fn read(frame: &DecodedFrame, content: &IconContent) -> io::Result<Self> {
         let failed = |error: io::Error| io::Error::new(error.kind(), undated(frame, &error));
         let links: BTreeMap<u32, u32> = frame

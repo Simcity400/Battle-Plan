@@ -1277,6 +1277,69 @@ fn every_range_folds_runs_crossing_batches_as_their_hours_do_without_rebuilding_
 }
 
 #[test]
+fn a_value_whose_run_ends_inside_an_aligned_piece_begins_where_it_began() {
+    // Each last value begins before a 16-hour boundary and its run ends inside a later
+    // piece: in one batch, and with a batch ending inside that piece.
+    type Layout<'a> = &'a [((i32, i32), &'a [(i32, i32, i128)])];
+    let layouts: [Layout<'_>; 2] = [
+        &[(
+            (0, 255),
+            &[(0, 89, 1), (90, 100, 2), (140, 170, 3), (171, 200, 4)],
+        )],
+        &[
+            ((0, 97), &[(0, 89, 1), (90, 97, 2)]),
+            ((98, 255), &[(98, 100, 2), (140, 170, 3), (171, 200, 4)]),
+        ],
+    ];
+    for layout in layouts {
+        let fixture = Fixture::new();
+        let mut states = BTreeMap::from([(0, KeyState::default())]);
+        let mut hours = BTreeMap::new();
+        for &((first, last), runs) in layout {
+            let mut batch = Batch::default();
+            batch.through(first);
+            batch.through(last);
+            for &(from, to, value) in runs {
+                let state = states.get_mut(&0).unwrap();
+                batch.push(0, state, Run::new(from, to, value, false));
+                for hour in from..=to {
+                    hours.insert(hour, value);
+                }
+            }
+            fixture.publish(batch, &mut states);
+        }
+        let flag = AtomicBool::new(false);
+        let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+        for (from, to, began) in [(64, 127, 90), (160, 223, 171), (0, 255, 171)] {
+            let bucket = reader.range_bucket(0, from, to, 0).unwrap().unwrap();
+            assert_eq!((bucket.last_value_hour, bucket.has_break), (began, true));
+        }
+        for from in (0..=255).step_by(3) {
+            for to in from..=255 {
+                // Independent hourly fold: an unknown hour is a missing child.
+                let mut wanted = None;
+                for hour in from..=to {
+                    let next = hours
+                        .get(&hour)
+                        .map(|&value| ChartBucket::hour(hour, value as f64, false));
+                    wanted = if hour == from {
+                        next
+                    } else {
+                        merge(wanted, next)
+                    };
+                }
+                coverage_break(&mut wanted, (from, to));
+                assert_eq!(
+                    reader.range_bucket(0, from, to, 0).unwrap(),
+                    wanted,
+                    "{from}..={to}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_gap_ends_where_another_batch_owns_the_hour_however_batch_bounds_overlap() {
     let fixture = Fixture::new();
     let mut states = BTreeMap::from([(0, KeyState::default())]);

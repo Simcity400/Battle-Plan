@@ -1,9 +1,18 @@
-//! The original sinking attribution and numerical collection feeding shared series.
+//! The original sinking attribution and numerical collection, published on the naval family's
+//! series ([`emit`]) and answered from it ([`lines`]).
 use super::*;
-use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
+use dashboard_base::prepared::series;
 use dashboard_text::metadata::check_cancel;
 use serde_json::{Value, json};
+pub mod emit;
 mod incremental;
+mod lines;
+
+use dashboard_series::PageRead;
+use lines::Lines;
+
+/// The family whose series publishes naval losses.
+pub const NAVAL: &str = "naval";
 
 const FIELDS: u64 = 8;
 // Read completeness belongs to the shared retained table, independently of holders.
@@ -66,6 +75,52 @@ struct Correction {
     delta: Delta,
 }
 type Projection = BTreeMap<String, BTreeMap<String, Delta>>;
+/// A channel's values as its series holds them: each key it ever wrote with its open value, and
+/// the writes not yet appended.
+#[derive(Default, Serialize, Deserialize)]
+struct Values {
+    #[serde(with = "dashboard_core::map_pairs")]
+    open: BTreeMap<u64, Option<i128>>,
+    #[serde(skip)]
+    written: Vec<(u64, i32, Option<i128>, bool)>,
+}
+impl Values {
+    /// `key`'s value from `hour` on; None ends its run. An equal value that does not start a
+    /// segment goes on; a value after none starts one.
+    fn observe(&mut self, key: u64, hour: i32, value: Option<i128>, starts: bool) {
+        let held = self.open.entry(key).or_insert(None);
+        if *held == value && !(starts && value.is_some()) {
+            return;
+        }
+        let starts = starts || held.is_none();
+        *held = value;
+        self.written.push((key, hour, value, starts));
+    }
+    /// Ends every open value after `last`, the hour before a gap: nothing is held across it.
+    fn gap(&mut self, last: i32) {
+        let after = last.saturating_add(1);
+        for (&key, held) in &mut self.open {
+            if held.take().is_some() {
+                self.written.push((key, after, None, false));
+            }
+        }
+    }
+    /// Whether it ever wrote `key`.
+    fn held(&self, key: u64) -> bool {
+        self.open.contains_key(&key)
+    }
+    /// `key`'s open value.
+    fn value(&self, key: u64) -> Option<i128> {
+        self.open.get(&key).copied().flatten()
+    }
+    /// The keys with an open value.
+    fn active(&self) -> impl Iterator<Item = u64> + '_ {
+        self.open
+            .iter()
+            .filter(|(_, value)| value.is_some())
+            .map(|(&key, _)| key)
+    }
+}
 #[derive(Default, Serialize, Deserialize)]
 struct Channel {
     #[cfg(test)]
@@ -81,8 +136,7 @@ struct Channel {
     crossings: usize,
     error: Option<String>,
     warnings: Vec<String>,
-    values: Accumulator,
-    ranks: Accumulator,
+    values: Values,
     rank_tail: BTreeMap<String, NavalLossRun>,
     incremental: incremental::Channel,
     #[serde(skip)]
@@ -93,9 +147,13 @@ pub struct Prepared {
     actors: BTreeMap<String, u64>,
     tags: BTreeMap<String, u64>,
     channels: [Channel; 12],
-    corrections: Accumulator,
+    /// The corrections and reads not yet written: (holder * 12 + channel, hour, correction),
+    /// and (0 for ships or 1 for convoys, hour).
+    #[serde(skip)]
+    corrections: Vec<(u64, i32, Correction)>,
     corrected: BTreeSet<u64>,
-    reads: Accumulator,
+    #[serde(skip)]
+    reads: Vec<(u64, i32)>,
     last: Option<i32>,
     /// Not saved: a restored observer takes the holders with an open value as
     /// the holders it continues from.
@@ -211,7 +269,7 @@ impl Channel {
         if kind == NavalKind::Both {
             for (field, value) in [(8, raw[0]), (9, raw[1])] {
                 let key = field_key(holder, field);
-                if value != 0 || self.values.state(key).is_some() {
+                if value != 0 || self.values.held(key) {
                     self.values
                         .observe(key, hour, display_known.then_some(value), false);
                 }
@@ -222,7 +280,7 @@ impl Channel {
                 continue;
             }
             let key = field_key(holder, field as u64);
-            if field == 6 || value != 0 || self.values.state(key).is_some() {
+            if field == 6 || value != 0 || self.values.held(key) {
                 self.values.observe(key, hour, Some(value), false);
             }
         }
@@ -523,11 +581,15 @@ impl Prepared {
             .iter()
             .map(|(_, identity)| *identity)
             .collect();
+        if let Some(last) = previous.filter(|last| last.checked_add(1) != Some(hour)) {
+            for state in &mut self.channels {
+                state.values.gap(last);
+            }
+        }
         for index in 0..12 {
             check_cancel(flag)?;
             let params = selection(0, index);
             let state = &mut self.channels[index];
-            state.values.advance(hour)?;
             state.rank_tail.clear();
             if params.period == NavalPeriod::Month && state.month != month(hour) {
                 state.ledger.clear();
@@ -555,15 +617,15 @@ impl Prepared {
                     if read >= hour || delta == Delta::default() {
                         continue;
                     }
-                    self.corrections.event(
+                    self.corrections.push((
                         holder * 12 + index as u64,
                         hour,
-                        &Correction {
+                        Correction {
                             read_hour: read,
                             month: bucket,
                             delta,
                         },
-                    )?;
+                    ));
                     self.corrected.insert(holder * 12 + index as u64);
                     if bucket.is_none() || bucket == month(hour) {
                         state.ledger.entry(key.clone()).or_default().add(delta);
@@ -648,14 +710,7 @@ impl Prepared {
                 });
                 let value = identity.map(|identity| {
                     let holder = self.actors[&actor(identity)];
-                    let read = |field: u64| {
-                        state
-                            .values
-                            .state(field_key(holder, field))
-                            .and_then(|state| state.last)
-                            .filter(|run| run.last_hour == hour)
-                            .map(|run| run.value)
-                    };
+                    let read = |field: u64| state.values.value(field_key(holder, field));
                     let ships = (read(4) == Some(1) && read(2).unwrap_or(0) == 0)
                         .then(|| read(0).unwrap_or(0) as i64);
                     let convoys = (read(5) == Some(1) && read(3).unwrap_or(0) == 0)
@@ -705,26 +760,23 @@ impl Prepared {
             );
         }
         if scan.last_ship_read == Some(hour) {
-            self.reads.event(0, hour, &hour)?;
+            self.reads.push((0, hour));
         }
         if scan.last_convoy_read == Some(hour) {
-            self.reads.event(1, hour, &hour)?;
+            self.reads.push((1, hour));
         }
-        self.reads.through(hour);
-        self.corrections.through(hour);
         self.last = Some(hour);
         Ok(())
     }
-    pub fn flush<W: dashboard_base::prepared::pages::Pages + ?Sized>(
-        &mut self,
-        writer: &mut W,
-        branch: u64,
-        scan: &sinkings::Scanned,
-        flag: &AtomicBool,
-    ) -> io::Result<()> {
+    /// Each channel's rank runs since the last call, every tail extended to the last hour
+    /// observed: (rank * 2, first, last, tag) and (tag * 2 + 1, first, last, rank), in hour
+    /// order.
+    fn ranks(&mut self, flag: &AtomicBool) -> io::Result<Vec<Vec<(u64, i32, i32, i128)>>> {
         self.extend_ranks();
+        let mut out = Vec::with_capacity(self.channels.len());
         for (index, state) in self.channels.iter_mut().enumerate() {
-            let params = selection(branch, index);
+            let params = selection(0, index);
+            let mut runs = Vec::new();
             dashboard_base::ranking::rank_positions(
                 &state.rank_inputs,
                 |run| (run.first_hour, run.last_hour),
@@ -741,78 +793,69 @@ impl Prepared {
                 },
                 flag,
                 |rank, tag, first, last| {
-                    state.ranks.push(
-                        rank as u64 * 2,
-                        Run::new(first, last, i128::from(self.tags[tag]), false),
-                    );
-                    state.ranks.push(
-                        self.tags[tag] * 2 + 1,
-                        Run::new(first, last, rank as i128 + 1, false),
-                    );
+                    let tag = self.tags[tag];
+                    runs.push((rank as u64 * 2, first, last, i128::from(tag)));
+                    runs.push((tag * 2 + 1, first, last, rank as i128 + 1));
                     Ok(())
                 },
             )?;
-            if let Some(last) = self.last {
-                state.ranks.through(last);
-            }
-            state.values.flush(
-                writer,
-                &format!("naval-loss-values-{branch}-{index}"),
-                0,
-                flag,
-            )?;
-            state.ranks.flush(
-                writer,
-                &format!("naval-loss-ranks-{branch}-{index}"),
-                0,
-                flag,
-            )?;
             state.rank_inputs.clear();
+            out.push(runs);
         }
-        self.corrections
-            .flush(writer, &format!("naval-loss-corrections-{branch}"), 0, flag)?;
-        self.reads
-            .flush(writer, &format!("naval-loss-reads-{branch}"), 0, flag)?;
-        series::write_catalogue(
-            writer,
-            "naval-losses",
-            branch,
-            &self.actors,
-            &Metadata {
-                scan: scan.metadata(),
-                tags: self.tags.clone(),
-                corrected: self.corrected.clone(),
-                errors: self
-                    .channels
-                    .iter()
-                    .map(|channel| channel.error.clone())
-                    .collect(),
-                warnings: self
-                    .channels
-                    .iter()
-                    .map(|channel| channel.warnings.clone())
-                    .collect(),
-            },
-        )
+        Ok(out)
+    }
+    /// Everything it holds and has not handed its series yet, spelled out.
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> String {
+        let written: Vec<_> = self
+            .channels
+            .iter()
+            .map(|channel| &channel.values.written)
+            .collect();
+        serde_json::to_string(&(self, written, &self.corrections, &self.reads))
+            .expect("naval losses spell out")
+    }
+    /// What it saves, spelled out.
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> String {
+        serde_json::to_string(self).expect("naval losses spell out")
+    }
+    /// The reads not handed to its series yet: (0 for ships or 1 for convoys, hour).
+    #[cfg(test)]
+    pub(crate) fn pending_reads(&self) -> &[(u64, i32)] {
+        &self.reads
+    }
+    /// What the replies read besides the series, as of `scan`.
+    fn metadata(&self, scan: &sinkings::Scanned) -> Metadata {
+        Metadata {
+            scan: scan.metadata(),
+            tags: self.tags.clone(),
+            corrected: self.corrected.clone(),
+            errors: self
+                .channels
+                .iter()
+                .map(|channel| channel.error.clone())
+                .collect(),
+            warnings: self
+                .channels
+                .iter()
+                .map(|channel| channel.warnings.clone())
+                .collect(),
+        }
     }
 }
 
-fn corrections(
-    reader: &mut Reader<'_>,
+/// The corrections of `holder` on the channel `lines` reads, none unless it was corrected.
+fn corrections<P: PageRead>(
+    lines: &mut Lines<'_, '_, P>,
     metadata: &Metadata,
     holder: u64,
     index: usize,
 ) -> io::Result<Vec<Correction>> {
-    let key = holder * 12 + index as u64;
-    if !metadata.corrected.contains(&key) {
+    if !metadata.corrected.contains(&(holder * 12 + index as u64)) {
         return Ok(Vec::new());
     }
-    reader
-        .events(&[key], i32::MIN, i32::MAX, 0, u32::MAX)?
-        .rows
-        .into_iter()
-        .map(|row| serde_json::from_value(row.row).map_err(Into::into))
-        .collect()
+    lines.corrections(holder)
 }
 fn adjustment(rows: &[Correction], hour: i32, period: NavalPeriod) -> Delta {
     let mut value = Delta::default();
@@ -823,8 +866,8 @@ fn adjustment(rows: &[Correction], hour: i32, period: NavalPeriod) -> Delta {
     }
     value
 }
-fn exact(
-    reader: &mut Reader<'_>,
+fn exact<P: PageRead>(
+    reader: &mut Lines<'_, '_, P>,
     holder: u64,
     hour: i32,
     corrections: &[Correction],
@@ -834,7 +877,7 @@ fn exact(
     for (field, value) in raw.iter_mut().enumerate() {
         *value = reader
             .value_at(field_key(holder, field as u64), hour)?
-            .map_or(0, |run| run.value);
+            .unwrap_or(0);
     }
     let correction = adjustment(corrections, hour, params.period);
     let ships = (raw[4] != 0 && raw[2] + i128::from(correction.ship_unknown) == 0)
@@ -855,8 +898,8 @@ fn exact(
     }
     Ok((ships.map(|n| n as i64), convoys.map(|n| n as i64)))
 }
-fn exact_runs(
-    reader: &mut Reader<'_>,
+fn exact_runs<P: PageRead>(
+    reader: &mut Lines<'_, '_, P>,
     holder: u64,
     range: (i32, i32),
     corrections: &[Correction],
@@ -912,8 +955,8 @@ fn exact_runs(
     }
     Ok(runs)
 }
-fn candidates(
-    ranks: &mut Reader<'_>,
+fn candidates<P: PageRead>(
+    ranks: &mut Lines<'_, '_, P>,
     actors: &BTreeMap<String, u64>,
     metadata: &Metadata,
     params: &NavalLossesParams,
@@ -939,8 +982,8 @@ fn candidates(
         .saturating_add(corrected.len())
         .min(metadata.tags.len());
     for position in 0..positions {
-        for run in ranks.runs(position as u64 * 2, range.0, range.1)? {
-            if let Some(tag) = inverse.get(&(run.value as u64)) {
+        for (_, value) in ranks.rank_runs(position as u64 * 2, range.0, range.1)? {
+            if let Some(tag) = inverse.get(&(value as u64)) {
                 tags.insert(tag.clone());
             }
         }
@@ -972,9 +1015,15 @@ fn corrected_within(
             continue;
         }
         let identity: Identity = serde_json::from_str(identity)?;
-        if metadata.scan.country_identities.values().flatten().any(|span| {
-            span.identity == identity && span.first_hour <= range.1 && span.last_hour >= range.0
-        }) {
+        if metadata
+            .scan
+            .country_identities
+            .values()
+            .flatten()
+            .any(|span| {
+                span.identity == identity && span.first_hour <= range.1 && span.last_hour >= range.0
+            })
+        {
             return Ok(true);
         }
     }
@@ -984,9 +1033,8 @@ fn corrected_within(
 /// Each candidate's exact runs over `range`, every correction applied: what a
 /// windowed reply ranks and clips to the Top N.
 #[allow(clippy::too_many_arguments)]
-fn window_series(
-    store: &store::Store,
-    key: &store::SourceKey,
+fn window_series<P: PageRead>(
+    lines: &mut Lines<'_, '_, P>,
     actors: &BTreeMap<String, u64>,
     metadata: &Metadata,
     histories: &RecordedHistories,
@@ -994,29 +1042,14 @@ fn window_series(
     range: Option<(i32, i32)>,
     flag: &AtomicBool,
 ) -> io::Result<BTreeMap<String, Vec<NavalLossRun>>> {
-    let branch: u64 = params.branch_id.parse().expect("validated branch");
     let index = channel(params);
     if let Some(error) = &metadata.errors[index] {
         return Err(dashboard_core::invalid(error));
     }
-    let mut values = Reader::new(
-        store,
-        key,
-        format!("naval-loss-values-{branch}-{index}"),
-        flag,
-    )?;
-    let mut ranks = Reader::new(
-        store,
-        key,
-        format!("naval-loss-ranks-{branch}-{index}"),
-        flag,
-    )?;
-    let mut corrections_reader =
-        Reader::new(store, key, format!("naval-loss-corrections-{branch}"), flag)?;
     let mut series = BTreeMap::new();
     let tags = if let Some(range) = range {
         if params.top.is_some() {
-            candidates(&mut ranks, actors, metadata, params, range)?
+            candidates(lines, actors, metadata, params, range)?
         } else {
             country_history::selected_aliases(histories, &params.tags)
                 .into_iter()
@@ -1051,9 +1084,9 @@ fn window_series(
                 let Some(&holder) = actors.get(&actor((identity.slot, identity.country_id))) else {
                     continue;
                 };
-                let corrections = corrections(&mut corrections_reader, metadata, holder, index)?;
+                let corrections = corrections(lines, metadata, holder, index)?;
                 runs.extend(exact_runs(
-                    &mut values,
+                    lines,
                     holder,
                     range,
                     &corrections,
@@ -1068,9 +1101,8 @@ fn window_series(
 }
 /// Reply construction, identity selection and Top-N clipping stay in the original product.
 #[allow(clippy::too_many_arguments)]
-fn window_reply(
-    store: &store::Store,
-    key: &store::SourceKey,
+fn window_reply<P: PageRead>(
+    lines: &mut Lines<'_, '_, P>,
     actors: &BTreeMap<String, u64>,
     metadata: &Metadata,
     histories: &RecordedHistories,
@@ -1078,28 +1110,20 @@ fn window_reply(
     range: Option<(i32, i32)>,
     flag: &AtomicBool,
 ) -> io::Result<NavalLossesReply> {
-    let branch: u64 = params.branch_id.parse().expect("validated branch");
     let index = channel(params);
-    let series = window_series(store, key, actors, metadata, histories, params, range, flag)?;
+    let series = window_series(lines, actors, metadata, histories, params, range, flag)?;
     let mut scan = metadata.scan.clone();
     if let Some((first, last)) = range {
-        let mut reads = Reader::new(store, key, format!("naval-loss-reads-{branch}"), flag)?;
         for (id, out) in [(0, &mut scan.ship_reads), (1, &mut scan.convoy_reads)] {
-            if let Some((hour, _)) = first
+            if let Some(hour) = first
                 .checked_sub(1)
-                .map(|before| reads.latest_event(id, before))
+                .map(|before| lines.latest_read(id, before))
                 .transpose()?
                 .flatten()
             {
                 out.push(hour);
             }
-            out.extend(
-                reads
-                    .events(&[id], first, last, 0, u32::MAX)?
-                    .rows
-                    .into_iter()
-                    .map(|row| row.hour),
-            );
+            out.extend(lines.reads(id, first, last)?);
         }
     }
     let mut metadata_selection = params.clone();
@@ -1130,11 +1154,13 @@ fn window_reply(
         series,
     )
 }
+/// A naval losses reply, or a `naval-losses` series request, from the naval family's
+/// publication of the branch; null before its first.
 pub fn query(
     source: &Source,
     product: &str,
     params: &Value,
-    _context: &LoadContext,
+    context: &LoadContext,
     store: &store::Store,
     key: &store::SourceKey,
     flag: &AtomicBool,
@@ -1155,11 +1181,42 @@ pub fn query(
     };
     NavalLosses::validate(&selection).map_err(dashboard_core::invalid)?;
     let branch = selection.branch_id.parse().expect("validated branch");
-    let Some((actors, metadata)) =
-        series::read_catalogue::<Metadata>(store, key, "naval-losses", branch)?
+    let Some(opened) = dashboard_base::prepared::published::open(
+        source,
+        context.content.as_ref(),
+        NAVAL,
+        emit::SCHEMA,
+        branch,
+    )?
     else {
         return Ok(Value::Null);
     };
+    opened.read(flag, |snapshot, directory| {
+        let Some(emit::Catalogue { actors, metadata }) = emit::catalogue(directory)? else {
+            return Ok(Value::Null);
+        };
+        let mut lines = Lines::new(snapshot, directory, channel(&selection));
+        answer(
+            source, product, params, &selection, &actors, &metadata, &mut lines, store, key, flag,
+        )
+    })
+}
+
+/// [`query`] of the publication `lines` reads.
+#[allow(clippy::too_many_arguments)]
+fn answer<P: PageRead>(
+    source: &Source,
+    product: &str,
+    params: &Value,
+    selection: &NavalLossesParams,
+    actors: &BTreeMap<String, u64>,
+    metadata: &Metadata,
+    lines: &mut Lines<'_, '_, P>,
+    store: &store::Store,
+    key: &store::SourceKey,
+    flag: &AtomicBool,
+) -> io::Result<Value> {
+    let branch = selection.branch_id.parse().expect("validated branch");
     // The naval scan records these holders at every observed hour itself;
     // its prefix need not wait for the whole branch's identity history.
     let evidence = metadata
@@ -1208,9 +1265,7 @@ pub fn query(
         } else {
             None
         };
-        let reply = window_reply(
-            store, key, &actors, &metadata, &histories, &selection, range, flag,
-        )?;
+        let reply = window_reply(lines, actors, metadata, &histories, selection, range, flag)?;
         let mut reply = serde_json::to_value(reply)?;
         if range.is_none() {
             reply["windows"] = serde_json::to_value(
@@ -1227,7 +1282,7 @@ pub fn query(
         Ok(reply)
     } else {
         series_query(
-            product, params, &selection, &actors, &metadata, &histories, store, key, flag,
+            product, params, selection, actors, metadata, &histories, lines, flag,
         )
     }
 }
@@ -1284,8 +1339,8 @@ fn amount(run: &NavalLossRun, kind: NavalKind) -> Option<i64> {
     }
 }
 /// Reached buckets use the shared numeric summary/merge, with exact original runs.
-fn rebuilt_bucket(
-    values: &mut Reader<'_>,
+fn rebuilt_bucket<P: PageRead>(
+    values: &mut Lines<'_, '_, P>,
     holder: u64,
     range: (i32, i32),
     corrections: &[Correction],
@@ -1374,9 +1429,8 @@ fn shifted(
     Ok(bucket)
 }
 #[allow(clippy::too_many_arguments)]
-fn corrected_summary(
-    values: &mut Reader<'_>,
-    corrections_reader: &mut Reader<'_>,
+fn corrected_summary<P: PageRead>(
+    values: &mut Lines<'_, '_, P>,
     metadata: &Metadata,
     index: usize,
     spans: &[(u64, i32, i32, Option<bool>)],
@@ -1398,7 +1452,7 @@ fn corrected_summary(
     let all: Vec<_> = spans
         .iter()
         .map(|&(holder, first, last, starts)| {
-            corrections(corrections_reader, metadata, holder, index)
+            corrections(values, metadata, holder, index)
                 .map(|rows| (holder, first, last, starts, rows))
         })
         .collect::<io::Result<_>>()?;
@@ -1663,36 +1717,20 @@ fn holder_spans(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn series_query(
+fn series_query<P: PageRead>(
     product: &str,
     params: &Value,
     selection: &NavalLossesParams,
     actors: &BTreeMap<String, u64>,
     metadata: &Metadata,
     history: &RecordedHistories,
-    store: &store::Store,
-    key: &store::SourceKey,
+    values: &mut Lines<'_, '_, P>,
     flag: &AtomicBool,
 ) -> io::Result<Value> {
-    let branch: u64 = selection.branch_id.parse().expect("validated branch");
     let index = channel(selection);
     if let Some(error) = &metadata.errors[index] {
         return Err(dashboard_core::invalid(error));
     }
-    let mut values = Reader::new(
-        store,
-        key,
-        format!("naval-loss-values-{branch}-{index}"),
-        flag,
-    )?;
-    let mut ranks = Reader::new(
-        store,
-        key,
-        format!("naval-loss-ranks-{branch}-{index}"),
-        flag,
-    )?;
-    let mut correction_reader =
-        Reader::new(store, key, format!("naval-loss-corrections-{branch}"), flag)?;
     let selected = country_history::selected_identities(history, &selection.tags);
     let mut wanted = if selection.top.is_some() {
         metadata.tags.keys().cloned().collect::<Vec<_>>()
@@ -1723,7 +1761,7 @@ fn series_query(
             let hour = origin
                 .clamp(navigation.first_hour, navigation.last_hour)
                 .floor() as i32;
-            let reached = candidates(&mut ranks, actors, metadata, selection, (hour, hour))?;
+            let reached = candidates(values, actors, metadata, selection, (hour, hour))?;
             let corrected = metadata
                 .corrected
                 .iter()
@@ -1757,7 +1795,7 @@ fn series_query(
             for (holder, first, last, _) in
                 holder_spans(tag, selection, &selected, actors, history, within)?
             {
-                let rows = corrections(&mut correction_reader, metadata, holder, index)?;
+                let rows = corrections(values, metadata, holder, index)?;
                 for row in &rows {
                     let end = (selection.period == NavalPeriod::Month)
                         .then(|| {
@@ -1796,17 +1834,15 @@ fn series_query(
                 }
             }
         }
-        let prepared = series::navigate(
-            &mut [(&mut values, value_keys), (&mut ranks, rank_keys)],
-            &navigation,
-        )?
-        .filter(|hour| {
-            if forward {
-                *hour > origin
-            } else {
-                *hour < origin
-            }
-        });
+        let prepared = values
+            .navigate(&value_keys, &rank_keys, &navigation)?
+            .filter(|hour| {
+                if forward {
+                    *hour > origin
+                } else {
+                    *hour < origin
+                }
+            });
         let correction = correction_starts
             .into_iter()
             .filter(|hour| {
@@ -1844,8 +1880,7 @@ fn series_query(
     let hourly = to.floor() - from.floor() + 1.0 <= f64::from(width);
     let reached = if hourly && selection.top.is_some() {
         Some(window_reply(
-            store,
-            key,
+            values,
             actors,
             metadata,
             history,
@@ -1864,7 +1899,15 @@ fn series_query(
     let range = (from.floor() as i32, to.floor() as i32);
     let corrected_ranks = match selection.top {
         Some(top) if reached.is_none() && corrected_within(actors, metadata, index, range)? => {
-            let series = window_series(store, key, actors, metadata, history, selection, Some(range), flag)?;
+            let series = window_series(
+                values,
+                actors,
+                metadata,
+                history,
+                selection,
+                Some(range),
+                flag,
+            )?;
             Some(dashboard_base::ranking::top_membership(
                 &series,
                 top as usize,
@@ -1885,7 +1928,7 @@ fn series_query(
                 continue;
             }
         } else if let Some(top) = selection.top {
-            let ranked = ranks.summary(tag_key * 2 + 1, bounds, (from, to, 1), 0)?;
+            let ranked = values.rank_summary(tag_key * 2 + 1, bounds, (from, to, 1), 0)?;
             let corrected = history.countries.get(&tag).is_some_and(|country| {
                 country.identities.iter().any(|identity| {
                     actors
@@ -1913,7 +1956,7 @@ fn series_query(
         {
             let ranked = match &corrected_ranks {
                 Some(membership) => membership.get(&tag).cloned().unwrap_or_default(),
-                None => ranks.top_spans(tag_key * 2 + 1, bounds, view, top as usize, &[])?,
+                None => values.rank_top_spans(tag_key * 2 + 1, bounds, view, top as usize)?,
             };
             let mut pieces = Vec::new();
             dashboard_base::ranking::for_each_piece(
@@ -1936,17 +1979,8 @@ fn series_query(
             }
             spans = pieces;
         }
-        let mut summary = corrected_summary(
-            &mut values,
-            &mut correction_reader,
-            metadata,
-            index,
-            &spans,
-            bounds,
-            view,
-            selection,
-            7,
-        )?;
+        let mut summary =
+            corrected_summary(values, metadata, index, &spans, bounds, view, selection, 7)?;
         if selection.top.is_some() {
             if let Some(reached) = &reached {
                 let exact = reached.series.iter().find(|series| series.tag == tag);
@@ -1983,28 +2017,10 @@ fn series_query(
             }
         }
         if params["parts"].as_bool() == Some(true) && selection.kind == NavalKind::Both {
-            let ships = corrected_summary(
-                &mut values,
-                &mut correction_reader,
-                metadata,
-                index,
-                &spans,
-                bounds,
-                view,
-                selection,
-                8,
-            )?;
-            let convoys = corrected_summary(
-                &mut values,
-                &mut correction_reader,
-                metadata,
-                index,
-                &spans,
-                bounds,
-                view,
-                selection,
-                9,
-            )?;
+            let ships =
+                corrected_summary(values, metadata, index, &spans, bounds, view, selection, 8)?;
+            let convoys =
+                corrected_summary(values, metadata, index, &spans, bounds, view, selection, 9)?;
             let mut runs = Vec::new();
             for ((total, ships), convoys) in summary
                 .buckets
@@ -2037,10 +2053,8 @@ fn series_query(
                     else {
                         continue;
                     };
-                    let corrections =
-                        corrections(&mut correction_reader, metadata, *holder, index)?;
-                    let (ships, convoys) =
-                        exact(&mut values, *holder, hour, &corrections, selection)?;
+                    let corrections = corrections(values, metadata, *holder, index)?;
+                    let (ships, convoys) = exact(values, *holder, hour, &corrections, selection)?;
                     runs.push(NavalLossRun {
                         first_hour: hour,
                         last_hour: if total.has_break {

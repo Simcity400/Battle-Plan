@@ -567,13 +567,16 @@ struct Published {
     projected: Fixture,
 }
 
-/// A columnar walk: its hours, segment starts, whether parked projectors spill, and spills inside.
+/// A columnar walk: its hours, segment starts, whether parked projectors spill, spills inside,
+/// and whether its scans are saved and loaded again where a segment ends, as a native branch
+/// is after each batch.
 struct Walk<'a> {
     tables: Tables,
     hours: &'a [(u64, i32)],
     restart: &'a dyn Fn(usize) -> bool,
     spill: bool,
     inside: &'a dyn Fn(usize) -> bool,
+    reload: bool,
 }
 
 impl<'a> Walk<'a> {
@@ -584,6 +587,7 @@ impl<'a> Walk<'a> {
             restart,
             spill: false,
             inside: &never,
+            reload: false,
         }
     }
 }
@@ -593,7 +597,7 @@ fn never(_: usize) -> bool {
 }
 
 /// `projector` as the run's store takes it up after spilling it.
-fn spilled(projector: Projector, make: &dyn Fn() -> Projector) -> Projector {
+fn spilled<'a>(projector: Projector<'a>, make: &dyn Fn() -> Projector<'a>) -> Projector<'a> {
     assert!(
         projector.carried().is_some(),
         "a parked projector names its bytes"
@@ -636,24 +640,32 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
         Projector::new(
             replay.format,
             replay.capture_mode,
-            Arc::clone(&source),
-            Arc::clone(&context),
+            &source,
+            &context,
             &content,
         )
         .unwrap()
     };
-    let mut emit = |items: &mut Vec<columnar::Hour>, writer: &mut store::Writer| {
+    let mut emit = |items: &mut Vec<columnar::Hour>, writer: &mut store::Writer, reload: bool| {
         for hour in std::mem::take(items) {
             seen(&hour);
             assert!(hour.heap() < 1 << 30, "{label}: an hour names its bytes");
             let (branch, at) = (hour.branch, hour.hour);
             let scan = projected.entry(branch).or_default();
             scan.configure(&source, branch, &content).unwrap();
-            scan.observe_projected(hour, &source, &context, &flag)
-                .unwrap();
+            scan.observe_projected(hour, &source, &flag).unwrap();
             if let Some(&ordinal) = ends.get(&(branch, at)) {
                 scan.publish_configured(replay, writer, branch, ordinal, &flag)
                     .unwrap();
+            }
+        }
+        if reload {
+            // As a native branch's cut and save leave it: its histories settled, then reloaded.
+            for scan in projected.values_mut() {
+                if let Some(last) = scan.last_hour {
+                    scan.settle(last);
+                }
+                *scan = serde_json::from_slice(&serde_json::to_vec(&*scan).unwrap()).unwrap();
             }
         }
     };
@@ -671,9 +683,9 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
             && let Some(done) = walking.as_mut()
         {
             done.end(&mut items).unwrap();
-            emit(&mut items, &mut writers.1);
+            emit(&mut items, &mut writers.1, walk.reload && opens);
         }
-        let carry = |going: Projector| {
+        let carry = |going| {
             if walk.spill {
                 spilled(going, &make)
             } else {
@@ -768,7 +780,7 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
     }
     if let Some(done) = walking.as_mut() {
         done.end(&mut items).unwrap();
-        emit(&mut items, &mut writers.1);
+        emit(&mut items, &mut writers.1, false);
     }
     drop(emit);
     writers.0.commit().unwrap();
@@ -782,8 +794,6 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
         "naval-battle-reads-1",
         "naval-battle-fleets-1",
         "naval-battle-ship-reads-1",
-        "naval-loss-values-1-0",
-        "naval-loss-reads-1",
         "ships-sunk-manifest-1",
     ] {
         assert!(
@@ -792,6 +802,16 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
         );
     }
     assert_payloads_equal(&published.projected.payloads(), &expected, label);
+    for (branch, scan) in &mut rows {
+        let walked = projected.get_mut(branch).unwrap().losses().0;
+        // A reloaded scan's losses handed what they wrote to its series before each save.
+        let (row, walked) = if walk.reload {
+            (scan.losses().0.state(), walked.state())
+        } else {
+            (scan.losses().0.pending(), walked.pending())
+        };
+        assert_eq!(walked, row, "{label}: branch {branch}'s naval losses");
+    }
     published
 }
 
@@ -914,6 +934,31 @@ fn a_second_branch_starts_its_own_scan() {
     parity("branches every hour", Walk::campaign(&hours, &|_| true));
 }
 
+/// A scan saved and loaded again where each segment ends, as a native branch is after each
+/// batch, publishes what the row path does.
+#[test]
+fn scans_reloaded_where_segments_end_publish_what_block_reads_publish() {
+    let mut hours = campaign();
+    hours.extend((140..=147).map(|hour| (1, hour)));
+    for (label, restart) in [
+        ("reloaded every hour", &(|_| true) as &dyn Fn(usize) -> bool),
+        ("reloaded inside blocks", &|at| at % 7 == 3),
+        ("reloaded at blocks", &|at| at % 6 == 0),
+    ] {
+        parity(
+            label,
+            Walk {
+                tables: hour_tables,
+                hours: &hours,
+                restart,
+                spill: true,
+                inside: &never,
+                reload: true,
+            },
+        );
+    }
+}
+
 /// A projector spilled where it parks, and inside segments, goes on as it would have.
 #[test]
 fn spilled_projectors_go_on_as_they_would_have() {
@@ -928,6 +973,7 @@ fn spilled_projectors_go_on_as_they_would_have() {
                 restart,
                 spill: true,
                 inside,
+                reload: false,
             },
         )
     };
@@ -940,6 +986,7 @@ fn spilled_projectors_go_on_as_they_would_have() {
             restart: &|at| at == 20,
             spill: true,
             inside: &|_| false,
+            reload: false,
         },
         &mut |hour| parked += usize::from(hour.hour == 119 && hour.base.is_some()),
     );
@@ -1006,6 +1053,7 @@ fn fifteen_hundred_countries_are_read_again_only_where_a_tag_changes() {
             restart: &|at| at == 8,
             spill: false,
             inside: &|_| false,
+            reload: false,
         },
         &mut |hour| {
             if matches!(hour.countries, columnar::Countries::Read(_)) {

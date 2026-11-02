@@ -3,6 +3,7 @@ use dashboard_base::{
     prepared::{
         coverage::{Coverage, SCHEMA},
         prefix::Prefix,
+        query::progressive,
         series::tests::Fixture,
     },
     test_fixtures::{CAMPAIGN, records, world_frame},
@@ -103,7 +104,8 @@ pub(super) fn answer(
         },
         pending: vec![],
     };
-    query(&Query {
+    let cancelled = AtomicBool::new(false);
+    let request = Query {
         source,
         params,
         content,
@@ -111,8 +113,9 @@ pub(super) fn answer(
         key: &fixture.key,
         branch: 1,
         prefix: &prefix,
-        cancelled: &AtomicBool::new(false),
-    })
+        cancelled: &cancelled,
+    };
+    respond(&request, || request.open::<block::Observer>())
 }
 
 #[test]
@@ -808,7 +811,7 @@ fn cold_query_contract_validation_and_cancellation() {
         pending: vec![],
     };
     let cancelled = AtomicBool::new(true);
-    let error = query(&Query {
+    let request = Query {
         source: &source,
         params: &params,
         content: None,
@@ -817,8 +820,8 @@ fn cold_query_contract_validation_and_cancellation() {
         branch: 1,
         prefix: &prefix,
         cancelled: &cancelled,
-    })
-    .unwrap_err();
+    };
+    let error = respond(&request, || request.open::<block::Observer>()).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
 }
 

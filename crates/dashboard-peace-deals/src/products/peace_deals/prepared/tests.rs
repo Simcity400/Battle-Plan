@@ -3,18 +3,55 @@ use crate::products::peace_deals::{
     test_fixtures::{frame, replay},
     tests::{settled_row, with_settlement},
 };
-use dashboard_base::prepared::series::tests::Fixture;
+use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+
+/// Whether `frame` read the conference roster's slot.
+fn read(recording: &Replay, frame: &DecodedFrame) -> bool {
+    slot_read(
+        recording.format,
+        &frame.metrics,
+        TableId::PeaceConferences,
+        frame.hour,
+    )
+}
+
+/// `frame` observed with every table changed, its events published as the emit writes them.
+fn observe(
+    prepared: &mut Prepared,
+    recording: &Replay,
+    frame: &DecodedFrame,
+    published: &mut Vec<Vec<u8>>,
+) {
+    let mut events = Vec::new();
+    let changes = FrameChanges {
+        rows_changed: [true; replay_data::rows::TABLE_COUNT],
+        table_read: [true; replay_data::rows::TABLE_COUNT],
+        slot_read: [true; replay_data::rows::TABLE_COUNT],
+        updates: None,
+    };
+    prepared
+        .observe_changed(frame, &changes, read(recording, frame), &mut events)
+        .unwrap();
+    published.extend(events.iter().map(|event| serde_json::to_vec(event).unwrap()));
+}
+
+/// The events `published` holds, as a reader takes them up.
+fn events(published: &[Vec<u8>]) -> Vec<Event> {
+    published
+        .iter()
+        .map(|bytes| serde_json::from_slice(bytes).unwrap())
+        .collect()
+}
 
 #[test]
-fn peace_deferred_country_evidence_matches_late_finalizers_after_commits_resume_append_and_a_gap() {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let flag = AtomicBool::new(false);
-    let mut fixture = Fixture::new();
+fn peace_deferred_country_evidence_matches_late_finalizers_after_cuts_resume_and_a_gap() {
     let mut current = frame(100, 2, false, &[]);
     let recording = replay(vec![current.clone()]);
-    let mut prepared = Prepared::new(&recording, 1);
+    let mut prepared = Prepared::new(&recording, 1).unwrap();
     let mut tracker = FrameChangeTracker::new();
     let mut frames = Vec::new();
+    let mut published = Vec::new();
+    let mut continuation = Vec::new();
     for hour in 100..=135 {
         if hour == 128 {
             continue;
@@ -34,26 +71,26 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_commits_resume_
             row.conference = Some(if hour == 125 { 9 } else { 10 });
             current = with_settlement(current, row);
         }
+        let mut events = Vec::new();
+        let roster = read(&recording, &current);
         prepared
-            .observe_changed(&current, &tracker.observe(&current, recording.format))
+            .observe_changed(
+                &current,
+                &tracker.observe(&current, recording.format),
+                roster,
+                &mut events,
+            )
             .unwrap();
+        published.extend(events.iter().map(|event| serde_json::to_vec(event).unwrap()));
         frames.push(current.clone());
         if [110, 124, 135].contains(&hour) {
-            let mut writer = if hour == 135 {
-                fixture.append_writer()
-            } else {
-                fixture.writer()
-            };
-            prepared.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            compare(&fixture, &frames);
+            continuation = prepared.continuation().unwrap();
+            compare(&continuation, &published, &frames);
             prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
             tracker.invalidate();
         }
     }
-    let actual = reply(&fixture.store, &fixture.key, 1, 135, false, &flag)
-        .unwrap()
-        .unwrap();
+    let actual = reply(&continuation, events(&published), 135, false).unwrap();
     let captures: Vec<_> = actual
         .deals
         .iter()
@@ -78,7 +115,6 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_commits_resume_
 
 #[test]
 fn peace_snapshot_projections_share_unchanged_maps_and_expire_subjects_at_native_hours() {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let mut current = frame(100, 2, false, &[]);
     let recording = replay(vec![current.clone()]);
     if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Subjects(rows)) =
@@ -93,31 +129,40 @@ fn peace_snapshot_projections_share_unchanged_maps_and_expire_subjects_at_native
             ..Default::default()
         });
     }
-    let mut prepared = Prepared::new(&recording, 1);
+    let mut prepared = Prepared::new(&recording, 1).unwrap();
     let mut tracker = FrameChangeTracker::new();
-    prepared
-        .observe_changed(&current, &tracker.observe(&current, recording.format))
-        .unwrap();
+    let mut events = Vec::new();
+    let mut step = |prepared: &mut Prepared, current: &DecodedFrame| {
+        let roster = read(&recording, current);
+        prepared
+            .observe_changed(
+                current,
+                &tracker.observe(current, recording.format),
+                roster,
+                &mut events,
+            )
+            .unwrap();
+    };
+    step(&mut prepared, &current);
     let first = prepared.scan.previous.clone().unwrap();
     assert_eq!(first.subjects.len(), 1);
     current.hour = 101;
-    prepared
-        .observe_changed(&current, &tracker.observe(&current, recording.format))
-        .unwrap();
-    let second = prepared.scan.previous.as_ref().unwrap();
+    step(&mut prepared, &current);
+    let second = prepared.scan.previous.clone().unwrap();
     assert!(Arc::ptr_eq(&first.owners, &second.owners));
     assert!(Arc::ptr_eq(&first.wars, &second.wars));
     assert!(Arc::ptr_eq(&first.subjects, &second.subjects));
-    let before = prepared.work.row_visits;
+    let visits =
+        |prepared: &Prepared| prepared.scan.snapshot_inputs.row_visits + prepared.scan.exact.row_visits;
+    let before = visits(&prepared);
     for hour in 102..=103 {
         current.hour = hour;
-        prepared
-            .observe_changed(&current, &tracker.observe(&current, recording.format))
-            .unwrap();
+        step(&mut prepared, &current);
     }
     assert!(prepared.scan.previous.as_ref().unwrap().subjects.is_empty());
     assert_eq!(
-        prepared.work.row_visits, before,
+        visits(&prepared),
+        before,
         "expiry uses current native operands"
     );
 }
@@ -128,38 +173,20 @@ const UNSETTLED: [&str; 2] = [
     "No end was observed; the conference outcome is not recorded.",
 ];
 
-/// Compares the published pages with a scan of `frames`, as a complete reply
-/// and as a prepared prefix through their last hour; returns how many deals
-/// the prefix says are still being prepared.
-fn compare(fixture: &Fixture, frames: &[DecodedFrame]) -> usize {
+/// Compares the reply from `continuation` and the events `published` before it with a scan
+/// of `frames`, as a complete reply and as a prepared prefix through their last hour; returns
+/// how many deals the prefix says are still being prepared.
+fn compare(continuation: &[u8], published: &[Vec<u8>], frames: &[DecodedFrame]) -> usize {
     let reference = scan_branch(&replay(frames.to_vec()), 1, &AtomicBool::new(false)).unwrap();
     let last = frames.last().unwrap().hour;
-    let actual = reply(
-        &fixture.store,
-        &fixture.key,
-        1,
-        last,
-        false,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-    .unwrap();
+    let actual = reply(continuation, events(published), last, false).unwrap();
     assert_eq!(
         serde_json::to_value(&actual).unwrap(),
         serde_json::to_value(&reference).unwrap()
     );
     // As a prefix, a deal a later read may still settle is preparing its
     // outcome rather than claiming it was never recorded; all else is equal.
-    let prefix = reply(
-        &fixture.store,
-        &fixture.key,
-        1,
-        last,
-        true,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-    .unwrap();
+    let prefix = reply(continuation, events(published), last, true).unwrap();
     let mut expected = serde_json::to_value(&reference).unwrap();
     let mut preparing = 0;
     for deal in expected["deals"].as_array_mut().unwrap() {
@@ -192,19 +219,18 @@ fn compare(fixture: &Fixture, frames: &[DecodedFrame]) -> usize {
 }
 
 #[test]
-fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_changes() {
-    let mut fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
+fn peace_events_match_cuts_resume_late_capture_gaps_and_identity_changes() {
     let mut frames = vec![frame(100, 3, false, &[9]), frame(101, 3, true, &[])];
-    let mut prepared = Prepared::new(&replay(frames.clone()), 1);
+    let recording = replay(frames.clone());
+    let mut prepared = Prepared::new(&recording, 1).unwrap();
+    let mut published = Vec::new();
     let mut preparing = 0;
     for frame in &frames {
-        prepared.observe(frame).unwrap();
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
+        observe(&mut prepared, &recording, frame, &mut published);
+        let continuation = prepared.continuation().unwrap();
         preparing += compare(
-            &fixture,
+            &continuation,
+            &published,
             &frames[..=frames
                 .iter()
                 .position(|value| value.hour == frame.hour)
@@ -212,16 +238,13 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
         );
         prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
     }
-    // The conference open at the first commit is preparing in that prefix.
+    // The conference open at the first cut is preparing in that prefix.
     assert!(preparing > 0);
     let mut row = settled_row();
     row.actions[0].cached_name = Some(b"literal cached native name".to_vec());
     frames.push(with_settlement(frame(103, 3, true, &[]), row));
-    let mut writer = fixture.append_writer();
-    prepared.observe(frames.last().unwrap()).unwrap();
-    prepared.flush(&mut writer, 1, &flag).unwrap();
-    writer.commit().unwrap();
-    compare(&fixture, &frames);
+    observe(&mut prepared, &recording, frames.last().unwrap(), &mut published);
+    compare(&prepared.continuation().unwrap(), &published, &frames);
     let mut changed = frame(104, 3, false, &[]);
     if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Countries(rows)) =
         &mut *changed.tables[TableId::Countries.index()]
@@ -231,11 +254,8 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
         rows.dedup_by_key(|row| row.key());
     }
     frames.push(changed);
-    prepared.observe(frames.last().unwrap()).unwrap();
-    let mut writer = fixture.writer();
-    prepared.flush(&mut writer, 1, &flag).unwrap();
-    writer.commit().unwrap();
-    compare(&fixture, &frames);
+    observe(&mut prepared, &recording, frames.last().unwrap(), &mut published);
+    compare(&prepared.continuation().unwrap(), &published, &frames);
     assert!(prepared.scan.reply.deals.is_empty());
     assert!(prepared.scan.exact.captures.is_empty());
 }
@@ -270,9 +290,10 @@ fn peace_fresh_observers_write_the_same_continuation() {
     second.hour = 101;
     let continuations: Vec<_> = (0..2)
         .map(|_| {
-            let mut prepared = Prepared::new(&recording, 1);
+            let mut prepared = Prepared::new(&recording, 1).unwrap();
+            let mut published = Vec::new();
             for frame in [&first, &second] {
-                prepared.observe(frame).unwrap();
+                observe(&mut prepared, &recording, frame, &mut published);
             }
             let previous = prepared.scan.previous.as_ref().unwrap();
             assert_eq!(previous.states_by_owner.len(), 3);
@@ -289,7 +310,7 @@ fn peace_fresh_observers_write_the_same_continuation() {
                     .values()
                     .all(|subjects| subjects.windows(2).all(|pair| pair[0] < pair[1]))
             );
-            serde_json::to_vec(&(&prepared.scan, &prepared.ordinals)).unwrap()
+            prepared.continuation().unwrap()
         })
         .collect();
     assert_eq!(continuations[0], continuations[1]);

@@ -1,9 +1,8 @@
-use super::plan::{self, Backend, Lane, Owner, Plan};
+use super::plan::{self, Backend, Owner, Plan};
 use super::registry::{self, Descriptor, FamilyId};
 use crate::prepared::series::catalogue_section;
-use crate::products::{self, parts_race_prepared::Family as _};
+use crate::products;
 use dashboard_keyed::Observer as _;
-use replay_data::rows::TableId;
 use std::{collections::BTreeSet, io};
 
 fn names(ids: &[FamilyId]) -> BTreeSet<&'static str> {
@@ -24,38 +23,16 @@ fn family(name: &str) -> Owner {
 
 #[test]
 fn every_family_has_one_backend_and_every_status_row_one_reporter() {
-    let rows = plan::rows();
+    let plan = plan::native();
+    let native = super::native::names();
     for family in registry::FAMILIES {
-        let backend = rows.backend(family.id.name());
-        assert!(backend.is_some(), "{} has no backend", family.id.name());
-        assert_eq!(
-            backend == Some(Backend::Own),
-            crate::prepared::pipeline::independent::row_names().contains(&family.id.name()),
-            "{}",
-            family.id.name()
-        );
-    }
-    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 14);
-    for segments in [
-        "stability",
-        "supply",
-        "army",
-        "division-equipment",
-        "country-styles",
-        "politics_ledger",
-        "stockpile",
-        "fuel",
-        "diplomacy_state",
-        "nukes",
-    ] {
-        assert_eq!(
-            rows.backend(segments),
-            Some(Backend::Unavailable),
-            "{segments}"
-        );
-    }
-    for walked in ["resources", "land", "game_score", "autonomy", "measure"] {
-        assert_eq!(rows.backend(walked), Some(Backend::Walk), "{walked}");
+        let name = family.id.name();
+        let backend = if native.contains(&name) {
+            Backend::Segments
+        } else {
+            Backend::Unavailable
+        };
+        assert_eq!(plan.backend(name), Some(backend), "{name}");
     }
     for &(row, _) in registry::STATUS {
         let reporters = registry::FAMILIES
@@ -76,7 +53,7 @@ fn the_division_log_is_the_divisions_family_by_either_spelling() {
         registry::coverage_section(divisions.name(), 3),
         "preparation-family-divisions-3"
     );
-    let rows = plan::rows();
+    let rows = plan::native();
     assert_eq!(
         rows.owner("preparation-family-divisions-3"),
         Some(family("divisions"))
@@ -102,28 +79,15 @@ fn the_division_log_is_the_divisions_family_by_either_spelling() {
 
 #[test]
 fn every_section_has_one_exact_owner() {
-    let rows = plan::rows();
+    let rows = plan::native();
     for (section, owner) in [
-        ("preparation-checkpoint-v1", Some(Owner::Coordinator)),
-        ("preparation-map-progress-v1", Some(Owner::Coordinator)),
-        ("preparation-coverage-2", Some(Owner::Walk)),
-        ("preparation-branch-2", Some(Owner::Walk)),
-        ("preparation-family-map-pages-12", Some(family("map-pages"))),
+        ("preparation-plan-v1", Some(Owner::Coordinator)),
         (
             "preparation-family-production-lines-0",
             Some(Owner::Job("production-lines")),
         ),
-        ("construction-continuation-4", Some(family("construction"))),
         ("event_feed-continuation-1", Some(family("event_feed"))),
-        (
-            "faction-state-continuation-2",
-            Some(family("faction_state")),
-        ),
         ("production-facts-v2/7", Some(family("production"))),
-        (
-            "production_catalogue-values-3",
-            Some(family("production_catalogue")),
-        ),
         (
             "production-lines-state-v2-1-0",
             Some(Owner::Job("production-lines")),
@@ -148,7 +112,6 @@ fn every_section_has_one_exact_owner() {
             "production-absence-v1-1",
             Some(Owner::Job("production-lines")),
         ),
-        ("occupation-3", Some(family("occupation"))),
         (
             "occupation-reserve-values-3",
             Some(family("occupation-reserve")),
@@ -160,23 +123,21 @@ fn every_section_has_one_exact_owner() {
         ("air-superiority-groups-1", Some(family("air_superiority"))),
         ("country-groups-1", Some(family("groups"))),
         ("country-group-state-1", Some(family("groups"))),
-        ("territory-identities-1", Some(family("territory"))),
         ("event-feed-identities-1", Some(family("event_feed"))),
         ("country-identities-1", Some(family("identities"))),
         ("naval-battles-1", Some(family("naval"))),
         ("naval-battle-windows-1", Some(family("naval"))),
         ("war-casualties-state-1", Some(family("casualties"))),
-        ("wars-series-1", Some(family("wars"))),
-        ("map.checkpoints.3", Some(Owner::Job("map"))),
-        ("map-pages.state.1.2", Some(family("map-pages"))),
-        ("map-export-v3/endpoints/1", Some(Owner::Job("map-export"))),
         ("land-owners", Some(Owner::Job("land-owners"))),
         ("synthetic-alpha-1", None),
         ("airfield-1", None),
         // Spellings no writer builds.
         ("production-catalogue-values-3", None),
+        ("production_catalogue-values-3", None),
         ("fuel-branches-values-1", None),
+        ("fuel_branches-values-1", None),
         ("lend-lease-balance-1-catalogue", None),
+        ("wars-series-1", None),
         (
             "preparation-facts-v2/ab/one/map-export-endpoints/keys",
             None,
@@ -191,29 +152,15 @@ fn every_section_has_one_exact_owner() {
 /// constructors and constants wherever they have them.
 #[test]
 fn every_section_a_writer_names_belongs_to_its_publisher() {
-    let rows = plan::rows();
-    let facts = dashboard_base::prepared::facts::Namespace::new(
-        &"a7".repeat(32),
-        1,
-        dashboard_base::map_export::ENDPOINT_FACTS,
-    )
-    .unwrap()
-    .section();
-    let air = products::air_force::prepared::Air::NAME;
-    let navy = products::navy::prepared::Navy::NAME;
-    let goals = format!("faction-goals-{}", 12_884_901_976_u64);
+    let rows = plan::native();
     let named = [
-        // The coordinator's, the walk's, and every coverage page.
-        ("preparation-checkpoint-v1".to_owned(), Owner::Coordinator),
+        // The coordinator's, and every coverage page.
         (
-            crate::prepared::pipeline::MAP_PROGRESS.to_owned(),
+            crate::prepared::coverage::PLAN.to_owned(),
             Owner::Coordinator,
         ),
-        ("preparation-side-work-v1".to_owned(), Owner::Coordinator),
         ("source-metadata-v1".to_owned(), Owner::Coordinator),
         ("source-metadata-refusals-v1".to_owned(), Owner::Coordinator),
-        (crate::prepared::coverage::coverage_section(1), Owner::Walk),
-        ("preparation-branch-1".to_owned(), Owner::Walk),
         (
             registry::coverage_section("fuel_branches", 1),
             family("fuel_branches"),
@@ -227,59 +174,36 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             registry::continuation_section(products::fuel_branches::FAMILY, 1),
             family("fuel_branches"),
         ),
-        (
-            registry::continuation_section(products::faction_state::prepared::FAMILY, 1),
-            family("faction_state"),
-        ),
-        (registry::continuation_section(air, 1), family("air")),
         // Series and catalogues.
-        (catalogue_section(air, 1), family("air")),
-        (format!("{air}-parts-1-0"), family("air")),
-        (format!("{navy}-maximum-1-0"), family("navy")),
-        (catalogue_section(navy, 1), family("navy")),
         (
-            catalogue_section(products::politics_state::history::FAMILY, 1),
+            dashboard_base::prepared::roots::root_section(
+                products::politics_state::history::FAMILY,
+                1,
+            ),
             family("politics_state"),
         ),
-        ("politics-state-1".to_owned(), family("politics_state")),
         (
-            catalogue_section(products::production_catalogue::FAMILY, 1),
+            dashboard_base::prepared::roots::root_section(
+                products::production_catalogue::FAMILY,
+                1,
+            ),
             family("production_catalogue"),
-        ),
-        (
-            catalogue_section(products::lend_lease_balance::FAMILY, 1),
-            family("lend_lease_balance"),
-        ),
-        (
-            dashboard_economy::products::keyed::values_section(products::fuel_branches::FAMILY, 1),
-            family("fuel_branches"),
-        ),
-        (
-            dashboard_economy::products::keyed::values_section(products::market::FAMILY, 1),
-            family("market"),
         ),
         (
             dashboard_economy::products::keyed::values_section(products::convoy_health::FAMILY, 1),
             family("convoys"),
         ),
         (
-            dashboard_keyed::series_section(products::air_missions::AirMissionsObserver::NAME, 1),
-            family("air-missions"),
-        ),
-        (
-            catalogue_section(products::regional_weather::block::Observer::NAME, 1),
-            family("regional-weather"),
-        ),
-        (
             dashboard_base::prepared::roots::root_section(products::style_runs::NAME, 1),
             family("country-styles"),
         ),
         (
-            catalogue_section("military-air-losses", 1),
-            family("air_ledger"),
+            dashboard_base::prepared::roots::root_section(
+                products::naval_losses::prepared::NAVAL,
+                1,
+            ),
+            family("naval"),
         ),
-        ("military-bombing-1-series".to_owned(), family("air_ledger")),
-        (catalogue_section("naval-losses", 1), family("naval")),
         (
             catalogue_section("naval-battle-ship-keys", 1),
             family("naval"),
@@ -292,32 +216,10 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             catalogue_section("event-feed-facts", 1),
             family("event_feed"),
         ),
-        (catalogue_section("trade-flows", 1), family("trade")),
         (
-            catalogue_section("territory-breakdown", 1),
-            family("territory"),
+            dashboard_base::prepared::roots::root_section("trade", 1),
+            family("trade"),
         ),
-        (
-            catalogue_section("occupation-trend", 1),
-            family("occupation"),
-        ),
-        (
-            catalogue_section("resource-balance", 1),
-            family("resources"),
-        ),
-        (catalogue_section("world-tension", 1), family("tension")),
-        (
-            format!(
-                "{}-1",
-                products::special_projects::prepared::completion_stream::FAMILY
-            ),
-            family("projects"),
-        ),
-        // Stability's parts and each faction's goals.
-        ("parts-1".to_owned(), family("parts")),
-        ("parts-1-names".to_owned(), family("parts")),
-        (catalogue_section("parts", 1), family("parts")),
-        (catalogue_section(&goals, 1), family("faction_state")),
         // Pages kept by name and branch.
         (
             format!("{}/1", crate::prepared_production::FACTS),
@@ -336,36 +238,9 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             "production-lines-state-v2-1-world".to_owned(),
             Owner::Job("production-lines"),
         ),
-        // The map, its pages and its export, and the land owners.
-        ("map.checkpoints.1".to_owned(), Owner::Job("map")),
-        ("map.gaps.1".to_owned(), Owner::Job("map")),
-        ("map.resume".to_owned(), Owner::Job("map")),
-        (
-            dashboard_base::prepared_map::pages::section(1, 20),
-            family("map-pages"),
-        ),
-        (
-            dashboard_base::prepared_map::pages::progress_section(1),
-            family("map-pages"),
-        ),
-        (
-            dashboard_base::prepared_map::pages::state_section(1, 40),
-            family("map-pages"),
-        ),
-        (
-            dashboard_base::map_export::payload_section(1).unwrap(),
-            Owner::Job("map-export"),
-        ),
-        (
-            dashboard_base::map_export::payload_section(dashboard_base::map_export::TABLE_SECTION)
-                .unwrap(),
-            Owner::Job("map-export"),
-        ),
-        (facts.clone(), Owner::Job("map-export")),
-        (format!("{facts}/map-keys"), Owner::Job("map-export")),
-        (format!("{facts}/map-values"), Owner::Job("map-export")),
+        // The land owners.
         ("land-owners".to_owned(), Owner::Job("land-owners")),
-        // Reads of another family's state, under the reader's names.
+        // A family's own reads of another's state, under its own names.
         (
             "air-superiority-groups-1".to_owned(),
             family("air_superiority"),
@@ -378,7 +253,6 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             "air-superiority-group-state-1".to_owned(),
             family("air_superiority"),
         ),
-        ("territory-identities-1".to_owned(), family("territory")),
         ("event-feed-identities-1".to_owned(), family("event_feed")),
     ];
     for (section, owner) in named {
@@ -388,59 +262,34 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
 
 #[test]
 fn a_writer_refuses_every_section_another_publisher_owns() {
-    let rows = plan::rows();
-    let refused = |lane: Lane, section: &str| {
-        rows.guard(lane)(section)
+    let rows = plan::native();
+    let refused = |name: &'static str, section: &str| {
+        rows.guard(name)(section)
             .map(|()| false)
             .unwrap_or_else(|error| {
                 assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{section}");
                 true
             })
     };
-    for section in [
-        "measure-pp-1",
-        "preparation-branch-1",
-        "preparation-coverage-1",
-        "land-owners",
-        "map.checkpoints.1",
-        "map-export-v2/endpoints/1",
-    ] {
-        assert!(!refused(Lane::Walk, section), "{section}");
-    }
-    for section in [
-        "stability-1",
-        "air-1-catalogue",
-        "preparation-family-stability-1",
-        "preparation-checkpoint-v1",
-        "production-lines-state-v2-1-0",
-        "map-pages.1.20",
-    ] {
-        assert!(refused(Lane::Walk, section), "{section}");
-    }
-    // A name no publisher registers is refused from every lane.
-    for lane in [
-        Lane::Walk,
-        Lane::Own("parts"),
-        Lane::Own("production-lines"),
-    ] {
+    // A name no publisher registers is refused from every publisher, as the coordinator's are.
+    for name in ["leaders", "production-lines", "land-owners"] {
         for section in [
             "synthetic-unregistered-1",
             "airfield-1",
             "preparation-family-unknown-1",
             "preparation-facts-v2/ab/1/unregistered-column/keys",
+            "preparation-plan-v1",
         ] {
-            assert!(refused(lane, section), "{lane:?} {section}");
+            assert!(refused(name, section), "{name} {section}");
         }
     }
-    let parts = Lane::Own("parts");
     for section in [
-        "parts-1",
-        "parts-1-names",
-        "parts-1-catalogue",
-        "preparation-family-parts-1",
-        "parts-continuation-1",
+        "unit-leaders-1",
+        "unit-leaders-1-catalogue",
+        "preparation-family-leaders-1",
+        "leaders-continuation-1",
     ] {
-        assert!(!refused(parts, section), "{section}");
+        assert!(!refused("leaders", section), "{section}");
     }
     for section in [
         "stability-1",
@@ -448,57 +297,21 @@ fn a_writer_refuses_every_section_another_publisher_owns() {
         "faction-goals-7-1-catalogue",
         "experience-1",
         "preparation-family-supply-1",
-        "preparation-branch-1",
-        "preparation-checkpoint-v1",
         "land-owners",
     ] {
-        assert!(refused(parts, section), "{section}");
+        assert!(refused("leaders", section), "{section}");
     }
-    let lines = Lane::Own("production-lines");
+    let lines = "production-lines";
     assert!(!refused(lines, "preparation-family-production-lines-1"));
     assert!(!refused(lines, "production-lines-history-v3-1"));
     assert!(refused(lines, "production-spent-1"));
-}
-
-#[test]
-fn a_private_read_belongs_to_its_reader_while_the_reader_is_in_the_walk() {
-    let rows = plan::rows();
-    assert!(!rows.hourly("groups") && !rows.hourly("identities"));
-    assert_eq!(rows.kept_as("country-groups"), "air-superiority-groups");
-
-    let groups = plan::test_plan(&[], &["groups"]).unwrap();
-    assert!(groups.registered("groups") && groups.hourly("groups"));
-    assert!(!groups.registered("air_superiority") && groups.hourly("air_superiority"));
-    assert_eq!(groups.kept_as("country-groups"), "air-superiority-groups");
-    assert_eq!(
-        groups.kept_as("country-group-changes"),
-        "air-superiority-group-changes"
-    );
-    let walk = groups.guard(Lane::Walk);
-    assert!(walk("air-superiority-groups-1").is_ok());
-    assert!(walk("country-groups-1").is_err());
-    assert!(groups.guard(Lane::Own("groups"))("air-superiority-groups-1").is_err());
-    assert!(groups.guard(Lane::Own("groups"))("country-groups-1").is_ok());
-
-    // The feed makes its own read of the identities; territory's is kept.
-    let identities = plan::test_plan(&[], &["identities", "event_feed"]).unwrap();
-    assert!(identities.hourly("identities"));
-    assert!(!identities.hourly("event_feed"));
-    assert_eq!(
-        identities.kept_as("country-identities"),
-        "territory-identities"
-    );
-    assert!(identities.guard(Lane::Walk)("territory-identities-1").is_ok());
-    assert!(identities.guard(Lane::Own("event_feed"))("event-feed-identities-1").is_ok());
-
-    let both = plan::test_plan(&[], &["identities", "territory", "event_feed"]).unwrap();
-    assert!(!both.hourly("identities"));
+    assert!(!refused("air_superiority", "air-superiority-groups-1"));
+    assert!(refused("groups", "air-superiority-groups-1"));
+    assert!(!refused("groups", "country-groups-1"));
+    assert!(!refused("event_feed", "event-feed-identities-1"));
     // A same-hour dependent is refused with its source, which no query join does.
     let observers = registry::family_named("identities").unwrap().observers;
-    assert_eq!(
-        names(observers),
-        BTreeSet::from(["event_feed", "territory"])
-    );
+    assert_eq!(names(observers), BTreeSet::from(["event_feed"]));
     assert!(
         !registry::family_named("territory")
             .unwrap()
@@ -509,7 +322,7 @@ fn a_private_read_belongs_to_its_reader_while_the_reader_is_in_the_walk() {
 
 #[test]
 fn shared_queries_name_every_supplier_of_their_coverage_and_refusals() {
-    let rows = plan::rows();
+    let rows = plan::native();
     let feed = BTreeSet::from([
         "event_feed",
         "groups",
@@ -537,33 +350,13 @@ fn shared_queries_name_every_supplier_of_their_coverage_and_refusals() {
         rows.gating("production-line-detail"),
         Some("production-lines")
     );
-    plan::with_test_hourly(|| {
-        let hourly = plan::current();
-        // Supply health still joins the segment-prepared supply with the walk's identities,
-        // and the feed the segment-prepared stockpiles with the walk's families.
-        assert_eq!(names(hourly.joint("event-feed").unwrap()), feed);
-        assert_eq!(names(hourly.joint("supply-health").unwrap()), supply);
-        assert_eq!(hourly.gating("event-choices"), None);
-        assert_eq!(
-            hourly.gating("production-line-detail"),
-            Some("production-lines")
-        );
-        assert_eq!(
-            crate::prepared::pipeline::gate("event-feed"),
-            vec!["nukes", crate::prepared::coverage::WALK]
-        );
-        assert_eq!(
-            crate::prepared::pipeline::gate("supply-health"),
-            vec!["identities", "supply"]
-        );
-    });
 }
 
-/// Ordinary preparation's policies for a representative set of families and
+/// Preparation's policies for a representative set of families and
 /// jobs, written out rather than read back from the registry.
 #[test]
 fn ordinary_preparation_plans_exactly_these_policies() {
-    let rows = plan::rows();
+    let rows = plan::native();
     for (product, publisher) in [
         ("air-missions", Some("air-missions")),
         ("country-colours", Some("country-styles")),
@@ -587,15 +380,17 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         ("production-line-breakdown", Some("production-lines")),
         ("volunteers-expeditionaries", Some("army")),
         ("army-size", None),
-        ("country-measure", None),
-        ("game-score", None),
+        ("country-measure", Some("measure")),
+        ("game-score", Some("game_score")),
         ("resource-balance", None),
-        ("land-battles", None),
+        ("land-battles", Some("land")),
         ("autonomy", None),
         ("scoreboard", None),
         ("event-feed", None),
         ("territory", None),
         ("country-nukes", None),
+        ("world-tension", None),
+        ("trade-flows", None),
     ] {
         assert_eq!(rows.gating(product), publisher, "gate of {product}");
     }
@@ -629,7 +424,28 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         ("dockyard-spending", Some(vec!["production", "repairs"])),
         ("supply-health", Some(vec!["supply", "identities"])),
         ("country-nukes", Some(vec!["nukes", "identities"])),
+        ("world-tension", Some(vec!["tension", "identities"])),
+        ("autonomy", Some(vec!["autonomy", "identities"])),
+        ("trade-flows", Some(vec!["trade", "identities"])),
         ("army-size", Some(vec!["army", "identities"])),
+        ("air-force-size", Some(vec!["air", "identities"])),
+        ("navy-size", Some(vec!["navy", "identities"])),
+        (
+            "scoreboard",
+            Some(vec![
+                "air",
+                "army",
+                "casualties",
+                "factories",
+                "identities",
+                "measure",
+                "navy",
+                "nukes",
+                "production",
+                "stability",
+                "territory",
+            ]),
+        ),
         ("country-stability", None),
     ] {
         assert_eq!(joint(product), suppliers, "suppliers of {product}");
@@ -665,6 +481,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
             ][..],
         ),
         ("civil-wars", &["event_feed", "politics_state"][..]),
+        ("country-people", &["manpower", "politics_state"][..]),
         (
             "faction-totals",
             &["factories", "groups", "identities", "territory"][..],
@@ -679,11 +496,10 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         );
     }
 
-    let walked = ["resources", "land", "game_score", "autonomy", "measure"];
     for family in registry::FAMILIES {
         let name = family.id.name();
         let observers: &[&str] = match name {
-            "identities" => &["territory", "event_feed"],
+            "identities" => &["event_feed"],
             "groups" => &["air_superiority"],
             _ => &[],
         };
@@ -696,102 +512,45 @@ fn ordinary_preparation_plans_exactly_these_policies() {
             observers,
             "observers of {name}"
         );
-        let private: Option<(Vec<&str>, &[(&str, &str)])> = match name {
-            "identities" => Some((
-                vec!["territory"],
-                &[("country-identities", "territory-identities")][..],
-            )),
-            "groups" => Some((
-                vec!["air_superiority"],
-                &[
-                    ("country-groups", "air-superiority-groups"),
-                    ("country-group-changes", "air-superiority-group-changes"),
-                ][..],
-            )),
-            _ => None,
-        };
-        assert_eq!(
-            family.private.map(|read| (
-                read.readers.iter().map(|id| id.name()).collect::<Vec<_>>(),
-                read.kept
-            )),
-            private,
-            "private read of {name}"
-        );
-        assert_eq!(rows.hourly(name), walked.contains(&name), "{name} hourly");
     }
 
-    assert_eq!(
-        rows.walk_tables().into_iter().collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            TableId::Campaign,
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::CountryAppearance,
-            TableId::LexicalTokens,
-            TableId::Politics,
-            TableId::PoliticalParties,
-            TableId::Autonomy,
-            TableId::ReservedCountryNaming,
-            TableId::Subjects,
-            TableId::States,
-            TableId::LandCombats,
-            TableId::LandCombatSides,
-            TableId::LandCombatProgress,
-            TableId::LandCombatResults,
-            TableId::LandEventCoverage,
-            TableId::VariantDefinitions,
-            TableId::VariantModules,
-            TableId::VariantUpgrades,
-            TableId::VariantChanges,
-            TableId::CountryGameScoreInputs,
-            TableId::AirWingGameScoreStats,
-            TableId::GameScoreMultipliers,
-            TableId::CountryFactories,
-            TableId::AirBaseRegistrations,
-            TableId::Factions,
-            TableId::FactionMembers,
-            TableId::WeatherProvinces,
-        ]),
-        "the walk's tables"
-    );
 }
 
 #[test]
 fn a_plan_refuses_what_its_registry_or_backends_cannot_prepare() {
     let families = || registry::FAMILIES.iter().collect::<Vec<_>>();
-    let rows = crate::prepared::pipeline::independent::row_names();
-    for (own, error) in [
+    for (native, error) in [
         (
             &["nonexistent"][..],
-            "Unknown prepared family \"nonexistent\"",
+            "A native backend prepares the unknown family \"nonexistent\"",
         ),
-        (
-            &["army"][..],
-            "\"army\" has no row implementation of its own",
-        ),
-        (&["groups", "groups"][..], "\"groups\" is selected twice"),
+        (&["groups", "groups"][..], "\"groups\" has two native backends"),
     ] {
-        let refused = Plan::new(families(), own, &rows)
+        let refused = Plan::new(families(), native)
             .err()
             .expect("a refused plan");
         assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(refused.to_string(), error);
     }
+    let owned: &'static [&'static str] = registry::FAMILIES
+        .iter()
+        .find(|family| !family.sections.is_empty())
+        .map(|family| &family.sections[..1])
+        .expect("a family owning sections");
     let twice: &'static Descriptor = Box::leak(Box::new(Descriptor {
-        sections: &["stability"],
+        sections: owned,
         ..registry::family("echo")
     }));
     let mut doubled = families();
     doubled.push(twice);
-    assert!(Plan::new(doubled, &[], &[]).is_err(), "a stem owned twice");
+    assert!(Plan::new(doubled, &[]).is_err(), "a stem owned twice");
     let gating: &'static Descriptor = Box::leak(Box::new(Descriptor {
         gates: &["country-groups"],
         ..registry::family("echo")
     }));
     let mut doubled = families();
     doubled.push(gating);
-    assert!(Plan::new(doubled, &["groups", "echo"], &["groups", "echo"]).is_err());
+    assert!(Plan::new(doubled, &[]).is_err(), "a product gated twice");
     let alias: &'static Descriptor = Box::leak(Box::new(Descriptor {
         aliases: &["divisions"],
         ..registry::family("echo")
@@ -799,25 +558,25 @@ fn a_plan_refuses_what_its_registry_or_backends_cannot_prepare() {
     let mut doubled = families();
     doubled.push(alias);
     assert!(
-        Plan::new(doubled, &[], &[]).is_err(),
+        Plan::new(doubled, &[]).is_err(),
         "a spelling of two families"
     );
 }
 
 #[test]
 fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
-    let rows = plan::rows();
-    let own = crate::prepared::pipeline::independent::row_names();
+    let rows = plan::native();
+    let native = super::native::names();
     let bumped = |name: &str, version: u32| -> &'static Descriptor {
         Box::leak(Box::new(Descriptor {
             version,
             ..*registry::family_named(name).unwrap()
         }))
     };
-    let plan = plan::test_plan(&[bumped("identities", 2)], &own).unwrap();
+    let plan = plan::test_native(&[bumped("identities", 2)], &native).unwrap();
     for (name, moved) in [
         ("identities", true),
-        ("territory", true),
+        ("territory", false),
         ("event_feed", true),
         ("groups", false),
         ("air_superiority", false),
@@ -825,13 +584,11 @@ fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
     ] {
         assert_eq!(plan.stamp(name) != rows.stamp(name), moved, "{name}");
     }
-    assert_eq!(plan.walk_stamp(), rows.walk_stamp());
-    let plan = plan::test_plan(&[bumped("groups", 3)], &own).unwrap();
+    let plan = plan::test_native(&[bumped("groups", 3)], &native).unwrap();
     assert_ne!(plan.stamp("air_superiority"), rows.stamp("air_superiority"));
     assert_eq!(plan.stamp("identities"), rows.stamp("identities"));
-    // A family the walk prepares moves the walk's stamp, and no other family's.
-    let plan = plan::test_plan(&[bumped("resources", 2)], &own).unwrap();
-    assert_ne!(plan.walk_stamp(), rows.walk_stamp());
+    let plan = plan::test_native(&[bumped("land", 2)], &native).unwrap();
+    assert_ne!(plan.stamp("land"), rows.stamp("land"));
     assert_eq!(plan.stamp("stability"), rows.stamp("stability"));
     assert_eq!(rows.stamp("nonexistent"), None);
     for (section, owner) in [
@@ -840,7 +597,6 @@ fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
             "preparation-ledger-division-equipment-0",
             Some(family("division-equipment")),
         ),
-        ("preparation-state-map-pages-2", Some(family("map-pages"))),
         (
             "preparation-carry-production-lines-1",
             Some(Owner::Job("production-lines")),

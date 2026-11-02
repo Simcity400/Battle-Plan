@@ -3,12 +3,21 @@ use crate::products::regional_weather::{
     TEMPERATURE_SCALE, block,
     tests::{answer, frame, reply_runs, row, source, write},
 };
-use dashboard_base::prepared::series::tests::Fixture;
-use dashboard_keyed::{Observer as _, Scan};
+use dashboard_base::{prepared::series::tests::Fixture, products::country_groups::HourSpan};
+use dashboard_keyed::{
+    Observer as _, Scan,
+    native::{
+        Emit,
+        testing::{operate, publish_bound},
+    },
+    query::KeyedWindow,
+};
+use replay::columnar_frames::synthetic::Synthetic;
 use replay_data::{
     format::FormatVersion,
     rows::{
         ProvinceTemperature, Recorded, TableId, TableRows, TemperaturePass, WeatherProvinceRow,
+        WeatherRegionRow,
     },
     temperature::{Province, Settings, Simulation},
 };
@@ -689,82 +698,188 @@ fn unchanged_pass_at_a_new_hour_is_rechecked_not_carried_as_proven_temperature()
     );
 }
 
+/// Hour `hour` of branch 1, both its tables read: the regions, and the provinces' words
+/// anchored at `anchor` with no pass moving them since, or the provinces refused.
+fn weather_hour(
+    hour: i32,
+    regions: Vec<WeatherRegionRow>,
+    provinces: Option<(i32, &[i64])>,
+    content: &Content,
+) -> DecodedFrame {
+    let mut weather = match provinces {
+        Some((anchor, words)) => temperatures(
+            1,
+            anchor,
+            hour,
+            &states(words),
+            vec![None; (hour - anchor) as usize],
+            content,
+        ),
+        None => {
+            let mut refused = frame(hour, None);
+            *refused.tables[TableId::WeatherProvinces.index()] = TableView::Unavailable {
+                reason: "synthetic bound-temperature refusal".into(),
+            };
+            refused
+        }
+    };
+    *weather.tables[TableId::WeatherRegions.index()] =
+        TableView::Complete(TableRows::WeatherRegions(regions));
+    for table in block::Observer::TABLES {
+        weather.metrics.table_ns[table.index()] = 1;
+    }
+    weather
+}
+
+/// From 10: the provinces refused at 11 and anchored anew at 12; then only the pass moving, or
+/// one province's words (14), while a region's flags move (13, 17), one appears (14) and one
+/// ends (15).
+fn bound_weather(content: &Content) -> Vec<DecodedFrame> {
+    let rain = |id, light_rain, heavy_rain| WeatherRegionRow {
+        light_rain,
+        heavy_rain,
+        ..row(id)
+    };
+    let first: &[i64] = &[0, -100_000, 300_000];
+    let anchored: &[i64] = &[0, -300_000, 100_000];
+    let warmed: &[i64] = &[0, 100_000, 100_000];
+    vec![
+        weather_hour(10, vec![row(71), row(72)], Some((10, first)), content),
+        weather_hour(11, vec![row(71), row(72)], None, content),
+        weather_hour(12, vec![row(71), row(72)], Some((12, anchored)), content),
+        weather_hour(13, vec![rain(71, 3, 0), row(72)], Some((12, anchored)), content),
+        weather_hour(14, vec![rain(71, 3, 0), row(72), row(73)], Some((14, warmed)), content),
+        weather_hour(15, vec![rain(71, 3, 0), row(73)], Some((14, warmed)), content),
+        weather_hour(16, vec![rain(71, 3, 0), row(73)], Some((14, warmed)), content),
+        weather_hour(17, vec![rain(71, 3, 2), row(73)], Some((14, warmed)), content),
+    ]
+}
+
+fn walked_weather(walk: &mut Synthetic, frame: &DecodedFrame) {
+    dashboard_keyed::native::testing::write::<tables::WeatherRegions>(walk, frame);
+    dashboard_keyed::native::testing::write::<tables::WeatherProvinces>(walk, frame);
+}
+
+/// The values `window` holds at `hour`, by name.
+fn held_at(window: &KeyedWindow, hour: i32) -> BTreeMap<String, i128> {
+    window
+        .series
+        .iter()
+        .filter_map(|series| {
+            let (_, _, value, _) = series
+                .runs
+                .iter()
+                .find(|(first, last, _, _)| (*first..=*last).contains(&hour))?;
+            Some((series.name.clone(), value.parse().unwrap()))
+        })
+        .collect()
+}
+
+/// A bound observer's native publication, its hours kept as the provinces and regions they
+/// changed, holds at every hour what observing each frame whole gives, literal temperatures
+/// included, and at every cut the same observer, its refusal and content warnings and its
+/// status, whatever segments start, wherever it is cut and after a resume at the refused hour.
 #[test]
-fn compact_bound_observers_preserve_literal_temperatures_and_refusals_after_resume() {
+fn native_bound_publication_holds_whole_observation_through_refusal_and_resume() {
     let mut content = bound(&[(71, vec![1, 2]), (72, vec![2])], 3);
     content.warnings = vec!["synthetic bound-content warning".into()];
-    let first_words = states(&[0, -100_000, 300_000]);
-    let resumed_words = states(&[0, -300_000, 100_000]);
-    let first = temperatures(1, 10, 10, &first_words, vec![], &content.pass);
-    let mut refused = frame(11, Some(vec![row(71), row(72)]));
-    *refused.tables[TableId::WeatherProvinces.index()] = TableView::Unavailable {
-        reason: "synthetic bound-temperature refusal".into(),
-    };
-    let resumed = temperatures(1, 12, 12, &resumed_words, vec![], &content.pass);
-    let frames = vec![first, refused, resumed];
+    let frames = bound_weather(&content.pass);
     let source = source(frames.clone());
     let options = install_cached(&source, content);
-    let cancelled = AtomicBool::new(false);
+    let refusal = "1 weather temperature observations not shown: hour 11 WeatherProvinces is unavailable: synthetic bound-temperature refusal";
     let mut whole = block::Observer::default();
-    let mut compact = block::Observer::default();
-    for observer in [&mut whole, &mut compact] {
-        observer.bind(&source, Some(&options), &cancelled).unwrap();
-        assert_eq!(observer.temperature_status(), "available");
-    }
-    let mut keeper = <block::Observer as dashboard_keyed::Observer>::keeper().unwrap();
-    for (at, frame) in frames.into_iter().enumerate() {
-        let province_view = frame.tables[TableId::WeatherProvinces.index()].identity();
-        let region_view = frame.tables[TableId::WeatherRegions.index()].identity();
-        let input = keeper.keep(FormatVersion::CURRENT, &frame).unwrap();
-        let mut expected = Values::default();
+    whole
+        .bind(&source, Some(&options), &AtomicBool::new(false))
+        .unwrap();
+    let mut expected = BTreeMap::new();
+    for frame in &frames {
+        let hour = frame.hour;
+        let mut values = Values::default();
         assert!(
             whole
-                .observe(FormatVersion::CURRENT, &frame, &mut expected)
+                .observe(FormatVersion::CURRENT, frame, &mut values)
                 .unwrap()
         );
-        drop(frame);
-        assert!(!province_view.is_alive());
-        assert!(!region_view.is_alive());
-        let mut actual = Values::default();
-        assert!(input.observe(&mut compact, &mut actual).unwrap());
-        assert!(expected.iter().eq(actual.iter()));
-        let literal = match at {
-            0 => BTreeMap::from([("71|temp", 100_000), ("72|temp", 300_000)]),
-            1 => BTreeMap::new(),
-            2 => BTreeMap::from([("71|temp", -100_000), ("72|temp", 100_000)]),
-            _ => unreachable!(),
+        let values: BTreeMap<String, i128> = values
+            .iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect();
+        let literal: BTreeMap<&str, i128> = match hour {
+            10 => BTreeMap::from([("71|temp", 100_000), ("72|temp", 300_000)]),
+            11 => BTreeMap::new(),
+            12 | 13 => BTreeMap::from([("71|temp", -100_000), ("72|temp", 100_000)]),
+            _ => BTreeMap::from([("71|temp", 100_000), ("72|temp", 100_000)]),
         };
-        let warnings = if at == 0 {
-            vec!["synthetic bound-content warning"]
-        } else {
-            vec![
-                "synthetic bound-content warning",
-                "1 weather temperature observations not shown: hour 11 WeatherProvinces is unavailable: synthetic bound-temperature refusal",
-            ]
-        };
-        for (observer, values) in [(&whole, &expected), (&compact, &actual)] {
-            assert_eq!(
-                values
-                    .iter()
-                    .filter(|(name, _)| name.ends_with("|temp"))
-                    .collect::<BTreeMap<_, _>>(),
-                literal,
-            );
-            assert_eq!(observer.temperature_warnings(), warnings);
-            assert_eq!(observer.temperature_status(), "available");
-        }
         assert_eq!(
-            serde_json::to_value(&whole).unwrap(),
-            serde_json::to_value(&compact).unwrap()
+            values
+                .iter()
+                .filter(|(name, _)| name.ends_with("|temp"))
+                .map(|(name, &value)| (name.as_str(), value))
+                .collect::<BTreeMap<_, _>>(),
+            literal,
+            "hour {hour}"
         );
-        if at == 1 {
-            whole = serde_json::from_value(serde_json::to_value(&whole).unwrap()).unwrap();
-            compact = serde_json::from_value(serde_json::to_value(&compact).unwrap()).unwrap();
-            for observer in [&mut whole, &mut compact] {
-                observer.bind(&source, Some(&options), &cancelled).unwrap();
-                assert_eq!(observer.temperature_warnings(), warnings);
+        let mut warnings = vec!["synthetic bound-content warning"];
+        if hour >= 11 {
+            warnings.push(refusal);
+        }
+        assert_eq!(whole.temperature_warnings(), warnings, "hour {hour}");
+        assert_eq!(whole.temperature_status(), "available");
+        expected.insert(hour, (values, serde_json::to_value(&whole).unwrap()));
+    }
+    let mut bind = |emit: &mut Emit<block::Observer>| {
+        emit.bind(&source, Some(&options), &mut || Ok(())).unwrap();
+    };
+    let first = frames[0].hour;
+    for (starts, cuts, resume) in [
+        (&[][..], &[17][..], None),
+        // A resumed emit's next hour starts a segment, as the driver resumes.
+        (&[2, 6][..], &[10, 11, 14, 17][..], Some(11)),
+        (&[6][..], &[11, 15, 17][..], Some(15)),
+        (
+            &[1, 2, 3, 4, 5, 6, 7][..],
+            &[10, 11, 12, 13, 14, 15, 16, 17][..],
+            Some(11),
+        ),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let hours = operate::<block::Observer>(&frames, starts, walked_weather);
+        let published = publish_bound(hours, 1, cuts, resume, &mut bind);
+        for (&cut, published) in cuts.iter().zip(&published) {
+            let (scan, window) = published.read::<block::Observer>(first, cut, None);
+            assert_eq!(
+                window.known,
+                [HourSpan {
+                    first_hour: first,
+                    last_hour: cut
+                }],
+                "{label}: known through {cut}"
+            );
+            assert_eq!(
+                window.reads,
+                (first..=cut).map(|hour| (hour, hour, hour)).collect::<Vec<_>>(),
+                "{label}: reads through {cut}"
+            );
+            for hour in first..=cut {
+                assert_eq!(
+                    held_at(&window, hour),
+                    expected[&hour].0,
+                    "{label}: hour {hour} through {cut}"
+                );
             }
-            keeper = <block::Observer as dashboard_keyed::Observer>::keeper().unwrap();
+            // The reply's temperature status and warnings are the catalogued observer's.
+            let observer = &scan.observer;
+            assert_eq!(
+                serde_json::to_value(observer).unwrap(),
+                expected[&cut].1,
+                "{label}: the observer at {cut}"
+            );
+            assert_eq!(observer.temperature_status(), "available", "{label}: {cut}");
+            let mut warnings = vec!["synthetic bound-content warning"];
+            if cut >= 11 {
+                warnings.push(refusal);
+            }
+            assert_eq!(observer.temperature_warnings(), warnings, "{label}: {cut}");
         }
     }
 }

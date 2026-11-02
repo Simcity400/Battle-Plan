@@ -1,35 +1,38 @@
 //! Territory totals from complete, freshly read States and Provinces tables.
 //! A read whose measured fields are unchanged reuses its totals. A failed or
 //! unrecorded read supplies no totals, including for countries that held zero
-//! territory at the last read.
+//! territory at the last read. Preparation projects them on the segment driver
+//! ([`facts`], [`emit`]) and replies read its publication ([`query`]); the row
+//! scan here is the parity oracle.
+#[cfg(any(test, feature = "test-support"))]
+use super::country_groups::record_hour;
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
-    country_groups::{HourSpan, record_hour},
+    country_groups::HourSpan,
     country_history::{CountryIdentityRun, RecordedHistories},
     validate_tag,
 };
-use crate::{
-    Source, content,
-    metadata::{check_cancel, slot_read},
-    protocol::MAX_EXACT_JS_INTEGER,
-    transport::json_len,
-};
+use crate::{Source, content, metadata::check_cancel, transport::json_len};
 #[cfg(any(test, feature = "test-support"))]
-use crate::{content::ContentKey, metadata::validate_campaign};
+use crate::{
+    content::ContentKey,
+    metadata::{slot_read, validate_campaign},
+    protocol::MAX_EXACT_JS_INTEGER,
+};
 use installed_content_province_area::province_area::ProvinceAreas;
 #[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
-use replay_data::{
-    rows::CountryRow, rows::ProvinceRow, rows::StateRow, rows::TableId, rows::tables,
-};
+#[cfg(any(test, feature = "test-support"))]
+use replay_data::rows::{ProvinceRow, StateRow};
+use replay_data::{rows::CountryRow, rows::TableId, rows::tables};
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
 use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -163,6 +166,7 @@ struct Track {
 pub struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub format: replay_data::format::FormatVersion,
     world_totals: Vec<TerritoryRun>,
@@ -174,6 +178,7 @@ pub struct Scan {
     incomplete: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct Lineage {
     reads: CountryReads,
     raw_slots: HashMap<u32, usize>,
@@ -183,6 +188,7 @@ struct Lineage {
     incomplete: bool,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default, Serialize, Deserialize)]
 struct Builder {
     #[serde(skip)]
@@ -316,6 +322,7 @@ impl CountryReads {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// What territory measures read of a fresh States and Provinces read: each state's
 /// id and holders, and each province's id, holders and victory points. Their
 /// other fields change hourly.
@@ -325,6 +332,7 @@ pub struct LandReads {
     provinces: Option<Vec<([u32; 3], i32)>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl LandReads {
     /// Compare only changed/read tables; absence and freshness remain operands.
     pub fn update_changes(
@@ -354,6 +362,7 @@ impl LandReads {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Builder {
     fn seal_world(&self, scan: &mut Scan) {
         let Some(hour) = self.previous_hour else {
@@ -400,6 +409,7 @@ impl Builder {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn seal_track(track: &mut Track, hour: i32) {
     let Some((identity, before)) = track.last else {
         return;
@@ -415,6 +425,7 @@ fn seal_track(track: &mut Track, hour: i32) {
     track.last = Some((identity, hour));
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn keep<R, T: Copy + PartialEq>(
     kept: &mut Option<Vec<T>>,
     rows: Option<&[R]>,
@@ -430,6 +441,7 @@ fn keep<R, T: Copy + PartialEq>(
     same
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// This hour's complete States and Provinces when freshly read; a failed or
 /// unrecorded read supplies none.
 pub fn fresh_tables(
@@ -447,6 +459,7 @@ pub fn fresh_tables(
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// A non-null unresolved holder could belong to any country, so its rule is
 /// unknown globally. Null holders, including with canonical slot zero, hold none.
 #[derive(Clone, Copy)]
@@ -456,6 +469,8 @@ struct Totals {
     overflowed: [usize; columns::COUNT],
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub const TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
@@ -477,6 +492,7 @@ pub const SAMPLE_FIELDS: [&str; columns::COUNT] = [
     "occupiedArea",
 ];
 
+#[cfg(any(test, feature = "test-support"))]
 /// The empty tag addresses independent world totals, never a country template.
 /// Presence and complete-country-read proof also serve the existing group sum.
 #[allow(clippy::type_complexity)]
@@ -557,6 +573,7 @@ pub fn sample(
     Ok(result)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// A raw null is known unassigned; a non-null reference needs a unique native
 /// holder. Dense slots identify that hour's authenticated country instances.
 #[derive(Clone, Copy)]
@@ -566,6 +583,7 @@ enum Holder {
     Country(usize),
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Holder {
     fn resolve(raw: u32, slots: &HashMap<u32, usize>) -> Self {
         if raw == 0 {
@@ -579,6 +597,7 @@ impl Holder {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// Shared by the ordinary oracle, preparation and progressive sampling, before
 /// aggregating the paired holders. Unresolved references retain conservative
 /// unknown coverage, separately from known unassigned or domestic territory.
@@ -592,6 +611,7 @@ fn occupied_holder(controller: Holder, owner: Holder) -> Holder {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// The same exact province weights serve totals and geographic breakdowns.
 pub fn province_values(
     province: &replay_data::rows::ProvinceRow,
@@ -604,6 +624,7 @@ pub fn province_values(
     ]
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 fn sample_rows(
     format: replay_data::format::FormatVersion,
@@ -706,6 +727,7 @@ fn sample_rows(
     totals
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// A world-share ring also needs every candidate country to be rankable. A
 /// safe signed world sum cannot conceal an overflowing country contribution.
 fn sanitise_totals(
@@ -750,6 +772,7 @@ fn sanitise_totals(
     overflowed
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// One native holder join serves the cached observer and transient sampler.
 fn lineage(scan: &mut Scan, reads: CountryReads) -> Lineage {
     let mut entries = Vec::new();
@@ -816,6 +839,7 @@ fn lineage(scan: &mut Scan, reads: CountryReads) -> Lineage {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn observe(
     scan: &mut Scan,
     frame: &DecodedFrame,
@@ -1484,8 +1508,8 @@ pub fn cached_scan(
 
 pub struct AreaData {
     pub areas: Option<Arc<ProvinceAreas>>,
-    reason: Option<String>,
-    warnings: Vec<String>,
+    pub reason: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 fn load_areas(
@@ -1564,9 +1588,58 @@ pub fn area_data(
     load_areas(source, &source.state::<Cache>(), context, cancelled)
 }
 
+/// What preparing territory reads of the recorded content: the map's areas and the strategic
+/// regions, and what the publication says of them.
+pub struct Configured {
+    pub areas: Option<Arc<ProvinceAreas>>,
+    pub regions: Option<Arc<super::territory_breakdown::Regions>>,
+    pub content: Arc<emit::Content>,
+}
+
+impl Configured {
+    pub fn read(
+        source: &Source,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let AreaData {
+            areas,
+            reason,
+            warnings,
+        } = area_data(source, context, cancelled)?;
+        let regions = super::territory_breakdown::Regions::load(source, context);
+        let regional = match &regions {
+            Ok(regions) => emit::RegionalMeta {
+                reason: None,
+                regions: regions.names().to_vec(),
+                warnings: regions.warnings(),
+            },
+            Err(reason) => emit::RegionalMeta {
+                reason: Some(reason.clone()),
+                ..emit::RegionalMeta::default()
+            },
+        };
+        let content = emit::Content {
+            areas: areas.is_some(),
+            meta: emit::Meta {
+                area_unit: areas.as_ref().map(|_| ProvinceAreas::UNIT.to_owned()),
+                area_reason: reason,
+                warnings,
+            },
+            regional,
+        };
+        Ok(Self {
+            areas,
+            regions: regions.ok().map(Arc::new),
+            content: Arc::new(content),
+        })
+    }
+}
+
 impl Product for Territory {
     const KEY: &'static str = "territory";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = TerritoryParams;
     type Reply = TerritoryReply;
     fn types() -> Vec<String> {
@@ -1702,6 +1775,11 @@ pub(crate) fn faction_tracks(
 }
 
 #[cfg(test)]
+mod columnar_tests;
+#[cfg(test)]
 mod tests;
 
-pub mod prepared;
+pub mod emit;
+pub mod facts;
+pub mod query;
+pub mod served;

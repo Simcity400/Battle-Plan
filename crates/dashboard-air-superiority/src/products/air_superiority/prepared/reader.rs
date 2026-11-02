@@ -567,7 +567,7 @@ pub(super) fn publication(
     let pages = (
         page(format!("air-superiority-{branch}"))?,
         series::catalogue_pages(store, key, "air-superiority", branch)?,
-        page(super::super::block::groups_section(branch))?,
+        page(super::groups_section(branch))?,
         page(format!("country-groups-{branch}"))?,
     );
     Ok(serde_json::to_vec(&pages)?)

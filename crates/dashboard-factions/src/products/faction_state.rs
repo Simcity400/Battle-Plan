@@ -8,10 +8,13 @@ use dashboard_base::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub mod block;
 pub mod columnar;
+pub mod emit;
 pub mod prepared;
+pub mod query;
 pub mod served;
+#[cfg(test)]
+mod harness;
 #[cfg(test)]
 mod tests;
 pub struct FactionState;

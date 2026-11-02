@@ -33,6 +33,8 @@ struct Harness {
     strings: Strings,
     cells: RowCells,
     views: Views,
+    /// The same tables noted by slot every hour and built only when a test asks.
+    slotted: Views,
     hour: i32,
 }
 
@@ -48,6 +50,9 @@ impl Harness {
             strings: Strings::new(),
             cells: RowCells::default(),
             views: Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap(),
+            slotted: Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full)
+                .unwrap()
+                .by_slot(),
             hour: 0,
         }
     }
@@ -142,8 +147,18 @@ impl Harness {
         self.state
             .apply(&manifest, |at| Ok(&sections[at].1[..]))
             .unwrap();
+        self.slotted
+            .note(&self.state, &manifest, self.hour == 1)
+            .unwrap();
         self.views
             .advance(&self.state, &manifest, self.hour == 1)
+            .unwrap()
+    }
+
+    /// The slot-noted views of the walk's hour, built from every hour noted since their last.
+    fn slotted(&mut self) -> DecodedFrame {
+        self.slotted
+            .build(&self.state, (1, self.hour), Metrics::default(), None)
             .unwrap()
     }
 }
@@ -384,6 +399,160 @@ fn walked_hours_are_the_views_their_rows_make() {
         &fifth.tables[TableId::Clock.index()],
         &not_selected()
     ));
+}
+
+/// Views noted by slot and built only now and then hold, at each build, what views built every
+/// hour hold: rows changed, deleted, inserted, deleted and inserted again under the same key or
+/// at a freed slot, a truncated read between builds; a view no row changed since keeps its
+/// allocation, sections or not.
+#[test]
+fn views_noted_by_slot_and_built_rarely_hold_the_hourly_views() {
+    let mut walk = Harness::new();
+    let same = || {
+        Input::Divisions(TableInput::Same {
+            read: true,
+            sample: READ,
+        })
+    };
+    let first = walk.hour(vec![
+        Input::Countries(TableInput::Snapshot {
+            rows: &[country(1, 10), country(2, 20), country(3, 30)],
+            partial: None,
+            read: true,
+            sample: READ,
+        }),
+        Input::Divisions(TableInput::Snapshot {
+            rows: &[division(10, 1_500_000), division(11, 2_000_000)],
+            partial: None,
+            read: true,
+            sample: READ,
+        }),
+    ]);
+    let built = walk.slotted();
+    for table in TABLES {
+        assert_eq!(built.tables[table.index()], first.tables[table.index()]);
+    }
+    // Hours 2 to 4, built at 4: a change, an insert and a removal; the inserted row removed and
+    // the removed one back; a division changed twice and one removed.
+    walk.hour(vec![
+        Input::Countries(TableInput::Changes {
+            rows: &[country(2, 21), country(4, 40)],
+            removed: &[3],
+            read: true,
+            sample: READ,
+        }),
+        Input::Divisions(TableInput::Changes {
+            rows: &[division(10, 1_000_000)],
+            removed: &[],
+            read: true,
+            sample: READ,
+        }),
+    ]);
+    walk.hour(vec![
+        Input::Countries(TableInput::Changes {
+            rows: &[country(3, 33)],
+            removed: &[4],
+            read: true,
+            sample: READ,
+        }),
+        Input::Divisions(TableInput::Changes {
+            rows: &[division(10, 750_000)],
+            removed: &[11],
+            read: true,
+            sample: READ,
+        }),
+    ]);
+    let fourth = walk.hour(vec![
+        Input::Countries(TableInput::Changes {
+            rows: &[country(1, 12)],
+            removed: &[],
+            read: true,
+            sample: READ,
+        }),
+        same(),
+    ]);
+    let built = walk.slotted();
+    for table in TABLES {
+        assert_eq!(built.tables[table.index()], fourth.tables[table.index()]);
+    }
+    // Hour 5 changes nothing the views hold: both keep their allocations.
+    walk.hour(vec![
+        Input::Countries(TableInput::Same {
+            read: true,
+            sample: READ,
+        }),
+        same(),
+    ]);
+    let carried = walk.slotted();
+    for table in [TableId::Countries, TableId::Divisions] {
+        assert!(SharedView::ptr_eq(
+            &carried.tables[table.index()],
+            &built.tables[table.index()]
+        ));
+    }
+    drop((built, carried));
+    // Hours 6 to 8, built at 8: a row removed and inserted again, new rows at freed slots; then
+    // a truncated read and a whole one.
+    walk.hour(vec![
+        Input::Countries(TableInput::Changes {
+            rows: &[country(5, 50)],
+            removed: &[1, 2],
+            read: true,
+            sample: READ,
+        }),
+        Input::Divisions(TableInput::Changes {
+            rows: &[division(12, 900_000), division(13, 800_000)],
+            removed: &[10],
+            read: true,
+            sample: READ,
+        }),
+    ]);
+    let seventh = walk.hour(vec![
+        Input::Countries(TableInput::Changes {
+            rows: &[country(1, 15), country(6, 60)],
+            removed: &[5],
+            read: true,
+            sample: READ,
+        }),
+        Input::Divisions(TableInput::Changes {
+            rows: &[division(10, 600_000), division(13, 700_000)],
+            removed: &[12],
+            read: true,
+            sample: READ,
+        }),
+    ]);
+    let built = walk.slotted();
+    for table in TABLES {
+        assert_eq!(built.tables[table.index()], seventh.tables[table.index()]);
+    }
+    drop(built);
+    walk.hour(vec![
+        Input::Countries(TableInput::Snapshot {
+            rows: &[country(1, 16)],
+            partial: Some(2),
+            read: true,
+            sample: READ,
+        }),
+        same(),
+    ]);
+    let ninth = walk.hour(vec![
+        Input::Countries(TableInput::Snapshot {
+            rows: &[country(1, 17), country(3, 34), country(7, 70)],
+            partial: None,
+            read: true,
+            sample: READ,
+        }),
+        Input::Divisions(TableInput::Changes {
+            rows: &[division(11, 500_000)],
+            removed: &[],
+            read: true,
+            sample: READ,
+        }),
+    ]);
+    let built = walk.slotted();
+    for table in TABLES {
+        assert_eq!(built.tables[table.index()], ninth.tables[table.index()]);
+    }
 }
 
 /// A changed slot's mask names every column its runs wrote, and a deleted slot's key is kept.

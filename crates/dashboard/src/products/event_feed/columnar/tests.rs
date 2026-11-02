@@ -1,5 +1,5 @@
 use super::*;
-use crate::prepared::{frame_changes::FrameChangeTracker, pipeline::FeedReference};
+use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
 use crate::products::event_feed::prepared::{KeptFrames, tests::frame as fixture_frame};
 use dashboard_base::{
     prepared::series::tests::{Fixture, PublishedPayloads, assert_payloads_equal},
@@ -15,6 +15,49 @@ use replay_data::{
         CountryPowerChangeRow, PoliticsCaptureCoverageRow, Recorded, RelationTupleRow, SliceReadRow,
     },
 };
+
+/// One branch's feed folded hour by hour from its rows: the identity history, then the feed
+/// naming its countries through it. The parity oracle of the projection.
+struct FeedReference {
+    identities: HistoryScan,
+    feed: Observer,
+}
+
+impl Default for FeedReference {
+    fn default() -> Self {
+        Self::from_parts(HistoryScan::new(false, &[]), Observer::default())
+    }
+}
+
+impl FeedReference {
+    fn from_parts(identities: HistoryScan, feed: Observer) -> Self {
+        Self { identities, feed }
+    }
+
+    fn observe(
+        &mut self,
+        replay: &Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        self.identities
+            .observe_owned_states(frame, Some(changes), |_, _, _| {});
+        self.feed
+            .observe(replay, frame, &self.identities, &AtomicBool::new(false))
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        _: &Replay,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        write_identities(writer, branch, &mut self.identities)?;
+        self.feed.flush(writer, branch, cancelled)?;
+        save_feed(writer, branch, &self.feed)
+    }
+}
 
 fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = fixture_frame(hour, count);

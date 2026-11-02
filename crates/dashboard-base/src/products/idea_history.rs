@@ -13,37 +13,50 @@
 //! category and slot from content. Nothing is assumed about which categories
 //! exist.
 
+//!
+//! The family is prepared from native recordings (`dashboard_ideas`); the row recording's scan
+//! below ([`Scan`]) is kept as its parity oracle.
+
 use super::{
-    CountryParams, LoadContext, Product,
+    CountryParams, Product,
     idea_format::{LocalisedText, ModifierFormat},
-    identity::{NamingCountry, built_template, character_script_token},
-    politics_content::{IdeaCountry, PoliticsContent, politics_content},
+    identity::NamingCountry,
+    politics_content::{IdeaCountry, PoliticsContent},
 };
+#[cfg(any(test, feature = "test-support"))]
+use super::{
+    LoadContext,
+    identity::{built_template, character_script_token},
+    politics_content::politics_content,
+};
+#[cfg(any(test, feature = "test-support"))]
 use crate::{
-    Artwork, Source,
-    catalogue::View,
+    Source,
     metadata::{CountryKeys, branch_bounds, link_slot, tagged_countries, validate_campaign},
-    products::country_groups::HourSpan,
 };
+use crate::{Artwork, catalogue::View, products::country_groups::HourSpan};
 use installed_content_core::{
     characters::BuiltTemplate, coverage::Gap, modifiers::Modifier, modifiers::Modifiers,
 };
+#[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::TableId, rows::tables};
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
+use std::{collections::VecDeque, sync::Arc};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
 use ts_rs::TS;
 
 pub struct IdeaHistory;
 
+#[cfg(any(test, feature = "test-support"))]
 const TABLES: [TableId; 12] = [
     TableId::Campaign,
     TableId::Countries,
@@ -61,6 +74,7 @@ const TABLES: [TableId; 12] = [
 
 #[cfg(any(test, feature = "test-support"))]
 pub const CACHED_BRANCHES: usize = 2;
+#[cfg(any(test, feature = "test-support"))]
 const CACHED_COUNTRIES: usize = 8;
 
 /// An idea held over consecutive recorded hours. An advisor idea carries the
@@ -255,16 +269,116 @@ pub struct ScannedIdeas {
     pub unobserved: Vec<HourSpan>,
     pub identity_starts: Vec<i32>,
     /// For each identity start, the country used for idea naming.
-    pub(crate) identity_naming: Vec<NamingCountry>,
+    pub identity_naming: Vec<NamingCountry>,
     /// Each recorded advisor holder's template, by character id,
     /// or why the recording does not give it.
     pub templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
     pub warnings: Vec<String>,
     /// Feed-only naming at each span's first hour, in the same order as `spans`.
-    pub(crate) span_naming: Vec<NamingCountry>,
+    pub span_naming: Vec<NamingCountry>,
     /// Starts of the same identity after unobserved hours, where additions
     /// cannot be separated from holdings that continued through the gap.
-    pub(crate) gap_starts: Vec<i32>,
+    pub gap_starts: Vec<i32>,
+}
+
+/// The request of the idea history widgets: a country's history through an hour.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdeaHistoryQuery {
+    pub branch_id: String,
+    pub tag: String,
+    pub through: Option<i32>,
+    pub hour: Option<i32>,
+    pub preview: Option<bool>,
+}
+
+/// What the event feed reads of the ideas family: every addition in hour order, then tag
+/// order, then token order, with what its rows need and the family's refusals.
+#[derive(Clone, Debug, Default)]
+pub struct Feed {
+    pub additions: Vec<Addition>,
+    /// Whether any hour held every input complete with resolved countries.
+    pub observed: bool,
+    /// Each country's advisor templates, by character id.
+    pub templates: BTreeMap<String, BTreeMap<u32, Result<BuiltTemplate, String>>>,
+    /// Refused observations by reason, with their counts, in the order the feed lists them.
+    pub refusals: Vec<(String, usize)>,
+    /// Changed holdings first observed right after an unobserved stretch.
+    pub gap_additions: usize,
+    /// The recorded modifier definitions by name, as last recorded.
+    pub definitions: Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>,
+}
+
+impl Feed {
+    pub fn bytes(&self) -> usize {
+        let text = |text: &str| 24 + text.len();
+        std::mem::size_of::<Self>()
+            + self
+                .additions
+                .iter()
+                .map(|addition| {
+                    std::mem::size_of::<Addition>()
+                        + text(&addition.tag)
+                        + text(&addition.span.token)
+                        + addition.span.slot.as_deref().map_or(0, text)
+                        + addition.span.character.as_ref().map_or(0, |holder| {
+                            text(&holder.token) + text(&holder.name)
+                        })
+                })
+                .sum::<usize>()
+            + self
+                .templates
+                .values()
+                .map(|templates| 64 + templates.len() * 96)
+                .sum::<usize>()
+            + self
+                .refusals
+                .iter()
+                .map(|(reason, _)| text(reason))
+                .sum::<usize>()
+            + self.definitions.as_ref().map_or(0, |definitions| {
+                definitions
+                    .iter()
+                    .map(|(key, row)| {
+                        text(key)
+                            + std::mem::size_of_val(row)
+                            + row.name_key.len()
+                            + row.postfix_key.len()
+                            + row.argument.len()
+                    })
+                    .sum::<usize>()
+            })
+    }
+}
+
+/// The reasons an observation is refused, as the feed and the reply name them.
+pub mod refusal {
+    pub const TAG: &str = "Countries tag is not UTF-8; idea holder cannot be identified.";
+    pub const IDEA_HOLDER: &str =
+        "ActiveIdeas owner has no resolved Countries holder; holding cannot be attributed.";
+    pub const IDEA_LINK: &str =
+        "ActiveIdeas owner is unresolved through CountryLinks; holding cannot be attributed.";
+    pub const ADVISOR_HOLDER: &str =
+        "HiredAdvisors owner has no resolved Countries holder; appointment cannot be attributed.";
+    pub const ADVISOR_LINK: &str =
+        "HiredAdvisors owner is unresolved through CountryLinks; appointment cannot be attributed.";
+    pub const SEAT: &str = "HiredAdvisors seat is not UTF-8; appointment cannot be identified.";
+    pub const TOKEN: &str = "Held idea token is not UTF-8; holding cannot be identified.";
+    /// The feed's count of appointments without an idea token.
+    pub const TOKENLESS: &str =
+        "Appointed advisors have no recorded idea token, so cannot be named.";
+    /// A country's warning that it holds such an appointment.
+    pub const TOKENLESS_SEATS: &str =
+        "Some appointed advisors have no recorded idea, so their seats show as empty.";
+}
+
+/// Why an advisor template is unknown when its character has no Characters row at `hour`.
+pub fn missing_template(id: u32, complete: bool, hour: i32) -> String {
+    if complete {
+        format!("character {id} has no Characters row at hour {hour}")
+    } else {
+        format!("the Characters table is incomplete at hour {hour}")
+    }
 }
 
 /// Witnessed additions of active ideas and appointed advisors only.
@@ -318,6 +432,7 @@ pub fn addition_indices(scanned: &ScannedIdeas) -> impl Iterator<Item = usize> {
 
 /// New or changed holdings first observed after a gap cannot prove an
 /// appointment or a law change. The feed names and counts these refusals.
+#[cfg(any(test, feature = "test-support"))]
 pub fn unavailable_additions(scanned: &ScannedIdeas) -> usize {
     let mut previous: BTreeMap<&str, &IdeaSpan> = BTreeMap::new();
     scanned
@@ -345,7 +460,7 @@ pub fn unavailable_additions(scanned: &ScannedIdeas) -> usize {
 }
 
 /// Adds hours to the unobserved spans, merging with the last span they touch.
-fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
+pub fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     match spans.last_mut() {
         Some(span) if span.last_hour.checked_add(1) >= Some(first_hour) => {
             span.first_hour = span.first_hour.min(first_hour);
@@ -360,6 +475,7 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
 
 /// The feed's held-idea spans and row-hour naming. The topic product retains
 /// only its selected country's history, through the same observer.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, Default)]
 pub struct ScannedIdeaBranch {
     pub countries: BTreeMap<String, ScannedIdeas>,
@@ -370,6 +486,7 @@ pub struct ScannedIdeaBranch {
     absent: ScannedIdeas,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl ScannedIdeaBranch {
     fn into_country(mut self, tag: &str) -> ScannedIdeas {
         let mut result = self.countries.remove(tag).unwrap_or(self.absent);
@@ -381,67 +498,26 @@ impl ScannedIdeaBranch {
         result.span_naming.clear();
         result
     }
-    #[cfg(any(test, feature = "test-support"))]
     pub fn country(&self, tag: &str) -> &ScannedIdeas {
         self.countries.get(tag).unwrap_or(&self.absent)
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 type RefusedRows = BTreeMap<String, BTreeSet<(u32, u32, Vec<u8>)>>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A holding the event feed lists: a law or an appointment the hour before did not hold, with
+/// its holder's naming at that hour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Addition {
     pub tag: String,
     pub span: IdeaSpan,
     pub naming: Option<NamingCountry>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-pub struct PreparedChanges {
-    events: crate::prepared::series::Accumulator,
-    unclassified: BTreeMap<String, u32>,
-    definitions: Option<Vec<u8>>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ChangeMetadata {
-    pub late: crate::prepared::series::LateIndex,
-    pub observed: bool,
-    pub templates: BTreeMap<String, BTreeMap<u32, Result<BuiltTemplate, String>>>,
-    pub refusals: Vec<(String, usize)>,
-    pub gap_additions: usize,
-    pub unclassified: BTreeMap<String, u32>,
-    pub definitions: Option<Vec<u8>>,
-}
-impl ChangeMetadata {
-    pub fn definition_index(
-        &self,
-    ) -> io::Result<Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>> {
-        self.definitions
-            .as_ref()
-            .map(|bytes| {
-                let bytes = crate::prepared::series::decompress(bytes.as_slice())?;
-                let mut input = replay_data::codec::Decoder::new(&bytes);
-                let frame = replay_frame::frame::DecodedFrame::decode_checkpoint(&mut input)?;
-                input.finish()?;
-                Ok(super::idea_format::index_recorded(
-                    frame.complete::<tables::ModifierDefinitions>()?,
-                    frame.complete::<tables::LexicalTokens>()?,
-                ))
-            })
-            .transpose()
-    }
-}
-impl PreparedChanges {
-    pub fn bytes(&self) -> usize {
-        self.events.bytes()
-    }
-}
-
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct CountryScan {
-    #[serde(skip)]
-    recent: Vec<Addition>,
     result: ScannedIdeas,
     open: BTreeMap<String, usize>,
     last: Option<((u32, u32), i32)>,
@@ -452,6 +528,7 @@ struct CountryScan {
     dated_templates: BTreeMap<u32, bool>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct CountryRead<'a> {
     country: &'a replay_data::rows::CountryRow,
     slot: u32,
@@ -461,6 +538,7 @@ struct CountryRead<'a> {
     topic_appearance: Option<&'a replay_data::rows::CountryAppearanceRow>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl CountryScan {
     fn advance(&mut self, hour: i32) {
         let Some((_, previous)) = self.last.as_mut() else {
@@ -481,10 +559,8 @@ impl CountryScan {
         read: CountryRead<'_>,
         feed: bool,
     ) {
-        self.recent.clear();
         self.dated_templates.clear();
         let Self {
-            recent,
             result,
             open,
             last,
@@ -528,7 +604,7 @@ impl CountryScan {
             let Ok(seat) = std::str::from_utf8(&advisor.slot) else {
                 refused
                     .entry(
-                        "HiredAdvisors seat is not UTF-8; appointment cannot be identified.".into(),
+                        refusal::SEAT.into(),
                     )
                     .or_default()
                     .insert((country.id, advisor.ordinal, advisor.slot.clone()));
@@ -558,7 +634,7 @@ impl CountryScan {
             if !matches!(result.templates.get(&advisor.character), Some(Ok(_))) {
                 let template = match (characters, row) {
                     (_, Some(row)) => built_template(row, lexical),
-                    (characters, None) => Err(Self::missing_template(
+                    (characters, None) => Err(missing_template(
                         advisor.character,
                         characters.is_some(),
                         hour,
@@ -589,7 +665,7 @@ impl CountryScan {
         for token in held {
             let Ok(token) = std::str::from_utf8(token) else {
                 refused
-                    .entry("Held idea token is not UTF-8; holding cannot be identified.".into())
+                    .entry(refusal::TOKEN.into())
                     .or_default()
                     .insert((country.id, 0, token.to_vec()));
                 continue;
@@ -610,13 +686,6 @@ impl CountryScan {
                     result.spans[index].last_hour = hour
                 }
                 _ => {
-                    let same_holding = open.get(token).is_some_and(|&index| {
-                        let old = &result.spans[index];
-                        old.last_hour.checked_add(1) == Some(hour)
-                            && old.slot.as_deref() == role.map(|role| role.0)
-                            && old.character.as_ref().map(|holder| holder.id)
-                                == role.map(|role| role.1)
-                    });
                     if feed {
                         result.span_naming.push(
                             naming
@@ -640,15 +709,6 @@ impl CountryScan {
                             name: (*name).to_owned(),
                         }),
                     });
-                    if feed && continues && !same_holding {
-                        recent.push(Addition {
-                            tag: std::str::from_utf8(&country.tag)
-                                .expect("named country")
-                                .to_owned(),
-                            span: result.spans.last().expect("new holding span").clone(),
-                            naming: result.span_naming.last().cloned(),
-                        });
-                    }
                 }
             }
         }
@@ -658,19 +718,13 @@ impl CountryScan {
         for (id, complete) in &self.dated_templates {
             self.result
                 .templates
-                .insert(*id, Err(Self::missing_template(*id, *complete, hour)));
-        }
-    }
-    fn missing_template(id: u32, complete: bool, hour: i32) -> String {
-        if complete {
-            format!("character {id} has no Characters row at hour {hour}")
-        } else {
-            format!("the Characters table is incomplete at hour {hour}")
+                .insert(*id, Err(missing_template(*id, *complete, hour)));
         }
     }
 }
 
 /// Scans and retains only the requested country's topic history.
+#[cfg(any(test, feature = "test-support"))]
 pub fn scan(
     replay: &Replay,
     branch: u64,
@@ -689,8 +743,10 @@ pub fn scan_all(
     scan_selected(replay, branch, None, cancelled)
 }
 
-/// The production idea scan, including open holdings and deduplicated refusals.
-#[derive(Default, Serialize, Deserialize)]
+/// The row recording's idea scan, including open holdings and deduplicated refusals: the
+/// parity oracle of the native family.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
 pub struct Scan {
     states: BTreeMap<String, CountryScan>,
     unobserved: Vec<HourSpan>,
@@ -698,22 +754,15 @@ pub struct Scan {
     observed: bool,
     refused: RefusedRows,
     previous_hour: Option<i32>,
-    #[serde(skip)]
     native: IdeaInputs,
     active: BTreeSet<String>,
     unresolved: BTreeSet<String>,
-    #[serde(skip)]
-    updated: Vec<String>,
-    #[serde(skip)]
     dated: BTreeSet<String>,
-    #[cfg(any(test, feature = "test-support"))]
-    #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
-    #[cfg(any(test, feature = "test-support"))]
-    #[serde(skip)]
     pub test_changes: Option<crate::prepared::frame_changes::FrameChangeTracker>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct IdeaInputs {
     complete: bool,
@@ -733,6 +782,7 @@ struct IdeaInputs {
     lexical: Option<BTreeMap<u32, Vec<u8>>>,
     script_users: BTreeMap<u32, BTreeSet<String>>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl IdeaInputs {
     fn refresh(
         &mut self,
@@ -773,8 +823,7 @@ impl IdeaInputs {
                     if known_inputs && std::str::from_utf8(&country.tag).is_err() {
                         refused
                             .entry(
-                                "Countries tag is not UTF-8; idea holder cannot be identified."
-                                    .into(),
+                                refusal::TAG.into(),
                             )
                             .or_default()
                             .insert((country.id, country.canonical_slot, country.tag.clone()));
@@ -801,8 +850,7 @@ impl IdeaInputs {
                     if known_inputs && std::str::from_utf8(&country.tag).is_err() {
                         refused
                             .entry(
-                                "Countries tag is not UTF-8; idea holder cannot be identified."
-                                    .into(),
+                                refusal::TAG.into(),
                             )
                             .or_default()
                             .insert((country.id, country.canonical_slot, country.tag.clone()));
@@ -836,8 +884,8 @@ impl IdeaInputs {
                 for row in rows {
                     match self.links.as_ref().and_then(|links| link_slot(links, row.country)) {
                         Some(slot) if self.slots.contains_key(&slot) => {by_slot.entry(slot).or_default().push(row.clone());},
-                        Some(_) => {if known_inputs {refused.entry("ActiveIdeas owner has no resolved Countries holder; holding cannot be attributed.".into()).or_default().insert((row.country, row.ordinal, row.token.clone()));}},
-                        None => {if known_inputs {refused.entry("ActiveIdeas owner is unresolved through CountryLinks; holding cannot be attributed.".into()).or_default().insert((row.country, row.ordinal, row.token.clone()));}},
+                        Some(_) => {if known_inputs {refused.entry(refusal::IDEA_HOLDER.into()).or_default().insert((row.country, row.ordinal, row.token.clone()));}},
+                        None => {if known_inputs {refused.entry(refusal::IDEA_LINK.into()).or_default().insert((row.country, row.ordinal, row.token.clone()));}},
                     }
                 }
                 by_slot
@@ -866,8 +914,8 @@ impl IdeaInputs {
                 for row in rows {
                     match self.links.as_ref().and_then(|links| link_slot(links, row.country)) {
                         Some(slot) if self.slots.contains_key(&slot) => {by_slot.entry(slot).or_default().push(row.clone());},
-                        Some(_) => {if known_inputs {refused.entry("HiredAdvisors owner has no resolved Countries holder; appointment cannot be attributed.".into()).or_default().insert((row.country, row.ordinal, row.idea.clone()));}},
-                        None => {if known_inputs {refused.entry("HiredAdvisors owner is unresolved through CountryLinks; appointment cannot be attributed.".into()).or_default().insert((row.country, row.ordinal, row.idea.clone()));}},
+                        Some(_) => {if known_inputs {refused.entry(refusal::ADVISOR_HOLDER.into()).or_default().insert((row.country, row.ordinal, row.idea.clone()));}},
+                        None => {if known_inputs {refused.entry(refusal::ADVISOR_LINK.into()).or_default().insert((row.country, row.ordinal, row.idea.clone()));}},
                     }
                 }
                 by_slot
@@ -1010,150 +1058,8 @@ impl IdeaInputs {
         dirty
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl Scan {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn prepare_changes(
-        &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
-        changes: &mut PreparedChanges,
-        source: &Source,
-        context: &LoadContext,
-    ) -> io::Result<()> {
-        let facts = self
-            .test_changes
-            .get_or_insert_with(crate::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, source.replay_ref().format);
-        let content = context
-            .content()
-            .and_then(|content| politics_content(source, content))
-            .ok();
-        self.prepare_changes_in(frame, &facts, changes, content.as_deref())
-    }
-    pub fn prepare_changes_in(
-        &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
-        facts: &crate::prepared::frame_changes::FrameChanges,
-        changes: &mut PreparedChanges,
-        content: Option<&PoliticsContent>,
-    ) -> io::Result<()> {
-        self.observe_changes(frame, facts)?;
-        changes.events.through(frame.hour);
-        for tag in &self.updated {
-            let state = self.states.get_mut(tag).expect("updated idea holder");
-            for event in state.recent.drain(..) {
-                let kind = if event.span.character.is_some() {
-                    1
-                } else {
-                    match content.and_then(|content| {
-                        content
-                            .idea_is_law(&event.span.token)
-                            .ok()
-                            .and_then(|law| *law)
-                    }) {
-                        Some(true) => 0,
-                        Some(false) => 2,
-                        None => {
-                            let count = changes
-                                .unclassified
-                                .entry(event.span.token.clone())
-                                .or_default();
-                            *count = count.checked_add(1).ok_or_else(|| {
-                                crate::invalid("Idea classification count exceeds u32")
-                            })?;
-                            3
-                        }
-                    }
-                };
-                changes.events.event(kind, event.span.first_hour, &event)?;
-            }
-        }
-        let tables = [TableId::ModifierDefinitions, TableId::LexicalTokens];
-        if tables.iter().any(|table| facts.rows_changed[table.index()])
-            && frame.complete::<tables::ModifierDefinitions>().is_ok()
-            && frame.complete::<tables::LexicalTokens>().is_ok()
-        {
-            let _cpu = ::replay_frame::cpu::scope_phase("ideas:definitions");
-            let packet = replay_frame::frame::DecodedFrame {
-                tables: std::array::from_fn(|index| {
-                    if tables.contains(&TableId::ALL[index]) {
-                        frame.tables[index].clone()
-                    } else {
-                        replay_frame::frame::TableView::Unavailable {
-                            reason: "Table not selected for reconstruction".into(),
-                        }
-                        .into()
-                    }
-                }),
-                ..frame.clone()
-            };
-            let mut bytes = Vec::new();
-            packet.encode_checkpoint(&mut bytes)?;
-            changes.definitions = Some(crate::prepared::series::compress(bytes.as_slice(), 3)?);
-        }
-        Ok(())
-    }
-    pub fn flush_changes(
-        &self,
-        writer: &mut store::Writer,
-        branch: u64,
-        changes: &mut PreparedChanges,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        changes
-            .events
-            .flush(writer, &format!("idea-changes-{branch}"), 0, cancelled)?;
-        let mut refused = self.refused.clone();
-        let mut tokenless = 0;
-        for state in self.states.values() {
-            tokenless += state.tokenless.len();
-            for (reason, rows) in &state.refused {
-                refused
-                    .entry(reason.clone())
-                    .or_default()
-                    .extend(rows.iter().cloned());
-            }
-        }
-        let mut refusals: Vec<_> = refused
-            .into_iter()
-            .map(|(reason, rows)| (reason, rows.len()))
-            .collect();
-        if tokenless > 0 {
-            refusals.push((
-                "Appointed advisors have no recorded idea token, so cannot be named.".into(),
-                tokenless,
-            ));
-        }
-        if self.unreadable > 0 {
-            refusals.push((
-                "Part of this branch could not be read; idea history is missing there.".into(),
-                self.unreadable as usize,
-            ));
-        }
-        let metadata = ChangeMetadata {
-            late: Default::default(),
-            observed: self.observed,
-            templates: self
-                .states
-                .iter()
-                .map(|(tag, state)| (tag.clone(), state.result.templates.clone()))
-                .collect(),
-            refusals,
-            gap_additions: self
-                .states
-                .values()
-                .map(|state| unavailable_additions(&state.result))
-                .sum(),
-            unclassified: changes.unclassified.clone(),
-            definitions: changes.definitions.clone(),
-        };
-        crate::prepared::series::write_catalogue(
-            writer,
-            "idea-changes",
-            branch,
-            &BTreeMap::new(),
-            &metadata,
-        )
-    }
     pub fn new(replay: &Replay, branch: u64) -> Self {
         let bounds = replay
             .branches
@@ -1165,7 +1071,6 @@ impl Scan {
             ..Default::default()
         }
     }
-    #[cfg(any(test, feature = "test-support"))]
     pub fn observe(&mut self, decoded: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
         let changes = self
             .test_changes
@@ -1205,11 +1110,9 @@ impl Scan {
         let hour = decoded.hour;
         let previous = self.previous_hour;
         let adjacent = previous.and_then(|at| at.checked_add(1)) == Some(hour);
-        self.updated.clear();
         if !adjacent {
             self.seal();
         }
-        #[cfg(any(test, feature = "test-support"))]
         {
             for table in TABLES
                 .into_iter()
@@ -1329,12 +1232,8 @@ impl Scan {
             } else {
                 self.dated.insert(tag.clone());
             }
-            self.active.insert(tag.clone());
-            self.updated.push(tag);
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.work.emitted += 1;
-            }
+            self.active.insert(tag);
+            self.work.emitted += 1;
         }
         // Only these actual recorded-state failures have hour-dependent text.
         for tag in &self.dated {
@@ -1343,51 +1242,6 @@ impl Scan {
             }
         }
         Ok(())
-    }
-
-    /// Hours `first..=last` of a block read by its changes, which continue
-    /// the last observed hour and at which no field this scan reads changed:
-    /// [`Self::prepare_changes_in`]'s step for each, at once. Its joins find
-    /// every holder's ideas, advisors, characters, spellings and appearance
-    /// as the hour before, so no holder is visited and nothing is published:
-    /// the frontier advances, an hour without its inputs stays unobserved,
-    /// and dated template refusals take the last hour's text (each hour
-    /// rewrites them with its own). False, with nothing changed, after a gap;
-    /// the caller then observes the hours on their frames.
-    pub(crate) fn advance_quiet(
-        &mut self,
-        first: i32,
-        last: i32,
-        changes: &mut PreparedChanges,
-    ) -> bool {
-        let _cpu = ::replay_frame::cpu::scope_phase("ideas:quiet");
-        if last < first || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first) {
-            return false;
-        }
-        self.updated.clear();
-        let known = self.native.countries.is_some()
-            && self.native.links.is_some()
-            && self.native.ideas.is_some()
-            && self.native.advisors.is_some();
-        if known {
-            self.previous_hour = Some(last);
-            self.observed = true;
-            for tag in &self.dated {
-                if let Some(state) = self.states.get_mut(tag) {
-                    state.date_template_refusals(last);
-                }
-            }
-        } else {
-            self.seal();
-            self.active.clear();
-            self.unresolved.clear();
-            self.dated.clear();
-            self.previous_hour = Some(last);
-            mark(&mut self.unobserved, first, last);
-        }
-        changes.events.through(first);
-        changes.events.through(last);
-        true
     }
 
     fn seal(&mut self) {
@@ -1507,8 +1361,7 @@ impl Scan {
             if !state.tokenless.is_empty() {
                 if requested.is_some() {
                     state.result.warnings.push(
-                    "Some appointed advisors have no recorded idea, so their seats show as empty."
-                        .into(),
+                    refusal::TOKENLESS_SEATS.into(),
                 );
                 } else {
                     tokenless = tokenless
@@ -1525,7 +1378,7 @@ impl Scan {
         }
         if tokenless > 0 {
             result.refusals.push((
-                "Appointed advisors have no recorded idea token, so cannot be named.".into(),
+                refusal::TOKENLESS.into(),
                 tokenless,
             ));
         }
@@ -1539,17 +1392,9 @@ impl Scan {
     pub fn country(&self, replay: &Replay, branch: u64, tag: &str) -> io::Result<ScannedIdeas> {
         Ok(self.result(replay, branch, Some(tag))?.into_country(tag))
     }
-    pub fn saved_bytes(&mut self) -> io::Result<Vec<u8>> {
-        self.seal();
-        crate::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 3)
-    }
-    pub fn read(reader: impl io::Read) -> io::Result<Self> {
-        Ok(serde_json::from_reader(zstd::stream::Decoder::new(
-            reader,
-        )?)?)
-    }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn scan_selected(
     replay: &Replay,
     branch: u64,
@@ -1957,6 +1802,49 @@ pub fn scanned_branch(
     Ok(scanned)
 }
 
+/// What the event feed reads of the ideas family, from the row recording's scan: the parity
+/// oracle of the family's publication ([`Feed`]).
+#[cfg(any(test, feature = "test-support"))]
+pub fn row_feed(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Feed> {
+    let scanned = scan_all(replay, branch, cancelled)?;
+    let mut additions: Vec<Addition> = scanned
+        .countries
+        .iter()
+        .flat_map(|(tag, country)| {
+            named_additions(country).map(move |(span, naming)| Addition {
+                tag: tag.clone(),
+                span: IdeaSpan {
+                    last_hour: span.first_hour,
+                    ..span.clone()
+                },
+                naming: naming.cloned(),
+            })
+        })
+        .collect();
+    // Stable: each hour's additions stay in tag order, then token order.
+    additions.sort_by_key(|addition| addition.span.first_hour);
+    let (tokenless, mut refusals): (Vec<_>, Vec<_>) = scanned
+        .refusals
+        .iter()
+        .cloned()
+        .partition(|(reason, _)| reason == refusal::TOKENLESS);
+    refusals.sort();
+    refusals.extend(tokenless);
+    Ok(Feed {
+        additions,
+        observed: scanned.observed,
+        templates: scanned
+            .countries
+            .iter()
+            .map(|(tag, country)| (tag.clone(), country.templates.clone()))
+            .collect(),
+        refusals,
+        gap_additions: scanned.countries.values().map(unavailable_additions).sum(),
+        definitions: super::idea_format::recorded(replay, branch, cancelled)?,
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<((u64, String), Arc<ScannedIdeas>)>,
@@ -1965,6 +1853,7 @@ struct Cache {
 impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CountryParams;
     type Reply = IdeaHistoryReply;
 
@@ -1972,7 +1861,7 @@ impl Product for IdeaHistory {
         vec![
             IdeaSpan::decl(),
             HeldIdeas::decl(),
-            progressive::IdeaHistoryQuery::decl(),
+            IdeaHistoryQuery::decl(),
             IdeaCharacter::decl(),
             EffectLine::decl(),
             EffectGroup::decl(),
@@ -1991,6 +1880,8 @@ impl Product for IdeaHistory {
         params.validate()
     }
 
+    /// The topic scan of the row recording: the parity oracle of the prepared reply.
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -2036,11 +1927,27 @@ impl Product for IdeaHistory {
     }
 }
 
+/// The reply to `params` from the row recording's scan of the country, formatted with the
+/// branch's last recorded modifier definitions.
+#[cfg(any(test, feature = "test-support"))]
 pub fn reply(
     content: &PoliticsContent,
     replay: &Replay,
     params: &CountryParams,
     scanned: &ScannedIdeas,
+    cancelled: &AtomicBool,
+) -> io::Result<IdeaHistoryReply> {
+    let recorded = super::idea_format::recorded(replay, params.branch(), cancelled)?;
+    present(content, params, scanned, recorded.as_ref(), cancelled)
+}
+
+/// The reply to `params` from `scanned`, the country's history, joined with `content` and
+/// formatted with `recorded`, the recorded modifier definitions by name.
+pub fn present(
+    content: &PoliticsContent,
+    params: &CountryParams,
+    scanned: &ScannedIdeas,
+    recorded: Option<&BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>,
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
     let tokens: BTreeSet<&str> = scanned
@@ -2173,13 +2080,8 @@ pub fn reply(
         ));
     }
     let (modifier_keys, text_keys) = effect_keys(&ideas);
-    let (modifiers, format_warnings) = super::idea_format::modifier_formats(
-        replay,
-        params.branch(),
-        &modifier_keys,
-        content,
-        cancelled,
-    )?;
+    let (modifiers, format_warnings) =
+        super::idea_format::modifier_formats_from_recorded(recorded, &modifier_keys, content);
     warnings.extend(format_warnings);
     let texts = super::idea_format::texts(content, &text_keys);
     // Names left out for a localisation refusal, by reason and key.
@@ -2202,8 +2104,7 @@ pub fn reply(
     })
 }
 
-pub mod prepared;
-pub mod progressive;
+pub mod served;
 
 #[cfg(test)]
 mod tests;

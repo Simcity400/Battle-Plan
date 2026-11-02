@@ -2,11 +2,18 @@
 //! Progress runs stay country-local; the feed caches only actual completions.
 
 use super::*;
+#[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
 
 #[cfg(any(test, feature = "test-support"))]
 const CACHED_BRANCHES: usize = 4;
+
+#[cfg(any(test, feature = "test-support"))]
+const UNMAPPED_PROJECT_OWNER: &str = "Project owner has no recorded CountryLinks mapping.";
+#[cfg(any(test, feature = "test-support"))]
+const UNMAPPED_HISTORY_OWNER: &str = "Project history owner has no recorded CountryLinks mapping.";
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
@@ -86,7 +93,7 @@ impl WorldBuilder {
                 } else {
                     *self
                         .warnings
-                        .entry(prepared::completion_stream::UNMAPPED_PROJECT_OWNER.into())
+                        .entry(UNMAPPED_PROJECT_OWNER.into())
                         .or_default() += 1;
                 }
             }
@@ -100,7 +107,7 @@ impl WorldBuilder {
                 } else {
                     *self
                         .warnings
-                        .entry(prepared::completion_stream::UNMAPPED_HISTORY_OWNER.into())
+                        .entry(UNMAPPED_HISTORY_OWNER.into())
                         .or_default() += 1;
                 }
             }
@@ -240,6 +247,7 @@ fn finish(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn refusal_totals(
     mut counts: BTreeMap<String, usize>,
     texts: &catalogue::Refusals,
@@ -250,7 +258,8 @@ pub(super) fn refusal_totals(
     counts.into_iter().collect()
 }
 
-/// Transient presentation work; raw observations never enter prepared state.
+/// Transient presentation work of the recording oracle.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) struct PresentedCompletion {
     pub id: u64,
     pub observation: CompletionObservation,
@@ -260,7 +269,8 @@ pub(super) struct PresentedCompletion {
 }
 
 /// Present newly recognised changes at their native hours, decoding each selected
-/// block once. The recording oracle and preparation share this presenter.
+/// block once, as the recording oracle presents them.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn present_observations(
     replay: &Replay,
     branch: u64,
@@ -476,6 +486,7 @@ pub(super) fn structural_reason(reason: &str) -> String {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn present_completion(
     tag: String,
     observation: CompletionObservation,

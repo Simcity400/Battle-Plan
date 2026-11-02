@@ -1,6 +1,7 @@
 //! Joined country/region values use shared series; queries reuse the air renderers.
 use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +9,11 @@ mod facts;
 mod first_view;
 mod reader;
 mod values;
+
+/// Air superiority's own read of the country groups, kept under its own name.
+pub fn groups_section(branch: u64) -> String {
+    format!("air-superiority-groups-{branch}")
+}
 
 #[derive(Serialize, Deserialize)]
 enum Field {
@@ -43,6 +49,7 @@ struct Assigned {
 
 /// The tables whose change assigns the day's sides again: any change of
 /// their rows (a new decoding of them) marks the day's roster for a new read.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) const ROSTER_TABLES: [TableId; 6] = [
     TableId::Factions,
     TableId::FactionMembers,
@@ -54,10 +61,12 @@ pub(super) const ROSTER_TABLES: [TableId; 6] = [
 
 /// The countries' score identity an hour's scores are projected through:
 /// the score operands and each raw owner's tag.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) type ScoreIdentity = (scan::ScoreOperands, HashMap<u32, String>);
 
 /// An hour's score projection made on a pre-pass worker, through the score
 /// identity that worker read ([`Prepared::observe_scored`]).
+#[cfg(any(test, feature = "test-support"))]
 pub(super) struct Scored {
     pub identity: Arc<ScoreIdentity>,
     pub projection: scan::CountryScores,
@@ -69,11 +78,13 @@ pub(super) struct Scored {
 }
 
 /// One worker projection, told apart from every other by its allocation.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) struct ProjectionMark;
 
 /// A worker projection's pairs against the worker's projection before it
 /// (`after`): the pairs new or with other scores, in pair order, and the
 /// pairs gone, in pair order.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) struct PairDiff {
     pub after: Arc<ProjectionMark>,
     pub changed: Vec<((String, u32), (i64, i64))>,
@@ -82,6 +93,7 @@ pub(super) struct PairDiff {
 
 /// Time a measured fold spent in each part of the observation, with the
 /// times it took that part ([`Prepared::measure`]).
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct FoldParts {
     parts: BTreeMap<&'static str, (std::time::Duration, u64)>,
@@ -113,23 +125,29 @@ pub struct Prepared {
     /// Hours at which recorded wars end with no row changing, latest first.
     war_ends: Vec<i32>,
     facts: facts::Ledger,
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     score_identity: Option<ScoreIdentity>,
     /// A worker's score identity found equal to [`Self::score_identity`],
     /// whose projections are this observer's own until the identity changes.
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     verified: Option<Arc<ScoreIdentity>>,
     /// Each region's wings and active keys once named, so a region's fields
     /// are named (serialized and looked up) once, not every hour.
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     region_keys: HashMap<u32, [Option<u64>; 2]>,
     /// The worker projection this observer applied last, while its pairs
     /// are [`Self::current_keys`]: the projection a worker's next pair diff
     /// must follow to be taken.
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     applied: Option<Arc<ProjectionMark>>,
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     parts: Option<Box<FoldParts>>,
     #[cfg(test)]
@@ -142,6 +160,7 @@ pub struct Prepared {
     plain: bool,
 }
 impl Prepared {
+    #[cfg(any(test, feature = "test-support"))]
     fn key(&mut self, field: &Field) -> io::Result<u64> {
         let name = serde_json::to_string(field)?;
         let next =
@@ -150,6 +169,7 @@ impl Prepared {
     }
     /// [`Self::key`], held per region for its wings and active fields: the
     /// same key, named once.
+    #[cfg(any(test, feature = "test-support"))]
     fn region_key(&mut self, field: &Field) -> io::Result<u64> {
         let (region, slot) = match field {
             Field::Wings(region) => (*region, 0),
@@ -168,11 +188,13 @@ impl Prepared {
         Ok(key)
     }
     /// Measure the parts of each observation from now on ([`Self::take_parts`]).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn measure(&mut self) {
         self.parts.get_or_insert_with(Box::default);
     }
     /// The time each part took since last asked, by part name, with the
     /// times it took it; none unless measured.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn take_parts(&mut self) -> Vec<(&'static str, std::time::Duration, u64)> {
         self.parts
             .as_mut()
@@ -183,10 +205,12 @@ impl Prepared {
             .collect()
     }
     /// When a measured part starts.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn clock(&self) -> Option<std::time::Instant> {
         self.parts.as_ref().map(|_| std::time::Instant::now())
     }
     /// Count the time since `started` to `part`.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn lap(&mut self, started: Option<std::time::Instant>, part: &'static str) {
         if let (Some(parts), Some(started)) = (self.parts.as_mut(), started) {
             let entry = parts.parts.entry(part).or_default();
@@ -197,6 +221,7 @@ impl Prepared {
     /// One projected pair's scores at `hour` as the pair loop observes them,
     /// on its held keys while it is current and on its named fields when it
     /// is new; its keys.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_pair(
         &mut self,
         pair: &(String, u32),
@@ -226,6 +251,7 @@ impl Prepared {
         Ok((friendly_key, enemy_key))
     }
     /// A pair gone from the projection: both its values end.
+    #[cfg(any(test, feature = "test-support"))]
     fn end_pair(&mut self, (friendly, enemy): (u64, u64), hour: i32) {
         self.roster_dirty = true;
         self.values.observe(friendly, hour, None, false);
@@ -235,6 +261,7 @@ impl Prepared {
             self.work.emitted += 2;
         }
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_value(
         &mut self,
         field: &Field,
@@ -247,6 +274,7 @@ impl Prepared {
         Ok(key)
     }
     /// Observe `value` on `key` when forced or when it is not the held one.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_key(&mut self, key: u64, hour: i32, value: Option<i128>, force: bool) {
         if force
             || self
@@ -274,6 +302,7 @@ impl Prepared {
             .observe(frame, replay.format);
         self.observe_changed(frame, replay, groups, &changes)
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn observe_changed(
         &mut self,
         frame: &DecodedFrame,
@@ -286,6 +315,7 @@ impl Prepared {
     /// Whether a worker's score identity is this observer's: the same
     /// operands and owners, so its projections are the ones this observer
     /// would make.
+    #[cfg(any(test, feature = "test-support"))]
     fn accepts(&mut self, identity: &Arc<ScoreIdentity>) -> bool {
         if self
             .verified
@@ -304,6 +334,7 @@ impl Prepared {
     /// pre-pass worker (`scored`), used when that worker's score identity is
     /// this observer's; otherwise, or without one, the projection is made
     /// here.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn observe_scored(
         &mut self,
         frame: &DecodedFrame,
@@ -634,6 +665,7 @@ impl Prepared {
     }
     /// Whether `hour` can take [`Self::quiet_hour`]: it follows the last hour
     /// observed within the same day, after the scores' identity was read.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn quiet_follows(&self, hour: i32) -> bool {
         self.score_identity.is_some()
             && self.previous_hour.is_some_and(|previous| {
@@ -650,6 +682,7 @@ impl Prepared {
     /// observation would find there. Rows decoded again with equal values change nothing else:
     /// every value it would observe is the one it holds, and every key it
     /// would name it named before.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn quiet_hour(
         &mut self,
         hour: i32,
@@ -676,6 +709,7 @@ impl Prepared {
     }
     /// The wars ending by `hour` change the groups with no row changing: the
     /// roster is assigned again.
+    #[cfg(any(test, feature = "test-support"))]
     fn end_wars(&mut self, hour: i32) {
         while self.war_ends.last().is_some_and(|end| *end <= hour) {
             self.war_ends.pop();
@@ -684,6 +718,7 @@ impl Prepared {
     }
     /// Assign `hour`'s sides to the present countries, keeping their faction
     /// names; none without country identities.
+    #[cfg(any(test, feature = "test-support"))]
     fn assign(
         &mut self,
         groups: &dashboard_base::products::country_groups::Scan,
@@ -708,6 +743,7 @@ impl Prepared {
     /// The day of the last hour observed: its roster assigned again where it
     /// may have changed and, once the day is over (not `terminal`), its facts
     /// recorded.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn publish_day(
         &mut self,
         groups: &dashboard_base::products::country_groups::Scan,
@@ -763,9 +799,11 @@ impl Prepared {
             active: &self.active_regions,
         })
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn bytes(&self) -> usize {
         self.values.bytes() + self.events.bytes() + self.hours.bytes() + self.facts.bytes()
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -801,6 +839,7 @@ impl Prepared {
         }
         result
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn read(
         store: &store::Store,
         key: &store::SourceKey,
@@ -1006,7 +1045,7 @@ fn read_groups(
     branch: u64,
 ) -> io::Result<dashboard_base::products::country_groups::Scan> {
     let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_groups");
-    let file = match store.read(key, &super::block::groups_section(branch), 0)? {
+    let file = match store.read(key, &groups_section(branch), 0)? {
         Some(file) => file,
         None => store
             .read(key, &format!("country-groups-{branch}"), 0)?

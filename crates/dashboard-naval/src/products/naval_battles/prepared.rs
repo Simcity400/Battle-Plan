@@ -4,7 +4,7 @@ use super::details::{
     NavalBattleNamedShip,
 };
 use super::*;
-use crate::products::{ships_sunk, sinkings};
+use crate::products::{naval_losses, ships_sunk, sinkings};
 use dashboard_base::{
     catalogue,
     prepared::{frame_changes::FrameChanges, series},
@@ -28,13 +28,12 @@ pub(super) struct DetailPreparation {
     ships: sinkings::ShipHistory,
     sinking_log: ships_sunk::prepared::Prepared,
     sinking_titles: ships_sunk::battle_titles::Prepared,
-    losses: super::super::naval_losses::prepared::Prepared,
+    losses: naval_losses::prepared::Prepared,
     fleets: BTreeMap<u64, FleetRead>,
     fleet_reads: series::Accumulator,
     ship_reads: series::Accumulator,
     census_reads: series::Accumulator,
     ship_count: u32,
-    #[serde(skip)]
     pending_named: BTreeMap<u64, Vec<PreparedShip>>,
     ship_pages: BTreeMap<String, u64>,
     /// The content refusals this family's own reads produced, which its
@@ -245,6 +244,17 @@ impl DetailPreparation {
     }
 }
 impl Scan {
+    /// The naval losses it keeps, and the sinking scan they read.
+    pub(crate) fn losses(&mut self) -> (&mut naval_losses::prepared::Prepared, &sinkings::Scanned) {
+        (&mut self.details.losses, &self.details.ships.scan)
+    }
+
+    /// Brings the sinking scan's country histories through `last`, the last hour observed, as
+    /// a window's publication does.
+    pub(crate) fn settle(&mut self, last: i32) {
+        self.details.ships.finish_prepared(last);
+    }
+
     pub fn configure(
         &mut self,
         source: &Source,
@@ -385,13 +395,12 @@ impl Scan {
     pub(super) fn observe_projected_details(
         &mut self,
         source: &Source,
-        context: &LoadContext,
         hour: &mut columnar::Hour,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let mut own = std::mem::take(&mut self.details.refusals);
         let observed = catalogue::own_refusals(&mut own, || {
-            self.observe_own_projected(source, context, hour, cancelled)
+            self.observe_own_projected(source, hour, cancelled)
         });
         self.details.refusals = own;
         observed
@@ -400,7 +409,6 @@ impl Scan {
     fn observe_own_projected(
         &mut self,
         source: &Source,
-        context: &LoadContext,
         hour: &mut columnar::Hour,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -429,9 +437,16 @@ impl Scan {
         }
         drop(cpu);
         let sighted = hour.sighting.take();
+        // The catalogue the scan was configured with: looking it up again reads the settings.
+        let cat = self.details.cat.clone().ok_or_else(|| {
+            self.details
+                .catalogue_error
+                .clone()
+                .expect("configured content outcome")
+        });
         self.details
             .observe_sunk(at, &changes, reads, cancelled, |titles, ships, indices| {
-                titles.observe_sighted(source, context, at, ships, indices, cancelled, sighted)
+                titles.observe_sighted(source, cat, at, ships, indices, cancelled, sighted)
             })?;
         let _cpu = ::replay_frame::cpu::scope_phase("naval:fleet_projection_series");
         if let Some((labels, noted)) = hour.fleets.take() {
@@ -632,9 +647,6 @@ impl Scan {
         let _cpu = ::replay_frame::cpu::scope_phase("naval:series_flush");
         let details = &mut self.details;
         details.ships.finish_prepared(window.last_hour);
-        details
-            .losses
-            .flush(writer, branch, &details.ships.scan, cancelled)?;
         details.sinking_titles.flush(writer, branch, cancelled)?;
         details.fleet_reads.flush(
             writer,

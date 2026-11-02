@@ -2,8 +2,8 @@
 //! changes: the observed hours' frames, with tables reduced to the fields the
 //! family's observer reads, and the spans of quiet hours between them; and
 //! the hour-by-hour observation of a block its fold does not continue. Shared
-//! by the families whose extracts keep their hours this way (subjects, peace
-//! and idea history).
+//! by the families whose extracts keep their hours this way (peace and idea
+//! history).
 
 use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
 use replay::{container::BlockIndex, container::QuietHours, container::Replay};

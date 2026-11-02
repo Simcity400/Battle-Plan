@@ -92,19 +92,7 @@ impl<'a> Texts<'a> {
         self.viewer
             .get_or_init(|| {
                 let frame = self.frame;
-                let raw = frame
-                    .complete::<tables::LocalPlayer>()
-                    .map_err(|why| why.to_string())?
-                    .first()
-                    .and_then(|row| row.viewing_country())
-                    .ok_or("Faction goal text needs the selected country")?;
-                let root = crate::metadata::link_slot(
-                    frame
-                        .complete::<tables::CountryLinks>()
-                        .map_err(|why| why.to_string())?,
-                    raw,
-                )
-                .ok_or("Faction goal text needs the selected country's identity")?;
+                let root = viewer_root(frame)?;
                 Ok(ScriptedText::new(
                     frame,
                     &self.cat.localisation,
@@ -115,6 +103,18 @@ impl<'a> Texts<'a> {
             .as_ref()
             .map_err(Clone::clone)
     }
+}
+/// The selected country's slot, which goal names and descriptions expand in.
+pub(super) fn viewer_root(frame: &DecodedFrame) -> Result<u32, String> {
+    let raw = super::viewer::viewing(frame)?
+        .ok_or("Faction goal text needs the selected country")?;
+    crate::metadata::link_slot(
+        frame
+            .complete::<tables::CountryLinks>()
+            .map_err(|why| why.to_string())?,
+        raw,
+    )
+    .ok_or_else(|| "Faction goal text needs the selected country's identity".to_owned())
 }
 // The command creates a fresh leader scope, then binds the acting country as FROM.
 fn command_scopes(leader: u32, actor: u32) -> Scopes {

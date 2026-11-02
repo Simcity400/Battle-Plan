@@ -49,7 +49,12 @@ use {
 pub struct AirAces;
 pub struct AirAcePortraits;
 
+#[cfg(test)]
+mod columnar_tests;
+pub mod emit;
 pub mod prepared;
+pub mod segment;
+mod served;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "kebab-case")]
@@ -1166,6 +1171,7 @@ fn ace_warnings(result: &mut AirAcesReply, cat: Result<&Catalogue, &io::Error>) 
 impl Product for AirAces {
     const KEY: &'static str = "air-aces";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = AirAcesParams;
     type Reply = AirAcesReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

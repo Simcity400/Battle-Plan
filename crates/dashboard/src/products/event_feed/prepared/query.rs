@@ -1,11 +1,17 @@
 //! Backward native-date pages composed from the owning families' event ranges.
 use super::*;
 use crate::prepared::series::{self, DatedRow, EventsPage, LateIndex, Reader};
+use crate::prepared_focus::query::Feed as FocusFeed;
 use crate::products::country_nukes::{
     NukeTypeInfo,
     query::{Feed, Increase},
 };
-use crate::products::special_projects::prepared::completion_stream;
+use crate::products::idea_history::{Addition, Feed as Ideas};
+use crate::products::special_projects::{
+    emit::Change,
+    query::{FEED_KEY as PROJECTS_KEY, Feed as Projects},
+};
+use crate::products::subjects::Feed as SubjectFeed;
 #[cfg(test)]
 thread_local! {
     pub(super) static EVENT_ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -76,35 +82,249 @@ struct Cursor {
     before: Position,
 }
 
-/// Each source's pages, by source; the stockpile increases ([`INCREASES`]) are the nukes
-/// family's publication's.
-const FAMILIES: [Option<&str>; 7] = [
+/// Where each source's events are read, by source: the pages the hourly walk publishes, or,
+/// where none, the events a family's publication gives the feed whole ([`Held`]).
+const PAGES: [Option<&str>; 7] = [
     Some("country-group-changes"),
-    Some("subject-changes"),
-    Some("idea-changes"),
-    Some("focus-completions"),
+    None,
+    None,
+    None,
     Some("event-feed-facts"),
     None,
-    Some(completion_stream::FAMILY),
+    None,
 ];
+/// The sources given whole: the subjects family's relation starts, the ideas family's
+/// additions, the focus family's completions, the nukes family's stockpile increases and the
+/// projects family's completion changes.
+const STARTS: usize = 1;
+const IDEAS: usize = 2;
+const COMPLETIONS: usize = 3;
 const INCREASES: usize = 5;
-/// The key every increase is read under.
-const INCREASE_KEY: u64 = 0;
+const PROJECTS: usize = 6;
+/// The key every event of an unkeyed source is read under.
+const GIVEN_KEY: u64 = 0;
+/// The keys the idea additions are read under: the laws changed, then the advisors appointed.
+const LAW_KEY: u64 = 0;
+const ADVISOR_KEY: u64 = 1;
 
-/// Where a source's events are read: its pages, or the increases the feed is given.
-enum Events<'a> {
-    Pages(Reader<'a>),
-    Increases(&'a [Increase]),
+/// What the feed reads of the families the segment driver prepares, each from its own
+/// publication.
+#[derive(Clone, Copy)]
+pub(crate) struct Families<'a> {
+    pub nukes: &'a Feed,
+    pub subjects: &'a SubjectFeed,
+    pub focus: &'a FocusFeed,
+    pub ideas: &'a Ideas,
+    pub projects: &'a Projects,
 }
 
-impl Events<'_> {
+/// An event a family gives the feed, dated by the hour that read it.
+trait Dated: Serialize {
+    fn read_hour(&self) -> i32;
+}
+
+impl<T: Dated> Dated for &T {
+    fn read_hour(&self) -> i32 {
+        (**self).read_hour()
+    }
+}
+
+impl Dated for Increase {
+    fn read_hour(&self) -> i32 {
+        self.hour
+    }
+}
+
+impl Dated for subjects::SubjectStart {
+    fn read_hour(&self) -> i32 {
+        self.read_hour
+    }
+}
+
+impl Dated for Addition {
+    fn read_hour(&self) -> i32 {
+        self.span.first_hour
+    }
+}
+
+impl Dated for national_focus::FocusCompletion {
+    fn read_hour(&self) -> i32 {
+        self.hour
+    }
+}
+
+impl Dated for Change {
+    fn read_hour(&self) -> i32 {
+        self.observed_hour
+    }
+}
+
+/// A family's events under the key and ordinal the feed pages them by, each key's in the order
+/// of the hours that read them.
+trait Keyed {
+    type Event: Dated;
+    fn given(&self, key: u64) -> &[Self::Event];
+    /// The references of the events read after their dates.
+    fn late(&self) -> Option<&LateIndex> {
+        None
+    }
+}
+
+/// An unkeyed source's events: every one under [`GIVEN_KEY`].
+fn unkeyed<T>(key: u64, events: &[T]) -> &[T] {
+    if key == GIVEN_KEY {
+        events
+    } else {
+        &events[..0]
+    }
+}
+
+impl Keyed for Feed {
+    type Event = Increase;
+    fn given(&self, key: u64) -> &[Increase] {
+        unkeyed(key, &self.increases)
+    }
+}
+
+impl Keyed for SubjectFeed {
+    type Event = subjects::SubjectStart;
+    fn given(&self, key: u64) -> &[subjects::SubjectStart] {
+        self.keyed(key)
+    }
+    fn late(&self) -> Option<&LateIndex> {
+        Some(&self.late)
+    }
+}
+
+impl Keyed for FocusFeed {
+    type Event = national_focus::FocusCompletion;
+    fn given(&self, key: u64) -> &[national_focus::FocusCompletion] {
+        unkeyed(key, &self.completions)
+    }
+}
+
+impl Keyed for Projects {
+    type Event = Change;
+    fn given(&self, key: u64) -> &[Change] {
+        let changes = self.changes.as_slice();
+        if key == PROJECTS_KEY {
+            changes
+        } else {
+            &changes[..0]
+        }
+    }
+    fn late(&self) -> Option<&LateIndex> {
+        Some(&self.late)
+    }
+}
+
+impl<'a> Keyed for Classified<'a> {
+    type Event = &'a Addition;
+    fn given(&self, key: u64) -> &[&'a Addition] {
+        match usize::try_from(key)
+            .ok()
+            .and_then(|key| self.listed.get(key))
+        {
+            Some(listed) => listed.as_slice(),
+            None => &[],
+        }
+    }
+}
+
+/// A source's events the feed is given whole, read as its pages would be.
+trait Held {
+    /// How many of `key`'s events were read by `hour`.
+    fn through(&self, key: u64, hour: i32) -> usize;
+    /// `key`'s event at `ordinal`: the hour that read it, and its row.
+    fn at(&self, key: u64, ordinal: usize) -> io::Result<Option<(i32, serde_json::Value)>>;
+    fn late(&self) -> Option<&LateIndex>;
+}
+
+impl<K: Keyed> Held for K {
+    fn through(&self, key: u64, hour: i32) -> usize {
+        self.given(key)
+            .partition_point(|event| event.read_hour() <= hour)
+    }
+    fn at(&self, key: u64, ordinal: usize) -> io::Result<Option<(i32, serde_json::Value)>> {
+        self.given(key)
+            .get(ordinal)
+            .map(|event| -> io::Result<_> {
+                Ok((event.read_hour(), serde_json::to_value(event)?))
+            })
+            .transpose()
+    }
+    fn late(&self) -> Option<&LateIndex> {
+        Keyed::late(self)
+    }
+}
+
+/// The idea additions the feed lists, by key ([`LAW_KEY`], [`ADVISOR_KEY`]), and each idea the
+/// recorded content cannot classify, with its additions. An addition of an idea content proves
+/// no law is no change the feed lists.
+struct Classified<'a> {
+    listed: [Vec<&'a Addition>; 2],
+    unclassified: BTreeMap<String, u32>,
+}
+
+fn classified<'a>(
+    ideas: &'a Ideas,
+    politics: Option<&politics_content::PoliticsContent>,
+) -> io::Result<Classified<'a>> {
+    let mut listed: [Vec<&Addition>; 2] = [Vec::new(), Vec::new()];
+    let mut unclassified = BTreeMap::<String, u32>::new();
+    for addition in &ideas.additions {
+        let key = if addition.span.character.is_some() {
+            ADVISOR_KEY
+        } else {
+            match politics.and_then(|content| {
+                content
+                    .idea_is_law(&addition.span.token)
+                    .ok()
+                    .and_then(|law| *law)
+            }) {
+                Some(true) => LAW_KEY,
+                Some(false) => continue,
+                None => {
+                    let count = unclassified
+                        .entry(addition.span.token.clone())
+                        .or_default();
+                    *count = count
+                        .checked_add(1)
+                        .ok_or_else(|| crate::invalid("Idea classification count exceeds u32"))?;
+                    continue;
+                }
+            }
+        };
+        listed[key as usize].push(addition);
+    }
+    Ok(Classified {
+        listed,
+        unclassified,
+    })
+}
+
+/// Where a source's events are read: its pages, or the events a family gives the feed whole.
+enum Events<'a> {
+    Pages(Reader<'a>),
+    Given(&'a dyn Held),
+}
+
+impl<'a> Events<'a> {
+    /// The late references of the events the feed is given.
+    fn late(&self) -> Option<&'a LateIndex> {
+        match self {
+            Self::Pages(_) => None,
+            Self::Given(held) => {
+                let held: &'a dyn Held = *held;
+                held.late()
+            }
+        }
+    }
+
     fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
         match self {
             Self::Pages(reader) => reader.event_count_through(key, hour),
-            Self::Increases(rows) if key == INCREASE_KEY => {
-                Ok(rows.partition_point(|row| row.hour <= hour) as u64)
-            }
-            Self::Increases(_) => Ok(0),
+            Self::Given(held) => Ok(held.through(key, hour) as u64),
         }
     }
 
@@ -112,11 +332,22 @@ impl Events<'_> {
     fn event(&mut self, key: u64, ordinal: u64) -> io::Result<DatedRow> {
         match self {
             Self::Pages(reader) => event(reader, key, ordinal),
-            Self::Increases(_) => self
-                .events(&[key], i32::MIN, i32::MAX, ordinal, 1)?
-                .rows
-                .pop()
-                .ok_or_else(|| crate::invalid("Prepared feed event reference is missing")),
+            Self::Given(held) => {
+                let (hour, row) = usize::try_from(ordinal)
+                    .ok()
+                    .map(|at| held.at(key, at))
+                    .transpose()?
+                    .flatten()
+                    .ok_or_else(|| crate::invalid("Prepared feed event reference is missing"))?;
+                #[cfg(test)]
+                EVENT_ROWS_READ.with(|count| count.set(count.get() + 1));
+                Ok(DatedRow {
+                    key,
+                    hour,
+                    ordinal,
+                    row,
+                })
+            }
         }
     }
 
@@ -130,67 +361,57 @@ impl Events<'_> {
         cursor: u64,
         size: u32,
     ) -> io::Result<EventsPage> {
-        let rows = match self {
+        let held = match self {
             Self::Pages(reader) => return reader.events(keys, from, to, cursor, size),
-            Self::Increases(rows) => *rows,
+            Self::Given(held) => *held,
+        };
+        let &[key] = keys else {
+            return Err(crate::invalid("Given feed events are read one key at a time"));
         };
         if from > to || size == 0 {
             return Err(crate::invalid("invalid event page"));
         }
-        let held = if keys.contains(&INCREASE_KEY) {
-            rows
-        } else {
-            &[]
-        };
         let base = if from == i32::MIN {
             0
         } else {
-            held.partition_point(|row| row.hour < from)
+            held.through(key, from - 1)
         };
-        let last = held.partition_point(|row| row.hour <= to);
+        let last = held.through(key, to);
         let first = usize::try_from(cursor).unwrap_or(usize::MAX).max(base);
         let end = first.saturating_add(size as usize).min(last);
-        let mut page = Vec::new();
+        let mut rows = Vec::with_capacity(end.saturating_sub(first));
         for ordinal in first..end {
-            page.push(DatedRow {
-                key: INCREASE_KEY,
-                hour: held[ordinal].hour,
+            let (hour, row) = held
+                .at(key, ordinal)?
+                .ok_or_else(|| crate::invalid("Prepared feed event reference is missing"))?;
+            rows.push(DatedRow {
+                key,
+                hour,
                 ordinal: ordinal as u64,
-                row: serde_json::to_value(&held[ordinal])?,
+                row,
             });
         }
         Ok(EventsPage {
             first: first as u64,
             total: (last - base) as u64,
-            rows: page,
+            rows,
             cursor: (end < last).then_some(end as u64),
         })
     }
 }
+
 /// The feed facts' catalogue: diagnostics, observed tables and late
 /// references. Each opener's continuing facts are entries apart.
 pub(in crate::products::event_feed) type FactsCatalogue = (Builder, BTreeSet<String>, LateIndex);
-/// Whether any country's focus was observed, the completions and countries
-/// without an event date by reason, and the late references.
-type FocusMetadata = (bool, BTreeMap<String, u64>, LateIndex);
 struct Metadata {
     groups: country_groups::changes::Metadata,
-    subjects: (bool, Vec<String>, LateIndex),
-    ideas: idea_history::ChangeMetadata,
-    definitions: Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>,
-    focus: FocusMetadata,
     facts: FactsCatalogue,
-    projects: completion_stream::Metadata,
 }
 impl Metadata {
     fn late(&self, source: usize) -> Option<&LateIndex> {
         match source {
             0 => Some(&self.groups.late),
-            1 => Some(&self.subjects.2),
-            2 => Some(&self.ideas.late),
-            3 => Some(&self.focus.2),
             4 => Some(&self.facts.2),
-            6 => Some(&self.projects.late),
             _ => None,
         }
     }
@@ -208,7 +429,7 @@ fn metadata(
     branch: u64,
 ) -> io::Result<Option<Arc<Metadata>>> {
     let mut stamps = Vec::new();
-    for family in FAMILIES.into_iter().flatten() {
+    for family in PAGES.into_iter().flatten() {
         let Some(ranges) = series::catalogue_ranges(store, key, family, branch)? else {
             return Ok(None);
         };
@@ -232,19 +453,10 @@ fn metadata(
             .map(|(_, value)| value)
             .ok_or_else(|| crate::invalid("Prepared feed catalogue disappeared"))
     }
-    let family = |source: usize| FAMILIES[source].expect("a source's pages");
-    let groups = read(store, key, family(0), branch)?;
-    let subjects = read(store, key, family(1), branch)?;
-    let ideas: idea_history::ChangeMetadata = read(store, key, family(2), branch)?;
-    let definitions = ideas.definition_index()?;
+    let family = |source: usize| PAGES[source].expect("a source's pages");
     let value = Arc::new(Metadata {
-        groups,
-        subjects,
-        ideas,
-        definitions,
-        focus: read(store, key, family(3), branch)?,
+        groups: read(store, key, family(0), branch)?,
         facts: read(store, key, family(4), branch)?,
-        projects: read(store, key, family(6), branch)?,
     });
     cache
         .0
@@ -261,7 +473,7 @@ enum SourceRow {
     Focus(national_focus::FocusCompletion),
     Fact(Box<Fact>),
     Increase(Increase),
-    Project(completion_stream::Change),
+    Project(Change),
 }
 fn decode(source: usize, row: DatedRow) -> io::Result<(Position, SourceRow)> {
     let value = match source {
@@ -361,14 +573,13 @@ fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>, observations: b
             (3, EventFeedCategory::WarsPeace),
             (4, EventFeedCategory::WarsPeace),
         ],
-        1 => vec![(0, EventFeedCategory::Diplomacy)],
-        2 => vec![
-            (0, EventFeedCategory::Politics),
-            (1, EventFeedCategory::Politics),
+        STARTS => vec![(0, EventFeedCategory::Diplomacy)],
+        IDEAS => vec![
+            (LAW_KEY, EventFeedCategory::Politics),
+            (ADVISOR_KEY, EventFeedCategory::Politics),
         ],
-        3 => vec![(0, EventFeedCategory::Milestones)],
-        6 => vec![(completion_stream::KEY, EventFeedCategory::Milestones)],
-        INCREASES => vec![(INCREASE_KEY, EventFeedCategory::Milestones)],
+        COMPLETIONS | INCREASES => vec![(GIVEN_KEY, EventFeedCategory::Milestones)],
+        PROJECTS => vec![(PROJECTS_KEY, EventFeedCategory::Milestones)],
         _ => FACT_KEYS
             .iter()
             .copied()
@@ -451,8 +662,8 @@ fn candidates(
     // its late references are reached; obsolete project pages never reread a
     // whole older late-completion tie.
     for source in (0..readers.len()).rev() {
+        let late = readers[source].late().or_else(|| metadata.late(source));
         let reader = &mut readers[source];
-        let late = metadata.late(source);
         for key in keys(source, categories, observations) {
             check_cancel(cancelled)?;
             let mut to = native_to;
@@ -630,7 +841,7 @@ fn project(
     builder: &mut Builder,
     position: &Position,
     row: SourceRow,
-    metadata: &Metadata,
+    ideas: &Ideas,
     nuke_types: &[NukeTypeInfo],
     politics: Option<&politics_content::PoliticsContent>,
     catalogue: Option<&Catalogue>,
@@ -652,7 +863,7 @@ fn project(
                 .span
                 .character
                 .as_ref()
-                .and_then(|holder| metadata.ideas.templates.get(&change.tag)?.get(&holder.id));
+                .and_then(|holder| ideas.templates.get(&change.tag)?.get(&holder.id));
             idea_rows(
                 builder,
                 politics,
@@ -804,7 +1015,7 @@ pub(crate) fn query(
     context: &LoadContext,
     store: &store::Store,
     key: &store::SourceKey,
-    nukes: Option<&Feed>,
+    families: Option<Families<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Page>> {
     check_cancel(cancelled)?;
@@ -842,15 +1053,31 @@ pub(crate) fn query(
             "Prepared feed cursor belongs to another view",
         ));
     }
-    let (Some(metadata), Some(nukes)) = (metadata(source, store, key, branch)?, nukes) else {
+    let (Some(metadata), Some(families)) = (metadata(source, store, key, branch)?, families) else {
         return Ok(None);
     };
-    let mut readers: Vec<_> = FAMILIES
+    // Laws are told from other ideas by the recorded content, read as the page is asked.
+    let politics = context
+        .content()
+        .and_then(|content| politics_content::politics_content(source, content));
+    let ideas = classified(families.ideas, politics.as_deref().ok())?;
+    let given: [Option<&dyn Held>; 7] = [
+        None,
+        Some(families.subjects),
+        Some(&ideas),
+        Some(families.focus),
+        None,
+        Some(families.nukes),
+        Some(families.projects),
+    ];
+    let mut readers: Vec<_> = PAGES
         .iter()
-        .map(|family| match family {
-            Some(family) => Reader::new(store, key, format!("{family}-{branch}"), cancelled)
+        .zip(given)
+        .map(|(pages, given)| match (pages, given) {
+            (Some(family), _) => Reader::new(store, key, format!("{family}-{branch}"), cancelled)
                 .map(Events::Pages),
-            None => Ok(Events::Increases(&nukes.increases)),
+            (None, Some(held)) => Ok(Events::Given(held)),
+            (None, None) => Err(crate::invalid("A prepared feed source has no events")),
         })
         .collect::<io::Result<_>>()?;
     let mut native_ends = Reader::new(store, key, format!("event-feed-facts-{branch}"), cancelled)?;
@@ -890,40 +1117,20 @@ pub(crate) fn query(
         None
     };
     // Revisions remain raw paging operands even when they no longer project a
-    // row at Live. Validate the bounded page together, preserving its cursor.
-    let projects: Vec<_> = rows
-        .iter()
-        .filter_map(|(position, row)| match row {
-            SourceRow::Project(change) => {
-                Some(completion_stream::episode_key(change.id).map(|key| (key, position.ordinal)))
-            }
-            _ => None,
-        })
-        .collect::<io::Result<_>>()?;
-    let Events::Pages(completions) = &mut readers[6] else {
-        return Err(crate::invalid("Prepared feed projects are not pages"));
-    };
-    let current = completions.values_at(
-        &projects.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-        live,
-    )?;
-    let current: BTreeSet<_> = projects
-        .into_iter()
-        .zip(current)
-        .filter_map(|((_, ordinal), current)| {
-            (current == Some(i128::from(ordinal))).then_some(ordinal)
-        })
-        .collect();
+    // row at Live: only an episode's change current at Live is listed.
     rows.retain(|position, row| match row {
         SourceRow::Project(change) => {
-            change.completion.is_some() && current.contains(&position.ordinal)
+            change.completion.is_some()
+                && families
+                    .projects
+                    .current(change.id, position.ordinal, live)
         }
         _ => true,
     });
     let mut builder = Builder::new(first, live);
     let texts = ScopedTexts::rising(source, branch, cancelled);
-    diagnostics(&mut builder, &metadata, nukes, live)?;
-    let nuke_types = nukes.types();
+    diagnostics(&mut builder, &metadata, &families, &ideas.unclassified, live)?;
+    let nuke_types = families.nukes.types();
     let mut project_refusals = catalogue::Refusals::default();
     for row in rows.values() {
         if let SourceRow::Project(change) = row {
@@ -979,10 +1186,7 @@ pub(crate) fn query(
             _ => None,
         }));
     }
-    let politics = match context
-        .content()
-        .and_then(|content| politics_content::politics_content(source, content))
-    {
+    let politics = match politics {
         Ok(content) => Some(content),
         Err(reason) => {
             builder.unavailable(
@@ -1087,7 +1291,7 @@ pub(crate) fn query(
             &mut builder,
             &position,
             row,
-            &metadata,
+            families.ideas,
             &nuke_types,
             politics.as_deref(),
             catalogue.as_deref(),
@@ -1106,7 +1310,7 @@ pub(crate) fn query(
                 .filter_map(|item| item.idea.as_ref()),
         );
         let (formats, warnings) = idea_format::modifier_formats_from_recorded(
-            metadata.definitions.as_ref(),
+            families.ideas.definitions.as_ref(),
             &keys,
             &content,
         );
@@ -1136,12 +1340,25 @@ pub(crate) fn query(
         }
         // A page is an I/O unit. Shrinking it changes no source selection or cursor bound.
         params.page_size /= 2;
-        return query(source, params, context, store, key, Some(nukes), cancelled);
+        return query(source, params, context, store, key, Some(families), cancelled);
     }
     Ok(Some(page))
 }
 
-fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i32) -> io::Result<()> {
+fn diagnostics(
+    builder: &mut Builder,
+    metadata: &Metadata,
+    families: &Families<'_>,
+    unclassified: &BTreeMap<String, u32>,
+    live: i32,
+) -> io::Result<()> {
+    let Families {
+        nukes,
+        subjects,
+        focus,
+        ideas,
+        projects,
+    } = *families;
     builder.feed.unavailable = metadata.facts.0.feed.unavailable.clone();
     builder.unavailable_keys = metadata.facts.0.unavailable_keys.clone();
     builder
@@ -1151,11 +1368,11 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
     builder
         .feed
         .warnings
-        .extend(metadata.subjects.1.iter().cloned());
+        .extend(subjects.warnings.iter().cloned());
     builder
         .feed
         .warnings
-        .extend(metadata.projects.warnings.iter().cloned());
+        .extend(projects.warnings.iter().cloned());
     builder.unavailable("warDeclarationOrJoin", "War declaration or join", "WarRelations supplies the pair becoming at war. Declarations and joins require the native event history; refused intervals cannot distinguish those actions.", None);
     let counted = |count: usize| {
         u32::try_from(count).map_err(|_| crate::invalid("Feed refusal count exceeds u32"))
@@ -1196,7 +1413,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             );
         }
     }
-    if !metadata.projects.available {
+    if !projects.available {
         builder.unavailable(
             "projectFinished",
             "Special projects",
@@ -1204,7 +1421,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             None,
         );
     }
-    if let Some(reason) = &metadata.projects.content_error {
+    if let Some(reason) = &projects.content_error {
         builder.unavailable(
             "projectFinished",
             "Special project presentation",
@@ -1272,7 +1489,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             ),
         );
     }
-    for (reason, count) in &metadata.ideas.refusals {
+    for (reason, count) in &ideas.refusals {
         builder.unavailable(
             "ideaObservation",
             "Laws and advisors",
@@ -1280,7 +1497,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             Some(counted(*count)?),
         );
     }
-    for (reason, count) in &metadata.focus.1 {
+    for (reason, count) in &focus.unavailable {
         builder.unavailable(
             "focusCompleted",
             "Focus completions",
@@ -1291,7 +1508,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             ),
         );
     }
-    if !metadata.subjects.0 {
+    if !subjects.observed {
         builder.unavailable(
             "becameSubject",
             "Subjects",
@@ -1299,10 +1516,10 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             None,
         );
     }
-    if !metadata.ideas.observed {
+    if !ideas.observed {
         builder.unavailable("lawChanged", "Laws and advisors", "ActiveIdeas and HiredAdvisors were not recorded complete together with resolved countries.", None);
     }
-    if !metadata.focus.0 {
+    if !focus.observed {
         builder.unavailable(
             "focusCompleted",
             "Focus completions",
@@ -1310,10 +1527,10 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i
             None,
         );
     }
-    if metadata.ideas.gap_additions > 0 {
-        builder.unavailable("ideaAdditionAfterGap", "Law and advisor changes", "Changed holdings after an unrecorded stretch cannot establish whether a law changed or an advisor was hired.", Some(counted(metadata.ideas.gap_additions)?));
+    if ideas.gap_additions > 0 {
+        builder.unavailable("ideaAdditionAfterGap", "Law and advisor changes", "Changed holdings after an unrecorded stretch cannot establish whether a law changed or an advisor was hired.", Some(counted(ideas.gap_additions)?));
     }
-    for (token, count) in &metadata.ideas.unclassified {
+    for (token, count) in unclassified {
         builder.unavailable("lawChanged", "Law classification", format!("Idea {token}: the recorded content cannot establish whether this addition is a law."), Some(*count));
     }
     Ok(())

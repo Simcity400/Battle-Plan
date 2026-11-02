@@ -4,82 +4,10 @@ use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::T
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::atomic::AtomicBool;
 
-#[test]
-fn prepared_observer_roundtrip_preserves_reply_names_with_and_without_content() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
-    use crate::products::subjects::{Scan, SubjectParams, Subjects};
-    use dashboard_base::products::Product;
-    use dashboard_core::config::{ContentOptions, LoadContext};
-    let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
-        (
-            "common/autonomous_states/mod.txt",
-            "autonomy_state={id=mod_level min_freedom_level=0.2}",
-        ),
-        (
-            "localisation/mod_l_english.yml",
-            "\u{feff}l_english:\n mod_level:0 \"\"\n",
-        ),
-        ("settings.txt", "language=\"l_english\""),
-    ]);
-    let options = ContentOptions {
-        options: installed_content_core::ResolveOptions {
-            game_dir: folder.0.clone(),
-            user_dir: folder.0.clone(),
-            cache_dir: folder.0.join("cache"),
-        },
-        allow_unverified: true,
-        presentation: Default::default(),
-    };
-    let frames = [
-        subject_frame(100, &[(9001, 44, 40)], Some(&[(44, "mod_level")])),
-        subject_frame(101, &[(9001, 44, 40)], Some(&[(44, "mod_level")])),
-    ];
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
-    let source = dashboard_base::source::Source::from_replay(
-        dashboard_base::source::SourceKey {
-            source_id: "subjects-content".into(),
-            revision: "1".into(),
-        },
-        Default::default(),
-        std::sync::Arc::new(replay),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    source.set_test_content(options.options.clone(), catalogue.content.clone());
-    let mut scan = Scan::new(source.replay_ref(), 1);
-    scan.observe(&frames[0]).unwrap();
-    let mut scan: Scan = serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
-    scan.observe(&frames[1]).unwrap();
-    for content in [None, Some(options)] {
-        let context = LoadContext { content };
-        let expected = Subjects::load(
-            &source,
-            &SubjectParams {
-                branch_id: "1".into(),
-            },
-            &context,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let actual = scan
-            .finish(source.replay_ref(), 1)
-            .reply(&source, "1", &context)
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(&actual).unwrap(),
-            serde_json::to_value(expected).unwrap()
-        );
-        assert_eq!(
-            actual.levels[0].name,
-            context.content.map(|_| String::new())
-        );
-    }
-}
-
 /// Countries GER (link 9001), FRA (44), CTL (55) and MOD (66), with the given
 /// subject relations (overlord, subject, start hour) and each subject's current
 /// autonomy state; `None` leaves the Autonomy table unavailable this hour.
-fn subject_frame(
+pub(super) fn subject_frame(
     hour: i32,
     relations: &[(u32, u32, i32)],
     levels: Option<&[(u32, &str)]>,
@@ -120,7 +48,7 @@ fn subject_frame(
 
 #[test]
 fn subjects_follow_relations_their_levels_and_break_at_gaps() {
-    use crate::products::subjects::{LevelStep, SubjectRun, scan_branch};
+    use crate::products::subjects::{LevelStep, SubjectRun, row::scan_branch};
     use dashboard_base::products::country_groups::HourSpan;
     let step = |first_hour, last_hour, level: Option<&str>| LevelStep {
         first_hour,
@@ -240,7 +168,7 @@ fn subjects_follow_relations_their_levels_and_break_at_gaps() {
 
 #[test]
 fn subjects_link_tags_follow_identity_changes_and_unavailable_reads() {
-    use crate::products::subjects::{LevelStep, SubjectRun, scan_branch};
+    use crate::products::subjects::{LevelStep, SubjectRun, row::scan_branch};
     use dashboard_base::products::country_groups::HourSpan;
     let frames = (100..=108)
         .map(|hour| {
@@ -321,7 +249,7 @@ fn subjects_link_tags_follow_identity_changes_and_unavailable_reads() {
 
 #[test]
 fn subjects_leave_unknown_countries_out_and_mark_the_hour() {
-    use crate::products::subjects::scan_branch;
+    use crate::products::subjects::row::scan_branch;
     use dashboard_base::products::country_groups::HourSpan;
     // Two link ids naming FRA give it two levels in one hour: its level is not known.
     // CTL's level is recorded under an id that is not text: refused, and counted.
@@ -498,7 +426,7 @@ fn subject_levels_follow_a_modded_content_stack() {
 /// overlords and subjects like any other.
 #[test]
 fn subjects_keep_dynamic_and_unusual_tags_as_recorded() {
-    use crate::products::subjects::scan_branch;
+    use crate::products::subjects::row::scan_branch;
     let frame = |hour| {
         let mut frame = subject_frame(
             hour,
@@ -559,177 +487,6 @@ fn subjects_keep_dynamic_and_unusual_tags_as_recorded() {
     assert!(scan.warnings().is_empty(), "{:?}", scan.warnings());
 }
 
-#[test]
-fn subject_deferred_spans_and_refusal_rates_match_oracle_after_commits_resume_append_and_expiry() {
-    use super::Scan;
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        series::{Accumulator, LateIndex},
-    };
-    let flag = AtomicBool::new(false);
-    for levels in [None, Some(&[(44, "level")][..])] {
-        let mut initial = subject_frame(100, &[(9001, 44, 40)], levels);
-        if let TableView::Complete(TableRows::Subjects(rows)) =
-            &mut *initial.tables[TableId::Subjects.index()]
-        {
-            rows[0].end_hour = 109;
-        }
-        let mut frames: Vec<_> = (100..=110)
-            .map(|hour| {
-                let mut frame = initial.clone();
-                frame.hour = hour;
-                frame
-            })
-            .collect();
-        let mut resumed = initial.clone();
-        resumed.hour = 113;
-        frames.push(resumed.clone());
-        resumed.hour = 114;
-        frames.push(resumed);
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-        let source = dashboard_base::source::Source::from_replay(
-            dashboard_base::source::SourceKey {
-                source_id: "subjects-deferred".into(),
-                revision: "1".into(),
-            },
-            Default::default(),
-            std::sync::Arc::new(replay),
-            &flag,
-        )
-        .unwrap();
-        let mut fixture = dashboard_base::prepared::series::tests::Fixture::new();
-        let mut scan = Scan::new(source.replay_ref(), 1);
-        let mut events = Accumulator::default();
-        let mut late = LateIndex::default();
-        for (index, batch) in [&frames[..6], &frames[6..11], &frames[11..]]
-            .into_iter()
-            .enumerate()
-        {
-            let mut tracker = FrameChangeTracker::new();
-            for frame in batch {
-                scan.prepare_changes_changed(
-                    frame,
-                    &tracker.observe(frame, source.replay_ref().format),
-                    &mut events,
-                    &mut late,
-                )
-                .unwrap();
-            }
-            scan.seal();
-            let mut writer = if index == 2 {
-                fixture.append_writer()
-            } else {
-                fixture.writer()
-            };
-            events
-                .flush(&mut writer, "subject-changes-1", 0, &flag)
-                .unwrap();
-            writer
-                .write_at(
-                    "subjects-1",
-                    0,
-                    zstd::stream::encode_all(serde_json::to_vec(&scan).unwrap().as_slice(), 3)
-                        .unwrap()
-                        .as_slice(),
-                )
-                .unwrap();
-            writer.commit().unwrap();
-            scan = serde_json::from_reader(
-                zstd::stream::Decoder::new(
-                    fixture
-                        .store
-                        .read(&fixture.key, "subjects-1", 0)
-                        .unwrap()
-                        .unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            events = serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
-        }
-        let context = dashboard_core::config::LoadContext { content: None };
-        let actual = scan
-            .finish(source.replay_ref(), 1)
-            .reply(&source, "1", &context)
-            .unwrap();
-        let expected = super::scan_branch(source.replay_ref(), 1, &flag)
-            .unwrap()
-            .reply(&source, "1", &context)
-            .unwrap();
-        dashboard_base::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
-        assert_eq!(
-            actual.runs[0].last_hour, 108,
-            "a stored native end seals the open relation at the old frontier"
-        );
-    }
-}
-
-#[test]
-fn subject_holder_change_reuses_unchanged_native_relation_level_and_link_tables() {
-    use super::Scan;
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        series::{Accumulator, LateIndex},
-    };
-    let mut first = dashboard_base::test_fixtures::world_frame(100, true);
-    *first.tables[TableId::Subjects.index()] =
-        TableView::Complete(TableRows::Subjects(vec![replay_data::rows::SubjectRow {
-            overlord: 11,
-            subject: 31,
-            start_hour: 90,
-            ..Default::default()
-        }]));
-    *first.tables[TableId::Autonomy.index()] =
-        TableView::Complete(TableRows::Autonomy(vec![replay_data::rows::AutonomyRow {
-            subject: 31,
-            state: b"level".to_vec(),
-            ..Default::default()
-        }]));
-    let mut renamed = first.clone();
-    renamed.hour = 101;
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *renamed.tables[TableId::Countries.index()]
-    {
-        rows.iter_mut().find(|row| row.id == 31).unwrap().tag = b"RENAMED".to_vec();
-    }
-    let mut scan = Scan::default();
-    let mut events = Accumulator::default();
-    let mut late = LateIndex::default();
-    let mut tracker = FrameChangeTracker::new();
-    let format = replay_data::format::FormatVersion::CURRENT;
-    scan.prepare_changes_changed(
-        &first,
-        &tracker.observe(&first, format),
-        &mut events,
-        &mut late,
-    )
-    .unwrap();
-    let before = scan.work;
-    scan.prepare_changes_changed(
-        &renamed,
-        &tracker.observe(&renamed, format),
-        &mut events,
-        &mut late,
-    )
-    .unwrap();
-    assert_eq!(
-        scan.work.row_visits - before.row_visits,
-        renamed
-            .complete::<replay_data::rows::tables::Countries>()
-            .unwrap()
-            .len()
-    );
-    let mut oracle = Scan::default();
-    oracle.observe(&first).unwrap();
-    oracle.observe(&renamed).unwrap();
-    scan.seal();
-    assert_eq!(
-        serde_json::to_value(&scan.runs).unwrap(),
-        serde_json::to_value(&oracle.runs).unwrap()
-    );
-    assert_eq!(scan.change_warnings(), oracle.change_warnings());
-}
-
 /// A span of unchanged hours adds each diagnostic rate as that many hourly
 /// additions do: the same sum, and an overflow exactly where one addition at
 /// a time overflows (a panic where overflow is checked, a wrap otherwise).
@@ -745,7 +502,7 @@ fn unchanged_spans_add_diagnostic_rates_as_hourly_additions_do() {
         (1, u32::MAX, 2),
     ] {
         let hourly = std::panic::catch_unwind(|| (0..hours).fold(value, |value, _| value + rate));
-        let spanned = std::panic::catch_unwind(|| super::repeated(value, rate, hours));
+        let spanned = std::panic::catch_unwind(|| super::scan::repeated(value, rate, hours));
         match (hourly, spanned) {
             (Ok(hourly), Ok(spanned)) => {
                 assert_eq!(spanned, hourly, "{value} + {hours} x {rate}");

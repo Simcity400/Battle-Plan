@@ -6,24 +6,35 @@
 //!
 //! The family folds each block in order on the carried scan: each kept hour
 //! is observed as an hour-by-hour walk observes it, and each hour between
-//! takes the scan's unchanged-hour step ([`Scan::advance_quiet`]). When the
+//! takes the scan's unchanged-hour step (`Scan::advance_quiet`). When the
 //! carried scan does not continue into such an hour, the rest of the block is
 //! observed hour by hour.
 
-use crate::{Observer, Scan};
+use crate::Observer;
+#[cfg(any(test, feature = "test-support"))]
+use crate::Scan;
+#[cfg(any(test, feature = "test-support"))]
 use dashboard_base::prepared::kept::{Observed, consecutive, kept_changes, observe_hours};
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_base::prepared::kept::{note_frames, note_observed};
+use dashboard_base::prepared::prepass::HeldBytes;
+#[cfg(any(test, feature = "test-support"))]
 use dashboard_base::prepared::{
     frame_changes::FrameChanges,
-    prepass::{Extract, Family, Folded, HeldBytes},
+    prepass::{Extract, Family, Folded},
 };
+#[cfg(any(test, feature = "test-support"))]
 use replay::container::{BlockIndex, QuietHours, Replay};
 use replay_data::format::FormatVersion;
-use replay_frame::frame::{DecodedFrame, FrameLog};
-use std::{any::Any, io, marker::PhantomData, ops::Range};
+use replay_frame::frame::DecodedFrame;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameLog;
+use std::io;
+#[cfg(any(test, feature = "test-support"))]
+use std::{any::Any, marker::PhantomData, ops::Range};
 
 /// The pre-pass entry of observer `O`, named `name` with its timing rows.
+#[cfg(any(test, feature = "test-support"))]
 pub const fn family<O: Observer>(
     name: &'static str,
     extract: &'static str,
@@ -41,6 +52,7 @@ pub const fn family<O: Observer>(
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn start<O: Observer>(format: FormatVersion) -> Box<dyn Extract> {
     Box::new(BlockExtract::<O> {
         format,
@@ -64,10 +76,17 @@ pub trait Operands<O: Observer>: Send {
         let _ = (observer, names, delta);
         Ok(None)
     }
+    /// Whether the hour gave `table` whole, as `observer` holds it from the last hour it
+    /// observed: a native segment's first hour restating it, which is then unchanged.
+    fn restates(&self, observer: &O, table: replay_data::rows::TableId) -> bool {
+        let _ = (observer, table);
+        false
+    }
     fn held(&self, bytes: &mut HeldBytes);
 }
 
 /// Copies changed operands while the driver lends the current hour; never keeps source views.
+#[cfg(any(test, feature = "test-support"))]
 pub trait Keeper<O: Observer>: Send {
     fn keep(
         &mut self,
@@ -77,6 +96,7 @@ pub trait Keeper<O: Observer>: Send {
     fn held(&self, bytes: &mut HeldBytes);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 enum Input<O: Observer> {
     /// The hour's frame: the next its block's kept frames hold.
     Frame,
@@ -104,6 +124,7 @@ impl<O: Observer> Operands<O> for Borrowed<'_> {
 }
 
 /// One hour of a block's facts, in hour order.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(
     clippy::large_enum_variant,
     reason = "Block facts retain observed frames inline without a per-hour allocation."
@@ -122,13 +143,14 @@ enum Hour<O: Observer> {
 }
 
 /// A block's hours as the extract kept them.
+#[cfg(any(test, feature = "test-support"))]
 struct BlockFacts<O: Observer> {
     hours: Vec<Hour<O>>,
     kept: FrameLog,
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     frames: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct BlockExtract<O: Observer> {
     format: FormatVersion,
     hours: Vec<Hour<O>>,
@@ -138,6 +160,7 @@ struct BlockExtract<O: Observer> {
     observer: PhantomData<fn() -> O>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl<O: Observer> Extract for BlockExtract<O> {
     fn bytes(&self) -> u64 {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
@@ -230,6 +253,7 @@ impl<O: Observer> Extract for BlockExtract<O> {
 
 /// Fold one block's facts into the carried scan. Returns how it folded and
 /// the last hour it reached.
+#[cfg(any(test, feature = "test-support"))]
 pub fn fold<O: Observer>(
     scan: &mut Scan<O>,
     facts: Box<dyn Any + Send>,
@@ -293,6 +317,7 @@ pub fn fold<O: Observer>(
 
 /// Observe the block hour by hour from `from` (every hour without it), with
 /// the change facts of the block alone. Returns the last hour observed.
+#[cfg(any(test, feature = "test-support"))]
 pub fn observe_block<O: Observer>(
     scan: &mut Scan<O>,
     replay: &Replay,

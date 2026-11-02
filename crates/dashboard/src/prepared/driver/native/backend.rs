@@ -11,7 +11,7 @@ use super::{
     shape::{Placed, Shape},
 };
 use crate::prepared::driver::{
-    publication::{Hours, Made, Stage},
+    publication::{self, Hours, Made, Stage},
     registry::FamilyId,
 };
 use dashboard_base::prepared::{
@@ -505,7 +505,7 @@ impl<N: Native> Emit<'_, '_, N> {
             let hour = item.hour();
             if let Err(error) = self.observe(native, branch, item) {
                 if error.kind() != io::ErrorKind::InvalidData {
-                    return Err(error);
+                    return Err(alone(error));
                 }
                 refused = Some((hour, error));
                 break;
@@ -573,12 +573,7 @@ impl<N: Native> Emit<'_, '_, N> {
             .ok()
             .and_then(|past| placed.first.checked_add(past))
             .filter(|&last| (first..placed.last).contains(&last))
-            .ok_or_else(|| {
-                segments::fatal(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Hours outside what is left of their segment",
-                ))
-            })?;
+            .ok_or_else(|| io::Error::other("Hours outside what is left of their segment"))?;
         let next = last + 1;
         self.dirty.insert(placed.branch);
         self.open.insert(placed.branch);
@@ -596,7 +591,7 @@ impl<N: Native> Emit<'_, '_, N> {
         // Hours short of their segment's end always end the batch.
         self.stage
             .processed(hours, Made::Prepared, None, None)
-            .map_err(segments::fatal)?;
+            .map_err(alone)?;
         self.joins.insert(placed.branch, (placed.run, next));
         self.queue(native, walking)?;
         if let Some(started) = started {
@@ -657,7 +652,7 @@ impl<N: Native> Emit<'_, '_, N> {
         let ends = self
             .stage
             .processed(hours, made, None, None)
-            .map_err(segments::fatal)?;
+            .map_err(alone)?;
         if ends {
             self.queue(native, walking)?;
         }
@@ -672,9 +667,7 @@ impl<N: Native> Emit<'_, '_, N> {
     fn unprocessed(&mut self, placed: &Placed) -> io::Result<(u32, i32)> {
         match self.joins.remove(&placed.branch) {
             Some((run, ordinal)) if run == placed.run && ordinal > placed.first => {
-                let past = i32::try_from(ordinal - placed.first).map_err(|error| {
-                    segments::fatal(io::Error::new(io::ErrorKind::InvalidData, error))
-                })?;
+                let past = i32::try_from(ordinal - placed.first).map_err(io::Error::other)?;
                 Ok((ordinal, placed.first_hour + past))
             }
             _ => Ok((placed.first, placed.first_hour)),
@@ -682,7 +675,8 @@ impl<N: Native> Emit<'_, '_, N> {
     }
 
     /// Publishes every branch the batch touched, with the state each goes on with but where it
-    /// ended short or partway through a segment, and queues the batch for the next commit.
+    /// ended short or partway through a segment, and hands the batch off to be sealed and
+    /// committed while the lane goes on.
     fn queue(&mut self, native: &N, walking: &Walking<'_>) -> io::Result<()> {
         for branch in std::mem::take(&mut self.dirty) {
             let through = self
@@ -694,49 +688,54 @@ impl<N: Native> Emit<'_, '_, N> {
             if let Some(state) = self.states.get_mut(&branch) {
                 native
                     .flush(state, &mut self.stage, branch, through, walking.cancelled)
-                    .map_err(published)?;
+                    .map_err(alone)?;
             }
             let unsaved = self.short.remove(&branch) | self.open.remove(&branch);
             if !unsaved {
                 let carry = self.carries.get(&branch);
                 let saved = match self.states.get_mut(&branch) {
                     Some(state) if carry.is_none_or(Option::is_some) => {
-                        native.save(state).map_err(published)?
+                        native.save(state).map_err(alone)?
                     }
                     _ => None,
                 };
                 let carry = saved.as_ref().and(carry.cloned().flatten());
-                self.stage
-                    .keep(branch, saved, carry)
-                    .map_err(segments::fatal)?;
+                self.stage.keep(branch, saved, carry).map_err(alone)?;
             }
             if self.ended.remove(&branch) {
                 self.states.remove(&branch);
                 self.carries.remove(&branch);
             }
         }
-        self.stage.queue().map_err(segments::fatal).map(drop)
+        self.stage.send().map_err(alone)
     }
 }
 
-/// `error`, met taking up a family's saved state: the family's own when its codec's, else the
-/// run's, as the store's.
-fn resumed(error: io::Error) -> io::Error {
-    match error.kind() {
-        io::ErrorKind::InvalidData | io::ErrorKind::Unsupported => {
-            io::Error::other(format!("Its saved state could not be taken up: {error}"))
-        }
-        _ => segments::fatal(error),
-    }
+/// Whether `error`, met by a family's emit, is the run's own: publication stopped, as when a
+/// commit failed or the job was cancelled ([`publication::halted`]), or the job's cancellation.
+fn of_the_run(error: &io::Error) -> bool {
+    publication::halted(error) || error.kind() == io::ErrorKind::Interrupted
 }
 
-/// `error`, met publishing a family's state: the run's own when the store's, else the family's,
-/// which a flush can no longer date.
-fn published(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::InvalidData {
+/// `error`, met by a family's emit in its stage or its own code as it keeps, flushes, saves,
+/// seals or publishes its hours: the run's own ([`of_the_run`]), which stops every family; else
+/// the family's alone, which ends it and no other, never as a refusal its emit did not date.
+pub(crate) fn alone(error: io::Error) -> io::Error {
+    if of_the_run(&error) {
+        segments::fatal(error)
+    } else if error.kind() == io::ErrorKind::InvalidData {
         io::Error::other(error.to_string())
     } else {
+        error
+    }
+}
+
+/// `error`, met taking up a family's saved state, as [`alone`] says.
+fn resumed(error: io::Error) -> io::Error {
+    if of_the_run(&error) {
         segments::fatal(error)
+    } else {
+        io::Error::other(format!("Its saved state could not be taken up: {error}"))
     }
 }
 

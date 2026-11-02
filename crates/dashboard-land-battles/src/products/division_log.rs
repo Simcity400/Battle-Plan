@@ -36,11 +36,15 @@ use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
 
-pub mod block;
 pub mod columnar;
+pub mod emit;
 mod newest;
 pub mod prepared;
 pub mod served;
+
+/// The template read hour a walk holds before its first read of the templates, which only the
+/// ordered scan knows: its presentations are dated with it until then, and the scan dates them.
+const INHERITED: i32 = i32::MIN;
 
 pub struct DivisionLog;
 pub struct DivisionLogManifest;
@@ -376,7 +380,7 @@ fn deletion_signature(row: &DivisionEquipmentDeletionRow) -> (u32, u32, u8, Opti
 /// What a columnar walk leaves the ordered scan to date and name: the template read hour at
 /// the last census, the hour the census last built its presentations, and the names a walk
 /// that built them before its end gave the templates they name.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Walked {
     census_template: Option<i32>,
     built: Option<i32>,
@@ -405,20 +409,9 @@ pub struct Scan {
     #[serde(with = "dashboard_core::map_pairs")]
     warnings: BTreeMap<(i32, String), usize>,
     counts: prepared::Counts,
-    /// While a block's extract follows the block alone ([`block`]): each
-    /// division absent from the last census, by the index of the event it
-    /// opened and its id. The extract cannot know which of them earlier
-    /// blocks saw; its fold keeps the events of those the carried scan never
-    /// saw, as this scan's own record of seen divisions would.
-    #[serde(skip)]
-    candidates: Option<Vec<(usize, u64)>>,
-    /// While following, a census met without a census before it in the
-    /// block, which the carried scan may have had.
-    #[serde(skip)]
-    irregular: bool,
     /// While hours a columnar walk projected are kept ([`columnar`]): what only earlier
     /// walks know.
-    #[serde(skip)]
+    #[serde(default)]
     walked: Walked,
     #[cfg(test)]
     #[serde(skip)]
@@ -433,22 +426,9 @@ impl Scan {
     }
     /// Whether a division absent from the last census is seen for the
     /// first time on the branch, and so logged unless this census is the
-    /// first available one (`baseline`). While a block's extract follows,
-    /// every such division outside a baseline is a candidate its fold
-    /// decides.
+    /// first available one (`baseline`).
     fn first_seen(&mut self, id: u64, baseline: bool) -> bool {
-        let next = self.events.len();
-        match self.candidates.as_mut() {
-            Some(candidates) => {
-                if baseline {
-                    self.irregular = true;
-                    return false;
-                }
-                candidates.push((next, id));
-                true
-            }
-            None => self.seen.insert(id) && !baseline,
-        }
+        self.seen.insert(id) && !baseline
     }
     fn gap(&mut self) {
         self.previous_hour = None;
@@ -508,7 +488,7 @@ impl Scan {
                 .is_some_and(|presentation| presentation.hour != hour);
             let read = if census { census_template } else { template };
             let date = |at: &mut Option<i32>| {
-                if *at == Some(block::INHERITED) {
+                if *at == Some(INHERITED) {
                     *at = read;
                 }
             };
@@ -1112,6 +1092,24 @@ fn names(
     cache.select_content(&cat);
     Some(cat)
 }
+/// The catalogue division names are drawn from, and why it is unavailable.
+pub type Names = (Option<Arc<Catalogue>>, Vec<String>);
+
+/// [`Names`] as `context` gives them.
+pub fn names_content(source: &Source, context: &LoadContext) -> Names {
+    let mut warnings = Vec::new();
+    let catalogue = names(source, context, &mut warnings);
+    (catalogue, warnings)
+}
+
+/// The catalogue of `names`, selected for the source's name caches.
+fn selected(source: &Source, names: &Names) -> Option<Arc<Catalogue>> {
+    let catalogue = names.0.as_ref()?;
+    let state = source.state::<Cache>();
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    cache.select_content(catalogue);
+    Some(Arc::clone(catalogue))
+}
 /// The content stack's division name groups, read once per content binding,
 /// and the notes their read made.
 pub fn division_name_groups(source: &Source, cat: &Arc<Catalogue>) -> DivisionNameGroups {
@@ -1348,13 +1346,23 @@ impl Scan {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<DivisionLogReply> {
+        self.reply_named(source, params, &names_content(source, context), cancelled)
+    }
+    /// [`Self::reply`] naming from `names`, resolved before.
+    fn reply_named(
+        &self,
+        source: &Source,
+        params: &DivisionLogParams,
+        names: &Names,
+        cancelled: &AtomicBool,
+    ) -> io::Result<DivisionLogReply> {
         let branch = branch(source, &params.branch_id)?;
         let interval = windows(source.replay_ref(), branch)
             .get(params.window)
             .cloned()
             .ok_or_else(|| dashboard_core::invalid("Division log window not in recording"))?;
-        let mut content_warnings = Vec::new();
-        let content = names(source, context, &mut content_warnings);
+        let mut content_warnings = names.1.clone();
+        let content = selected(source, names);
         let mut refused = BTreeMap::new();
         let first = self
             .events
@@ -1390,6 +1398,7 @@ impl Scan {
             content_warnings,
         })
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn manifest(
         &self,
         source: &Source,
@@ -1397,9 +1406,19 @@ impl Scan {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<DivisionLogManifestReply> {
+        self.manifest_named(source, params, &names_content(source, context), cancelled)
+    }
+    /// [`Self::manifest`] naming from `names`, resolved before.
+    fn manifest_named(
+        &self,
+        source: &Source,
+        params: &BranchParams,
+        names: &Names,
+        cancelled: &AtomicBool,
+    ) -> io::Result<DivisionLogManifestReply> {
         let branch = branch(source, &params.branch_id)?;
-        let mut content_warnings = Vec::new();
-        let content = names(source, context, &mut content_warnings);
+        let mut content_warnings = names.1.clone();
+        let content = selected(source, names);
         let mut templates = BTreeMap::new();
         let mut refused = BTreeMap::new();
         let mut latest = BTreeMap::new();
@@ -1528,6 +1547,7 @@ impl Product for DivisionLogTotals {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Scan {
     pub fn state_census(
         &self,

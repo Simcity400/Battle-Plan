@@ -1,13 +1,51 @@
 use super::*;
-use crate::prepared::{coverage, driver::plan, pipeline, prefix::Prefix};
+use crate::prepared::{
+    coverage,
+    driver::{
+        plan,
+        registry::{self, Descriptor},
+    },
+    pipeline,
+    prefix::Prefix,
+};
 use dashboard_base::prepared::gates;
 use std::{
     io::Read,
     path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering as Atomic},
+    sync::{
+        LazyLock,
+        atomic::{AtomicUsize, Ordering as Atomic},
+    },
 };
 
 const BRANCH: u64 = 1;
+
+/// A family of the tests' own, gating its product.
+static STEADY: Descriptor = Descriptor {
+    queries: &["steady-product"],
+    gates: &["steady-product"],
+    sections: &["steady"],
+    ..registry::family("steady")
+};
+/// Another, for a loss that ends its branch.
+static ENDING: Descriptor = Descriptor {
+    queries: &["ending-product"],
+    gates: &["ending-product"],
+    sections: &["ending"],
+    ..registry::family("ending")
+};
+
+/// Preparation's plan, with the tests' families prepared beside the registry's.
+static PLAN: LazyLock<&'static plan::Plan> = LazyLock::new(|| {
+    let mut native = crate::prepared::driver::native::names();
+    native.extend(["steady", "ending"]);
+    plan::test_native(&[&STEADY, &ENDING], &native).unwrap()
+});
+
+/// `query` answered under the tests' plan.
+fn planned<T>(query: impl FnOnce() -> T) -> T {
+    plan::with_test_native(*PLAN, query)
+}
 
 /// A store of its own, bound to a synthetic recording.
 struct Fixture {
@@ -34,7 +72,7 @@ impl Fixture {
             &self.store,
             self.key.clone(),
             binding(),
-            plan::rows(),
+            *PLAN,
             families,
             &|_, _, _| true,
         )
@@ -77,7 +115,7 @@ fn binding() -> Binding {
 }
 
 fn family(name: &str) -> Family {
-    Family::planned(plan::rows(), &[name]).unwrap()[0]
+    Family::planned(*PLAN, &[name]).unwrap()[0]
 }
 
 /// Segment `index` of run 0: ordinals and hours 10 apart, hours from 1000.
@@ -128,39 +166,36 @@ fn batches_end_after_the_first_second_fourth_eighth_and_sixteenth_segment_then_e
     let ends: Vec<u64> = (0..=100).filter(|&n| ends_batch(n, 32)).collect();
     assert_eq!(ends, [1, 2, 4, 8, 16, 32, 64, 96]);
     let fixture = Fixture::new();
-    let stability = family("stability");
+    let steady = family("steady");
     let mut committed = {
-        let (publisher, _) = fixture.open(&[stability]);
-        let mut stage = publisher.stage(stability.id).unwrap();
+        let (publisher, _) = fixture.open(&[steady]);
+        let mut stage = publisher.stage(steady.id).unwrap();
         // The 17th to 20th segments end no batch: interrupted, they are prepared again.
-        prepare(&mut stage, "stability-test", 0..20)
+        prepare(&mut stage, "steady-test", 0..20)
     };
     assert_eq!(committed, [1, 2, 4, 8, 16]);
     // A resumed run counts its segments from the branch's first.
-    let (publisher, resume) = fixture.open(&[stability]);
-    assert_eq!(resume.families[&stability.id][&BRANCH].segments, 16);
-    assert_eq!(
-        resume.attach(stability.id, BRANCH, 0, 160, 169),
-        Attach::Whole
-    );
-    let mut stage = publisher.stage(stability.id).unwrap();
-    committed.extend(prepare(&mut stage, "stability-test", 16..40));
+    let (publisher, resume) = fixture.open(&[steady]);
+    assert_eq!(resume.families[&steady.id][&BRANCH].segments, 16);
+    assert_eq!(resume.attach(steady.id, BRANCH, 0, 160, 169), Attach::Whole);
+    let mut stage = publisher.stage(steady.id).unwrap();
+    committed.extend(prepare(&mut stage, "steady-test", 16..40));
     assert_eq!(committed, [1, 2, 4, 8, 16, 32]);
-    let published = publisher.committed(stability.id, BRANCH).unwrap();
+    let published = publisher.committed(steady.id, BRANCH).unwrap();
     assert_eq!(published.publication.generation, 6);
     assert_eq!(published.frontier.segments, 32);
-    assert_eq!(fixture.count("stability-test"), Some(32));
+    assert_eq!(fixture.count("steady-test"), Some(32));
 }
 
 #[test]
 fn a_query_after_the_first_segment_reads_it_while_later_work_is_held() {
     let fixture = Fixture::new();
-    let stability = family("stability");
-    let (publisher, _) = fixture.open(&[stability]);
-    let mut stage = publisher.stage(stability.id).unwrap();
+    let steady = family("steady");
+    let (publisher, _) = fixture.open(&[steady]);
+    let mut stage = publisher.stage(steady.id).unwrap();
     assert!(process(
         &mut stage,
-        "stability-test",
+        "steady-test",
         segment(0),
         Made::Prepared
     ));
@@ -168,12 +203,12 @@ fn a_query_after_the_first_segment_reads_it_while_later_work_is_held() {
     // The second segment ends its batch too; its lane holds it.
     assert!(process(
         &mut stage,
-        "stability-test",
+        "steady-test",
         segment(1),
         Made::Prepared
     ));
     let gates = fixture.gates();
-    let covered = pipeline::published_coverage(&gates, BRANCH, "country-stability")
+    let covered = planned(|| pipeline::published_coverage(&gates, BRANCH, "steady-product"))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -181,12 +216,12 @@ fn a_query_after_the_first_segment_reads_it_while_later_work_is_held() {
         (1000, 1009, false)
     );
     assert!(
-        pipeline::published_holes(&gates, BRANCH, "country-stability", None)
+        planned(|| pipeline::published_holes(&gates, BRANCH, "steady-product", None))
             .unwrap()
             .is_empty()
     );
-    assert_eq!(fixture.count("stability-test"), Some(1));
-    let progress = publisher.progress()[&stability.id].clone();
+    assert_eq!(fixture.count("steady-test"), Some(1));
+    let progress = publisher.progress()[&steady.id].clone();
     assert_eq!(
         (progress.emitted, progress.processed, progress.available),
         (2, 1, 10)
@@ -212,7 +247,7 @@ fn fast_and_slow_families_publish_their_own_frontiers() {
     fast_and_slow(&fixture);
     let gates = fixture.gates();
     let last = |product| {
-        pipeline::published_coverage(&gates, BRANCH, product)
+        planned(|| pipeline::published_coverage(&gates, BRANCH, product))
             .unwrap()
             .map(|covered| covered.last_hour)
     };
@@ -226,7 +261,7 @@ fn a_joint_query_reads_every_supplier_from_one_pinned_publication() {
     let (production, repairs) = fast_and_slow(&fixture);
     let pinned = fixture.gates();
     let joint = |gates: &gates::Published| {
-        pipeline::published_coverage(gates, BRANCH, "dockyard-spending")
+        planned(|| pipeline::published_coverage(gates, BRANCH, "dockyard-spending"))
             .unwrap()
             .map(|covered| covered.last_hour)
     };
@@ -246,8 +281,8 @@ fn a_joint_query_reads_every_supplier_from_one_pinned_publication() {
         .expect("a publication");
     assert_eq!(joint(&current), Some(1019));
     assert_ne!(
-        pipeline::query_pages(&pinned, BRANCH, "dockyard-spending").unwrap(),
-        pipeline::query_pages(&current, BRANCH, "dockyard-spending").unwrap(),
+        planned(|| pipeline::query_pages(&pinned, BRANCH, "dockyard-spending")).unwrap(),
+        planned(|| pipeline::query_pages(&current, BRANCH, "dockyard-spending")).unwrap(),
         "a publication to a supplier moves the query's identity"
     );
 }
@@ -255,13 +290,13 @@ fn a_joint_query_reads_every_supplier_from_one_pinned_publication() {
 #[test]
 fn a_refusal_is_published_with_every_later_hour_unanswered() {
     let fixture = Fixture::new();
-    let stability = family("stability");
+    let steady = family("steady");
     {
-        let (publisher, _) = fixture.open(&[stability]);
-        let mut stage = publisher.stage(stability.id).unwrap();
+        let (publisher, _) = fixture.open(&[steady]);
+        let mut stage = publisher.stage(steady.id).unwrap();
         assert!(process(
             &mut stage,
-            "stability-test",
+            "steady-test",
             segment(0),
             Made::Prepared
         ));
@@ -270,7 +305,7 @@ fn a_refusal_is_published_with_every_later_hour_unanswered() {
             reason: "Refused for the test".into(),
             from: None,
         };
-        assert!(process(&mut stage, "stability-test", segment(1), refusal));
+        assert!(process(&mut stage, "steady-test", segment(1), refusal));
         stage.submit().unwrap();
         assert!(
             stage
@@ -280,11 +315,12 @@ fn a_refusal_is_published_with_every_later_hour_unanswered() {
         );
     }
     let gates = fixture.gates();
-    let refusal = pipeline::refusal_from(&gates, BRANCH, "country-stability").unwrap();
+    let refusal = planned(|| pipeline::refusal_from(&gates, BRANCH, "steady-product")).unwrap();
     // Queries before it answer, those across it refuse (`publication_gates`).
     assert_eq!(refusal, Some((1015, "Refused for the test".to_owned())));
     let holes = |through| {
-        pipeline::published_holes(&gates, BRANCH, "country-stability", Some(through)).unwrap()
+        planned(|| pipeline::published_holes(&gates, BRANCH, "steady-product", Some(through)))
+            .unwrap()
     };
     assert!(holes(1014).is_empty());
     let across = holes(1030);
@@ -295,33 +331,34 @@ fn a_refusal_is_published_with_every_later_hour_unanswered() {
             .iter()
             .all(|hole| hole.unavailable == coverage::Unavailable::Refused)
     );
-    let (_, resume) = fixture.open(&[stability]);
-    assert_eq!(resume.attach(stability.id, BRANCH, 0, 20, 29), Attach::Skip);
+    let (_, resume) = fixture.open(&[steady]);
+    assert_eq!(resume.attach(steady.id, BRANCH, 0, 20, 29), Attach::Skip);
 }
 
 #[test]
 fn no_value_is_carried_or_summed_across_a_hole() {
     let fixture = Fixture::new();
-    let (stability, supply) = (family("stability"), family("supply"));
-    let (publisher, _) = fixture.open(&[stability, supply]);
+    let (steady, ending) = (family("steady"), family("ending"));
+    let (publisher, _) = fixture.open(&[steady, ending]);
     let lost = |ends| Made::Lost {
         reason: "A damaged unit".into(),
         ends,
     };
-    let mut stage = publisher.stage(stability.id).unwrap();
+    let mut stage = publisher.stage(steady.id).unwrap();
     for (index, made) in [Made::Prepared, lost(false), Made::Prepared]
         .into_iter()
         .enumerate()
     {
-        process(&mut stage, "stability-test", segment(index as u32), made);
+        process(&mut stage, "steady-test", segment(index as u32), made);
         stage.submit().unwrap();
     }
     let gates = fixture.gates();
-    let covered = pipeline::published_coverage(&gates, BRANCH, "country-stability")
+    let covered = planned(|| pipeline::published_coverage(&gates, BRANCH, "steady-product"))
         .unwrap()
         .unwrap();
     assert_eq!((covered.first_hour, covered.last_hour), (1000, 1029));
-    let holes = pipeline::published_holes(&gates, BRANCH, "country-stability", None).unwrap();
+    let holes =
+        planned(|| pipeline::published_holes(&gates, BRANCH, "steady-product", None)).unwrap();
     assert_eq!(
         holes
             .iter()
@@ -342,10 +379,10 @@ fn no_value_is_carried_or_summed_across_a_hole() {
     assert_eq!(prefix.through(Some(1029)), Some(1009));
     assert!(prefix.pending.is_empty());
     // Its lost hours are never counted as prepared ones.
-    assert_eq!(publisher.progress()[&stability.id].available, 20);
+    assert_eq!(publisher.progress()[&steady.id].available, 20);
     // A loss its family cannot go on from ends its branch: every later hour is a hole.
-    let mut stage = publisher.stage(supply.id).unwrap();
-    process(&mut stage, "supply-test", segment(0), lost(true));
+    let mut stage = publisher.stage(ending.id).unwrap();
+    process(&mut stage, "ending-test", segment(0), lost(true));
     stage.submit().unwrap();
     assert!(
         stage
@@ -353,7 +390,8 @@ fn no_value_is_carried_or_summed_across_a_hole() {
             .is_err()
     );
     let gates = fixture.gates();
-    let holes = pipeline::published_holes(&gates, BRANCH, "supply-health", Some(1100)).unwrap();
+    let holes = planned(|| pipeline::published_holes(&gates, BRANCH, "ending-product", Some(1100)))
+        .unwrap();
     assert_eq!(holes.first().map(|hole| hole.first_hour), Some(1000));
     assert_eq!(holes.last().map(|hole| hole.last_hour), Some(1100));
 }
@@ -385,7 +423,6 @@ fn a_batch_that_does_not_follow_rolls_back_alone_and_its_group_commits() {
         .unwrap_err();
     assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
     first.submit().unwrap();
-    let ticket = stale.queue().unwrap();
     let mut other = publisher.stage(repairs.id).unwrap();
     process(
         &mut other,
@@ -393,12 +430,24 @@ fn a_batch_that_does_not_follow_rolls_back_alone_and_its_group_commits() {
         segment(0),
         Made::Prepared,
     );
-    // The other family's batch leads the group the stale batch is queued in.
-    other.submit().unwrap();
-    assert_eq!(
-        publisher.wait(ticket).unwrap_err().kind(),
-        io::ErrorKind::InvalidInput
-    );
+    // Both batches are queued while the coordinator commits, so one group commits them.
+    publisher.sealing(2, || {
+        publisher
+            .coordinate(|_| {
+                stale.send().unwrap();
+                other.send().unwrap();
+                while publisher.lock().queue.len() < 2 {
+                    std::thread::yield_now();
+                }
+                Ok(())
+            })
+            .unwrap();
+        other.settle().unwrap();
+        assert_eq!(
+            stale.settle().unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    });
     assert_eq!(
         publisher
             .committed(production.id, BRANCH)
@@ -415,48 +464,44 @@ fn a_batch_that_does_not_follow_rolls_back_alone_and_its_group_commits() {
 #[test]
 fn an_interruption_around_adoption_or_root_publication_leaves_a_whole_root() {
     let fixture = Fixture::new();
-    let stability = family("stability");
+    let steady = family("steady");
     // Staged and never adopted.
     {
-        let (publisher, _) = fixture.open(&[stability]);
-        let mut stage = publisher.stage(stability.id).unwrap();
-        process(&mut stage, "stability-test", segment(0), Made::Prepared);
+        let (publisher, _) = fixture.open(&[steady]);
+        let mut stage = publisher.stage(steady.id).unwrap();
+        process(&mut stage, "steady-test", segment(0), Made::Prepared);
     }
-    let (_, resume) = fixture.open(&[stability]);
+    let (_, resume) = fixture.open(&[steady]);
     assert!(resume.families.is_empty());
-    assert!(
-        !fixture
-            .count("stability-test")
-            .is_some_and(|count| count > 0)
-    );
+    assert!(!fixture.count("steady-test").is_some_and(|count| count > 0));
     // Adopted, then gone before its root.
     {
-        let (publisher, _) = fixture.open(&[stability]);
+        let (publisher, _) = fixture.open(&[steady]);
         publisher.fail_next_commit(Fault::BeforeRoot);
-        let mut stage = publisher.stage(stability.id).unwrap();
-        process(&mut stage, "stability-test", segment(0), Made::Prepared);
+        let mut stage = publisher.stage(steady.id).unwrap();
+        process(&mut stage, "steady-test", segment(0), Made::Prepared);
         assert!(stage.submit().is_err());
         assert!(matches!(publisher.stopped(), Some(Stopped::Uncertain(_))));
-        assert!(publisher.committed(stability.id, BRANCH).is_none());
+        assert!(publisher.committed(steady.id, BRANCH).is_none());
     }
-    let (_, resume) = fixture.open(&[stability]);
+    let (_, resume) = fixture.open(&[steady]);
     assert!(resume.families.is_empty());
     // Its root published, then an error: what is read back stands, and nothing else goes on.
     let commits = std::sync::Arc::new(AtomicUsize::new(0));
     {
         let counted = std::sync::Arc::clone(&commits);
-        let (publisher, _) = fixture.open(&[stability]);
+        let (publisher, _) = fixture.open(&[steady]);
         let publisher = publisher.with_commits(move || {
             counted.fetch_add(1, Atomic::SeqCst);
         });
         publisher.fail_next_commit(Fault::AfterRoot);
-        let mut stage = publisher.stage(stability.id).unwrap();
-        process(&mut stage, "stability-test", segment(0), Made::Prepared);
+        let mut stage = publisher.stage(steady.id).unwrap();
+        process(&mut stage, "steady-test", segment(0), Made::Prepared);
         stage.submit().unwrap();
         assert!(matches!(publisher.stopped(), Some(Stopped::Uncertain(_))));
         assert_eq!(
             publisher
-                .committed(stability.id, BRANCH)
+                .committed(steady.id, BRANCH)
                 .unwrap()
                 .frontier
                 .last_hour,
@@ -469,9 +514,9 @@ fn an_interruption_around_adoption_or_root_publication_leaves_a_whole_root() {
         );
     }
     assert_eq!(commits.load(Atomic::SeqCst), 1);
-    let (_, resume) = fixture.open(&[stability]);
-    assert_eq!(resume.families[&stability.id][&BRANCH].last_hour, 1009);
-    assert_eq!(fixture.count("stability-test"), Some(1));
+    let (_, resume) = fixture.open(&[steady]);
+    assert_eq!(resume.families[&steady.id][&BRANCH].last_hour, 1009);
+    assert_eq!(fixture.count("steady-test"), Some(1));
 }
 
 #[test]
@@ -523,12 +568,12 @@ fn each_family_resumes_from_its_own_committed_segment() {
 #[test]
 fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hour() {
     let fixture = Fixture::new();
-    let stability = family("stability");
+    let steady = family("steady");
     let state = |hour: i32| Some(hour.to_le_bytes().to_vec());
     {
-        let (publisher, _) = fixture.open(&[stability]);
-        let mut stage = publisher.stage(stability.id).unwrap();
-        assert_eq!(prepare(&mut stage, "stability-test", 0..1), [1]);
+        let (publisher, _) = fixture.open(&[steady]);
+        let mut stage = publisher.stage(steady.id).unwrap();
+        assert_eq!(prepare(&mut stage, "steady-test", 0..1), [1]);
         // Each arrival of the open tail's committed hours ends a batch, and publishes within
         // its segment: the publication's sequence moves on, its completed segments do not.
         for (sequence, (first, last)) in [(2, (10, 14)), (3, (15, 16))] {
@@ -539,7 +584,7 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
                     .unwrap()
             );
             stage.submit().unwrap();
-            let published = publisher.committed(stability.id, BRANCH).unwrap();
+            let published = publisher.committed(steady.id, BRANCH).unwrap();
             assert_eq!(published.publication.segment, sequence);
             assert_eq!(published.frontier.segments, 1);
             assert_eq!(
@@ -549,22 +594,23 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
                     ordinal: last + 1
                 }
             );
-            let covered =
-                pipeline::published_coverage(&fixture.gates(), BRANCH, "country-stability")
-                    .unwrap()
-                    .unwrap();
+            let covered = planned(|| {
+                pipeline::published_coverage(&fixture.gates(), BRANCH, "steady-product")
+            })
+            .unwrap()
+            .unwrap();
             assert_eq!(
                 (covered.last_hour, covered.complete),
                 (1000 + last as i32, false)
             );
         }
     }
-    let (publisher, resume) = fixture.open(&[stability]);
+    let (publisher, resume) = fixture.open(&[steady]);
     assert_eq!(
-        resume.attach(stability.id, BRANCH, 0, 10, 19),
+        resume.attach(steady.id, BRANCH, 0, 10, 19),
         Attach::From(17)
     );
-    let published = publisher.committed(stability.id, BRANCH).unwrap();
+    let published = publisher.committed(steady.id, BRANCH).unwrap();
     assert_eq!(published.frontier.segments, 1);
     let before = fixture
         .store
@@ -574,14 +620,14 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
         .snapshot();
     let mut view = &before;
     assert_eq!(
-        roots::state(&mut view, "stability", BRANCH, &published).unwrap(),
+        roots::state(&mut view, "steady", BRANCH, &published).unwrap(),
         state(1016)
     );
     assert_eq!(
-        roots::carry(&mut view, "stability", BRANCH, &published).unwrap(),
+        roots::carry(&mut view, "steady", BRANCH, &published).unwrap(),
         state(-1)
     );
-    let mut stage = publisher.stage(stability.id).unwrap();
+    let mut stage = publisher.stage(steady.id).unwrap();
     assert!(
         stage
             .processed(hours(15, 19, true, true), Made::Prepared, None, None)
@@ -594,7 +640,7 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
             .unwrap()
     );
     stage.submit().unwrap();
-    let published = publisher.committed(stability.id, BRANCH).unwrap();
+    let published = publisher.committed(steady.id, BRANCH).unwrap();
     assert_eq!(published.frontier.segments, 2);
     assert!(published.frontier.complete);
     let snapshot = fixture
@@ -604,15 +650,8 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
         .unwrap()
         .snapshot();
     let mut view = &snapshot;
-    let ledger = roots::ledger(
-        &mut view,
-        "stability",
-        BRANCH,
-        &published,
-        i32::MIN,
-        i32::MAX,
-    )
-    .unwrap();
+    let ledger =
+        roots::ledger(&mut view, "steady", BRANCH, &published, i32::MIN, i32::MAX).unwrap();
     assert_eq!(
         ledger
             .iter()
@@ -620,10 +659,11 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
             .collect::<Vec<_>>(),
         [(1000, 1019, roots::Held::Prepared)]
     );
-    assert_eq!(publisher.progress()[&stability.id].available, 20);
-    let covered = pipeline::published_coverage(&fixture.gates(), BRANCH, "country-stability")
-        .unwrap()
-        .unwrap();
+    assert_eq!(publisher.progress()[&steady.id].available, 20);
+    let covered =
+        planned(|| pipeline::published_coverage(&fixture.gates(), BRANCH, "steady-product"))
+            .unwrap()
+            .unwrap();
     assert_eq!((covered.last_hour, covered.complete), (1019, true));
 }
 
@@ -639,7 +679,7 @@ fn a_clear_waits_for_pending_stages_and_none_of_them_publish() {
         segment(0),
         Made::Prepared,
     );
-    let ticket = queued.queue().unwrap();
+    queued.send().unwrap();
     let mut open = publisher.stage(repairs.id).unwrap();
     process(
         &mut open,
@@ -658,7 +698,7 @@ fn a_clear_waits_for_pending_stages_and_none_of_them_publish() {
         clearing.join().unwrap();
     });
     assert_eq!(
-        publisher.wait(ticket).unwrap_err().kind(),
+        queued.settle().unwrap_err().kind(),
         io::ErrorKind::Interrupted
     );
     fixture.store.clear().unwrap();
@@ -712,7 +752,7 @@ fn bumping_a_family_s_version_prepares_that_family_again_alone() {
     );
     let gates = fixture.gates();
     assert!(
-        pipeline::published_coverage(&gates, BRANCH, "production-select")
+        planned(|| pipeline::published_coverage(&gates, BRANCH, "production-select"))
             .unwrap()
             .is_none()
     );
@@ -728,20 +768,20 @@ fn bumping_a_family_s_version_prepares_that_family_again_alone() {
 #[test]
 fn state_and_carry_are_found_by_their_content_wherever_compaction_moves_them() {
     let fixture = Fixture::new();
-    let stability = family("stability");
+    let steady = family("steady");
     let state = vec![7_u8; 4096];
     let moved = {
-        let (publisher, _) = fixture.open(&[stability]);
-        let mut stage = publisher.stage(stability.id).unwrap();
+        let (publisher, _) = fixture.open(&[steady]);
+        let mut stage = publisher.stage(steady.id).unwrap();
         // A large page overwritten in the same stage leaves its pack mostly dead: the commit
         // empties the pack's live ranges, state and carry among them, into a new one.
         let pages = stage.pages().unwrap();
         pages
-            .write_at("stability-filler", 0, &vec![0_u8; 1 << 20][..])
+            .write_at("steady-filler", 0, &vec![0_u8; 1 << 20][..])
             .unwrap();
-        pages.write_at("stability-filler", 0, &b"kept"[..]).unwrap();
+        pages.write_at("steady-filler", 0, &b"kept"[..]).unwrap();
         let staged = pages
-            .range_id("stability-filler", 0)
+            .range_id("steady-filler", 0)
             .unwrap()
             .unwrap()
             .cache_key();
@@ -756,16 +796,16 @@ fn state_and_carry_are_found_by_their_content_wherever_compaction_moves_them() {
         stage.submit().unwrap();
         let committed = fixture
             .store
-            .range_id(&fixture.key, "stability-filler", 0)
+            .range_id(&fixture.key, "steady-filler", 0)
             .unwrap()
             .unwrap()
             .cache_key();
         staged != committed
     };
     assert!(moved, "the commit moved the stage's ranges into a new pack");
-    let (publisher, resume) = fixture.open(&[stability]);
+    let (publisher, resume) = fixture.open(&[steady]);
     assert!(resume.again.is_empty());
-    let published = publisher.committed(stability.id, BRANCH).unwrap();
+    let published = publisher.committed(steady.id, BRANCH).unwrap();
     let snapshot = fixture
         .store
         .session(&fixture.key)
@@ -774,11 +814,11 @@ fn state_and_carry_are_found_by_their_content_wherever_compaction_moves_them() {
         .snapshot();
     let mut view = &snapshot;
     assert_eq!(
-        roots::state(&mut view, "stability", BRANCH, &published).unwrap(),
+        roots::state(&mut view, "steady", BRANCH, &published).unwrap(),
         Some(state)
     );
     assert_eq!(
-        roots::carry(&mut view, "stability", BRANCH, &published).unwrap(),
+        roots::carry(&mut view, "steady", BRANCH, &published).unwrap(),
         Some(b"carry".to_vec())
     );
 }
@@ -786,9 +826,9 @@ fn state_and_carry_are_found_by_their_content_wherever_compaction_moves_them() {
 #[test]
 fn a_frontier_summarises_its_holes_and_its_ledger_is_read_page_by_page() {
     let fixture = Fixture::new();
-    let stability = family("stability");
-    let (publisher, _) = fixture.open(&[stability]);
-    let mut stage = publisher.stage(stability.id).unwrap();
+    let steady = family("steady");
+    let (publisher, _) = fixture.open(&[steady]);
+    let mut stage = publisher.stage(steady.id).unwrap();
     // One-hour segments alternating prepared and lost: 1,300 intervals over six ledger pages.
     let mut sizes = Vec::new();
     for index in 0..1_300_u32 {
@@ -805,11 +845,11 @@ fn a_frontier_summarises_its_holes_and_its_ledger_is_read_page_by_page() {
             .unwrap();
         if index % 100 == 99 {
             stage.submit().unwrap();
-            let frontier = publisher.committed(stability.id, BRANCH).unwrap().frontier;
+            let frontier = publisher.committed(steady.id, BRANCH).unwrap().frontier;
             sizes.push(serde_json::to_vec(&frontier).unwrap().len());
         }
     }
-    let published = publisher.committed(stability.id, BRANCH).unwrap();
+    let published = publisher.committed(steady.id, BRANCH).unwrap();
     assert_eq!(published.frontier.ledger_pages, 6);
     assert_eq!(published.frontier.prepared, 650);
     assert_eq!(
@@ -829,7 +869,8 @@ fn a_frontier_summarises_its_holes_and_its_ledger_is_read_page_by_page() {
     let reads = roots::LEDGER_READS.with(std::cell::Cell::get);
     let gates = fixture.gates();
     assert_eq!(roots::LEDGER_READS.with(std::cell::Cell::get), reads);
-    let holes = pipeline::published_holes(&gates, BRANCH, "country-stability", None).unwrap();
+    let holes =
+        planned(|| pipeline::published_holes(&gates, BRANCH, "steady-product", None)).unwrap();
     assert_eq!(
         holes
             .iter()
@@ -846,7 +887,7 @@ fn a_frontier_summarises_its_holes_and_its_ledger_is_read_page_by_page() {
         .snapshot();
     let mut view = &snapshot;
     let reads = roots::LEDGER_READS.with(std::cell::Cell::get);
-    let found = roots::ledger(&mut view, "stability", BRANCH, &published, 1_900, 1_903).unwrap();
+    let found = roots::ledger(&mut view, "steady", BRANCH, &published, 1_900, 1_903).unwrap();
     assert!(roots::LEDGER_READS.with(std::cell::Cell::get) - reads <= 5);
     assert_eq!(
         found

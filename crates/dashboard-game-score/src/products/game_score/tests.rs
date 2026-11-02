@@ -6,7 +6,7 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 
-fn input(country: u32) -> CountryGameScoreInputRow {
+pub(super) fn input(country: u32) -> CountryGameScoreInputRow {
     CountryGameScoreInputRow {
         country,
         army_count: Some(2),
@@ -22,7 +22,7 @@ fn input(country: u32) -> CountryGameScoreInputRow {
     }
 }
 
-fn multiplier_row() -> GameScoreMultiplierRow {
+pub(super) fn multiplier_row() -> GameScoreMultiplierRow {
     GameScoreMultiplierRow {
         total_raw: Some(Q),
         army_raw: Some(Q),
@@ -34,7 +34,7 @@ fn multiplier_row() -> GameScoreMultiplierRow {
     }
 }
 
-fn factories(country: u32) -> CountryFactoriesRow {
+pub(super) fn factories(country: u32) -> CountryFactoriesRow {
     CountryFactoriesRow {
         country,
         naval_total_raw: 100_001,
@@ -44,7 +44,7 @@ fn factories(country: u32) -> CountryFactoriesRow {
     }
 }
 
-fn frame(hour: i32) -> DecodedFrame {
+pub(super) fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     for rows in [
         TableRows::CountryGameScoreInputs(vec![input(9001)]),
@@ -60,7 +60,7 @@ fn frame(hour: i32) -> DecodedFrame {
     frame
 }
 
-fn set(frame: &mut DecodedFrame, rows: TableRows) {
+pub(super) fn set(frame: &mut DecodedFrame, rows: TableRows) {
     let id = rows.table();
     *frame.tables[id.index()] = TableView::Complete(rows);
 }
@@ -610,7 +610,7 @@ fn game_score_content_fallback_requires_disabled_capture() {
     assert!(amount_at(&reply, series, "industry", 103).raw.is_none());
 }
 
-fn appearance(country: u32, cosmetic: &[u8]) -> replay_data::rows::CountryAppearanceRow {
+pub(super) fn appearance(country: u32, cosmetic: &[u8]) -> replay_data::rows::CountryAppearanceRow {
     replay_data::rows::CountryAppearanceRow {
         country,
         cosmetic_tag: cosmetic.to_vec(),
@@ -621,7 +621,7 @@ fn appearance(country: u32, cosmetic: &[u8]) -> replay_data::rows::CountryAppear
     }
 }
 
-fn identity_tables(frame: &mut DecodedFrame, country: u32, cosmetic: &[u8]) {
+pub(super) fn identity_tables(frame: &mut DecodedFrame, country: u32, cosmetic: &[u8]) {
     set(
         frame,
         TableRows::CountryAppearance(vec![appearance(country, cosmetic)]),
@@ -1181,7 +1181,7 @@ fn game_score_names_are_read_again_only_for_changed_operands_or_slot_zero() {
     assert!(!names.agrees(&subject));
 }
 
-fn scale_score_frame(count: u32) -> DecodedFrame {
+pub(super) fn scale_score_frame(count: u32) -> DecodedFrame {
     let mut frame = scale_frame(1, 100, count);
     // Ordinary countries use positive slots; zero has separate naming operands.
     if let TableView::Complete(TableRows::Countries(rows)) =
@@ -1815,7 +1815,7 @@ fn game_score_oversized_reply_refuses_by_transport_budget_name() {
     );
 }
 
-fn prepared_naming() -> Naming {
+pub(super) fn prepared_naming() -> Naming {
     let mut fallback = Localisation::default();
     fallback.language = "english".into();
     Naming {
@@ -1823,516 +1823,16 @@ fn prepared_naming() -> Naming {
         templates: Err("Faction content unavailable".into()),
         fallback,
         warnings: Vec::new(),
-        multipliers: Default::default(),
     }
 }
-fn assert_prepared_score_at(
-    fixture: &dashboard_base::prepared::series::tests::Fixture,
-    reference: &GameScoreReply,
-    hour: i32,
-) {
-    let value = prepared::query(
-        "series-state",
-        serde_json::json!({ "branchId": "1",
-        "family": {"kind": "game-score"}, "reads": [{"hour": hour}] }),
-        &fixture.store,
-        &fixture.key,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let actual: prepared::GameScoreStateReply = serde_json::from_value(value).unwrap();
-    let recorded = reference.reads.contains(&hour);
-    assert_eq!(
-        actual.reply.reads,
-        if recorded { vec![hour] } else { Vec::new() }
-    );
-    assert_eq!(actual.reply.score_warnings, reference.score_warnings);
-    assert_eq!(actual.reply.labels, reference.labels);
-    assert_eq!(actual.reply.hints, reference.hints);
-    if recorded {
-        assert_eq!(
-            values_at(&actual.reply, &actual.reply.multipliers, hour),
-            values_at(reference, &reference.multipliers, hour)
-        );
-    }
-    let expected: Vec<_> = reference
-        .countries
-        .iter()
-        .filter(|country| {
-            country
-                .identity
-                .iter()
-                .any(|run| run.first_hour <= hour && hour <= run.last_hour)
-        })
-        .collect();
-    assert_eq!(actual.reply.countries.len(), expected.len());
-    for (actual_country, expected_country) in actual.reply.countries.iter().zip(expected) {
-        assert_eq!(actual_country.tag, expected_country.tag);
-        assert_eq!(
-            values_at(&actual.reply, &actual_country.scores, hour),
-            values_at(reference, &expected_country.scores, hour)
-        );
-        let identity = expected_country
-            .identity
-            .iter()
-            .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-            .unwrap();
-        assert_eq!(actual_country.identity[0].value, identity.value);
-    }
-}
-
-#[test]
-fn prepared_game_score_matches_history_after_commits_resume_append_gaps_and_identity_changes() {
-    let mut first = frame(100);
-    let mut second = frame(101);
-    let mut missing = frame(102);
-    *missing.tables[TableId::CountryGameScoreInputs.index()] = TableView::Unavailable {
-        reason: "synthetic score inputs unavailable".into(),
-    };
-    let mut replacement = frame(104);
-    for input_frame in [&mut first, &mut second, &mut replacement] {
-        identity_tables(input_frame, 9001, b"GER");
-    }
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *replacement.tables[TableId::Countries.index()]
-    {
-        rows[0].id += 1;
-    }
-    set(
-        &mut second,
-        TableRows::CountryGameScoreInputs(vec![CountryGameScoreInputRow {
-            army_count: Some(17),
-            ..input(9001)
-        }]),
-    );
-    let frames = [first, second, missing, replacement];
-    let mut fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let naming = prepared_naming();
-    let mut state = prepared::Prepared::default();
-    for end in [1, 3, 4] {
-        let replay =
-            Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..end].to_vec())]).unwrap();
-        let begin = match end {
-            1 => 0,
-            3 => 1,
-            _ => 3,
-        };
-        let mut observer = naming.observer(&replay);
-        let mut changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-        for frame in &frames[begin..end] {
-            state
-                .observe(
-                    frame,
-                    &replay,
-                    &mut observer,
-                    &naming,
-                    &mut || unreachable!("captured multipliers"),
-                    &changes.observe(frame, replay.format),
-                )
-                .unwrap();
-        }
-        let mut writer = if end == 4 {
-            fixture.append_writer()
-        } else {
-            fixture.writer()
-        };
-        state
-            .flush(&mut writer, 1, &AtomicBool::new(false))
-            .unwrap();
-        let saved = serde_json::to_vec(&state).unwrap();
-        writer
-            .write_at("score-test-resume", 0, saved.as_slice())
-            .unwrap();
-        writer.commit().unwrap();
-        let reference = scan_frames(frames[..end].to_vec(), None);
-        for hour in 100..=frames[end - 1].hour {
-            assert_prepared_score_at(&fixture, &reference, hour);
-        }
-        state = serde_json::from_reader(std::io::BufReader::new(
-            fixture
-                .store
-                .read(&fixture.key, "score-test-resume", 0)
-                .unwrap()
-                .unwrap(),
-        ))
-        .unwrap();
-    }
-}
-
-#[test]
-fn prepared_game_score_unchanged_work_is_flat_over_hours_and_accumulated_holders() {
-    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let measure = |history: usize, hours: i32| -> io::Result<observer_tests::Work> {
-        let mut first = frame(100);
-        let replay =
-            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
-        let naming = prepared_naming();
-        let mut observer = naming.observer(&replay);
-        let mut state = prepared::Prepared::default();
-        let mut changes = FrameChangeTracker::new();
-        for index in 0..history {
-            first.hour = 100 + index as i32;
-            identity_tables(&mut first, 9001, format!("H{index:03}").as_bytes());
-            state.observe(
-                &first,
-                &replay,
-                &mut observer,
-                &naming,
-                &mut || unreachable!("captured multipliers"),
-                &changes.observe(&first, replay.format),
-            )?;
-        }
-        let work = observer_tests::unchanged_frames(
-            state.work(),
-            &first,
-            hours,
-            replay.format,
-            |frame, changes| {
-                state.observe(
-                    frame,
-                    &replay,
-                    &mut observer,
-                    &naming,
-                    &mut || unreachable!("captured multipliers"),
-                    changes,
-                )?;
-                Ok(state.work())
-            },
-        )?;
-        assert_eq!(
-            work,
-            observer_tests::Work::default(),
-            "unchanged keys or history were visited"
-        );
-        let before = state.work();
-        let mut baseline = first.clone();
-        baseline.hour += hours;
-        changes.observe(&baseline, replay.format);
-        first.hour += hours + 1;
-        if let TableView::Complete(TableRows::CountryGameScoreInputs(rows)) =
-            &mut *first.tables[TableId::CountryGameScoreInputs.index()]
-        {
-            rows[0].army_count = Some(27);
-        }
-        state.observe(
-            &first,
-            &replay,
-            &mut observer,
-            &naming,
-            &mut || unreachable!("captured multipliers"),
-            &changes.observe(&first, replay.format),
-        )?;
-        let after = state.work();
-        Ok(observer_tests::Work {
-            row_visits: after.row_visits - before.row_visits,
-            history_visits: after.history_visits - before.history_visits,
-            emitted: after.emitted - before.emitted,
-            ..Default::default()
-        })
-    };
-    observer_tests::assert_flat(
-        observer_tests::scaled_work(8, |hours| measure(1, hours as i32)).unwrap(),
-    );
-    observer_tests::assert_flat(
-        observer_tests::scaled_work(8, |history| measure(history, 8)).unwrap(),
-    );
-}
-
-#[test]
-fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_counts() {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let first = frame(100);
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
-    let naming = prepared_naming();
-    let mut observer = naming.observer(&replay);
-    let mut prepared = prepared::Prepared::default();
-    let mut tracker = FrameChangeTracker::new();
-    prepared
-        .observe(
-            &first,
-            &replay,
-            &mut observer,
-            &naming,
-            &mut || unreachable!("captured multipliers"),
-            &tracker.observe(&first, replay.format),
-        )
-        .unwrap();
-    let work = prepared.work();
-    let mut next = first.clone();
-    for hour in 101..=110 {
-        next.hour = hour;
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *next.tables[TableId::Countries.index()]
-        {
-            rows[0].political_power_raw = Some(i64::from(hour));
-        }
-        prepared
-            .observe(
-                &next,
-                &replay,
-                &mut observer,
-                &naming,
-                &mut || unreachable!("captured multipliers"),
-                &tracker.observe(&next, replay.format),
-            )
-            .unwrap();
-        assert_eq!(prepared.work(), work);
-        assert_eq!(observer.current.as_ref().unwrap().projected, 100);
-    }
-    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let mut writer = fixture.writer();
-    prepared
-        .flush(&mut writer, 1, &AtomicBool::new(false))
-        .unwrap();
-    writer.commit().unwrap();
-    let reference = scan_frames(
-        (100..=110)
-            .map(|hour| {
-                let mut frame = first.clone();
-                frame.hour = hour;
-                frame
-            })
-            .collect(),
-        None,
-    );
-    assert_prepared_score_at(&fixture, &reference, 110);
-}
-
-#[test]
-fn prepared_game_score_reads_the_content_multipliers_of_a_recording_without_score_capture() {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let frames: Vec<_> = (100..=102)
-        .map(|hour| {
-            let mut frame = frame(hour);
-            for table in [
-                TableId::CountryGameScoreInputs,
-                TableId::GameScoreMultipliers,
-            ] {
-                *frame.tables[table.index()] = TableView::Unavailable {
-                    reason: replay_data::format::GAME_SCORE_DISABLED_REASON.into(),
-                };
-            }
-            frame
-        })
-        .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let defines = installed_content_core::defines::Defines::new().unwrap();
-    defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1.25, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
-    let fallback = content_multipliers(Ok(&defines));
-    let naming = prepared_naming();
-    let mut observer = naming.observer(&replay);
-    let mut prepared = prepared::Prepared::default();
-    let mut tracker = FrameChangeTracker::new();
-    let mut content_reads = 0;
-    for frame in &frames {
-        prepared
-            .observe(
-                frame,
-                &replay,
-                &mut observer,
-                &naming,
-                &mut || {
-                    content_reads += 1;
-                    fallback.clone()
-                },
-                &tracker.observe(frame, replay.format),
-            )
-            .unwrap();
-    }
-    assert!(content_reads > 0);
-    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let mut writer = fixture.writer();
-    prepared
-        .flush(&mut writer, 1, &AtomicBool::new(false))
-        .unwrap();
-    writer.commit().unwrap();
-    let reference = scan(
-        &replay,
-        &BranchParams {
-            branch_id: "1".into(),
-        },
-        None,
-        Err("Faction content unavailable".into()),
-        None,
-        &mut || fallback.clone(),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    for hour in 100..=102 {
-        assert_prepared_score_at(&fixture, &reference, hour);
-    }
-    let value = prepared::query(
-        "series-state",
-        serde_json::json!({ "branchId": "1",
-        "family": {"kind": "game-score"}, "reads": [{"hour": 101}] }),
-        &fixture.store,
-        &fixture.key,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let actual: prepared::GameScoreStateReply = serde_json::from_value(value).unwrap();
-    let reply = &actual.reply;
-    assert_eq!(
-        amount_at(reply, &reply.multipliers, "industry", 101).value(),
-        Some(125_000)
-    );
-    let series = &reply.countries[0].scores;
-    assert_eq!(
-        amount_at(reply, series, "industry", 101).value(),
-        Some(750_000)
-    );
-    assert_eq!(
-        amount_at(reply, series, "army", 101)
-            .missing
-            .unwrap()
-            .reason,
-        replay_data::format::GAME_SCORE_DISABLED_REASON
-    );
-}
-
-#[test]
-fn progressive_game_score_sampler_matches_observer() {
-    let mut frame = scale_score_frame(24);
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *frame.tables[TableId::CountryLinks.index()]
-    {
-        rows.pop(); // A present tag whose native holder is unresolved stays unknown.
-    }
-    if let TableView::Complete(TableRows::CountryGameScoreInputs(rows)) =
-        &mut *frame.tables[TableId::CountryGameScoreInputs.index()]
-    {
-        for (index, row) in rows.iter_mut().enumerate() {
-            row.army_count = (index % 7 != 0).then_some(index as i32 - 12);
-            // An unread count carries its named error, as the recording requires.
-            row.army_error = if row.army_count.is_some() {
-                Vec::new()
-            } else {
-                b"fixture unread army".to_vec()
-            };
-            row.land_count = Some(index as i32);
-        }
-    }
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap();
-    let naming = prepared_naming();
-    let mut observer = naming.observer(&replay);
-    let observed = observer
-        .observe(&frame, &replay, &mut || panic!("captured multipliers"))
-        .unwrap();
-    let samples = sample(&frame, replay.format, &mut || {
-        panic!("captured multipliers")
-    });
-    let values = samples.values();
-    assert_eq!(values.len(), 24 * 6 + 6);
-    for (tag, (scores, identity)) in &observed.countries {
-        for (field, amount) in PARTS.iter().zip(scores.amounts()) {
-            assert_eq!(
-                values[&(tag.clone(), (*field).into())],
-                (
-                    identity.canonical_slot.zip(identity.native_country),
-                    amount.raw.map(i128::from),
-                )
-            );
-        }
-    }
-    for (field, amount) in PARTS.iter().zip(observed.multipliers.amounts()) {
-        assert_eq!(
-            values[&(String::new(), format!("multiplier:{field}"))],
-            (None, amount.raw.map(i128::from))
-        );
-    }
-    assert!(!values.contains_key(&("unseen country".into(), "total".into())));
-}
-
-/// The recording codec: each input hour is encoded and decoded as the
-/// preparation pipeline reads it, with its recorded updates.
-struct Recorded {
-    encoder: replay_frame::frame::FrameEncoder,
-    decoder: FrameDecoder,
-}
-
-impl Recorded {
-    fn new() -> Self {
-        Self {
-            encoder: replay_frame::frame::FrameEncoder::new(),
-            decoder: FrameDecoder::new(),
-        }
-    }
-    fn next(
-        &mut self,
-        input: &DecodedFrame,
-        keyframe: bool,
-    ) -> (DecodedFrame, std::sync::Arc<replay_frame::frame::Frame>) {
-        let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
-        let decoded = self.decoder.advance(&wire).unwrap().clone();
-        (decoded, std::sync::Arc::new(wire))
-    }
-}
-
-/// One score preparation fed recorded hours with their changes, as the
-/// pipeline feeds them.
-struct Lane<'a> {
-    observer: ScoreObserver<'a>,
-    prepared: prepared::Prepared,
-    tracker: dashboard_base::prepared::frame_changes::FrameChangeTracker,
-}
-
-impl<'a> Lane<'a> {
-    fn new(naming: &'a Naming, replay: &'a Replay) -> Self {
-        Self {
-            observer: naming.observer(replay),
-            prepared: prepared::Prepared::default(),
-            tracker: dashboard_base::prepared::frame_changes::FrameChangeTracker::new(),
-        }
-    }
-
-    /// Observe one recorded hour. Gives the countries whose facts were
-    /// computed, whether the hour was read from its changed rows, and the
-    /// preparation's country visits, observed countries and emitted keys.
-    fn observe(
-        &mut self,
-        (decoded, wire): &(DecodedFrame, std::sync::Arc<replay_frame::frame::Frame>),
-        replay: &Replay,
-        naming: &Naming,
-    ) -> (usize, usize, [usize; 3]) {
-        let before = (
-            self.observer.computed,
-            self.observer.row_hours,
-            self.prepared.work(),
-        );
-        let changes =
-            self.tracker
-                .observe_updates(decoded, std::sync::Arc::clone(wire), replay.format);
-        self.prepared
-            .observe(
-                decoded,
-                replay,
-                &mut self.observer,
-                naming,
-                &mut || unreachable!("captured multipliers"),
-                &changes,
-            )
-            .unwrap();
-        let work = self.prepared.work();
-        (
-            self.observer.computed - before.0,
-            self.observer.row_hours - before.1,
-            [
-                work.row_visits - before.2.row_visits,
-                work.history_visits - before.2.history_visits,
-                work.emitted - before.2.emitted,
-            ],
-        )
-    }
-}
-
-fn rows<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
+pub(super) fn rows<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
     match &mut *frame.tables[T::ID.index()] {
         TableView::Complete(rows) => rows.rows_mut::<T>().expect("fixture rows"),
         _ => unreachable!("fixture tables are complete"),
     }
 }
 
-fn site(base: u64, access: u8) -> GameScoreAirSite {
+pub(super) fn site(base: u64, access: u8) -> GameScoreAirSite {
     GameScoreAirSite {
         base,
         access,
@@ -2340,7 +1840,7 @@ fn site(base: u64, access: u8) -> GameScoreAirSite {
     }
 }
 
-fn wing(id: u64, planes: i32) -> AirWingGameScoreStatsRow {
+pub(super) fn wing(id: u64, planes: i32) -> AirWingGameScoreStatsRow {
     AirWingGameScoreStatsRow {
         id,
         planes: Some(planes),
@@ -2350,7 +1850,7 @@ fn wing(id: u64, planes: i32) -> AirWingGameScoreStatsRow {
     }
 }
 
-fn registration(base: u64, slot: u32, wings: Vec<u64>) -> AirBaseRegistrationRow {
+pub(super) fn registration(base: u64, slot: u32, wings: Vec<u64>) -> AirBaseRegistrationRow {
     AirBaseRegistrationRow {
         base,
         slot,
@@ -2362,7 +1862,7 @@ fn registration(base: u64, slot: u32, wings: Vec<u64>) -> AirBaseRegistrationRow
 
 /// `count` countries: every tenth flies one wing from its own base, and the
 /// first five share a faction.
-fn row_score_frame(count: u32) -> DecodedFrame {
+pub(super) fn row_score_frame(count: u32) -> DecodedFrame {
     let mut frame = scale_score_frame(count);
     let air: Vec<u32> = (0..count).step_by(10).collect();
     for &index in &air {
@@ -2415,96 +1915,9 @@ fn row_score_frame(count: u32) -> DecodedFrame {
     frame
 }
 
-fn assert_one_country_hour_observes_only_it(count: u32) {
-    let mut input = row_score_frame(count);
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![input.clone()])]).unwrap();
-    let naming = prepared_naming();
-    let mut lane = Lane::new(&naming, &replay);
-    let mut recorded = Recorded::new();
-    let (computed, _, work) = lane.observe(&recorded.next(&input, false), &replay, &naming);
-    assert_eq!(
-        computed, count as usize,
-        "the first hour reads every country"
-    );
-    assert_eq!(work[1], count as usize + 1, "with the multipliers");
-    let mut next = |change: &dyn Fn(&mut DecodedFrame)| {
-        input.hour += 1;
-        change(&mut input);
-        lane.observe(&recorded.next(&input, false), &replay, &naming)
-    };
-    let index = |part: u32| (count / part) as usize;
-    // One country computed, read from changed rows, and observed alone.
-    let one = (1, 1, [1, 1, 7]);
-    assert_eq!(
-        next(&|frame| {
-            rows::<tables::CountryGameScoreInputs>(frame)[index(2)].army_count = Some(40);
-        }),
-        one,
-        "an army change observes only its country"
-    );
-    assert_eq!(
-        next(&|frame| rows::<tables::AirWingGameScoreStats>(frame)[1].planes = Some(11)),
-        one,
-        "a wing's planes observe only the country flying it"
-    );
-    assert_eq!(
-        next(&|frame| {
-            rows::<tables::CountryFactories>(frame)[index(3)].military_used += 1;
-            rows::<tables::CountryGameScoreInputs>(frame)[index(3)].fleets[0].fleet += 1;
-            rows::<tables::AirWingGameScoreStats>(frame)[0].mission_index = Some(1);
-            rows::<tables::Politics>(frame)[index(3)].last_election += 1;
-            rows::<tables::Factions>(frame)[0].color_red += 1;
-        }),
-        (0, 1, [0, 0, 0]),
-        "fields no score part reads observe no country"
-    );
-    assert_eq!(
-        next(&|frame| {
-            rows::<tables::CountryAppearance>(frame)[index(4)].red = 0.5_f32.to_bits();
-        }),
-        one,
-        "a colour change observes only its country"
-    );
-    assert_eq!(
-        next(&|frame| {
-            let hour = i64::from(frame.hour);
-            for row in rows::<tables::Countries>(frame) {
-                row.political_power_raw = Some(hour);
-            }
-        }),
-        (0, 1, [0, 0, 0]),
-        "every country's balance changing observes none"
-    );
-    assert_eq!(
-        next(&|frame| {
-            let members = rows::<tables::FactionMembers>(frame);
-            members.push(FactionMemberRow {
-                country: 100_007,
-                faction: 1,
-                ordinal: 5,
-            });
-            members.sort_by_key(|row| row.country);
-        }),
-        one,
-        "joining a faction observes only the joining country"
-    );
-    assert_eq!(
-        next(&|frame| {
-            rows::<tables::CountryAppearance>(frame)[index(5)].cosmetic_tag = b"COS".to_vec();
-        }),
-        (1, 1, [0, 0, 0]),
-        "a naming change names only its country again, unchanged without localisation"
-    );
-}
-
-#[test]
-fn prepared_game_score_one_changed_country_observes_only_that_country() {
-    assert_one_country_hour_observes_only_it(200);
-}
-
 /// Six countries: a subject named after its overlord, two air forces with
 /// an inaccessible base, and a faction one member joins through an alias link.
-fn parity_frame() -> DecodedFrame {
+pub(super) fn parity_frame() -> DecodedFrame {
     let mut frame = frame(100);
     let tags: [&[u8]; 6] = [b"AAA", b"BBB", b"CCC", b"DDD", b"EEE", b"FFF"];
     set(
@@ -2618,196 +2031,6 @@ fn parity_frame() -> DecodedFrame {
         ]),
     );
     frame
-}
-
-#[test]
-fn prepared_game_score_changed_rows_match_whole_tables_and_history_across_keyframe_gap_and_resume()
-{
-    use dashboard_base::prepared::series::tests::{Fixture, assert_payloads_equal};
-    let mut localisation: Localisation = [
-        ("AAA", "Alpha"),
-        ("AAA_ADJ", "Alphan"),
-        ("COSA", "Cosmetic Alpha"),
-        ("COSA_ADJ", "Cosmetic Alphan"),
-        ("BBB", "Beta"),
-        ("BBB_neutrality", "Neutral Beta"),
-        ("CCC_AAA_autonomy_puppet", "$OVERLORDADJ$ Gamma"),
-        ("DDD", "Delta"),
-        ("EEE", "Epsilon"),
-        ("FFF", "Phi"),
-        ("GGG", "Gimel"),
-    ]
-    .into_iter()
-    .map(|(key, value)| (key.to_owned(), value.to_owned()))
-    .collect();
-    localisation.language = "english".into();
-    let mut hourly = parity_frame();
-    let mut inputs = Vec::new();
-    for hour in 100..=126 {
-        hourly.hour = hour;
-        let frame = &mut hourly;
-        match hour {
-            101 => rows::<tables::AirWingGameScoreStats>(frame)[0].planes = Some(10),
-            102 => rows::<tables::CountryGameScoreInputs>(frame)[0].army_count = Some(9),
-            // Fields no score part reads.
-            103 => {
-                rows::<tables::CountryFactories>(frame)[1].military_used += 1;
-                rows::<tables::Politics>(frame)[2].last_election += 1;
-                rows::<tables::AirWingGameScoreStats>(frame)[0].mission_index = Some(1);
-            }
-            // The overlord's adjective names its subject.
-            104 => rows::<tables::CountryAppearance>(frame)[0].cosmetic_tag = b"COSA".to_vec(),
-            105 => {
-                rows::<tables::Politics>(frame)[1].ruling_party = Some(5);
-                set(
-                    frame,
-                    TableRows::PoliticalParties(vec![replay_data::rows::PoliticalPartyRow {
-                        country: 1002,
-                        id: 5,
-                        token: b"neutrality".to_vec(),
-                        ..Default::default()
-                    }]),
-                );
-            }
-            // A wing moves base and is reinforced in the same hour.
-            106 => {
-                let registrations = rows::<tables::AirBaseRegistrations>(frame);
-                registrations[0].wings = vec![70];
-                registrations[2].wings = vec![71, 73];
-                rows::<tables::AirWingGameScoreStats>(frame)[1].planes = Some(7);
-            }
-            // A holder's total becomes unknown, then known again.
-            107 => {
-                let row = &mut rows::<tables::CountryGameScoreInputs>(frame)[4];
-                row.army_count = None;
-                row.army_error = b"fixture unread army".to_vec();
-            }
-            108 => {
-                let row = &mut rows::<tables::CountryGameScoreInputs>(frame)[4];
-                row.army_count = Some(4);
-                row.army_error = Vec::new();
-            }
-            109 => rows::<tables::CountryGameScoreInputs>(frame)[3].army_count = Some(12),
-            110 => rows::<tables::Factions>(frame)[0].name = b"Axis Powers".to_vec(),
-            111 => rows::<tables::FactionMembers>(frame).retain(|row| row.country != 2006),
-            // An input row no link names, then gone, beside a colour change.
-            112 => rows::<tables::CountryGameScoreInputs>(frame).push(input(3000)),
-            113 => {
-                rows::<tables::CountryGameScoreInputs>(frame).retain(|row| row.country != 3000);
-                rows::<tables::CountryAppearance>(frame)[1].green = 0.125_f32.to_bits();
-            }
-            114 => continue,
-            115 => rows::<tables::CountryGameScoreInputs>(frame)[2].land_count = Some(20),
-            // A wing at an inaccessible base.
-            116 => rows::<tables::AirWingGameScoreStats>(frame)[2].planes = Some(10),
-            117 => {
-                let hour = i64::from(hour);
-                for row in rows::<tables::Countries>(frame) {
-                    row.political_power_raw = Some(hour);
-                }
-            }
-            118 => rows::<tables::CountryGameScoreInputs>(frame)[0].army_count = Some(10),
-            // An unresolved membership leaves every non-member unknown.
-            119 => rows::<tables::FactionMembers>(frame).push(FactionMemberRow {
-                country: 4000,
-                faction: 11,
-                ordinal: 1,
-            }),
-            120 => rows::<tables::FactionMembers>(frame).retain(|row| row.country != 4000),
-            121 => {
-                rows::<tables::Countries>(frame).push(CountryRow {
-                    id: 1007,
-                    canonical_slot: 7,
-                    tag: b"GGG".to_vec(),
-                    ..Default::default()
-                });
-                let links = rows::<tables::CountryLinks>(frame);
-                links.push(CountryLinkRow {
-                    id: 1007,
-                    canonical_slot: 7,
-                });
-                links.sort_by_key(|row| row.id);
-                rows::<tables::CountryGameScoreInputs>(frame).push(input(1007));
-                rows::<tables::CountryFactories>(frame).push(factories(1007));
-                rows::<tables::CountryAppearance>(frame).push(appearance(1007, b""));
-                rows::<tables::Politics>(frame).push(replay_data::rows::PoliticsRow {
-                    country: 1007,
-                    ..Default::default()
-                });
-            }
-            122 => rows::<tables::CountryGameScoreInputs>(frame)[6].army_count = Some(1),
-            123 => rows::<tables::GameScoreMultipliers>(frame)[0].army_raw = Some(2 * Q),
-            125 => {
-                rows::<tables::CountryGameScoreInputs>(frame)[3].first_sites[1].access =
-                    GameScoreAirSite::ACCESS_TRUE;
-            }
-            126 => rows::<tables::CountryLinks>(frame).retain(|row| row.id != 2006),
-            _ => {}
-        }
-        inputs.push((hourly.clone(), hour == 109));
-    }
-    let frames: Vec<_> = inputs.iter().map(|(frame, _)| frame.clone()).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let naming = Naming {
-        localisation: Ok(std::sync::Arc::new(localisation.clone())),
-        templates: Err("Faction content unavailable".into()),
-        fallback: prepared_naming().fallback,
-        warnings: Vec::new(),
-        multipliers: Default::default(),
-    };
-    let fixtures = [Fixture::new(), Fixture::new()];
-    // Observed from changed rows, and from the whole tables every hour.
-    let mut lanes = [Lane::new(&naming, &replay), Lane::new(&naming, &replay)];
-    lanes[1].observer.whole_tables = true;
-    let mut recorded = Recorded::new();
-    let mut row_hours = 0;
-    for (index, (input, keyframe)) in inputs.iter().enumerate() {
-        let hour = input.hour;
-        let read = recorded.next(input, *keyframe);
-        for lane in &mut lanes {
-            lane.observe(&read, &replay, &naming);
-        }
-        if ![108, 117, 126].contains(&hour) {
-            continue;
-        }
-        for (lane, fixture) in lanes.iter_mut().zip(&fixtures) {
-            let mut writer = fixture.writer();
-            lane.prepared
-                .flush(&mut writer, 1, &AtomicBool::new(false))
-                .unwrap();
-            writer.commit().unwrap();
-        }
-        assert_payloads_equal(
-            &fixtures[0].payloads(),
-            &fixtures[1].payloads(),
-            &format!("changed rows vs whole tables through hour {hour}"),
-        );
-        let saved = lanes
-            .each_ref()
-            .map(|lane| serde_json::to_vec(&lane.prepared).unwrap());
-        assert!(
-            saved[0] == saved[1],
-            "continuations differ through hour {hour}"
-        );
-        let reference = scan_frames(frames[..=index].to_vec(), Some(&localisation));
-        for read in 100..=hour {
-            assert_prepared_score_at(&fixtures[0], &reference, read);
-        }
-        // Resume both from what they published.
-        row_hours += lanes[0].observer.row_hours;
-        for (lane, saved) in lanes.iter_mut().zip(&saved) {
-            let whole_tables = lane.observer.whole_tables;
-            lane.prepared = serde_json::from_slice(saved).unwrap();
-            lane.observer = naming.observer(&replay);
-            lane.observer.whole_tables = whole_tables;
-            lane.tracker.invalidate();
-        }
-    }
-    assert!(
-        row_hours >= 15,
-        "most hours are read from their changed rows, not {row_hours}"
-    );
-    assert_eq!(lanes[1].observer.row_hours, 0);
 }
 
 #[test]

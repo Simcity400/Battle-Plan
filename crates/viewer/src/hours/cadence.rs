@@ -1,5 +1,11 @@
-use dashboard_base::prepared_map::pages;
 use replay_data::Hour;
+
+/// Hours per second of the fastest playback presets.
+const PRESETS: [u32; 2] = [720, 1_440];
+/// Frames per second the playback cadence targets.
+const CADENCE: u32 = 36;
+/// The grid's strides: the hours each preset passes per frame at the cadence.
+const STRIDES: [u32; 2] = [PRESETS[0] / CADENCE, PRESETS[1] / CADENCE];
 
 pub(super) fn stride_among(speed: f64, strides: &[u32]) -> Option<u32> {
     if !speed.is_finite() || speed <= 0.0 {
@@ -8,12 +14,12 @@ pub(super) fn stride_among(speed: f64, strides: &[u32]) -> Option<u32> {
     strides
         .iter()
         .copied()
-        .filter(|&stride| stride != 0 && f64::from(stride) * f64::from(pages::CADENCE) <= speed)
+        .filter(|&stride| stride != 0 && f64::from(stride) * f64::from(CADENCE) <= speed)
         .max()
 }
 
 pub(super) fn stride(speed: f64) -> Option<u32> {
-    stride_among(speed, &pages::provisional_strides())
+    stride_among(speed, &STRIDES)
 }
 
 pub(super) fn targets(
@@ -60,7 +66,7 @@ mod tests {
 
     #[test]
     fn the_stride_keeps_the_cadence_target_from_the_finest_preset_up() {
-        assert_eq!(pages::provisional_strides(), [20, 40]);
+        assert_eq!(STRIDES, [20, 40]);
         for (speed, expected) in [
             (0.25, None),
             (24.0, None),

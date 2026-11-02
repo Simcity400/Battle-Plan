@@ -75,7 +75,6 @@ pub struct Prepared {
     pub refusals: Vec<Refusal>,
     pub warnings: BTreeSet<String>,
     name_refusals: BTreeMap<String, BTreeSet<u64>>,
-    rates: Vec<Refusal>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -116,25 +115,14 @@ impl Prepared {
         groups.advance_quiet(first, last);
         self.quiet(first, last)
     }
-    /// Unchanged hours `first..=last`: the events reach `last` and every
-    /// configured refusal counts each hour.
+    /// Unchanged hours `first..=last`: the events reach `last`. Every refusal is of a boundary
+    /// or a dated event the hour observed, so an unchanged hour refuses nothing.
     fn quiet(&mut self, first: i32, last: i32) -> io::Result<()> {
+        if first > last {
+            return Err(crate::invalid("Country group hours reversed"));
+        }
         self.events.through(first);
         self.events.through(last);
-        let hours = u64::try_from(i64::from(last) - i64::from(first) + 1)
-            .map_err(|_| crate::invalid("Country group hours reversed"))?;
-        for rate in &self.rates {
-            let old = self
-                .refusals
-                .iter_mut()
-                .find(|old| old.key == rate.key && old.reason == rate.reason)
-                .expect("configured group refusal rate");
-            old.count = rate
-                .count
-                .checked_mul(hours)
-                .and_then(|added| old.count.checked_add(added))
-                .ok_or_else(|| crate::invalid("Country group refusal count exceeds u64"))?;
-        }
         Ok(())
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -222,7 +210,6 @@ impl Prepared {
         self.events.through(hour);
         self.observed
             .extend(changes.observed.iter().map(|table| format!("{table:?}")));
-        self.rates = changes.unavailable.clone();
         for refusal in changes.unavailable {
             if let Some(old) = self
                 .refusals

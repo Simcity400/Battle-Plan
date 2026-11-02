@@ -2501,10 +2501,12 @@ dependencies = [
  "dashboard-forces",
  "dashboard-game-score",
  "dashboard-game-window",
+ "dashboard-ideas",
  "dashboard-intelligence",
  "dashboard-keyed",
  "dashboard-land-battles",
  "dashboard-manpower",
+ "dashboard-measure",
  "dashboard-military-air-ledger",
  "dashboard-naval",
  "dashboard-naval-regions",
@@ -2582,8 +2584,9 @@ dependencies = [
  "dashboard-air-aces",
  "dashboard-base",
  "dashboard-core",
- "dashboard-raids",
+ "dashboard-keyed",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -2726,11 +2729,11 @@ name = "dashboard-base"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "content-witness",
  "dashboard-base",
  "dashboard-core",
  "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-allocation",
  "engine-dlc",
  "engine-events",
@@ -2754,8 +2757,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "map-display-data",
- "map-snow",
  "mimalloc",
  "once_cell",
  "png 0.18.1",
@@ -2768,7 +2769,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "sha2",
  "shader-pipeline",
  "store",
  "syn 2.0.119",
@@ -2789,7 +2789,9 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -2982,9 +2984,13 @@ name = "dashboard-economy"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
+ "dashboard-core",
  "dashboard-country-fuel",
  "dashboard-economy",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
+ "engine-allocation",
  "engine-native",
  "engine-resources",
  "installed-content-core",
@@ -3087,6 +3093,7 @@ name = "dashboard-factions"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
+ "dashboard-series",
  "dashboard-world",
  "engine-native",
  "engine-projects",
@@ -3108,7 +3115,6 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "zstd",
 ]
 
 [[package]]
@@ -3154,8 +3160,10 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-game-score",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-wars",
+ "dashboard-world",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
@@ -3188,6 +3196,7 @@ dependencies = [
  "dashboard-army",
  "dashboard-base",
  "dashboard-forces",
+ "dashboard-keyed",
  "dashboard-land-battles",
  "dashboard-text",
  "dpi",
@@ -3232,6 +3241,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-ideas"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-ideas",
+ "dashboard-series",
+ "dashboard-text",
+ "dashboard-world",
+ "engine-native",
+ "installed-content-core",
+ "indexmap 2.14.2",
+ "log",
+ "mimalloc",
+ "once_cell",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "store",
+ "test-unify",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "dashboard-intelligence"
 version = "0.1.0"
 dependencies = [
@@ -3240,6 +3281,7 @@ dependencies = [
  "dashboard-intelligence",
  "dashboard-keyed",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-intelligence",
  "engine-native",
@@ -3276,6 +3318,8 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-keyed",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-world",
  "engine-native",
@@ -3369,13 +3413,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-measure"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-series",
+ "dashboard-text",
+ "dashboard-world",
+ "engine-native",
+ "indexmap 2.14.2",
+ "log",
+ "mimalloc",
+ "once_cell",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "store",
+ "test-unify",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
 name = "dashboard-military-air-ledger"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-military-air-ledger",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-air-history",
  "engine-native",
  "installed-content-core",
@@ -3399,7 +3475,6 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "zstd",
 ]
 
 [[package]]
@@ -3410,6 +3485,7 @@ dependencies = [
  "dashboard-core",
  "dashboard-land-battles",
  "dashboard-naval",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
@@ -3520,6 +3596,7 @@ dependencies = [
  "dashboard-core",
  "dashboard-keyed",
  "dashboard-occupation",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
@@ -3547,7 +3624,6 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "zstd",
 ]
 
 [[package]]
@@ -3557,7 +3633,9 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-party-history",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -3582,7 +3660,6 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "zstd",
 ]
 
 [[package]]
@@ -3592,7 +3669,9 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-peace-deals",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-native",
  "engine-peace",
  "installed-content-core",
@@ -3652,8 +3731,11 @@ name = "dashboard-politics"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
+ "dashboard-core",
  "dashboard-politics",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "engine-power-balance",
@@ -3722,8 +3804,11 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-keyed",
  "dashboard-raids",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -3750,7 +3835,6 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "zstd",
 ]
 
 [[package]]
@@ -3760,7 +3844,9 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-resource-balance",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "engine-native",
  "engine-production",
  "indexmap 2.14.2",
@@ -3806,8 +3892,10 @@ dependencies = [
  "blake3",
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-special-projects",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "engine-projects",
@@ -3878,8 +3966,10 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-subjects",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -3904,7 +3994,6 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "zstd",
 ]
 
 [[package]]
@@ -4008,8 +4097,10 @@ dependencies = [
  "blake3",
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-wars",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "foldhash 0.2.0",
@@ -4094,7 +4185,9 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
  "dashboard-world-tension",
  "engine-native",
  "engine-stability",
@@ -9287,7 +9380,9 @@ dependencies = [
  "dashboard-equipment-losses",
  "dashboard-forces",
  "dashboard-game-score",
+ "dashboard-ideas",
  "dashboard-intelligence",
+ "dashboard-keyed",
  "dashboard-manpower",
  "dashboard-military-air-ledger",
  "dashboard-naval",
@@ -9766,7 +9861,6 @@ dependencies = [
  "bytemuck",
  "engine-allocation",
  "engine-executable",
- "foldhash 0.2.0",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
@@ -10503,6 +10597,7 @@ dependencies = [
  "cfg-if",
  "crossbeam-utils",
  "either",
+ "foldhash 0.2.0",
  "memchr",
  "num-traits",
  "proc-macro2",
@@ -11068,7 +11163,9 @@ dependencies = [
  "dashboard-equipment-losses",
  "dashboard-forces",
  "dashboard-game-score",
+ "dashboard-ideas",
  "dashboard-intelligence",
+ "dashboard-keyed",
  "dashboard-manpower",
  "dashboard-military-air-ledger",
  "dashboard-naval",
@@ -11139,7 +11236,6 @@ dependencies = [
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
  "windows-sys 0.61.2",
- "zstd",
 ]
 
 [[package]]

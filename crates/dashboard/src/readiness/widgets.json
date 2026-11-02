@@ -202,14 +202,14 @@
       "kind": "occupied-states",
       "requests": [
         {"product": "occupied-states-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "occupied-states", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:first"}}
+        {"product": "occupied-states", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "occupation-trend",
       "requests": [
-        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "reads": [{"hour": "$first"}]}},
-        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "from": "$first", "to": "$first", "width": "$width"}}
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "reads": [{"hour": "$first"}]}},
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "from": "$first", "to": "$first", "width": "$width"}}
       ]
     },
     {
@@ -327,8 +327,8 @@
     {
       "kind": "world-tension",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "from": "$first", "to": "$last", "width": 1, "within": {}}},
-        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "reads": [{"hour": "$first"}]}}
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "from": "$first", "to": "$last", "width": 1, "within": {}}},
+        {"product": "series-state", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "reads": [{"hour": "$first"}]}}
       ]
     },
     {
@@ -394,20 +394,20 @@
     {
       "kind": "decryption",
       "requests": [
-        {"product": "decryption", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstDayEnd"}}
+        {"product": "decryption", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstDayEnd"}}
       ]
     },
     {
       "kind": "espionage-log",
       "requests": [
         {"product": "espionage-log", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": null}},
-        {"product": "espionage-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:first"}}
+        {"product": "espionage-log", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "agency-comparison",
       "requests": [
-        {"product": "agency-comparison", "route": "prepared", "firstView": "a", "params": {"selection": {"branchId": "$branch", "tags": [], "includeUncreated": false, "top": null}, "firstHour": "$first", "lastHour": "$firstDayEnd"}}
+        {"product": "agency-comparison", "route": "prepared", "firstView": "d", "params": {"selection": {"branchId": "$branch", "tags": [], "includeUncreated": false, "top": null}, "firstHour": "$first", "lastHour": "$firstDayEnd"}}
       ]
     },
     {
@@ -421,7 +421,7 @@
     {
       "kind": "who-spies-on-whom",
       "requests": [
-        {"product": "operative-placements", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstDayEnd"}}
+        {"product": "operative-placements", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstDayEnd"}}
       ],
       "auxiliary": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}

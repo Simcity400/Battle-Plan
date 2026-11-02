@@ -8,12 +8,16 @@
 use dashboard_base::products::{Product, country_groups::HourSpan};
 use dashboard_base::{catalogue, ranking, source::Source};
 use dashboard_core::config::LoadContext;
+use dashboard_text::metadata::check_cancel;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
-use dashboard_text::metadata::{branch_bounds, check_cancel, tagged_countries};
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::metadata::{branch_bounds, tagged_countries};
 #[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::BuildingBombingDamageCause, rows::TableId, rows::tables};
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
@@ -29,7 +33,12 @@ use ts_rs::TS;
 
 pub struct MilitaryAirLedger;
 
-pub mod prepared;
+#[cfg(test)]
+mod columnar_tests;
+pub mod emit;
+pub mod facts;
+pub mod query;
+pub mod served;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -134,80 +143,60 @@ pub struct MilitaryAirReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-struct LeafKey {
-    country: Option<(String, String)>,
-    dealt: bool,
-    opponent: Option<String>,
-    region: Option<u32>,
-    building: Option<(u32, Option<String>)>,
-    state: Option<u32>,
-    cause: u32,
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LeafKey {
+    pub(crate) country: Option<(String, String)>,
+    pub(crate) dealt: bool,
+    pub(crate) opponent: Option<String>,
+    pub(crate) region: Option<u32>,
+    pub(crate) building: Option<(u32, Option<String>)>,
+    pub(crate) state: Option<u32>,
+    pub(crate) cause: u32,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Default)]
 struct FamilyScan {
     available: bool,
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
-    #[serde(with = "dashboard_core::map_pairs")]
     countries: BTreeMap<(String, String), Vec<HourSpan>>,
     /// Publish in read order; native dates never backfill a not-yet-recorded event.
-    #[serde(skip)]
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
     warnings: BTreeMap<String, usize>,
+    #[cfg(any(test, feature = "test-support"))]
     last_event: Option<u64>,
     /// The first hour of an unread event interval since the last read with
     /// events: the collector may restart its event identities across it.
-    #[serde(default)]
+    #[cfg(any(test, feature = "test-support"))]
     unread_since: Option<i32>,
-    presence_through: Option<i32>,
-    #[serde(skip)]
-    identities: Option<IdentityOperands>,
-    #[serde(skip)]
-    country_keys: Option<dashboard_text::metadata::CountryKeys>,
-    /// While a block's extract follows the hours after the block's first
-    /// ([`prepared::block`]): what they read of the event ordinal and unread
-    /// interval carried into the block.
-    #[serde(skip)]
-    entry: Option<Entry>,
-    /// The last hour observed found every table complete and could not read
-    /// the identities: the next hour reads them again, whatever changed.
-    #[serde(skip)]
-    retry: bool,
-    #[cfg(test)]
-    #[serde(skip)]
-    work: dashboard_base::prepared::observer_tests::Work,
-}
-
-/// What a block's hours after its first read of the state carried into the
-/// block (`last_event`, `unread_since`), which a block's extract, starting
-/// with none, cannot know: the first unread hour, and the first use of the
-/// ordinal.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Entry {
-    unread: Option<i32>,
-    used: Option<EntryUse>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EntryUse {
-    /// The first read with events: its first identity and earliest date.
-    Read { first: u64, earliest: i32 },
-    /// An ordinal checked outside a read with events.
-    Event,
 }
 
 /// The warning each hour gives for every country whose tag is not UTF-8.
-const UNNAMED_TAG: &str = "country tag is not UTF-8; its events cannot be named";
+pub(crate) const UNNAMED_TAG: &str = "country tag is not UTF-8; its events cannot be named";
 
-#[derive(PartialEq, Eq)]
-struct IdentityOperands {
-    by_id: BTreeMap<u32, (String, String)>,
-    present: BTreeSet<(String, String)>,
-    invalid_tags: usize,
+impl FamilyScan {
+    fn add(
+        &mut self,
+        key: LeafKey,
+        hour: i32,
+        read_hour: i32,
+        amount: impl Into<i128>,
+    ) -> io::Result<()> {
+        let entry = self
+            .leaves
+            .entry(key)
+            .or_default()
+            .entry((read_hour, hour))
+            .or_default();
+        *entry = entry
+            .checked_add(amount.into())
+            .ok_or_else(|| dashboard_core::invalid("military air event sum overflow"))?;
+        Ok(())
+    }
 }
 
+/// The row ledger, kept as the parity oracle of the publication's.
+#[cfg(any(test, feature = "test-support"))]
 impl FamilyScan {
     fn note(&mut self, reason: impl Into<String>) {
         *self.warnings.entry(reason.into()).or_default() += 1;
@@ -215,34 +204,20 @@ impl FamilyScan {
 
     /// An event table not read completely this hour.
     fn unread(&mut self, hour: i32) {
-        if let Some(entry) = self.entry.as_mut()
-            && entry.used.is_none()
-        {
-            entry.unread.get_or_insert(hour);
-        }
         self.unread_since.get_or_insert(hour);
     }
 
     /// The first read with events after an unread interval starts a new
     /// identity epoch when its identities restart and every event in it is
     /// dated within or after that interval: those events were never read
-    /// before. The collector restarts identities only across an interval it
-    /// did not deliver, and delivers only events applied after it, so a
-    /// restart holding an event dated before the interval is earlier events
-    /// recorded again, and refuses by that name. Any other backwards identity
-    /// refuses as [`Self::event`] does.
+    /// before. A restart holding an event dated before the interval is
+    /// earlier events recorded again, and refuses by that name.
     fn begin_read(
         &mut self,
         events: &str,
         first: Option<u64>,
         earliest: Option<i32>,
     ) -> io::Result<()> {
-        if let Some(entry) = self.entry.as_mut()
-            && entry.used.is_none()
-            && let (Some(first), Some(earliest)) = (first, earliest)
-        {
-            entry.used = Some(EntryUse::Read { first, earliest });
-        }
         let (Some(first), Some(earliest), Some(since)) = (first, earliest, self.unread_since)
         else {
             return Ok(());
@@ -262,11 +237,6 @@ impl FamilyScan {
     }
 
     fn event(&mut self, id: u64) -> io::Result<()> {
-        if let Some(entry) = self.entry.as_mut()
-            && entry.used.is_none()
-        {
-            entry.used = Some(EntryUse::Event);
-        }
         if self.last_event.is_some_and(|last| id <= last) {
             return Err(dashboard_core::invalid(
                 "military air event ordinal repeated or moved backwards",
@@ -276,63 +246,27 @@ impl FamilyScan {
         Ok(())
     }
 
-    fn add(
-        &mut self,
-        key: LeafKey,
-        hour: i32,
-        read_hour: i32,
-        amount: impl Into<i128>,
-    ) -> io::Result<()> {
-        let entry = self
-            .leaves
-            .entry(key)
-            .or_default()
-            .entry((read_hour, hour))
-            .or_default();
-        *entry = entry
-            .checked_add(amount.into())
-            .ok_or_else(|| dashboard_core::invalid("military air event sum overflow"))?;
-        Ok(())
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     fn identity_read(
         &mut self,
         frame: &DecodedFrame,
     ) -> io::Result<BTreeMap<u32, (String, String)>> {
-        Ok(self.identity_operands(frame)?.by_id)
-    }
-
-    fn identity_operands(&mut self, frame: &DecodedFrame) -> io::Result<IdentityOperands> {
         let countries = frame.complete::<tables::Countries>()?;
         let links = frame.complete::<tables::CountryLinks>()?;
-        self.country_keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
-        #[cfg(test)]
-        {
-            self.work.row_visits += countries.len() + links.len();
-        }
         let mut slots = BTreeMap::new();
-        let mut invalid_tags = 0;
         for (tag, lookup) in tagged_countries(countries, links) {
             let Some((country, slot)) = lookup.found() else {
                 continue;
             };
             let Ok(tag) = std::str::from_utf8(tag) else {
-                invalid_tags += 1;
                 self.note(UNNAMED_TAG);
                 continue;
             };
             dashboard_core::protocol::validate_tag(tag).map_err(dashboard_core::invalid)?;
             let key = (tag.to_owned(), format!("{slot}:{}", country.id));
-            #[cfg(test)]
-            {
-                self.work.history_visits += 1;
-            }
             append_hour(self.countries.entry(key.clone()).or_default(), frame.hour);
             slots.insert(slot, key);
         }
-        let present = slots.values().cloned().collect();
-        let by_id = links
+        Ok(links
             .iter()
             .filter_map(|link| {
                 slots
@@ -340,138 +274,11 @@ impl FamilyScan {
                     .cloned()
                     .map(|country| (link.id, country))
             })
-            .collect();
-        Ok(IdentityOperands {
-            by_id,
-            present,
-            invalid_tags,
-        })
-    }
-
-    fn seal_presence(&mut self) {
-        if let (Some(hour), Some(identities)) = (self.presence_through, &self.identities) {
-            for key in &identities.present {
-                #[cfg(test)]
-                {
-                    self.work.history_visits += 1;
-                }
-                if let Some(span) = self
-                    .countries
-                    .get_mut(key)
-                    .and_then(|spans| spans.last_mut())
-                {
-                    span.last_hour = hour;
-                }
-            }
-        }
-    }
-
-    fn observe_changed(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
-        bombing: bool,
-    ) -> io::Result<()> {
-        self.retry = false;
-        let source = if bombing {
-            TableId::BuildingBombingDamage
-        } else {
-            TableId::AirLossEvents
-        };
-        let complete = if bombing {
-            frame.complete::<tables::BuildingBombingDamage>().is_ok()
-        } else {
-            frame.complete::<tables::AirLossEvents>().is_ok()
-        };
-        if !complete
-            || frame.complete::<tables::Countries>().is_err()
-            || frame.complete::<tables::CountryLinks>().is_err()
-        {
-            if !complete {
-                self.unread(frame.hour);
-            }
-            self.seal_presence();
-            self.identities = None;
-            self.presence_through = None;
-            return Ok(());
-        }
-        let continuous = self
-            .presence_through
-            .is_some_and(|last| last.checked_add(1) == Some(frame.hour));
-        if !continuous {
-            self.seal_presence();
-            self.identities = None;
-        }
-        let countries_changed = changes.rows_changed[TableId::Countries.index()]
-            && self.country_keys.as_ref().is_none_or(|keys| {
-                #[cfg(test)]
-                let before = keys.row_visits();
-                let changed = !keys.same(
-                    frame
-                        .complete::<tables::Countries>()
-                        .expect("complete countries"),
-                );
-                #[cfg(test)]
-                {
-                    self.work.row_visits += keys.row_visits() - before;
-                }
-                changed
-            });
-        let refresh = self.identities.is_none()
-            || countries_changed
-            || changes.rows_changed[TableId::CountryLinks.index()];
-        if refresh {
-            self.seal_presence();
-            // Identity refusals retain the oracle's already-observed prefix and
-            // remain local to this ledger read.
-            match self.identity_operands(frame) {
-                Ok(identities) => self.identities = Some(identities),
-                Err(_) => {
-                    self.identities = None;
-                    self.presence_through = None;
-                    self.retry = true;
-                    return Ok(());
-                }
-            }
-        }
-        let identities = self.identities.as_ref().expect("complete identity read");
-        if !refresh && identities.invalid_tags != 0 {
-            *self.warnings.entry(UNNAMED_TAG.into()).or_default() += identities.invalid_tags;
-        }
-        self.presence_through = Some(frame.hour);
-        self.available = true;
-        append_hour(&mut self.observed, frame.hour);
-        // Reused nonempty event tables remain an ordinal error, as in the oracle.
-        // Empty equal reads establish coverage without revisiting the census.
-        if !changes.rows_changed[source.index()] {
-            let first = if bombing {
-                frame
-                    .complete::<tables::BuildingBombingDamage>()?
-                    .first()
-                    .map(|row| row.id)
-            } else {
-                frame
-                    .complete::<tables::AirLossEvents>()?
-                    .first()
-                    .map(|row| row.id)
-            };
-            if let Some(id) = first {
-                self.event(id)?;
-            }
-            return Ok(());
-        }
-        // Move the current join temporarily so the event consumer can update the scan.
-        let identities = self.identities.take().expect("complete identity read");
-        let result = if bombing {
-            bombing_events(self, frame, &identities.by_id)
-        } else {
-            air_events(self, frame, &identities.by_id)
-        };
-        self.identities = Some(identities);
-        result
+            .collect())
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn append_hour(spans: &mut Vec<HourSpan>, hour: i32) {
     if let Some(last) = spans.last_mut()
         && last.last_hour.checked_add(1) == Some(hour)
@@ -485,6 +292,7 @@ fn append_hour(spans: &mut Vec<HourSpan>, hour: i32) {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn event_country(
     raw: Option<u32>,
     countries: &BTreeMap<u32, (String, String)>,
@@ -509,6 +317,7 @@ fn air_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
     air_events(scan, frame, &countries)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn air_events(
     scan: &mut FamilyScan,
     frame: &DecodedFrame,
@@ -521,11 +330,6 @@ fn air_events(
         rows.iter().map(|row| row.game_hour).min(),
     )?;
     for row in rows {
-        #[cfg(test)]
-        {
-            scan.work.row_visits += 1;
-            scan.work.emitted += 1;
-        }
         scan.event(row.id)?;
         if row.game_hour > frame.hour {
             return Err(dashboard_core::invalid(
@@ -576,6 +380,7 @@ fn bombing_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> 
     bombing_events(scan, frame, &countries)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn bombing_events(
     scan: &mut FamilyScan,
     frame: &DecodedFrame,
@@ -595,11 +400,6 @@ fn bombing_events(
     }
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
     for row in rows {
-        #[cfg(test)]
-        {
-            scan.work.row_visits += 1;
-            scan.work.emitted += 1;
-        }
         scan.event(row.id)?;
         if row.cause == BuildingBombingDamageCause::Unknown {
             scan.note("building damage has an unsupported caller; its contribution to aircraft bombing is not known");
@@ -655,7 +455,7 @@ fn bombing_events(
     Ok(())
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Default)]
 struct Scan {
     first: i32,
     last: i32,
@@ -1128,6 +928,7 @@ pub fn check_content(
 impl Product for MilitaryAirLedger {
     const KEY: &'static str = "military-air-ledger";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = MilitaryAirParams;
     type Reply = MilitaryAirReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

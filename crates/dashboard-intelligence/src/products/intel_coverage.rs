@@ -8,10 +8,7 @@
 //! network counts and `member|COUNTRY` presence let playback select its own live
 //! countries. Pair history keeps the same window shape and dated endpoints.
 
-use dashboard_base::{
-    prepared::prepass::Family,
-    products::{Product, check_reply_budget, country_groups::HourSpan, validate_tag},
-};
+use dashboard_base::products::{Product, check_reply_budget, country_groups::HourSpan, validate_tag};
 use dashboard_keyed::{
     Observer as KeyedObserver, Values,
     countries::{self, Countries},
@@ -141,13 +138,6 @@ pub struct IntelCoverageObserver {
     refusals: BTreeMap<String, u64>,
 }
 
-pub static FAMILY: Family = dashboard_keyed::block::family::<IntelCoverageObserver>(
-    "intel-network-coverage",
-    "intel-network-coverage.extract",
-    "intel-network-coverage.sequential",
-    "intel-network-coverage.fallback",
-);
-
 fn transition(events: &mut Vec<(i32, bool)>, hour: i32, value: bool) {
     if events.last().is_none_or(|(_, held)| *held != value) {
         events.push((hour, value));
@@ -167,9 +157,6 @@ impl KeyedObserver for IntelCoverageObserver {
         TableId::Countries,
     ];
     const READ: TableId = TableId::IntelNetworkSummaries;
-    fn family() -> &'static Family {
-        &FAMILY
-    }
     fn fields() -> io::Result<Vec<TableFields>> {
         Ok(vec![
             TableFields::all(Self::READ).when_read(),
@@ -276,6 +263,7 @@ impl KeyedObserver for IntelCoverageObserver {
 impl Product for IntelCoverage {
     const KEY: &'static str = "intel-network-coverage";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = IntelCoverageParams;
     type Reply = IntelCoverageReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -356,14 +344,23 @@ fn counterparties(
     Ok(linked)
 }
 
+/// The reply from the family's native publication.
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
+    answer(query, || query.open_native::<IntelCoverageObserver>())
+}
+
+/// The reply to `query` from the family's publication `open` opens.
+fn answer<'q>(
+    query: &'q Query<'_>,
+    open: impl FnOnce() -> io::Result<Option<Opened<'q, IntelCoverageObserver>>>,
+) -> io::Result<serde_json::Value> {
     let params: IntelCoverageParams = serde_json::from_value(query.params.clone())
         .map_err(|error: serde_json::Error| dashboard_core::invalid(error.to_string()))?;
     IntelCoverage::validate(&params).map_err(dashboard_core::invalid)?;
     let (first, last) = query.window()?;
     let reply = reply(
-        query.open::<IntelCoverageObserver>()?,
+        open()?,
         &params,
         first,
         last,
@@ -576,6 +573,7 @@ fn retain_dated(window: &mut KeyedWindow) {
 }
 
 mod ranking;
+mod served;
 
 #[cfg(test)]
 mod tests;

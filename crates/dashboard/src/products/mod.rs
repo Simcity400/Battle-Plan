@@ -31,6 +31,7 @@ pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
 pub use dashboard_country_fuel::products::country_fuel;
 pub use dashboard_country_nukes::products::country_nukes;
+pub use dashboard_ideas::products::ideas;
 pub use dashboard_diplomacy::products::diplomacy_state;
 pub use dashboard_doctrine_mastery::products::doctrine_mastery;
 pub use dashboard_economy::products::{
@@ -43,7 +44,8 @@ pub use dashboard_forces::products::air_force;
 pub use dashboard_forces::products::army_size;
 pub use dashboard_forces::products::naval_management;
 pub use dashboard_forces::products::navy;
-pub use dashboard_forces::products::parts_race_prepared;
+#[cfg(test)]
+pub use dashboard_forces::products::force_fixtures;
 pub use dashboard_forces::products::supply_health;
 pub use dashboard_forces::products::volunteers_expeditionaries;
 pub use dashboard_game_score::products::game_score;
@@ -81,11 +83,12 @@ pub use dashboard_resource_balance::products::market_lendlease;
 pub use dashboard_resource_balance::products::resource_balance;
 pub use dashboard_resource_balance::products::trade_flows;
 pub use dashboard_special_projects::products::special_projects;
-pub use dashboard_stability::products::{country_stability, stability_parts};
+pub use dashboard_stability::products::{country_stability, experience, stability_parts};
 // The product, and the name ladder dashboard-base keeps for it, under one path.
 pub use dashboard_place_names::products::place_names;
 // The product, and the game rules dashboard-base keeps for it, under one path.
 pub use dashboard_manpower::products::country_people;
+pub use dashboard_measure::products::country_balances;
 pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
@@ -393,7 +396,7 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<occupied_states::OccupiedStatesManifest>(),
     register_prepared::<occupation_trend::OccupationTrend>(),
     register::<country_experience::CountryExperience>(),
-    register::<idea_history::IdeaHistory>(),
+    register_prepared::<idea_history::IdeaHistory>(),
     register_prepared::<party_history::PartyHistory>(),
     register::<politics_state::PoliticsState>(),
     register_prepared::<politics_state::history::PoliticsStateHistory>(),
@@ -495,8 +498,6 @@ mod kept_reply_tests;
 mod presentation_tests;
 #[cfg(test)]
 mod source_warning_tests;
-#[cfg(test)]
-mod tension_query_tests;
 
 #[cfg(test)]
 mod supply_health_registry_tests;

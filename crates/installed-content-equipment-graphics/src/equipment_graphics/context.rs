@@ -124,6 +124,22 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// The bytes it holds on the heap, about.
+    pub fn heap(&self) -> usize {
+        let text = |text: &String| std::mem::size_of::<String>() + text.len();
+        self.slots.len() * 2 * std::mem::size_of::<u32>()
+            + self
+                .contexts
+                .values()
+                .map(|context| {
+                    std::mem::size_of::<(u32, CountryContext)>()
+                        + context.country_tag.len()
+                        + context.faction_tags.iter().map(text).sum::<usize>()
+                        + context.capital_continent.as_ref().map_or(0, String::len)
+                })
+                .sum::<usize>()
+    }
+
     pub fn read(frame: &DecodedFrame, content: &Content) -> Result<Self, String> {
         let error = |error: io::Error| error.to_string();
         let links = frame.complete::<tables::CountryLinks>().map_err(error)?;

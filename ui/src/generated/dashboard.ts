@@ -431,8 +431,8 @@ export type PreparedUnavailable = "lost" | "refused";
 export type PreparedHole = { firstHour: number, lastHour: number, family: string, unavailable: PreparedUnavailable, reason: string, };
 export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
-export type PreparedFocusPages = { sampled?: boolean, first: string, count: string, rows: string, };
-export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, preparing?: Array<string>, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
+export type PreparedFocusPages = { first: string, count: string, rows: string, };
+export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
 export type PreparedFocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
 export type PreparedFocusUnavailableHour = { schema: number, firstHour: number, lastHour: number, reasons: Array<PreparedFocusTableRefusal>, };
 export type ChartBucket = {
@@ -2234,7 +2234,7 @@ export type GameScoreStateReply = { reply: GameScoreReply,
  */
 stretches: { [key in string]?: string },
 /**
- * Direct frame values beyond accepted preparation have no proven race continuity.
+ * Always false: every value is read from accepted preparation.
  */
 approximate: boolean, };
 export type ScoreboardColumnKey = "factories" | "armySize" | "territory" | "casualties" | "casualtiesDealt" | "casualtiesTaken" | "planes" | "ships" | "factoriesBuilt" | "factoriesTopbar" | "equipmentProduced" | "politicalPower" | "commandPower" | "stability" | "warSupport" | "nukes";

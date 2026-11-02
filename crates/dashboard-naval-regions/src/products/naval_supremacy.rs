@@ -8,12 +8,11 @@ use crate::{
 };
 use dashboard_base::{
     catalogue::Refusals,
-    prepared::{
-        frame_changes::FrameChanges,
-        prepass::{Family, HeldBytes},
-    },
+    prepared::{frame_changes::FrameChanges, prepass::HeldBytes},
     products::Product,
 };
+#[cfg(test)]
+use dashboard_base::prepared::prepass::Family;
 use dashboard_keyed::daily::DAY_HOURS;
 use dashboard_keyed::{
     Delta, Observer, Values,
@@ -36,6 +35,8 @@ use std::{
     sync::Arc,
 };
 use ts_rs::TS;
+
+mod served;
 
 pub struct NavalSupremacy;
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -67,6 +68,7 @@ pub struct Reply {
 impl Product for NavalSupremacy {
     const KEY: &'static str = "naval-supremacy";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = Params;
     type Reply = Reply;
     fn validate(p: &Params) -> Result<(), &'static str> {
@@ -100,6 +102,7 @@ struct Last {
     parts: HashMap<u32, Option<String>>,
 }
 
+#[cfg(test)]
 pub static FAMILY: Family = dashboard_keyed::block::family::<NavalSupremacyObserver>(
     "naval-supremacy",
     "naval-supremacy.extract",
@@ -121,6 +124,7 @@ impl Observer for NavalSupremacyObserver {
         TableId::ReservedCountryNaming,
     ];
     const READ: TableId = TableId::NavalSupremacy;
+    #[cfg(test)]
     fn family() -> &'static Family {
         &FAMILY
     }
@@ -704,8 +708,9 @@ pub(crate) fn project(
     }
     result
 }
+/// The reply to `q` from the family's native publication.
 pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
-    reply(q, sweep)
+    reply(q, sweep, || q.open_native::<NavalSupremacyObserver>())
 }
 
 /// Projects each requested day's restored operands into the reply.
@@ -937,7 +942,18 @@ fn sweep(
     Ok(())
 }
 
-pub(crate) fn reply(q: &Query<'_>, walk: Walk) -> io::Result<serde_json::Value> {
+/// The reply to `q` from the walk's pages.
+#[cfg(test)]
+pub(crate) fn row_query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+    reply(q, sweep, || q.open::<NavalSupremacyObserver>())
+}
+
+/// The reply to `q` from the family's publication `open` opens, its days walked by `walk`.
+pub(crate) fn reply<'q>(
+    q: &'q Query<'_>,
+    walk: Walk,
+    open: impl FnOnce() -> io::Result<Option<Opened<'q, NavalSupremacyObserver>>>,
+) -> io::Result<serde_json::Value> {
     let p = shared::params::<NavalSupremacy>(q)?;
     let (first, last) = q.window()?;
     let labels = shared::labels(q);
@@ -946,7 +962,7 @@ pub(crate) fn reply(q: &Query<'_>, walk: Walk) -> io::Result<serde_json::Value> 
         .map_or_else(|_| Vec::new(), |l| l.warnings.clone());
     let mut notes = Refusals::default();
     let mut ids = BTreeSet::new();
-    let opened = q.open::<NavalSupremacyObserver>()?;
+    let opened = open()?;
     if let Ok(l) = &labels
         && let Ok(sea) = &l.sea_regions
     {

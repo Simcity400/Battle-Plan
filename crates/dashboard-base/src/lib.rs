@@ -18,7 +18,6 @@ pub mod catalogue;
 pub mod content;
 pub mod prepared;
 pub mod prepared_chart;
-pub mod prepared_map;
 pub mod prepared_measure;
 pub mod prepared_production;
 pub mod presentation;
@@ -26,7 +25,7 @@ pub mod products;
 pub mod ranking;
 pub mod read_runs;
 pub mod research_dto;
-pub mod map_export;
+pub mod map_tables;
 pub mod source;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
@@ -41,3 +40,6 @@ pub use dashboard_text::{
 
 pub use research_dto::*;
 pub use source::{Source, SourceKey};
+
+#[cfg(test)]
+mod endpoint_alias_tests;

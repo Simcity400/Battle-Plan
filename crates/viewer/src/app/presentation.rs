@@ -178,12 +178,12 @@ impl Viewer {
                     Arc::clone(&document.content),
                     replay,
                     resources,
-                    document.playback.checkpoint_source(),
+                    document.playback.map_binding(),
                 )?,
-                None => hours::Pipeline::with_checkpoint_source(
+                None => hours::Pipeline::with_map_binding(
                     Arc::clone(&document.content),
                     replay,
-                    document.playback.checkpoint_source(),
+                    document.playback.map_binding(),
                 )?,
             });
             if let (Some(hours), Some(index)) = (&self.hours, self.engaged_carry.take()) {

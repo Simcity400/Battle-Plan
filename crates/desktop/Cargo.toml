@@ -42,7 +42,9 @@ dashboard-economy = { workspace = true, features = ["test-support"] }
 dashboard-equipment-losses = { workspace = true, features = ["test-support"] }
 dashboard-forces = { workspace = true, features = ["test-support"] }
 dashboard-game-score = { workspace = true, features = ["test-support"] }
+dashboard-ideas = { workspace = true, features = ["test-support"] }
 dashboard-intelligence = { workspace = true, features = ["test-support"] }
+dashboard-keyed = { workspace = true, features = ["test-support"] }
 dashboard-manpower = { workspace = true, features = ["test-support"] }
 dashboard-military-air-ledger = { workspace = true, features = ["test-support"] }
 dashboard-naval = { workspace = true, features = ["test-support"] }

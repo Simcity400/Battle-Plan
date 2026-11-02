@@ -298,7 +298,7 @@ pub(super) trait Branch {
     }
     /// Write the pages it holds from the blocks it went through since its
     /// last commit, which hourly preparation writes at each such block's end
-    /// (air aces' windows, espionage day pages, production pages). Called at
+    /// (espionage day pages, production pages). Called at
     /// every commit before [`Self::flush`], also when it refused the branch
     /// later in the batch: hourly preparation had written those blocks' pages
     /// before the refusing one. Its error refuses the branch at the batch's
@@ -366,52 +366,11 @@ static ROWS: &[&dyn Own] = &[
     &map_pages::MAP_PAGES,
     &GROUPS,
     &IDENTITIES,
-    &WARS,
-    &CASUALTIES,
-    &quiet_politics::SUBJECTS,
-    &quiet_politics::PEACE,
-    &quiet_politics::IDEAS,
-    &air::AIR_LEDGER,
-    &air::RAIDS,
-    &air::ACES,
-    &economy::CONSTRUCTION,
     &economy::PRODUCTION,
-    &economy::EXPERIENCE,
-    &intelligence::INTELLIGENCE,
-    &focus::FOCUS,
     &air_superiority::AIR_SUPERIORITY,
-    &world_tension::TENSION,
-    &factions::FACTIONS,
-    &evaluated::RESEARCH,
-    &evaluated::PROJECTS,
-    &evaluated::OCCUPATION,
-    &census::FACTORIES,
-    &census::REPAIRS,
     &event_feed::FEED,
-    &windowed::DIVISIONS,
-    &windowed::NAVAL,
     &leaders::LEADERS,
-    &sampled::AIR,
-    &sampled::PARTS,
-    &sampled::NAVY,
     &sampled::EQUIPMENT_LOSSES,
-    &sampled::PARTIES,
-    &sampled::FUEL_BRANCHES,
-    &sampled::MARKET,
-    &sampled::LEND_LEASE_BALANCE,
-    &sampled::PRODUCTION_CATALOGUE,
-    &sampled::CONVOYS,
-    &sampled::POLITICS,
-    &sampled::TRADE,
-    &sampled::TERRITORY,
-    &keyed::AIR_MISSIONS,
-    &keyed::AIR_STATISTICS,
-    &keyed::WEATHER,
-    &keyed::MINEFIELDS,
-    &keyed::NAVAL_SUPREMACY,
-    &keyed::DOCTRINE_MASTERY,
-    &keyed::OCCUPATION_RESERVE,
-    &keyed::INTEL_COVERAGE,
 ];
 
 /// One read of each block for the families that observe every block hour by
@@ -420,54 +379,26 @@ pub(super) mod shared;
 
 pub(super) mod map_pages;
 
-/// Subjects, peace outcomes and idea history.
-pub(super) mod quiet_politics;
-
-/// The military air ledger, raids and air aces.
-pub(super) mod air;
-
-/// Construction, production and country experience.
+/// Construction and production.
 pub(super) mod economy;
-
-/// Decryption, operative placements, agencies, the roster and espionage.
-pub(super) mod intelligence;
-
-/// The national focus order.
-pub(super) mod focus;
 
 /// Air superiority, with its own read of the country groups.
 pub(super) mod air_superiority;
 
-/// World tension.
-pub(super) mod world_tension;
-
-/// The keyed families: air missions and statistics, regional weather,
-/// minefields, naval supremacy, doctrine mastery, occupation reserve
-/// manpower, intel network coverage, naval repairs and refits.
+/// The keyed families: air missions and statistics.
 pub(super) mod keyed;
-mod weather;
-
-/// Shared faction account, selection and manpower histories.
-pub(super) mod factions;
-
-/// Research, special projects and occupation.
-pub(super) mod evaluated;
-
-/// Country factories, nuclear stockpiles and dockyard repairs.
-pub(super) mod census;
 
 /// The event feed, with its own read of the identity history.
 pub(super) mod event_feed;
 
-/// The division log and the naval battles, ships sunk and naval losses.
-pub(super) mod windowed;
-
 /// Unit leaders' careers, commands and battles.
 pub(super) mod leaders;
 
-/// Air force and navy size, stability's parts, equipment losses, the party
-/// history, trade flows and territory.
+/// Equipment losses.
 pub(super) mod sampled;
+
+/// The continuations the families prepared on their own save.
+pub(super) mod continuation;
 
 impl Own for Groups {
     fn family(&self) -> &'static prepass::Family {
@@ -585,12 +516,8 @@ impl Branch for GroupsBranch {
     }
 }
 
-/// The country identity history. Territory's owned-state observation drives
-/// it and reads it in the same hour: while territory is in the hourly walk,
-/// the walk keeps its own read under territory's name; prepared on its own,
-/// territory makes that read itself ([`sampled`]). The event feed, which
-/// reads it in the same hour too, makes its own read prepared on its own
-/// ([`event_feed`]).
+/// The country identity history. The event feed, which reads it in the same
+/// hour, makes its own read prepared on its own ([`event_feed`]).
 pub(super) struct Identities;
 
 pub(super) static IDENTITIES: Identities = Identities;
@@ -686,180 +613,6 @@ impl Branch for IdentitiesBranch {
     }
 }
 
-/// The wars' change inputs and relation counters. Their continuation is
-/// their published catalogue.
-pub(super) struct Wars;
-
-pub(super) static WARS: Wars = Wars;
-
-impl Own for Wars {
-    fn family(&self) -> &'static prepass::Family {
-        &crate::products::wars::block::FAMILY
-    }
-
-    fn timing(&self) -> &'static str {
-        "independent.wars"
-    }
-
-    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
-        Ok(Box::new(crate::products::wars::block::OwnBranch::load(
-            load.store, load.key, load.saved, branch,
-        )?))
-    }
-}
-
-impl Branch for crate::products::wars::block::OwnBranch {
-    fn fold(
-        &mut self,
-        facts: Box<dyn Any + Send>,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<(Folded, Option<i32>)> {
-        self.fold_facts(
-            facts,
-            block.replay,
-            block.index,
-            block.source,
-            block.context,
-            observed,
-            check,
-        )
-    }
-
-    fn observe_block(
-        &mut self,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
-        self.observe_hours(
-            block.replay,
-            block.index,
-            block.source,
-            block.context,
-            observed,
-            check,
-        )
-    }
-
-    fn pending(&self) -> usize {
-        self.pending_bytes()
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        _: &Replay,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.flush_batch(writer, branch, cancelled)
-    }
-
-    fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// War casualties: country values, pair windows and breakdown inputs. Their
-/// series queries route by the family kind `war-casualties`.
-pub(super) struct Casualties;
-
-pub(super) static CASUALTIES: Casualties = Casualties;
-
-impl Own for Casualties {
-    fn family(&self) -> &'static prepass::Family {
-        &crate::products::war_casualties::prepared::block::FAMILY
-    }
-
-    fn timing(&self) -> &'static str {
-        "independent.casualties"
-    }
-
-    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
-        use crate::products::war_casualties::prepared::block;
-        let saved = load.read(&block::state_section(branch))?;
-        Ok(Box::new(block::OwnBranch::load(
-            saved,
-            load.replay,
-            branch,
-        )?))
-    }
-}
-
-impl Branch for crate::products::war_casualties::prepared::block::OwnBranch {
-    fn fold(
-        &mut self,
-        facts: Box<dyn Any + Send>,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<(Folded, Option<i32>)> {
-        self.fold_facts(
-            facts,
-            block.replay,
-            block.index,
-            block.source,
-            block.context,
-            observed,
-            check,
-        )
-    }
-
-    fn observe_block(
-        &mut self,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<Option<i32>> {
-        let _cpu = ::replay_frame::cpu::scope("fold driver", None);
-        self.observe_hours(
-            block.replay,
-            block.index,
-            block.source,
-            block.context,
-            observed,
-            check,
-        )
-    }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {
-        self.finish_block();
-    }
-
-    /// The pair windows of the blocks gone through, which hourly preparation
-    /// writes at each block's end, also when a later block of the batch
-    /// refused the branch.
-    fn publish(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        _: &AtomicBool,
-    ) -> io::Result<()> {
-        self.publish_windows(writer, branch)
-    }
-
-    fn pending(&self) -> usize {
-        self.pending_bytes()
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        _: &Replay,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.flush_batch(writer, branch, cancelled)
-    }
-
-    fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        self.write_state(writer, branch)
-    }
-}
-
 /// The row implementations of the families the current plan prepares on
 /// their own, in lane order.
 fn registry() -> &'static [&'static dyn Own] {
@@ -923,7 +676,7 @@ pub(super) fn runtime_inventory() -> serde_json::Value {
     serde_json::json!({"candidate_borrowed_extract_families":borrowed,
         "families_on_main_path":old,
         "content_bound_families":content,
-        "unchanged_nonfamily_jobs":["production_scans", "air_statistics_external", "map_export"],
+        "unchanged_nonfamily_jobs":["production_scans", "map_export"],
         "store":"main store::Writer and existing publication/coverage/checkpoint drivers",
         "delivery":"one main watched read per prepass task, existing family-selected borrowed projections; old folds and reread fallbacks unchanged",
         "S3":false,"partial":true})
@@ -2541,11 +2294,7 @@ struct Counts {
     #[cfg(test)]
     notes: BTreeMap<&'static str, usize>,
     #[cfg(test)]
-    naval_saves: Vec<usize>,
-    #[cfg(test)]
     groups: (usize, usize),
-    #[cfg(test)]
-    air_ledger: (usize, usize),
 }
 
 impl Counts {
@@ -2557,11 +2306,7 @@ impl Counts {
             #[cfg(test)]
             notes: prepass::notes(),
             #[cfg(test)]
-            naval_saves: windowed::take_naval_saves(),
-            #[cfg(test)]
             groups: country_groups::prepared::counts(),
-            #[cfg(test)]
-            air_ledger: crate::products::military_air_ledger::prepared::counts(),
         }
     }
 
@@ -2571,9 +2316,7 @@ impl Counts {
         {
             prepass::add_notes(&self.notes);
             dashboard_base::prepared::kept::add_counts(&self.kept);
-            windowed::add_naval_saves(self.naval_saves);
             country_groups::prepared::add_counts(self.groups);
-            crate::products::military_air_ledger::prepared::add_counts(self.air_ledger);
         }
     }
 }
@@ -2585,8 +2328,6 @@ struct TestContext {
     observation_hook: Option<lanes::Hook>,
     prepass: prepass::TestContext,
     lanes: lanes::TestContext,
-    research_fallback: Vec<i32>,
-    sampled_fallback: bool,
     reload: bool,
     batch_blocks: Option<usize>,
     registry: TestRegistry,
@@ -2630,8 +2371,6 @@ impl TestContext {
             observation_hook: TEST_OBSERVATION_HOOK.with(|hook| hook.borrow().clone()),
             prepass: prepass::TestContext::capture(),
             lanes: lanes::TestContext::capture(),
-            research_fallback: crate::products::research::prepared::block::forced_fallback_hours(),
-            sampled_fallback: sampled::test_fallback(),
             reload: super::RELOAD_FLUSHED.with(std::cell::Cell::get),
             batch_blocks: super::TEST_BATCH_BLOCKS.with(std::cell::Cell::get),
             registry: test_registry(),
@@ -2640,30 +2379,22 @@ impl TestContext {
 
     /// Install the settings on this thread for as long as the guard lives.
     fn install(self) -> impl Drop {
-        struct Installed<P, R, S, A, O> {
+        struct Installed<P, A, O> {
             _prepass: P,
-            _research: R,
-            _sampled: S,
             _lanes: A,
             _observation: O,
         }
-        impl<P, R, S, A, O> Drop for Installed<P, R, S, A, O> {
+        impl<P, A, O> Drop for Installed<P, A, O> {
             fn drop(&mut self) {}
         }
         let prepass = self.prepass.install();
         let observation = install_observation_hook(self.observation_hook);
         let lanes = self.lanes.install();
-        let research = crate::products::research::prepared::block::install_forced_fallback(
-            self.research_fallback,
-        );
-        let sampled = sampled::install_test_fallback(self.sampled_fallback);
         super::RELOAD_FLUSHED.with(|flag| flag.set(self.reload));
         super::TEST_BATCH_BLOCKS.with(|blocks| blocks.set(self.batch_blocks));
         self.registry.install();
         Installed {
             _prepass: prepass,
-            _research: research,
-            _sampled: sampled,
             _lanes: lanes,
             _observation: observation,
         }

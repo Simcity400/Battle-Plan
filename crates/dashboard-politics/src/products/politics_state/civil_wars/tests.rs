@@ -1,9 +1,8 @@
 use super::*;
 use crate::products::politics_state::{
-    history::{Part, Prepared},
-    tests::{Changed, countries, frame, set},
+    history::{Part, walk::Walk},
+    tests::{countries, frame, set},
 };
-use dashboard_base::prepared::series::tests::Fixture;
 use replay_data::rows::{
     CountryCivilWarRow, CountryCounterInputRow, CountryWarRow, PoliticsRow, TableId, TableRows,
     WarRelationRow,
@@ -15,7 +14,7 @@ const ALL: &[(u32, u32, &str)] = &[(1, 1, "OLD"), (2, 2, "NEW"), (3, 3, "SPL"), 
 /// Records hours `first..=last` with the given civil-war lists, the
 /// countries in `present` existing (owning a state) throughout.
 fn record(
-    state: &mut Prepared,
+    state: &mut Walk,
     first: i32,
     last: i32,
     present: &[(u32, u32, &str)],
@@ -27,7 +26,7 @@ fn record(
 /// As [`record`], only the countries in `owning` owning a state; `None`
 /// leaves the states owned unrecorded.
 fn record_owning(
-    state: &mut Prepared,
+    state: &mut Walk,
     first: i32,
     last: i32,
     present: &[(u32, u32, &str)],
@@ -79,23 +78,27 @@ fn record_owning(
     }
 }
 
-fn wars(state: &mut Prepared, through: i32, annexations: &[Annexation]) -> CivilWarsReply {
-    let fixture = Fixture::new();
+/// The reply through `through` of `state` published, the same however it is cut.
+fn wars(state: &mut Walk, through: i32, annexations: &[Annexation]) -> CivilWarsReply {
     let flag = AtomicBool::new(false);
-    let mut writer = fixture.writer();
-    state.flush(&mut writer, 1, &flag).unwrap();
-    writer.commit().unwrap();
-    query(
-        &fixture.store,
-        &fixture.key,
-        &CivilWarsParams {
-            branch_id: "1".into(),
-        },
-        Some(through),
-        annexations,
-        &flag,
-    )
-    .unwrap()
+    let params = CivilWarsParams {
+        branch_id: "1".into(),
+    };
+    let [whole, cut] = state.publish();
+    let ask = |published: &crate::products::politics_state::history::walk::Published| {
+        published
+            .read(|snapshot, directory| {
+                query(snapshot, directory, &params, Some(through), annexations, &flag)
+            })
+            .unwrap()
+    };
+    let reply = ask(&whole);
+    assert_eq!(
+        serde_json::to_value(&reply).unwrap(),
+        serde_json::to_value(ask(&cut)).unwrap(),
+        "the same reply however the walk is cut"
+    );
+    reply
 }
 
 fn span(first_hour: i32, last_hour: i32) -> HourSpan {
@@ -117,7 +120,7 @@ fn annex(hour: i32, annexer: &str, annexed: &str, civil_war: bool) -> Annexation
 
 #[test]
 fn a_breakaway_that_splits_again_builds_one_tree_with_asymmetric_lists() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 90, 99, &ALL[..1], &[]);
     // Only the breakaway lists the old country: lists are not mirrored.
     record(&mut state, 100, 104, &ALL[..2], &[(2, 1)]);
@@ -141,7 +144,7 @@ fn a_breakaway_that_splits_again_builds_one_tree_with_asymmetric_lists() {
 
 #[test]
 fn a_later_rival_does_not_change_the_side_a_breakaway_broke_from() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 90, 99, &ALL[..1], &[]);
     record(&mut state, 100, 104, &ALL[..2], &[(2, 1)]);
     record(&mut state, 105, 109, &ALL[..3], &[(2, 1), (3, 2)]);
@@ -156,7 +159,7 @@ fn a_later_rival_does_not_change_the_side_a_breakaway_broke_from() {
 
 #[test]
 fn an_annexer_listed_only_after_the_annexation_was_not_a_side() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 90, 99, &ALL[..3], &[]);
     record(&mut state, 100, 110, &ALL[..3], &[(1, 2), (2, 1)]);
     // SPL annexes NEW at 110 and only then becomes OLD's rival, in the same episode.
@@ -178,7 +181,7 @@ fn an_annexer_listed_only_after_the_annexation_was_not_a_side() {
 #[test]
 fn a_side_restored_after_its_annexation_was_not_defeated_by_it() {
     let ended = |present: &[(u32, u32, &str)], lists: &[(u32, u32)], annexations: &[Annexation]| {
-        let mut state = Prepared::default();
+        let mut state = Walk::default();
         record(&mut state, 100, 100, present, lists);
         // With the states owned unrecorded, only annexations tell a restoration.
         record_owning(&mut state, 101, 120, present, None, lists);
@@ -213,7 +216,7 @@ fn a_side_restored_after_its_annexation_was_not_defeated_by_it() {
     assert_eq!(reply.wars[0].sides[1].exit, None);
     assert_eq!(reply.wars[0].outcome, None);
     // Restored long after its war ended, it was still defeated in that war.
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 100, 120, &ALL[..2], &[(1, 2), (2, 1)]);
     record(&mut state, 121, 125, &ALL[..1], &[]);
     record(&mut state, 400, 500, &ALL[..2], &[]);
@@ -230,7 +233,7 @@ fn a_side_existing_again_after_its_annexation_was_not_defeated_by_it() {
     let lists = [(1, 2), (2, 1)];
     // OLD annexes NEW at 110 and the listings run on; from 120 NEW owns a state where `later` says so.
     let annexed = |later: Option<&[(u32, u32, &str)]>| {
-        let mut state = Prepared::default();
+        let mut state = Walk::default();
         record(&mut state, 100, 110, &ALL[..2], &lists);
         record_owning(&mut state, 111, 119, &ALL[..2], Some(&ALL[..1]), &lists);
         record_owning(&mut state, 120, 140, &ALL[..2], later, &lists);
@@ -259,7 +262,7 @@ fn a_side_existing_again_after_its_annexation_was_not_defeated_by_it() {
 fn annexation_of_every_other_side_by_a_side_proves_a_winner() {
     let lists = [(1, 2), (2, 1)];
     let ended = |annexations: &[Annexation]| {
-        let mut state = Prepared::default();
+        let mut state = Walk::default();
         record(&mut state, 100, 120, &ALL[..2], &lists);
         record(&mut state, 121, 125, &ALL[..1], &[]);
         wars(&mut state, 125, annexations)
@@ -293,7 +296,7 @@ fn annexation_of_every_other_side_by_a_side_proves_a_winner() {
 
 #[test]
 fn listings_apart_in_time_are_separate_civil_wars() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 100, 105, &ALL[..2], &[(1, 2)]);
     record(&mut state, 106, 200, &ALL[..2], &[]);
     record(&mut state, 201, 205, &ALL[..2], &[(2, 1)]);
@@ -306,7 +309,7 @@ fn listings_apart_in_time_are_separate_civil_wars() {
 
 #[test]
 fn a_stale_listing_of_a_country_without_states_is_not_an_ongoing_war() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 100, 110, &ALL[..2], &[(2, 1)]);
     // NEW keeps listing OLD after OLD lost its last state: the game's
     // predicate no longer holds for either, though the listing remains.
@@ -321,7 +324,7 @@ fn a_stale_listing_of_a_country_without_states_is_not_an_ongoing_war() {
 
 #[test]
 fn hours_the_lists_were_not_read_are_unknown_not_an_ending() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 100, 110, &ALL[..2], &[(2, 1)]);
     for hour in 111..=120 {
         let mut at = frame(hour);
@@ -345,7 +348,7 @@ fn hours_the_lists_were_not_read_are_unknown_not_an_ending() {
 
 #[test]
 fn a_list_naming_a_country_with_no_identity_is_unknown_not_an_ending() {
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     record(&mut state, 100, 110, &ALL[..2], &[(2, 1)]);
     // NEW's list row names a raw country no link resolves.
     record(&mut state, 111, 115, &ALL[..2], &[(22, 1)]);
@@ -420,25 +423,25 @@ fn only_hours_changing_what_a_part_reads_observe_it() {
         );
         at
     };
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     let hours = [
         // The first hour follows nothing: every part.
-        (at(100, 1, 0, 7), Changed::default()),
+        at(100, 1, 0, 7),
         // A war's casualties, every hour of a war: nothing the parts read.
-        (at(101, 1, 500, 7), Changed::fields(TableId::WarRelations, &["first_casualties"])),
+        at(101, 1, 500, 7),
         // OLD loses its last state: NEW's own list no longer names an existing
         // country, and the game no longer holds OLD's elections.
-        (at(102, 0, 900, 7), Changed::fields(TableId::CountryCounterInputs, &["owned_state_count"])),
+        at(102, 0, 900, 7),
         // A capital moves: not part of an election schedule.
-        (at(103, 0, 900, 8), Changed::fields(TableId::Politics, &["capital"])),
+        at(103, 0, 900, 8),
         // The relation's recorded end arrives with no row changing: OLD's enemy is gone.
-        (at(104, 0, 900, 8), Changed::default()),
+        at(104, 0, 900, 8),
     ];
-    for (frame, changed) in &hours {
-        state.observe_changes(frame, changed).unwrap();
+    for frame in &hours {
+        state.step(frame);
     }
     assert_eq!(
-        state.observed,
+        state.observed(),
         [
             (100, Part::Elections),
             (100, Part::Exiles),
@@ -461,7 +464,7 @@ fn only_hours_changing_what_a_part_reads_observe_it() {
 fn the_predicate_reads_each_enemy_vector_as_the_game_scans_it() {
     // Only NEW and SPL list OLD; OLD has a civil war through SPL, its enemy
     // by a relation, which lists it.
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     let mut at = frame(100);
     countries(&mut at, &ALL[..3], &[]);
     set(

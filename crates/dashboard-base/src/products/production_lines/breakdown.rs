@@ -800,6 +800,7 @@ pub struct ProductionLineBreakdownReply {
 impl Product for ProductionLineBreakdown {
     const KEY: &'static str = "production-line-breakdown";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&super::served::PLAN);
     type Params = ProductionBreakdownParams;
     type Reply = ProductionLineBreakdownReply;
     fn types() -> Vec<String> {

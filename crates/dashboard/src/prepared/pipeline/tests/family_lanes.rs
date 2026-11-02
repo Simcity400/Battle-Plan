@@ -200,53 +200,14 @@ fn family_lanes_match_every_section_and_keep_the_time_budget() {
 /// on its own is no lane job otherwise. Resources and army fold their block
 /// facts instead (`prepass.rs`).
 const LANE_FAMILIES: &[&str] = &[
-    "factories",
-    "projects",
-    "peace",
-    "research",
-    "construction",
-    "trade",
-    "measure",
-    "navy",
-    "air",
-    "air_ledger",
-    "aces",
-    "raids",
-    "game_score",
-    "land",
-    "divisions",
-    "naval",
-    "subjects",
-    "autonomy",
-    "tension",
-    "wars",
-    "ideas",
-    "parties",
     "leaders",
-    "intelligence",
-    "parts",
-    "experience",
-    "occupation",
-    "casualties",
     "equipment_losses",
-    "repairs",
 ];
 
 /// Families observed by lane jobs whose observation needs no other family's
 /// output of the same frame.
 const MOVED: &[&str] = &[
-    "projects",
-    "construction",
-    "navy",
-    "air",
-    "raids",
-    "land",
-    "naval",
-    "ideas",
     "leaders",
-    "intelligence",
-    "occupation",
-    "casualties",
 ];
 
 #[test]
@@ -506,34 +467,10 @@ fn assert_lane_parity_covers(
 fn family_lanes_match_serial_for_every_moved_family_and_detect_a_diverging_lane() {
     let recordings = [
         (
-            two_blocks((10..=13).map(moved_families_frame).collect()),
-            &[
-                "air",
-                "navy",
-                "ideas",
-                "occupation",
-                "raids",
-                "intelligence",
-                "construction",
-            ][..],
-        ),
-        (
             two_blocks(
                 crate::products::unit_leaders::prepared::test_fixtures::outcome_frames(false),
             ),
-            &["leaders", "land"][..],
-        ),
-        (
-            two_blocks(
-                (100..=103)
-                    .map(|hour| crate::products::wars::test_fixtures::scaled_recorded(hour, 3))
-                    .collect(),
-            ),
-            &["casualties"][..],
-        ),
-        (
-            two_blocks((100..=103).map(project_and_sinking_frame).collect()),
-            &["projects", "naval"][..],
+            &["leaders"][..],
         ),
     ];
     let mut covered: Vec<_> = recordings
@@ -639,7 +576,7 @@ fn family_lanes_same_frame_identity_and_membership_change_match_serial() {
     }
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![initial, changed])]).unwrap();
-    // Territory/history/groups run on the coordinator; subject/tension/supply
+    // Territory/history/groups run on the coordinator; autonomy/tension/supply
     // jobs run on lanes. They must use this immutable frame and their own state,
     // not a coordinator's old or partially updated identity/link cache.
     compare_fixture(&replay);
@@ -746,7 +683,7 @@ fn frame_changes_force_all_on_same_branch_post_publication_restore() {
 #[test]
 fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
     use std::sync::mpsc;
-    // The two heaviest lane jobs, stability's parts and the leaders, are always
+    // The two heaviest lane jobs, the leaders and the equipment losses, are always
     // packed on different lanes.
     let (resource_send, resource_receive) = mpsc::sync_channel(1);
     let (leaders_send, leaders_receive) = mpsc::sync_channel(1);
@@ -757,7 +694,7 @@ fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
     let resource_frame = std::sync::atomic::AtomicUsize::new(0);
     let leaders_frame = std::sync::atomic::AtomicUsize::new(0);
     let hook: lanes::Hook = Arc::new(move |family, observed, _changes| {
-        if observed.hour == 10 && family == "parts" {
+        if observed.hour == 10 && family == "equipment_losses" {
             resource_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
             count.fetch_add(1, Ordering::SeqCst);
             resource_send.send(()).unwrap();
@@ -765,7 +702,7 @@ fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(2))
-                .expect("the leaders must enter while the parts are active");
+                .expect("the leaders must enter while the equipment losses are active");
             assert_eq!(
                 resource_frame.load(Ordering::SeqCst),
                 leaders_frame.load(Ordering::SeqCst),
@@ -779,8 +716,8 @@ fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(2))
-                .expect("the parts must enter while the leaders are active");
-        } else if observed.hour == 11 && matches!(family, "parts" | "leaders") {
+                .expect("the equipment losses must enter while the leaders are active");
+        } else if observed.hour == 11 && matches!(family, "equipment_losses" | "leaders") {
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 2,
@@ -922,7 +859,7 @@ fn check_lane_failures() {
             let prefix = payloads(&source, None);
             let cancellation = Arc::clone(&flag);
             let hook: lanes::Hook = Arc::new(move |family, frame, _changes| {
-                if family != "trade" || frame.hour != hour {
+                if family != "research" || frame.hour != hour {
                     return lanes::Fault::Continue;
                 }
                 match failure {

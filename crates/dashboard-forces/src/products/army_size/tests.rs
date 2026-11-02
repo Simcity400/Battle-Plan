@@ -864,7 +864,7 @@ fn a_window_reply_reads_the_selected_country_within_its_identity() {
     let cache = Cache::new(&budget);
     let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
-    let fixture = crate::products::parts_race_prepared::test_fixtures::Fixture::recording_only();
+    let fixture = crate::products::force_fixtures::Fixture::recording_only();
     let params = ArmySizeParams {
         template_at: None,
         branch_id: "1".into(),

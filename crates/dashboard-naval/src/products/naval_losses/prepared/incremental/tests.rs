@@ -1,5 +1,5 @@
 use super::*;
-use dashboard_base::prepared::series::tests::Fixture;
+use crate::products::naval_losses::prepared::tests::{Harness, reloaded};
 use replay_data::{
     rows::CountryLinkRow, rows::SunkConvoyRow, rows::SunkShipEntry, rows::SunkShipsRow,
     rows::TableId, rows::TableRows, rows::tables,
@@ -101,7 +101,7 @@ fn parity(countries: usize, baseline_step: usize) {
     let flag = AtomicBool::new(false);
     let frames = inputs(countries, baseline_step);
     let first = frames[0].hour;
-    let mut fixture = Fixture::new();
+    let mut harness = Harness::new(first);
     let mut history = sinkings::ShipHistory::new(first);
     let mut prepared = Prepared::default();
     let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
@@ -129,19 +129,9 @@ fn parity(countries: usize, baseline_step: usize) {
             )
             .unwrap();
         history.finish_prepared(frame.hour);
-        let mut writer = if step == frames.len() - 1 {
-            fixture.append_writer()
-        } else {
-            fixture.writer()
-        };
-        prepared
-            .flush(&mut writer, 1, &history.scan, &flag)
-            .unwrap();
-        series::write_reply(&mut writer, "resume", 0, &(&history, &prepared)).unwrap();
-        writer.commit().unwrap();
-        (history, prepared) = series::read_reply(&fixture.store, &fixture.key, "resume", 0)
-            .unwrap()
-            .unwrap();
+        harness.hour(&mut prepared, frame.hour);
+        harness.publish(&mut prepared, &history.scan, frame.hour);
+        (history, prepared) = reloaded(&(&history, &prepared));
         history.resume(frame);
         tracker.invalidate();
         if step == 0 {
@@ -156,10 +146,6 @@ fn parity(countries: usize, baseline_step: usize) {
         )
         .unwrap();
         let oracle = sinkings::scan(&replay, 1, &flag).unwrap();
-        let (actors, metadata) =
-            series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, "naval-losses", 1)
-                .unwrap()
-                .unwrap();
         let root = std::str::from_utf8(&frames[0].complete::<tables::Countries>().unwrap()[0].tag)
             .unwrap();
         for channel in 0..12 {
@@ -178,16 +164,17 @@ fn parity(countries: usize, baseline_step: usize) {
                     vec![],
                     Some(&oracle.histories),
                 );
-                let actual = window_reply(
-                    &fixture.store,
-                    &fixture.key,
-                    &actors,
-                    &metadata,
-                    &oracle.histories,
-                    &params,
-                    Some((first, frame.hour)),
-                    &flag,
-                );
+                let actual = harness.read(channel, |lines, actors, metadata| {
+                    window_reply(
+                        lines,
+                        actors,
+                        metadata,
+                        &oracle.histories,
+                        &params,
+                        Some((first, frame.hour)),
+                        &flag,
+                    )
+                });
                 match (actual, expected) {
                     (Err(actual), Err(expected)) => {
                         assert_eq!(actual.to_string(), expected.to_string())
@@ -442,15 +429,22 @@ fn restored_losses_close_a_holder_that_leaves_at_the_first_hour_after_a_commit()
                 let key = field_key(prepared.actors[&actor(VICTIM)], 0);
                 let lost = &prepared.channels[0].values;
                 assert!(lost.active().any(|open| open == key));
-                assert_eq!(
-                    lost.state(key)
-                        .and_then(|state| state.last)
-                        .map(|run| run.value),
-                    Some(1)
-                );
+                assert_eq!(lost.value(key), Some(1));
             }
-            prepared.flush(writer, 1, &history.scan, &flag).unwrap();
-            series::write_reply(
+            // What its series is handed: every write since the last commit, by channel.
+            let written: Vec<_> = prepared
+                .channels
+                .iter_mut()
+                .map(|channel| std::mem::take(&mut channel.values.written))
+                .collect();
+            dashboard_base::prepared::series::write_reply(
+                writer,
+                "naval-losses-written",
+                ordinal as u64,
+                &written,
+            )
+            .unwrap();
+            dashboard_base::prepared::series::write_reply(
                 writer,
                 "naval-losses-continuation",
                 0,
@@ -459,10 +453,14 @@ fn restored_losses_close_a_holder_that_leaves_at_the_first_hour_after_a_commit()
             .unwrap();
         },
         |fixture| {
-            let (mut history, prepared): Pair =
-                series::read_reply(&fixture.store, &fixture.key, "naval-losses-continuation", 0)
-                    .unwrap()
-                    .unwrap();
+            let (mut history, prepared): Pair = dashboard_base::prepared::series::read_reply(
+                &fixture.store,
+                &fixture.key,
+                "naval-losses-continuation",
+                0,
+            )
+            .unwrap()
+            .unwrap();
             // As preparation does after every restore: the last frame observed.
             let last = frames
                 .iter()
@@ -472,4 +470,125 @@ fn restored_losses_close_a_holder_that_leaves_at_the_first_hour_after_a_commit()
             (history, prepared)
         },
     );
+}
+
+/// One batch over the inputs' gap publishes what a cut after every hour does: nothing is held
+/// across the gap, and only the hours handed are known.
+#[test]
+fn a_batch_over_a_gap_answers_as_cuts_at_every_hour_do() {
+    let flag = AtomicBool::new(false);
+    let frames = inputs(3, 0);
+    let first = frames[0].hour;
+    assert!(
+        frames
+            .windows(2)
+            .any(|pair| pair[0].hour + 1 != pair[1].hour),
+        "the inputs skip an hour"
+    );
+    let retention = sinkings::Retention {
+        ships: true,
+        convoys: true,
+        ship_loss: vec![],
+        convoy_loss: vec![],
+        warnings: vec![],
+    };
+    let mut harnesses = [Harness::new(first), Harness::new(first)];
+    let mut histories = [
+        sinkings::ShipHistory::new(first),
+        sinkings::ShipHistory::new(first),
+    ];
+    let mut prepared = [Prepared::default(), Prepared::default()];
+    let last = frames.last().unwrap().hour;
+    for (at, (harness, (history, prepared))) in harnesses
+        .iter_mut()
+        .zip(histories.iter_mut().zip(prepared.iter_mut()))
+        .enumerate()
+    {
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        for frame in &frames {
+            let changes = history.prepare(
+                replay_data::format::FormatVersion::default(),
+                frame,
+                &tracker.observe(frame, replay_data::format::FormatVersion::default()),
+            );
+            prepared
+                .observe_changes(
+                    &history.scan,
+                    &changes,
+                    history.prepared_holders(),
+                    history.prepared_scope_changed(),
+                    &retention,
+                    &flag,
+                )
+                .unwrap();
+            history.finish_prepared(frame.hour);
+            harness.hour(prepared, frame.hour);
+            if at == 0 || frame.hour == last {
+                harness.publish(prepared, &history.scan, frame.hour);
+            }
+        }
+    }
+    let replay = replay::container::Replay::from_records(
+        dashboard_base::test_fixtures::CAMPAIGN.into(),
+        &[dashboard_base::test_fixtures::records(1, frames.clone())],
+    )
+    .unwrap();
+    let oracle = sinkings::scan(&replay, 1, &flag).unwrap();
+    for channel in 0..12 {
+        let mut params = selection(1, channel);
+        params.top = Some(10);
+        let [cut, batched] = [&harnesses[0], &harnesses[1]].map(|harness| {
+            harness.read(channel, |lines, actors, metadata| {
+                let reply = window_reply(
+                    lines,
+                    actors,
+                    metadata,
+                    &oracle.histories,
+                    &params,
+                    Some((first, last)),
+                    &flag,
+                )
+                .map(|reply| serde_json::to_value(reply).unwrap())
+                .map_err(|error| error.to_string());
+                let summary = series_query(
+                    "series-summary",
+                    &json!({"from": first, "to": last, "width": 4}),
+                    &params,
+                    actors,
+                    metadata,
+                    &oracle.histories,
+                    lines,
+                    &flag,
+                )
+                .map_err(|error| error.to_string());
+                (reply, summary)
+            })
+        });
+        assert_eq!(batched, cut, "channel {channel}");
+    }
+}
+
+#[test]
+fn a_value_after_none_starts_a_segment_and_a_gap_ends_every_value() {
+    let mut values = Values::default();
+    values.observe(1, 10, Some(4), false);
+    values.observe(1, 11, Some(4), false);
+    values.observe(1, 12, None, false);
+    values.observe(1, 13, Some(4), false);
+    values.observe(2, 13, Some(0), false);
+    values.gap(13);
+    values.observe(2, 16, Some(0), false);
+    assert_eq!(
+        values.written,
+        vec![
+            (1, 10, Some(4), true),
+            (1, 12, None, false),
+            (1, 13, Some(4), true),
+            (2, 13, Some(0), true),
+            (1, 14, None, false),
+            (2, 14, None, false),
+            (2, 16, Some(0), true),
+        ]
+    );
+    assert!(values.held(1) && values.value(1).is_none());
 }

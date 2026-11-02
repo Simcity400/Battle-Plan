@@ -39,10 +39,8 @@ use dashboard_base::{
     source::Source,
 };
 use dashboard_core::{config::LoadContext, transport::json_len};
-use dashboard_text::metadata::{LinkTags, check_cancel, slot_read};
+use dashboard_text::metadata::{LinkTags, check_cancel};
 use replay::container::Replay;
-use replay_data::{rows::TableId, rows::tables};
-use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -53,12 +51,17 @@ use std::{
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use {
-    dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder,
+    dashboard_text::metadata::{slot_read, validate_campaign},
+    replay_data::{rows::TableId, rows::tables},
+    replay_frame::frame::{DecodedFrame, FrameDecoder},
     std::collections::VecDeque,
 };
 
+pub mod emit;
+pub mod facts;
 mod losses;
 pub mod prepared;
+mod served;
 mod terrain;
 mod warnings;
 pub use terrain::LandBattleTerrains;
@@ -69,7 +72,8 @@ pub struct LandBattlesManifest;
 pub struct LandBattlesRanking;
 /// One battle's whole course, for a drill.
 pub struct LandBattleCourses;
-/// Every table the census reads.
+/// Every table the row census reads.
+#[cfg(any(test, feature = "test-support"))]
 pub const CENSUS_TABLES: [TableId; 14] = [
     TableId::Campaign,
     TableId::Countries,
@@ -559,6 +563,12 @@ pub struct Census {
     #[serde(default)]
     refusals: dashboard_text::catalogue::OwnRefusals,
     designs: losses::Designs,
+    /// Each variant's design and whether it is named, as its current names give them.
+    #[serde(skip)]
+    named: HashMap<u64, (usize, bool)>,
+    /// The hour and variant of each unnamed design read this hour, not warned of yet.
+    #[serde(skip)]
+    unnamed: Vec<(i32, u64)>,
     /// Ordinals whose course pages are published.
     keyed: usize,
     /// Battles that ended before this hour, and warnings dated before it,
@@ -645,6 +655,98 @@ fn held(episodes: &mut BTreeMap<usize, Episode>, at: usize) -> &mut Episode {
 impl Census {
     fn warn(&mut self, hour: i32, reason: impl AsRef<str> + Into<String>) {
         self.warnings.add(hour, reason, 1);
+    }
+    /// One LandCombats row at a read: its battle goes on, or a new one starts at `hour`.
+    #[allow(clippy::too_many_arguments)]
+    fn read_combat(
+        &mut self,
+        branch: u64,
+        hour: i32,
+        adjacent: bool,
+        row: facts::Combat,
+        countries: [Vec<String>; 2],
+        countries_unknown: [bool; 2],
+        opened: &mut Vec<u64>,
+    ) {
+        let current = self.open.get(&row.id).map(|at| (*at, &self.episodes[at]));
+        let continuing = current
+            .filter(|(_, episode)| {
+                episode.province == row.province
+                    && episode
+                        .runs
+                        .last()
+                        .is_none_or(|run| i64::from(row.duration) >= run.duration_at(run.last_hour))
+            })
+            .map(|(at, _)| at);
+        let at = match continuing {
+            Some(at) => at,
+            None => {
+                opened.push(row.id);
+                if let Some(old) = self.open.remove(&row.id) {
+                    self.dirty.insert(old);
+                    held(&mut self.episodes, old).end = Some((
+                        hour,
+                        BattleEnd::Moment(BattleMoment {
+                            hour,
+                            bound: BattleBound::Exact,
+                        }),
+                    ));
+                }
+                let at = self.begin(hour);
+                self.episodes.insert(
+                    at,
+                    Episode {
+                        id: format!("{branch}:{}:{hour}", row.id),
+                        province: row.province,
+                        start: BattleMoment {
+                            hour,
+                            bound: if adjacent {
+                                BattleBound::Exact
+                            } else {
+                                BattleBound::By
+                            },
+                        },
+                        end: None,
+                        counter_base: if adjacent { 0 } else { row.duration },
+                        runs: Vec::with_capacity(1),
+                        losses: Vec::new(),
+                        result: None,
+                        loss_inputs: None,
+                        prior_peaks: [None, None, None],
+                        history: None,
+                    },
+                );
+                self.open.insert(row.id, at);
+                self.latest.insert(row.id, at);
+                at
+            }
+        };
+        self.dirty.insert(at);
+        let counts = row.counts;
+        let runs = &mut held(&mut self.episodes, at).runs;
+        if let Some(run) = runs.last_mut().filter(|run| {
+            run.last_hour.checked_add(1) == Some(hour)
+                && run.counts == counts
+                && run.countries == countries
+                && run.countries_unknown == countries_unknown
+                && run.duration_at(hour) == i64::from(row.duration)
+        }) {
+            run.last_hour = hour;
+        } else {
+            #[cfg(test)]
+            {
+                self.work.emitted += 1;
+            }
+            runs.push(LandBattleRun {
+                first_hour: hour,
+                last_hour: hour,
+                counts,
+                roster_unknown: false,
+                countries,
+                countries_unknown,
+                duration: row.duration,
+            });
+        }
     }
     /// The ordinal of a new battle starting at `hour`.
     fn begin(&mut self, hour: i32) -> usize {
@@ -771,12 +873,14 @@ impl Census {
         }
         Ok(())
     }
-    /// Observes with no change facts, as the recording product does: every
-    /// table is treated as changed, which publishes what observation with
-    /// the facts publishes.
+    /// The row census, the parity oracle of the native one ([`emit`]): observes a decoded
+    /// frame with no change facts, every table treated as changed.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         self.observe_with_changes(frame, None)
     }
+    /// [`Self::observe`] with the hour's change facts, as the row walk read them.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn observe_prepared(
         &mut self,
         frame: &DecodedFrame,
@@ -786,6 +890,7 @@ impl Census {
     }
     /// Observes as one consumer of the shared content: its published
     /// warnings name the refusals of its own reads.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_with_changes(
         &mut self,
         frame: &DecodedFrame,
@@ -795,9 +900,11 @@ impl Census {
         let observed = dashboard_text::catalogue::own_refusals(&mut own, || {
             self.observe_own_changes(frame, changes)
         });
+        self.warn_unnamed();
         self.refusals = own;
         observed
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_own_changes(
         &mut self,
         frame: &DecodedFrame,
@@ -812,9 +919,13 @@ impl Census {
         // With the hour's change facts the variants read only what changed.
         match changes {
             Some(changes) => {
-                let _ = self.variants.observe_changed(self.format, frame, changes);
+                let changed = self.variants.observe_changed(self.format, frame, changes);
+                self.renamed(&changed);
             }
-            None => self.variants.observe(self.format, frame),
+            None => {
+                self.variants.observe(self.format, frame);
+                self.named.clear();
+            }
         }
         let update = self.links.update(frame);
         let labels = update.is_ok();
@@ -940,8 +1051,6 @@ impl Census {
                 .get(&row.id)
                 .cloned()
                 .unwrap_or_else(|| LiveSide::new(None, &self.links, labels));
-            let countries = side.countries;
-            let countries_unknown = side.unknown;
             for (reason, count) in side.warnings {
                 *self.live_warnings.entry(reason.clone()).or_default() += count;
                 self.warnings.add(hour, reason, count);
@@ -952,7 +1061,7 @@ impl Census {
             };
             // Duration and other combat fields move hourly. A delta that
             // leaves both rosters alone preserves their distinct counts.
-            let current = self.open.get(&row.id).map(|at| (*at, &self.episodes[at]));
+            let current = self.open.get(&row.id).map(|at| &self.episodes[at]);
             let counts = roster_changes.and_then(|(changed, deleted)| {
                 let key = u128::from(row.id);
                 if deleted.binary_search(&key).is_ok() {
@@ -963,7 +1072,7 @@ impl Census {
                 {
                     return None;
                 }
-                current?.1.runs.last().map(|run| run.counts)
+                current?.runs.last().map(|run| run.counts)
             });
             let counts = match counts {
                 Some(counts) => counts,
@@ -973,82 +1082,21 @@ impl Census {
                     [distinct(&row.attackers)?, distinct(&row.defenders)?]
                 }
             };
-            let continuing = current
-                .filter(|(_, episode)| {
-                    episode.province == row.province
-                        && episode.runs.last().is_none_or(|run| {
-                            i64::from(row.duration) >= run.duration_at(run.last_hour)
-                        })
-                })
-                .map(|(at, _)| at);
-            let at = match continuing {
-                Some(at) => at,
-                None => {
-                    opened.push(row.id);
-                    if let Some(old) = self.open.remove(&row.id) {
-                        self.dirty.insert(old);
-                        held(&mut self.episodes, old).end = Some((
-                            hour,
-                            BattleEnd::Moment(BattleMoment {
-                                hour,
-                                bound: BattleBound::Exact,
-                            }),
-                        ));
-                    }
-                    let at = self.begin(hour);
-                    self.episodes.insert(
-                        at,
-                        Episode {
-                            id: format!("{}:{}:{hour}", frame.branch, row.id),
-                            province: row.province,
-                            start: BattleMoment {
-                                hour,
-                                bound: if adjacent {
-                                    BattleBound::Exact
-                                } else {
-                                    BattleBound::By
-                                },
-                            },
-                            end: None,
-                            counter_base: if adjacent { 0 } else { row.duration },
-                            runs: Vec::with_capacity(1),
-                            losses: Vec::new(),
-                            result: None,
-                            loss_inputs: None,
-                            prior_peaks: [None, None, None],
-                            history: None,
-                        },
-                    );
-                    self.open.insert(row.id, at);
-                    self.latest.insert(row.id, at);
-                    at
-                }
+            let combat = facts::Combat {
+                id: row.id,
+                province: row.province,
+                duration: row.duration,
+                counts,
             };
-            self.dirty.insert(at);
-            let runs = &mut held(&mut self.episodes, at).runs;
-            if let Some(run) = runs.last_mut().filter(|run| {
-                run.last_hour.checked_add(1) == Some(hour)
-                    && run.counts == counts
-                    && run.countries == countries
-                    && run.countries_unknown == countries_unknown
-                    && run.duration_at(hour) == i64::from(row.duration)
-            }) {
-                run.last_hour = hour;
-            } else {
-                #[cfg(test)]
-                {
-                    self.work.emitted += 1;
-                }
-                runs.push(LandBattleRun {
-                    first_hour: hour,
-                    last_hour: hour,
-                    counts,
-                    roster_unknown: false,
-                    countries,
-                    countries_unknown,
-                    duration: row.duration,
-                });
-            }
+            self.read_combat(
+                frame.branch,
+                hour,
+                adjacent,
+                combat,
+                side.countries,
+                side.unknown,
+                &mut opened,
+            );
         }
         if changed(TableId::LandCombatProgress) {
             self.observe_losses(frame, None);
@@ -1084,6 +1132,10 @@ impl Census {
         self.reply_window(params.window, window)
     }
     fn reply_window(&self, ordinal: usize, window: &BattleWindow) -> io::Result<LandBattlesReply> {
+        bounded(self.window_reply(ordinal, window))
+    }
+    /// [`Self::reply_window`] before its size is checked.
+    fn window_reply(&self, ordinal: usize, window: &BattleWindow) -> LandBattlesReply {
         let mut rows = Vec::new();
         let observed = self
             .observed_spans()
@@ -1122,7 +1174,7 @@ impl Census {
             rows.push(episode.history(runs, window.last_hour, window.first_hour.checked_sub(1)));
         }
         let (reasons, warnings) = self.warnings_in(window.first_hour, window.last_hour);
-        bounded(LandBattlesReply {
+        LandBattlesReply {
             window: ordinal,
             interval: window.clone(),
             rows,
@@ -1130,7 +1182,7 @@ impl Census {
             reasons,
             warnings,
             content_warnings: self.content_warnings(),
-        })
+        }
     }
     fn ranked(
         &self,
@@ -1360,6 +1412,7 @@ fn scan(
     )?;
     Ok(census)
 }
+#[cfg(any(test, feature = "test-support"))]
 fn frame_available(format: replay_data::format::FormatVersion, frame: &DecodedFrame) -> bool {
     slot_read(format, &frame.metrics, TableId::LandCombats, frame.hour)
         && frame.complete::<tables::LandCombats>().is_ok()
@@ -1473,7 +1526,8 @@ impl Cache {
         }
     }
 }
-fn battle_content(
+/// The catalogue land battles name equipment designs from, or why they cannot be named.
+pub fn battle_content(
     source: &Source,
     context: &LoadContext,
 ) -> (
@@ -1515,6 +1569,7 @@ fn census(
 }
 impl Product for LandBattles {
     const KEY: &'static str = "land-battles";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     const CONTENT_DEPENDENT: bool = true;
     type Params = LandBattlesParams;
     type Reply = LandBattlesReply;
@@ -1555,6 +1610,7 @@ impl Product for LandBattles {
 }
 impl Product for LandBattlesManifest {
     const KEY: &'static str = "land-battles-manifest";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     const CONTENT_DEPENDENT: bool = false;
     type Params = LandBattlesManifestParams;
     type Reply = LandBattlesManifestReply;
@@ -1590,6 +1646,7 @@ impl Product for LandBattlesManifest {
 }
 impl Product for LandBattlesRanking {
     const KEY: &'static str = "land-battles-ranking";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     const CONTENT_DEPENDENT: bool = true;
     type Params = LandBattlesRankingParams;
     type Reply = LandBattlesRankingReply;
@@ -1631,6 +1688,7 @@ impl Product for LandBattlesRanking {
 }
 impl Product for LandBattleCourses {
     const KEY: &'static str = "land-battle-course";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     const CONTENT_DEPENDENT: bool = true;
     type Params = LandBattleCourseParams;
     type Reply = LandBattleCourseReply;
@@ -1665,43 +1723,6 @@ impl Product for LandBattleCourses {
         let branch = branch_id(source, &params.branch_id)?;
         check_cancel(cancelled)?;
         census(source, branch, cancelled, context)?.course(&params.id)
-    }
-}
-impl Census {
-    pub fn state_census(
-        &self,
-        line: dashboard_base::prepared::state_census::Line,
-    ) -> dashboard_base::prepared::state_census::Line {
-        let (window_keys, window_active) = self.windows.census_keys();
-        let (read_keys, read_active) = self.reads.census_keys();
-        let largest_open = self
-            .open
-            .values()
-            .filter_map(|at| {
-                dashboard_base::prepared::state_census::json_bytes(&self.episodes[at]).ok()
-            })
-            .max()
-            .unwrap_or(0);
-        line.field("land_episodes", self.episodes.len())
-            .json("land_episodes_json", &self.episodes)
-            .field("land_largest_open_json", largest_open)
-            .field("land_open", self.open.len())
-            .field("land_latest", self.latest.len())
-            .field("land_observed", self.observed.len())
-            .field("land_warnings", self.warnings.len())
-            .field("land_live_warnings", self.live_warnings.len())
-            .field("land_content_warnings", self.content_warnings.len())
-            .json("land_links_json", &self.links)
-            .json("land_variants_json", &self.variants)
-            .json("land_designs_json", &self.designs)
-            .field("land_created", self.created)
-            .field("land_pending", self.pending.len())
-            .field("land_window_keys", window_keys)
-            .field("land_window_active", window_active)
-            .json("land_windows_json", &self.windows)
-            .field("land_read_keys", read_keys)
-            .field("land_read_active", read_active)
-            .json("land_reads_json", &self.reads)
     }
 }
 #[cfg(test)]

@@ -33,6 +33,7 @@ use replay_columnar::{
 };
 use replay_columnar::{
     manifest::{Manifest, Status},
+    section::Changes,
     state::{Cell, Kind as Column, Table},
     walk::{Dictionary, State},
 };
@@ -184,6 +185,159 @@ struct Pending {
     edits: Vec<Noted>,
     /// How many edits the last compaction left.
     compacted: usize,
+    /// The edits by slot instead, for views noted by slot ([`Views::by_slot`]).
+    marks: Marks,
+}
+
+/// A table's edits since its view was built, kept by slot: what each slot's row got and the
+/// keys deleted, so an hour costs a bit and a mask per changed row and nothing is sorted
+/// until the view is built ([`Views::by_slot`]).
+#[derive(Default)]
+struct Marks {
+    /// The slots written or inserted since, a bit each.
+    touched: Vec<u64>,
+    /// The slots inserted since, a bit each.
+    inserted: Vec<u64>,
+    /// The columns written to each slot since, by slot.
+    masks: Vec<u64>,
+    /// The keys deleted since, some perhaps more than once.
+    deleted: Vec<u128>,
+    /// How many keys `deleted` held when last deduplicated.
+    distinct: usize,
+    /// Some slot or key is marked.
+    any: bool,
+}
+
+/// Sets `slot`'s bit in `bits`.
+fn mark(bits: &mut Vec<u64>, slot: u32) -> io::Result<()> {
+    let word = slot as usize / 64;
+    if word >= bits.len() {
+        grow(bits, word + 1)?;
+    }
+    bits[word] |= 1_u64 << (slot % 64);
+    Ok(())
+}
+
+/// `values` grown with zeros to `len`.
+fn grow(values: &mut Vec<u64>, len: usize) -> io::Result<()> {
+    engine_allocation::reserve(values, len.saturating_sub(values.len()))?;
+    values.resize(len.max(values.len()), 0);
+    Ok(())
+}
+
+impl Marks {
+    /// Marks what `changes`, one hour's section of `table`, did.
+    fn note(&mut self, changes: &Changes, table: &Table) -> io::Result<()> {
+        engine_allocation::reserve(&mut self.deleted, changes.deleted_keys.len())?;
+        self.deleted.extend_from_slice(&changes.deleted_keys);
+        self.any |= !changes.deleted_keys.is_empty();
+        for &slot in &changes.inserted {
+            mark(&mut self.touched, slot)?;
+            mark(&mut self.inserted, slot)?;
+            self.any = true;
+        }
+        let written = changes
+            .changed
+            .iter()
+            .zip(&changes.masks)
+            .chain(changes.fill_slots.iter().zip(&changes.fill_masks));
+        for (&slot, &mask) in written.filter(|(_, mask)| **mask != 0) {
+            mark(&mut self.touched, slot)?;
+            let at = slot as usize;
+            if at >= self.masks.len() {
+                grow(&mut self.masks, table.slots().max(at + 1))?;
+            }
+            self.masks[at] |= mask;
+            self.any = true;
+        }
+        // Deleted keys stay within the table's slots and twice what the last deduplication left.
+        if self.deleted.len() > table.slots().max(2 * self.distinct) {
+            self.deleted.sort_unstable();
+            self.deleted.dedup();
+            self.distinct = self.deleted.len();
+        }
+        Ok(())
+    }
+
+    /// Each marked row's edit, of `table` as it is now, after `edits`, unsorted; the marks
+    /// cleared. A live marked slot was inserted (its row set whole) or written; a deleted key
+    /// live again was inserted since, so only those gone are deleted.
+    fn edits(&mut self, table: &Table, edits: &mut Vec<Noted>) -> io::Result<()> {
+        if !self.any {
+            return Ok(());
+        }
+        // Room for every edit before any mark is taken: a refusal leaves the marks as they were.
+        let most = self
+            .touched
+            .iter()
+            .map(|bits| bits.count_ones() as usize)
+            .sum::<usize>()
+            + self.deleted.len();
+        if edits.len() + most >= PLACES as usize {
+            return Err(invalid("A table's edits pass the places they can hold"));
+        }
+        engine_allocation::reserve(edits, most)?;
+        self.any = false;
+        let place = |edits: &Vec<Noted>| u32::try_from(edits.len()).unwrap_or(PLACES);
+        for (word, bits) in self.touched.iter_mut().enumerate() {
+            let mut bits = std::mem::take(bits);
+            let inserted = self.inserted.get_mut(word).map_or(0, std::mem::take);
+            while bits != 0 {
+                let bit = bits.trailing_zeros();
+                bits &= bits - 1;
+                let slot = u32::try_from(word * 64 + bit as usize)
+                    .map_err(|_| invalid("A marked slot passes the slots a table holds"))?;
+                let mask = self.masks.get_mut(slot as usize).map_or(0, std::mem::take);
+                let Some(key) = table.key(slot) else {
+                    continue;
+                };
+                let edit = if inserted >> bit & 1 != 0 {
+                    Edit::Inserted(slot)
+                } else {
+                    Edit::Written(mask, slot)
+                };
+                let at = place(edits);
+                edits.push(Noted::new(key, at, edit)?);
+            }
+        }
+        self.deleted.sort_unstable();
+        self.deleted.dedup();
+        for &key in &self.deleted {
+            if table.slot(key).is_none() {
+                let at = place(edits);
+                edits.push(Noted::new(key, at, Edit::Deleted)?);
+            }
+        }
+        self.deleted.clear();
+        self.distinct = 0;
+        Ok(())
+    }
+
+    /// The marks cleared, their buffers kept.
+    fn emptied(mut self) -> Self {
+        if std::mem::take(&mut self.any) {
+            for (word, bits) in self.touched.iter_mut().enumerate() {
+                let mut bits = std::mem::take(bits);
+                while bits != 0 {
+                    let slot = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    if let Some(mask) = self.masks.get_mut(slot) {
+                        *mask = 0;
+                    }
+                }
+            }
+            self.inserted.fill(0);
+            self.deleted.clear();
+            self.distinct = 0;
+        }
+        self
+    }
+
+    fn heap_bytes(&self) -> usize {
+        (self.touched.capacity() + self.inserted.capacity() + self.masks.capacity())
+            * size_of::<u64>()
+            + self.deleted.capacity() * size_of::<u128>()
+    }
 }
 
 /// What a section did to a row, with the slot the row is at for an edit that leaves one.
@@ -392,6 +546,8 @@ pub struct Views {
     /// The last build's times, when builds are timed.
     timed: bool,
     times: BuildTimes,
+    /// Hours are noted by slot ([`Self::by_slot`]).
+    by_slot: bool,
 }
 
 impl Views {
@@ -411,7 +567,9 @@ impl Views {
             + self
                 .pending
                 .iter()
-                .map(|pending| pending.edits.capacity() * size_of::<Noted>())
+                .map(|pending| {
+                    pending.edits.capacity() * size_of::<Noted>() + pending.marks.heap_bytes()
+                })
                 .sum::<usize>()
             + self.times.tables.capacity() * size_of::<(TableId, Duration)>()
     }
@@ -445,7 +603,16 @@ impl Views {
             changes: None,
             timed: false,
             times: BuildTimes::default(),
+            by_slot: false,
         })
+    }
+
+    /// Views whose hours are noted by slot: a bit and the columns written per changed row, and
+    /// the keys deleted, sorted only when a view is built. For views built rarely of tables
+    /// changing often, whose edits would otherwise be sorted again and again as they pile up.
+    pub fn by_slot(mut self) -> Self {
+        self.by_slot = true;
+        self
     }
 
     /// Complete views carrying change facts and field stamps, as a decoder with change facts
@@ -483,6 +650,7 @@ impl Views {
             *pending = Pending {
                 anew: true,
                 edits: std::mem::take(&mut pending.edits),
+                marks: std::mem::take(&mut pending.marks).emptied(),
                 ..Pending::default()
             };
         }
@@ -600,6 +768,7 @@ impl Views {
             pending.edits.clear();
             *pending = Pending {
                 edits: std::mem::take(&mut pending.edits),
+                marks: std::mem::take(&mut pending.marks).emptied(),
                 ..Pending::default()
             };
         }
@@ -646,6 +815,7 @@ impl Views {
         if restart {
             self.reset();
         }
+        let by_slot = self.by_slot;
         for (at, pending) in self.pending.iter_mut().enumerate() {
             let id = self.selected[at];
             if !noted(id) {
@@ -669,6 +839,9 @@ impl Views {
             pending.sectioned = true;
             if pending.anew || pending.varied || status != Status::Complete {
                 pending.edits.clear();
+                if by_slot {
+                    pending.marks = std::mem::take(&mut pending.marks).emptied();
+                }
                 continue;
             }
             let changes = state
@@ -681,6 +854,10 @@ impl Views {
                 || changes.fill_masks.len() != changes.fill_slots.len()
             {
                 return Err(invalid("A table's change masks miss its changed slots"));
+            }
+            if by_slot {
+                pending.marks.note(changes, table)?;
+                continue;
             }
             engine_allocation::reserve(
                 &mut pending.edits,
@@ -808,6 +985,7 @@ impl Views {
     ) -> io::Result<()> {
         let mut plans = engine_allocation::vec(positions.len())?;
         let mut required = 0_usize;
+        let by_slot = self.by_slot;
         for &at in positions {
             let pending = &mut self.pending[at];
             let id = self.selected[at];
@@ -826,6 +1004,12 @@ impl Views {
             let plan = match (status, previous.map(|view| &**view)) {
                 (Status::Complete, Some(TableView::Complete(rows))) => {
                     if pending.sectioned {
+                        if by_slot {
+                            let table = state
+                                .table(index)
+                                .ok_or_else(|| invalid("The walker holds no such table"))?;
+                            pending.marks.edits(table, &mut pending.edits)?;
+                        }
                         sort(&mut pending.edits);
                         let (mut changed, mut deleted) = (0, 0);
                         fold(&pending.edits, |key, edit| {
@@ -835,7 +1019,12 @@ impl Views {
                             }
                             Ok(())
                         })?;
-                        Plan::Patch { changed, deleted }
+                        // Marks name every row changed since, so none changed keeps its view.
+                        if by_slot && changed == 0 && deleted == 0 {
+                            Plan::Carry
+                        } else {
+                            Plan::Patch { changed, deleted }
+                        }
                     } else {
                         Plan::Carry
                     }
@@ -911,6 +1100,7 @@ impl Views {
             pending.edits.clear();
             self.pending[at] = Pending {
                 edits: pending.edits,
+                marks: pending.marks.emptied(),
                 ..Pending::default()
             };
             self.views[index] = Some(view?);

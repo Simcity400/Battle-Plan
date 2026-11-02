@@ -21,7 +21,7 @@
 use super::reached;
 use dashboard_base::{
     catalogue,
-    prepared::query::progressive,
+    prepared::query::native,
     products::{Product, ReplyWarnings, check_reply_budget, equipment},
     source::Source,
 };
@@ -53,7 +53,8 @@ pub const COMBAT_LEDGER: u8 = 0;
 pub const RECOVERED_LEDGER: u8 = 4;
 pub const ENEMY_LEDGER: u8 = 5;
 
-const TABLES: [TableId; 9] = [
+/// The tables an hour's logs are read from.
+pub const TABLES: [TableId; 9] = [
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CombatLogGroups,
@@ -225,7 +226,7 @@ impl Product for ArmyLosses {
             &p.tag,
             cancelled,
             || {
-                let frame = progressive::frame_at(source, branch, p.hour, &TABLES, cancelled)?
+                let frame = native::frame_at(source, branch, p.hour, &TABLES, cancelled)?
                     .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
                 let mut warnings = Vec::new();
                 let cat = context.content.as_ref().and_then(|options| {
@@ -233,13 +234,13 @@ impl Product for ArmyLosses {
                         .map_err(|why| warnings.push(format!("Combat Log names unavailable: {why}")))
                         .ok()
                 });
-                let naming = progressive::latest_read(
+                let naming = native::latest_read(
                     source,
                     branch,
                     frame.hour,
                     TableId::VariantDefinitions,
                     replay_data::cadence::STAGGER_PERIOD,
-                    &equipment::VariantCatalogue::TABLES,
+                    &equipment::DESIGN_TABLES,
                     cancelled,
                 )?;
                 let mut history = ledgers::Recorded::new(source, branch, frame.hour, cancelled);

@@ -1,14 +1,20 @@
-//! Planes in wings, and wings, over recorded hourly censuses. Stockpiled planes
-//! are outside this measure. The wing's whole-plane count truncates its fixed5
-//! equipment-pool sum divided by 100000; fuel use reads that signed count.
+//! Planes in wings, and wings, prepared as the `air` series family ([`facts`], [`emit`]) and
+//! answered from its publication ([`query`]), which the scoreboard reads too. Stockpiled planes
+//! are outside this measure. The wing's whole-plane count truncates its fixed5 equipment-pool
+//! sum divided by 100000; fuel use reads that signed count.
 //!
-//! A single source/branch scan serves both ownership modes, both widget measures
-//! and the test-only Scoreboard count oracle. Content resolution happens after
-//! that scan, using each variant's token at the observation, never a later daily definition.
+//! Content resolution happens at the reply, using each variant's token at the observation,
+//! never a later daily definition.
 
-pub mod prepared;
+pub mod emit;
+pub mod facts;
+pub mod query;
 mod reply;
+#[cfg(any(test, feature = "test-support"))]
 mod scan;
+pub mod served;
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(test)]
 mod tests;
 
@@ -24,7 +30,7 @@ use dashboard_base::{
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -34,6 +40,7 @@ pub struct AirForceSize;
 pub use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 const MAX_EXACT: i64 = (1 << 53) - 1;
 const UNIDENTIFIED: &str = ":not-identified";
+#[cfg(any(test, feature = "test-support"))]
 const CACHED_BRANCHES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -167,6 +174,7 @@ pub struct ScannedAir {
     pub undisplayable_tags: BTreeMap<Vec<u8>, usize>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl ScannedAir {
     /// This scan's series of `spans`' tags only, each cut to its tag's spans.
     fn held(
@@ -217,12 +225,14 @@ impl ScannedAir {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Scans {
-    entries: VecDeque<(u64, Arc<ScannedAir>)>,
+    entries: std::collections::VecDeque<(u64, Arc<ScannedAir>)>,
     runs: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn scanned_branch(
     source: &Source,
     branch: u64,
@@ -276,6 +286,7 @@ pub fn visit_plane_runs(
 impl Product for AirForceSize {
     const KEY: &'static str = "air-force-size";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = AirForceParams;
     type Reply = AirForceReply;
 
@@ -308,6 +319,8 @@ impl Product for AirForceSize {
         Ok(())
     }
 
+    /// The row census's reply: the parity oracle of the publication's.
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -389,16 +402,6 @@ fn part_content(
     }
     Arc::clone(&state.binding.as_ref().expect("air part binding").1)
 }
-fn configure(source: &Source, context: &LoadContext) {
-    if let Ok(catalogue) = context
-        .content()
-        .and_then(|options| catalogue::catalogue(source, options))
-    {
-        let _ = dashboard_base::products::equipment::units(source, &catalogue);
-        part_content(source, Some(&catalogue));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn present(
     source: &Source,

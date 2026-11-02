@@ -1,12 +1,14 @@
 //! Faction queries join prepared membership and member series inside their window.
 use super::*;
 use crate::prepared::{
-    group_sum,
-    series::{self, Reader, Run},
+    group_sum, published,
+    series::{self, Run},
+    series_read::SeriesRead,
 };
 use crate::prepared_chart::{ChartBucket, ChartRun, ChartSummary, merge};
 use crate::products::country_history::RecordedHistories;
 use serde_json::{Value, json};
+use std::cell::RefCell;
 
 fn clipped(spans: &[HourSpan], window: &HourSpan) -> Vec<HourSpan> {
     let first = spans.partition_point(|span| span.last_hour < window.first_hour);
@@ -28,7 +30,7 @@ type MemberValues<'a> =
 
 /// One predecessor hour preserves the oracle's segment flags at a clipped left edge.
 fn exact(
-    values: &mut Reader<'_>,
+    values: &mut dyn SeriesRead,
     keys: &BTreeMap<String, u64>,
     history: &History,
     members: &NativeMembers,
@@ -161,9 +163,7 @@ impl Branch {
             + self
                 .tracks
                 .iter()
-                .map(|track| {
-                    track.tag.capacity() + track.runs.capacity() * size_of::<MeasureRun>()
-                })
+                .map(|track| track.tag.capacity() + track.runs.capacity() * size_of::<MeasureRun>())
                 .sum::<usize>()
             + self
                 .sums
@@ -185,34 +185,18 @@ impl Branch {
 #[allow(clippy::too_many_arguments)]
 fn branch_sums(
     source: &Source,
-    store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
     params: &FactionTotalsParams,
     groups: [u64; 3],
-    values: &mut Reader<'_>,
-    values_section: &str,
+    values: &mut dyn SeriesRead,
+    measured: [u8; 32],
     keys: &BTreeMap<String, u64>,
     history: &History,
     members: &NativeMembers,
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<Branch>> {
-    let family = match params.source {
-        FactionMeasure::Territory { .. } => "territory",
-        FactionMeasure::Factories { .. } => "factories",
-    };
-    let publication = (
-        groups,
-        crate::prepared::query::observations::published(
-            store,
-            key,
-            &[
-                format!("country-identities-{branch}").as_str(),
-                series::catalogue_section(family, branch).as_str(),
-                values_section,
-            ],
-        )?,
-    );
+    let publication = (groups, measured);
     crate::prepared::query::observations::scope(source, "faction-totals:branch", Some(key))
         .get_entry(
             branch,
@@ -236,13 +220,12 @@ fn branch_sums(
 #[allow(clippy::too_many_arguments)]
 fn sliced(
     source: &Source,
-    store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
     params: &FactionTotalsParams,
     groups: [u64; 3],
-    values: &mut Reader<'_>,
-    values_section: &str,
+    values: &mut dyn SeriesRead,
+    measured: [u8; 32],
     keys: &BTreeMap<String, u64>,
     history: &History,
     members: &NativeMembers,
@@ -250,18 +233,7 @@ fn sliced(
     cancelled: &AtomicBool,
 ) -> io::Result<(Vec<CountryTrack>, Sums)> {
     let whole = branch_sums(
-        source,
-        store,
-        key,
-        branch,
-        params,
-        groups,
-        values,
-        values_section,
-        keys,
-        history,
-        members,
-        cancelled,
+        source, key, branch, params, groups, values, measured, keys, history, members, cancelled,
     )?;
     let tracks = if params.parts == Some(true) {
         slice_tracks(&whole, members, window, cancelled)?
@@ -545,11 +517,11 @@ fn bindings(
 
 #[allow(clippy::too_many_arguments)]
 fn dense(
-    values: &mut Reader<'_>,
+    values: &mut dyn SeriesRead,
     keys: &BTreeMap<String, u64>,
-    present: &mut Reader<'_>,
+    present: &mut dyn SeriesRead,
     present_keys: &BTreeMap<String, u64>,
-    rosters: &mut Reader<'_>,
+    rosters: &mut dyn SeriesRead,
     native: &NativeMembers,
     bindings: &BTreeMap<usize, Vec<HourSpan>>,
     known: &[HourSpan],
@@ -602,7 +574,6 @@ fn dense(
             within: Some(within.as_slice()),
             excluded: &[],
             zeros,
-            tail: None,
         })
         .collect();
     // A known empty native roster is zero, including hours with no country read.
@@ -613,7 +584,6 @@ fn dense(
         within: Some(known),
         excluded: &[],
         zeros: &[],
-        tail: None,
     });
     group_sum::summary(
         values,
@@ -655,7 +625,7 @@ fn signature(sums: &Sums, params: &FactionTotalsParams, hour: i32) -> BTreeMap<S
 }
 
 fn navigate(
-    values: &mut Reader<'_>,
+    values: &mut dyn SeriesRead,
     keys: &BTreeMap<String, u64>,
     history: &History,
     members: &NativeMembers,
@@ -726,14 +696,13 @@ fn navigate(
                 series::MeasureKey::ArrowLeft
             },
         };
-        let numeric =
-            series::navigate(&mut [(&mut *values, dated.clone())], &query)?.filter(|hour| {
-                if forward {
-                    *hour > origin
-                } else {
-                    *hour < origin
-                }
-            });
+        let numeric = values.navigate(&dated, &query)?.filter(|hour| {
+            if forward {
+                *hour > origin
+            } else {
+                *hour < origin
+            }
+        });
         let boundary = if forward {
             boundaries
                 .iter()
@@ -803,187 +772,6 @@ fn navigate(
     }
 }
 
-/// The factory faction totals at `hour` under hour membership, read from
-/// the hour's frame and the hour's before alone, for a reached hour the
-/// prepared pages do not hold yet. Members at an hour are that hour's
-/// rosters, which carry recorded faction ids, joined by native holder
-/// through that hour's identities; each member's factories are its country
-/// read at the hour. The hour before supplies what decides a segment break
-/// at the hour (the same holder with a value then, the same roster), as
-/// preparation's runs carry it. So the reply is the one the prepared pages
-/// give at the hour, warnings aside. Null at an hour outside the branch's
-/// blocks or in a recorded gap.
-#[allow(clippy::too_many_arguments)]
-fn sampled_state(
-    source: &Source,
-    context: &LoadContext,
-    params: &FactionTotalsParams,
-    branch: u64,
-    hour: i32,
-    top: &country_factories::FactoryTop,
-    cancelled: &AtomicBool,
-) -> io::Result<Value> {
-    use crate::prepared::query::observations;
-    let Some(block) = source.replay_ref().index.iter().find(|block| {
-        block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
-    }) else {
-        return Ok(Value::Null);
-    };
-    let (_, binding) = crate::prepared::files(source, context.content.as_ref())?;
-    let cache = observations::scope(source, "faction-totals:state", Some(&binding));
-    let reply = cache.get(
-        block,
-        &(params, hour),
-        cancelled,
-        observations::json_bytes,
-        || sampled_state_from_frames(source, context, params, branch, hour, top, cancelled),
-    )?;
-    Ok(reply.as_ref().clone())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn sampled_state_from_frames(
-    source: &Source,
-    context: &LoadContext,
-    params: &FactionTotalsParams,
-    branch: u64,
-    hour: i32,
-    top: &country_factories::FactoryTop,
-    cancelled: &AtomicBool,
-) -> io::Result<Value> {
-    use crate::prepared::query::progressive;
-    use replay_data::rows::TableId;
-    let replay = source.replay_ref();
-    let in_gap = |hour: i32| {
-        replay
-            .gaps
-            .iter()
-            .any(|gap| gap.branch == branch && gap.first_hour <= hour && gap.last_hour >= hour)
-    };
-    let block_of = |hour: i32| {
-        replay.index.iter().find(|block| {
-            block.branch == branch && block.first_hour <= hour && block.last_hour >= hour
-        })
-    };
-    let Some(_) = block_of(hour).filter(|_| !in_gap(hour)) else {
-        return Ok(Value::Null);
-    };
-    let before = hour
-        .checked_sub(1)
-        .filter(|&before| !in_gap(before) && block_of(before).is_some());
-    let mut tables: Vec<TableId> = country_groups::prepared::TABLES
-        .iter()
-        .chain(country_factories::prepared::TABLES)
-        .copied()
-        .collect();
-    tables.sort_unstable();
-    tables.dedup();
-    let mut groups = country_groups::Scan::new(replay, branch);
-    let mut identities = super::super::country_history::HistoryScan::new(false, &[]);
-    let mut samples: BTreeMap<i32, progressive::Samples> = BTreeMap::new();
-    let mut observe = |frame: &replay_frame::frame::DecodedFrame| -> io::Result<()> {
-        groups.observe(frame)?;
-        identities.observe(frame);
-        samples.insert(
-            frame.hour,
-            country_factories::prepared::sample(frame, None)?,
-        );
-        Ok(())
-    };
-    if let Some(before) = before
-        && let Some(frame) = progressive::frame_at(source, branch, before, &tables, cancelled)?
-    {
-        observe(&frame)?;
-    }
-    if let Some(frame) = progressive::frame_at(source, branch, hour, &tables, cancelled)? {
-        observe(&frame)?;
-    }
-    if !samples.contains_key(&hour) {
-        return Ok(Value::Null);
-    }
-    let history = groups.faction_history(cancelled)?;
-    let identities = identities.finish();
-    let members = NativeMembers::new(&history, &identities, params.membership, cancelled)?;
-    // A tag's count at a sampled hour, with its native holder: known only
-    // when the frame read every part for one holder.
-    let count = |hour: i32, tag: &str| -> io::Result<Option<((u32, u32), i128)>> {
-        let Some(samples) = samples.get(&hour) else {
-            return Ok(None);
-        };
-        let mut holder = None;
-        let mut values = Vec::new();
-        for ordinal in 0..country_factories::fields().len() {
-            let Some(&(Some(identity), Some(value))) =
-                samples.get(&(tag.to_owned(), ordinal.to_string()))
-            else {
-                return Ok(None);
-            };
-            if holder.is_some_and(|holder| holder != identity) {
-                return Ok(None);
-            }
-            holder = Some(identity);
-            values.push(i32::try_from(value).map_err(io::Error::other)?);
-        }
-        Ok(holder.map(|holder| {
-            (
-                holder,
-                i128::from(country_factories::count_for(&values, top)),
-            )
-        }))
-    };
-    let window = HourSpan {
-        first_hour: hour,
-        last_hour: hour,
-    };
-    let (tracks, sums) = exact_with(
-        &mut |tag, read| {
-            let mut runs: Vec<Run> = Vec::new();
-            let earlier = match before.filter(|&before| before >= read.first_hour) {
-                Some(before) => count(before, tag)?.map(|counted| (before, counted)),
-                None => None,
-            };
-            if let Some((before, (_, value))) = earlier {
-                runs.push(Run::new(before, before, value, true));
-            }
-            if let Some((holder, value)) = count(hour, tag)? {
-                // Continued from the hour before by the same holder with a value.
-                let continued = earlier.is_some_and(|(_, (earlier, _))| earlier == holder);
-                match runs.last_mut() {
-                    Some(run) if continued && run.value == value => run.last_hour = hour,
-                    _ => runs.push(Run::new(hour, hour, value, !continued)),
-                }
-            }
-            let origin = runs
-                .first()
-                .filter(|run| run.first_hour <= read.first_hour)
-                .map(|run| run.first_hour);
-            Ok(Some((origin, runs)))
-        },
-        &history,
-        &members,
-        &window,
-        cancelled,
-    )?;
-    let measures = CountryMeasures {
-        tracks,
-        unit: Some("factories".into()),
-        unavailable_reason: None,
-        warnings: Vec::new(),
-    };
-    Ok(serde_json::to_value(build_reply(
-        source,
-        params,
-        context,
-        &history,
-        &identities,
-        &members,
-        &measures,
-        &sums,
-        Some(&window),
-        cancelled,
-    )?)?)
-}
-
 pub fn query(
     source: &Source,
     context: &LoadContext,
@@ -1002,36 +790,6 @@ pub fn query(
         .branch_id
         .parse()
         .map_err(|_| crate::invalid("Invalid faction branch"))?;
-    // A reached hour of factory totals under hour membership, without member
-    // parts, is answered from its frames where the prepared pages do not
-    // reach it yet; any other request past them waits.
-    let sampled = match (&params.source, product) {
-        (FactionMeasure::Factories { mode, groups }, "series-state")
-            if params.membership == FactionMembership::Hour && params.parts != Some(true) =>
-        {
-            let hour = value["reads"][0]["hour"]
-                .as_i64()
-                .and_then(|hour| i32::try_from(hour).ok())
-                .ok_or_else(|| crate::invalid("Invalid faction reached hour"))?;
-            Some((
-                hour,
-                country_factories::FactoryTop {
-                    count: 1,
-                    mode: *mode,
-                    groups: groups.clone(),
-                },
-            ))
-        }
-        _ => None,
-    };
-    let unprepared = || -> io::Result<Value> {
-        match &sampled {
-            Some((hour, top)) => {
-                sampled_state(source, context, &params, branch, *hour, top, cancelled)
-            }
-            None => Ok(Value::Null),
-        }
-    };
     if product == "series-state"
         && let Some(hour) = value["reads"][0]["hour"].as_i64()
         && !crate::prepared::coverage::product_coverage(
@@ -1043,11 +801,11 @@ pub fn query(
         )?
         .is_some_and(|coverage| coverage.complete || i64::from(coverage.last_hour) >= hour)
     {
-        return unprepared();
+        return Ok(Value::Null);
     }
     let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
     let Some(file) = store.read(&key, &format!("country-groups-{branch}"), 0)? else {
-        return unprepared();
+        return Ok(Value::Null);
     };
     // The history spans the branch, not the hours asked: it is kept while its
     // groups page is unchanged, charged at least what its scan holds.
@@ -1076,129 +834,284 @@ pub fn query(
         cancelled,
     )?
     else {
-        return unprepared();
+        return Ok(Value::Null);
     };
     let members = NativeMembers::new(&history, &identities, params.membership, cancelled)?;
-    // Territory's catalogue: its measures' keys, presence and metadata for
-    // territory totals. Factory totals read only its presence, which joins a
-    // dense summary's members; their exact replies never read territory.
-    let territory_catalogue =
-        || series::read_catalogue::<territory::TerritoryReply>(&store, &key, "territory", branch);
-    let (keys, section, mut measures, present_keys) = match &params.source {
+    let asked = Asked {
+        source,
+        context,
+        product,
+        value: &value,
+        params: &params,
+        branch,
+        groups: page,
+        key: &key,
+        history: &history,
+        identities: &identities,
+        members: &members,
+        cancelled,
+    };
+    match &params.source {
         FactionMeasure::Territory { measure, rule } => {
-            let Some((present_keys, territory_metadata)) = territory_catalogue()? else {
+            let Some(opened) = published::open(
+                source,
+                context.content.as_ref(),
+                "territory",
+                territory::emit::SCHEMA,
+                branch,
+            )?
+            else {
                 return Ok(Value::Null);
             };
-            (
-                present_keys.clone(),
-                format!(
-                    "territory-values-{branch}-{}",
-                    territory::prepared::VALUE_CHANNELS[measure.index(*rule)]
-                ),
-                CountryMeasures {
+            let measured = publication(&store, &key, branch, opened.stamp())?;
+            opened.read(cancelled, |snapshot, directory| {
+                let metadata = territory::query::metadata(directory, branch)?;
+                let measures = CountryMeasures {
                     tracks: Vec::new(),
                     unit: match measure {
                         TerritoryMeasure::States => Some("states".into()),
                         TerritoryMeasure::Provinces => Some("provinces".into()),
                         TerritoryMeasure::VictoryPoints => Some("victory points".into()),
-                        TerritoryMeasure::Area => territory_metadata.area_unit.clone(),
+                        TerritoryMeasure::Area => metadata.area_unit.clone(),
                     },
                     unavailable_reason: matches!(measure, TerritoryMeasure::Area)
-                        .then(|| territory_metadata.area_reason.clone())
+                        .then(|| metadata.area_reason.clone())
                         .flatten(),
-                    warnings: territory_metadata.warnings.clone(),
-                },
-                Some(present_keys),
-            )
+                    warnings: metadata.warnings.clone(),
+                };
+                let cell = RefCell::new(&mut *snapshot);
+                let mut readers =
+                    territory::query::measures(&cell, directory, Some((*measure, *rule)));
+                let keys = readers.keys.clone();
+                let presence = Presence {
+                    present: &mut readers.present,
+                    rosters: &mut readers.rosters,
+                    keys: &keys,
+                };
+                answer(
+                    &asked,
+                    &mut readers.values,
+                    &keys,
+                    measured,
+                    measures,
+                    Some(presence),
+                )
+            })
         }
         FactionMeasure::Factories { mode, groups } => {
-            let Some((keys, metadata)) = series::read_catalogue::<
-                country_factories::ScannedFactories,
-            >(&store, &key, "factories", branch)?
+            use country_factories::{FactoryTop, emit::SCHEMA, query};
+            let limit = crate::prepared::coverage::product_coverage(
+                source,
+                context.content.as_ref(),
+                branch,
+                FACTORIES_GATE,
+                cancelled,
+            )?
+            .filter(|coverage| !coverage.complete)
+            .map(|coverage| coverage.last_hour);
+            // Pinned through the coverage the factories share with the families read with
+            // them: a request reaching past it waits.
+            let Some(opened) = published::open_through(
+                source,
+                context.content.as_ref(),
+                "factories",
+                SCHEMA,
+                branch,
+                limit,
+            )?
             else {
                 return Ok(Value::Null);
             };
-            let channel = country_factories::prepared::channel(&country_factories::FactoryTop {
+            let measured = publication(&store, &key, branch, opened.stamp())?;
+            // A dense factory summary joins territory's member presence: it waits for
+            // territory's coverage through the window, as a request waiting for the
+            // branch's coverage does.
+            let joined = if dense_summary(product, &value)? {
+                let view_last = value["to"].as_f64().unwrap_or(f64::NAN).ceil();
+                let covered = crate::prepared::coverage::product_coverage(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    <territory::Territory as Product>::KEY,
+                    cancelled,
+                )?
+                .is_some_and(|coverage| {
+                    coverage.complete || f64::from(coverage.last_hour) >= view_last
+                });
+                if !covered {
+                    return Ok(Value::Null);
+                }
+                let Some(opened) = published::open(
+                    source,
+                    context.content.as_ref(),
+                    "territory",
+                    territory::emit::SCHEMA,
+                    branch,
+                )?
+                else {
+                    return Ok(Value::Null);
+                };
+                Some(opened)
+            } else {
+                None
+            };
+            let top = FactoryTop {
                 count: 1,
                 mode: *mode,
                 groups: groups.clone(),
-            });
-            let keys = identities
-                .countries
-                .keys()
-                .filter_map(|tag| {
-                    keys.get(&series::field_key(tag, ""))
-                        .map(|&key| (tag.clone(), key))
-                })
-                .collect();
-            let mut warnings = Vec::new();
-            let refused = if product == "series-state" {
-                let hour = value["reads"][0]["hour"]
-                    .as_i64()
-                    .and_then(|hour| i32::try_from(hour).ok())
-                    .ok_or_else(|| crate::invalid("Invalid faction reached hour"))?;
-                let mut diagnostics = Reader::new(
-                    &store,
-                    &key,
-                    format!("factories-diagnostics-{branch}"),
-                    cancelled,
-                )?;
-                diagnostics
-                    .runs(0, hour, hour)?
-                    .first()
-                    .map_or(0, |run| run.value.max(0) as usize)
-            } else {
-                metadata.unreadable + metadata.unnamed
             };
-            if refused > 0 {
-                warnings.push(format!("{refused} factory reads could not name a country or show its count; affected faction totals are gaps."));
-            }
-            (
-                keys,
-                format!("factories-values-{branch}-{channel}"),
-                CountryMeasures {
+            opened.read(cancelled, |snapshot, directory| {
+                if limit.is_some() {
+                    let reached = snapshot.publication().accepted.last;
+                    let requested = match product {
+                        "series-state" => value["reads"][0]["hour"].as_f64(),
+                        "series-summary" => value["to"].as_f64(),
+                        "series-next-change" => value["lastHour"].as_f64(),
+                        _ => None,
+                    }
+                    .map(f64::ceil);
+                    if requested.is_some_and(|requested| f64::from(reached) < requested) {
+                        return Ok(Value::Null);
+                    }
+                }
+                let keys = query::member_keys(directory, &identities, &top);
+                let refused = if product == "series-state" {
+                    let hour = value["reads"][0]["hour"]
+                        .as_i64()
+                        .and_then(|hour| i32::try_from(hour).ok())
+                        .ok_or_else(|| crate::invalid("Invalid faction reached hour"))?;
+                    query::refused_at(snapshot, directory, hour)?
+                        .map_or(0, |refused| refused.max(0) as usize)
+                } else {
+                    let scanned = query::scanned(directory);
+                    scanned.unreadable + scanned.unnamed
+                };
+                let mut warnings = Vec::new();
+                if refused > 0 {
+                    warnings.push(format!("{refused} factory reads could not name a country or show its count; affected faction totals are gaps."));
+                }
+                let measures = CountryMeasures {
                     tracks: Vec::new(),
                     unit: Some("factories".into()),
                     unavailable_reason: None,
                     warnings,
-                },
-                None,
-            )
-        }
-    };
-    let mut values = Reader::new(&store, &key, section.clone(), cancelled)?;
-    if matches!(params.source, FactionMeasure::Factories { .. })
-        && let Some(coverage) = crate::prepared::coverage::product_coverage(
-            source,
-            context.content.as_ref(),
-            branch,
-            FACTORIES_GATE,
-            cancelled,
-        )?
-        .filter(|coverage| !coverage.complete)
-    {
-        // Factories prepared on their own may have committed pages beyond
-        // the coverage of the families read with them: they are read only
-        // through the last batch committed by its last hour, and a request
-        // reaching past that waits.
-        let reached = values.through_hour(coverage.last_hour)?;
-        let requested = match product {
-            "series-state" => value["reads"][0]["hour"].as_f64(),
-            "series-summary" => value["to"].as_f64(),
-            "series-next-change" => value["lastHour"].as_f64(),
-            _ => None,
-        }
-        .map(f64::ceil);
-        if requested
-            .is_some_and(|requested| reached.is_none_or(|reached| f64::from(reached) < requested))
-        {
-            return unprepared();
+                };
+                let cell = RefCell::new(&mut *snapshot);
+                let mut values = query::counts(&cell, directory, &top);
+                let Some(joined) = joined else {
+                    return answer(&asked, &mut values, &keys, measured, measures, None);
+                };
+                joined.read(cancelled, |snapshot, directory| {
+                    let cell = RefCell::new(&mut *snapshot);
+                    let mut readers = territory::query::measures(&cell, directory, None);
+                    let present_keys = readers.keys.clone();
+                    let presence = Presence {
+                        present: &mut readers.present,
+                        rosters: &mut readers.rosters,
+                        keys: &present_keys,
+                    };
+                    answer(
+                        &asked,
+                        &mut values,
+                        &keys,
+                        measured,
+                        measures,
+                        Some(presence),
+                    )
+                })
+            })
         }
     }
+}
+
+/// Territory's presence of the members a dense summary joins: their presence and the
+/// rosters, by the tags' actors.
+struct Presence<'p> {
+    present: &'p mut dyn SeriesRead,
+    rosters: &'p mut dyn SeriesRead,
+    keys: &'p BTreeMap<String, u64>,
+}
+
+/// What a faction reply reads besides its measure.
+struct Asked<'a> {
+    source: &'a Source,
+    context: &'a LoadContext,
+    product: &'a str,
+    value: &'a Value,
+    params: &'a FactionTotalsParams,
+    branch: u64,
+    groups: [u64; 3],
+    key: &'a store::SourceKey,
+    history: &'a History,
+    identities: &'a RecordedHistories,
+    members: &'a NativeMembers,
+    cancelled: &'a AtomicBool,
+}
+
+/// Whether a request is a summary drawing more hours than its width.
+fn dense_summary(product: &str, value: &Value) -> io::Result<bool> {
+    if product != "series-summary" {
+        return Ok(false);
+    }
+    let view = series::viewport(
+        value["from"].as_f64(),
+        value["to"].as_f64(),
+        value["width"]
+            .as_u64()
+            .and_then(|width| u32::try_from(width).ok()),
+    )?;
+    let (exact, _) = series::summary_bins((view.0.floor() as i32, view.1.floor() as i32), view)?;
+    Ok(!exact)
+}
+
+/// What identifies a family's publication with the identity history it is read with.
+fn publication(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    (range, generation): ([u64; 3], u64),
+) -> io::Result<[u8; 32]> {
+    let identities = crate::prepared::query::observations::published(
+        store,
+        key,
+        &[format!("country-identities-{branch}").as_str()],
+    )?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(&identities);
+    for part in range.into_iter().chain([generation]) {
+        hash.update(&part.to_le_bytes());
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+/// A faction reply from `values`, its measure's values by tag key, and the members' territory
+/// presence where a dense summary joins it.
+fn answer(
+    asked: &Asked<'_>,
+    values: &mut dyn SeriesRead,
+    keys: &BTreeMap<String, u64>,
+    measured: [u8; 32],
+    mut measures: CountryMeasures,
+    presence: Option<Presence<'_>>,
+) -> io::Result<Value> {
+    let &Asked {
+        source,
+        context,
+        product,
+        value,
+        params,
+        branch,
+        groups: page,
+        key,
+        history,
+        identities,
+        members,
+        cancelled,
+    } = asked;
     if product == "series-next-change" {
-        let navigation: series::Navigation = serde_json::from_value(value)?;
+        let navigation: series::Navigation = serde_json::from_value(value.clone())?;
         return Ok(
-            json!({"hour":navigate(&mut values, &keys, &history, &members, &params, &navigation, cancelled)?}),
+            json!({"hour":navigate(values, keys, history, members, params, &navigation, cancelled)?}),
         );
     }
     if product == "series-state" {
@@ -1217,28 +1130,17 @@ pub fn query(
             last_hour: hour,
         };
         let (tracks, sums) = sliced(
-            source,
-            &store,
-            &key,
-            branch,
-            &params,
-            page,
-            &mut values,
-            &section,
-            &keys,
-            &history,
-            &members,
-            &window,
+            source, key, branch, params, page, values, measured, keys, history, members, &window,
             cancelled,
         )?;
         measures.tracks = tracks;
         return Ok(serde_json::to_value(build_reply(
             source,
-            &params,
+            params,
             context,
-            &history,
-            &identities,
-            &members,
+            history,
+            identities,
+            members,
             &measures,
             &sums,
             Some(&window),
@@ -1263,28 +1165,17 @@ pub fn query(
     let (is_exact, _) = series::summary_bins((window.first_hour, window.last_hour), view)?;
     if is_exact {
         let (tracks, sums) = sliced(
-            source,
-            &store,
-            &key,
-            branch,
-            &params,
-            page,
-            &mut values,
-            &section,
-            &keys,
-            &history,
-            &members,
-            &window,
+            source, key, branch, params, page, values, measured, keys, history, members, &window,
             cancelled,
         )?;
         measures.tracks = tracks;
         let reply = build_reply(
             source,
-            &params,
+            params,
             context,
-            &history,
-            &identities,
-            &members,
+            history,
+            identities,
+            members,
             &measures,
             &sums,
             Some(&window),
@@ -1323,49 +1214,12 @@ pub fn query(
         super::super::check_reply_budget(&reply)?;
         return Ok(reply);
     }
-    let present_keys = match present_keys {
-        Some(present_keys) => present_keys,
-        None => {
-            // A dense factory summary joins territory's member presence: it
-            // waits for territory's coverage through the window, as a request
-            // waiting for the branch's coverage does.
-            let covered = crate::prepared::coverage::product_coverage(
-                source,
-                context.content.as_ref(),
-                branch,
-                <territory::Territory as Product>::KEY,
-                cancelled,
-            )?
-            .is_some_and(|coverage| {
-                coverage.complete || f64::from(coverage.last_hour) >= view.1.ceil()
-            });
-            if !covered {
-                return Ok(Value::Null);
-            }
-            let Some((present_keys, _)) = territory_catalogue()? else {
-                return Ok(Value::Null);
-            };
-            present_keys
-        }
+    let Some(presence) = presence else {
+        return Ok(Value::Null);
     };
     dense_reply(
-        source,
-        context,
-        &params,
-        &history,
-        &identities,
-        &members,
-        measures,
-        &mut values,
-        &keys,
-        &present_keys,
-        &store,
-        &key,
-        branch,
-        page,
-        &section,
-        view,
-        cancelled,
+        source, context, params, history, identities, members, measures, values, keys, presence,
+        key, branch, page, measured, view, cancelled,
     )
 }
 
@@ -1378,35 +1232,28 @@ fn dense_reply(
     identities: &RecordedHistories,
     members: &NativeMembers,
     mut measures: CountryMeasures,
-    values: &mut Reader<'_>,
+    values: &mut dyn SeriesRead,
     keys: &BTreeMap<String, u64>,
-    present_keys: &BTreeMap<String, u64>,
-    store: &store::Store,
+    presence: Presence<'_>,
     key: &store::SourceKey,
     branch: u64,
     groups: [u64; 3],
-    values_section: &str,
+    measured: [u8; 32],
     view: (f64, f64, u32),
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
+    let Presence {
+        present,
+        rosters,
+        keys: present_keys,
+    } = presence;
     let window = HourSpan {
         first_hour: view.0.floor() as i32,
         last_hour: view.1.floor() as i32,
     };
     // Every view, column ranking and endpoint reads the branch's exact sums, built once.
     let whole = branch_sums(
-        source,
-        store,
-        key,
-        branch,
-        params,
-        groups,
-        values,
-        values_section,
-        keys,
-        history,
-        members,
-        cancelled,
+        source, key, branch, params, groups, values, measured, keys, history, members, cancelled,
     )?;
     // Exact sums inside the window also read the hour before it, for its segment flags.
     let nearby = members.clone().within(
@@ -1418,14 +1265,7 @@ fn dense_reply(
     )?;
     let bounded = nearby.clone().within(&window, cancelled)?;
     // Only member parts read presence and rosters, each member's on its own.
-    let mut readers = if params.parts == Some(true) {
-        Some((
-            Reader::new(store, key, format!("territory-present-{branch}"), cancelled)?,
-            Reader::new(store, key, format!("territory-rosters-{branch}"), cancelled)?,
-        ))
-    } else {
-        None
-    };
+    let mut readers = (params.parts == Some(true)).then_some((present, rosters));
     let ranks = params.faction_id.is_none() && params.inventory != Some(true);
     let mut summaries = BTreeMap::new();
     let mut member_summaries = BTreeMap::new();
@@ -1440,7 +1280,10 @@ fn dense_reply(
             continue;
         }
         let (tags, known, unknown) = bindings(&bounded, id, cancelled)?;
-        let summary = folded(whole.sums.series.get(id).map_or(&[][..], Vec::as_slice), view)?;
+        let summary = folded(
+            whole.sums.series.get(id).map_or(&[][..], Vec::as_slice),
+            view,
+        )?;
         series::summary_budget(view.0, view.1, view.2, summaries.len() + 1)?;
         summaries.insert(id.clone(), summary);
         if let Some((present, rosters)) = &mut readers {
@@ -1457,9 +1300,9 @@ fn dense_reply(
                     dense(
                         values,
                         keys,
-                        present,
+                        &mut **present,
                         present_keys,
-                        rosters,
+                        &mut **rosters,
                         &bounded,
                         &BTreeMap::from([(index, within.clone())]),
                         &known,

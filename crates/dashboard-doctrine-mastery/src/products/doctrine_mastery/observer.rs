@@ -1,4 +1,3 @@
-use dashboard_base::prepared::prepass::Family;
 use dashboard_keyed::{Observer, Values, countries::Countries};
 use replay::container::TableFields;
 use replay_data::{
@@ -42,17 +41,13 @@ pub struct DoctrineMasteryObserver {
     pub(super) folders: BTreeMap<u32, FolderInventory>,
     pub(super) refusals: BTreeMap<String, BTreeMap<String, u64>>,
     #[serde(skip)]
-    index: HashMap<(u32, Option<Vec<u8>>), u64>,
+    pub(super) index: HashMap<(u32, Option<Vec<u8>>), u64>,
     #[serde(skip)]
     lexical: LexicalIndex,
+    /// The tables a native segment's keeper kept, observed a row at a time.
+    #[serde(skip)]
+    pub(super) mirror: super::mirror::Mirror,
 }
-
-pub static FAMILY: Family = dashboard_keyed::block::family::<DoctrineMasteryObserver>(
-    "doctrine-mastery",
-    "doctrine-mastery.extract",
-    "doctrine-mastery.sequential",
-    "doctrine-mastery.fallback",
-);
 
 impl DoctrineMasteryObserver {
     fn refuse(&mut self, owner: &str, why: String) {
@@ -122,8 +117,8 @@ impl Observer for DoctrineMasteryObserver {
     ];
     const READ: TableId = TableId::DoctrineTracks;
 
-    fn family() -> &'static Family {
-        &FAMILY
+    fn native_keeper() -> Option<Box<dyn dashboard_keyed::native::Keeper<Self>>> {
+        Some(Box::new(super::kept::Keeper::default()))
     }
 
     fn fields() -> io::Result<Vec<TableFields>> {

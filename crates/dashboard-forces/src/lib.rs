@@ -1,4 +1,4 @@
-//! Force sizes: army size, supply health, air force and navy by country, with the parts-race families that prepare and query them.
+//! Force sizes: army size, supply health, air force and navy by country.
 //!
 //! One product crate above `dashboard-base`: the
 //! modules keep their dashboard paths (`products::<name>`) and name what they
@@ -14,9 +14,10 @@ static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod products {
     pub mod air_force;
     pub mod army_size;
+    #[cfg(any(test, feature = "test-support"))]
+    pub mod force_fixtures;
     pub mod naval_management;
     pub mod navy;
-    pub mod parts_race_prepared;
     pub mod supply_health;
     pub mod volunteers_expeditionaries;
 

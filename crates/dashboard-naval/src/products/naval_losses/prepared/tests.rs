@@ -1,10 +1,119 @@
 use super::*;
-use dashboard_base::prepared::series::tests::Fixture;
+use dashboard_series::{
+    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    memory::{Memory, publish},
+};
 use replay_data::{
     rows::CountryLinkRow, rows::SunkConvoyRow, rows::SunkShipEntry, rows::SunkShipsRow,
     rows::TableId, rows::TableRows, rows::tables,
 };
 use replay_frame::frame::TableView;
+
+/// Decoded pages the harness's publications share.
+static BUDGET: Budget = Budget::new(64 << 20);
+
+fn identity() -> dashboard_series::Identity {
+    dashboard_series::Identity {
+        source: [3; 32],
+        content: [4; 32],
+        branch: [5; 32],
+        schema: emit::SCHEMA,
+    }
+}
+
+/// Naval losses published on a series held in memory, cut where the family cuts a batch.
+pub(in crate::products::naval_losses::prepared) struct Harness {
+    cache: Cache<'static>,
+    pages: Memory,
+    writer: Writer<'static>,
+    emit: emit::Emit,
+    root: Option<u64>,
+    generation: u64,
+    first: i32,
+}
+
+impl Harness {
+    pub(in crate::products::naval_losses::prepared) fn new(first: i32) -> Self {
+        Self {
+            cache: Cache::new(&BUDGET),
+            pages: Memory::default(),
+            writer: Writer::new(&BUDGET, identity(), first).unwrap(),
+            emit: emit::Emit::default(),
+            root: None,
+            generation: 0,
+            first,
+        }
+    }
+
+    /// Appends what `prepared` wrote at `hour`.
+    pub(in crate::products::naval_losses::prepared) fn hour(
+        &mut self,
+        prepared: &mut Prepared,
+        hour: i32,
+    ) {
+        self.emit.hour(&mut self.writer, prepared, hour).unwrap();
+    }
+
+    /// Cuts the series through `last` and publishes it.
+    pub(in crate::products::naval_losses::prepared) fn publish(
+        &mut self,
+        prepared: &mut Prepared,
+        scan: &sinkings::Scanned,
+        last: i32,
+    ) {
+        self.emit
+            .cut(
+                &mut self.writer,
+                prepared,
+                scan,
+                last,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        self.generation += 1;
+        self.root = Some(
+            publish(
+                &mut self.writer,
+                &mut self.pages,
+                &self.cache,
+                Publication {
+                    generation: self.generation,
+                    segment: self.generation - 1,
+                    accepted: Span::new(self.first, last).unwrap(),
+                    reached: last,
+                    refusal: None,
+                },
+                Blob::EMPTY,
+            )
+            .unwrap(),
+        );
+    }
+
+    /// `read` of the last publication's `channel`, with its catalogue.
+    pub(in crate::products::naval_losses::prepared) fn read<T>(
+        &self,
+        channel: usize,
+        read: impl FnOnce(&mut Lines<'_, '_, Memory>, &BTreeMap<String, u64>, &Metadata) -> T,
+    ) -> T {
+        let root = self.root.expect("a publication");
+        let mut snapshot =
+            Snapshot::open(self.pages.clone(), &self.cache, root, identity()).unwrap();
+        let directory =
+            dashboard_series::family::Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+        let emit::Catalogue { actors, metadata } = emit::catalogue(&directory).unwrap().unwrap();
+        let mut lines = Lines::new(&mut snapshot, &directory, channel);
+        read(&mut lines, &actors, &metadata)
+    }
+}
+
+/// `value` after a round trip through its saved JSON, as a commit and a reload leave it.
+pub(in crate::products::naval_losses::prepared) fn reloaded<
+    T: Serialize + serde::de::DeserializeOwned,
+>(
+    value: &impl Serialize,
+) -> T {
+    serde_json::from_slice(&serde_json::to_vec(value).unwrap()).unwrap()
+}
 
 fn sample(reply: &NavalLossesReply, hour: i32) -> BTreeMap<String, (Option<i64>, Option<i64>)> {
     reply
@@ -94,7 +203,7 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
         frame.metrics.table_ns[TableId::SunkConvoys.index()] = 1;
         inputs.push(frame);
     }
-    let mut fixture = Fixture::new();
+    let mut harness = Harness::new(first);
     let mut history = sinkings::ShipHistory::new(first);
     let mut prepared = Prepared::default();
     for (step, frame) in inputs.iter().enumerate() {
@@ -108,20 +217,10 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
             warnings: vec![],
         };
         prepared.observe(&history.scan, &retention, &flag).unwrap();
-        let mut writer = if step == 4 {
-            fixture.append_writer()
-        } else {
-            fixture.writer()
-        };
-        prepared
-            .flush(&mut writer, 1, &history.scan, &flag)
-            .unwrap();
+        harness.hour(&mut prepared, frame.hour);
+        harness.publish(&mut prepared, &history.scan, frame.hour);
         history.compact();
-        series::write_reply(&mut writer, "resume", 0, &(&history, &prepared)).unwrap();
-        writer.commit().unwrap();
-        (history, prepared) = series::read_reply(&fixture.store, &fixture.key, "resume", 0)
-            .unwrap()
-            .unwrap();
+        (history, prepared) = reloaded(&(&history, &prepared));
         history.resume(frame);
         if step >= 1 {
             let replay = replay::container::Replay::from_records(
@@ -133,10 +232,6 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
             )
             .unwrap();
             let oracle = sinkings::scan(&replay, 1, &flag).unwrap();
-            let (actors, metadata) =
-                series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, "naval-losses", 1)
-                    .unwrap()
-                    .unwrap();
             let root =
                 std::str::from_utf8(&inputs[0].complete::<tables::Countries>().unwrap()[0].tag)
                     .unwrap()
@@ -158,17 +253,18 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
                         Some(&oracle.histories),
                     )
                     .unwrap();
-                    let actual = window_reply(
-                        &fixture.store,
-                        &fixture.key,
-                        &actors,
-                        &metadata,
-                        &oracle.histories,
-                        &params,
-                        Some((first, frame.hour)),
-                        &flag,
-                    )
-                    .unwrap();
+                    let actual = harness.read(channel, |lines, actors, metadata| {
+                        window_reply(
+                            lines,
+                            actors,
+                            metadata,
+                            &oracle.histories,
+                            &params,
+                            Some((first, frame.hour)),
+                            &flag,
+                        )
+                        .unwrap()
+                    });
                     assert_eq!(
                         actual.warnings, expected.warnings,
                         "channel {channel}, step {step}"
@@ -188,40 +284,50 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
             }
             if step == 3 {
                 let params = selection(1, 8);
-                let exact = window_reply(
-                    &fixture.store,
-                    &fixture.key,
-                    &actors,
-                    &metadata,
-                    &oracle.histories,
-                    &NavalLossesParams {
-                        tags: vec![root.clone()],
-                        ..params.clone()
-                    },
-                    Some((first + 1, first + 1)),
-                    &flag,
-                )
-                .unwrap();
+                let corrected = harness.read(8, |_, _, metadata| metadata.corrected.clone());
+                let exact = harness.read(8, |lines, actors, metadata| {
+                    window_reply(
+                        lines,
+                        actors,
+                        metadata,
+                        &oracle.histories,
+                        &NavalLossesParams {
+                            tags: vec![root.clone()],
+                            ..params.clone()
+                        },
+                        Some((first + 1, first + 1)),
+                        &flag,
+                    )
+                    .unwrap()
+                });
+                let series = |product: &str, query: Value, params: &NavalLossesParams| {
+                    harness.read(8, |lines, actors, metadata| {
+                        series_query(
+                            product,
+                            &query,
+                            params,
+                            actors,
+                            metadata,
+                            &oracle.histories,
+                            lines,
+                            &flag,
+                        )
+                        .unwrap()
+                    })
+                };
                 assert!(
                     sample(&exact, first + 1)
                         .values()
                         .all(|(ships, convoys)| ships.is_some() && convoys.is_some())
                 );
-                let summary = series_query(
+                let summary = series(
                     "series-summary",
-                    &json!({"from":first,"to":frame.hour,"width":1,"parts":true}),
+                    json!({"from":first,"to":frame.hour,"width":1,"parts":true}),
                     &NavalLossesParams {
                         tags: vec![root.clone()],
                         ..params
                     },
-                    &actors,
-                    &metadata,
-                    &oracle.histories,
-                    &fixture.store,
-                    &fixture.key,
-                    &flag,
-                )
-                .unwrap();
+                );
                 assert!(summary["sampled"]["series"].as_array().is_some());
                 let expected = reply_with_histories(
                     &oracle,
@@ -262,50 +368,38 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
                         .sum::<u128>()
                 );
                 let before_bridge = first + 1;
-                let blocked = series_query(
+                let blocked = series(
                     "series-next-change",
-                    &json!({"key":"Home","from":null,"firstHour":first,"lastHour":frame.hour,
+                    json!({"key":"Home","from":null,"firstHour":first,"lastHour":frame.hour,
                         "within":{(root.clone()):[]}}),
                     &NavalLossesParams {
                         tags: vec![root.clone()],
                         ..selection(1, 8)
                     },
-                    &actors,
-                    &metadata,
-                    &oracle.histories,
-                    &fixture.store,
-                    &fixture.key,
-                    &flag,
-                )
-                .unwrap();
+                );
                 assert!(blocked["hour"].is_null());
-                let bound = series_query(
+                let bound = series(
                     "series-next-change",
-                    &json!({"key":"Home","from":null,"firstHour":first,"lastHour":frame.hour,
+                    json!({"key":"Home","from":null,"firstHour":first,"lastHour":frame.hour,
                         "within":{(root.clone()):[[root.clone(),before_bridge,before_bridge,true]]}}),
-                    &NavalLossesParams { tags:vec![root.clone()], ..selection(1,8) },
-                    &actors, &metadata, &oracle.histories, &fixture.store, &fixture.key, &flag,
-                ).unwrap();
+                    &NavalLossesParams {
+                        tags: vec![root.clone()],
+                        ..selection(1, 8)
+                    },
+                );
                 assert_eq!(bound["hour"].as_f64(), Some(f64::from(before_bridge)));
                 // A dense Top 1 draws each line only where the exact, corrected ranking
                 // puts its country first, the late-resolved alias included.
-                assert!(!metadata.corrected.is_empty(), "the fixture corrects a late alias");
+                assert!(!corrected.is_empty(), "the fixture corrects a late alias");
                 let top = NavalLossesParams {
                     top: Some(1),
                     ..selection(1, 8)
                 };
-                let dense = series_query(
+                let dense = series(
                     "series-summary",
-                    &json!({"from":first,"to":frame.hour,"width":1}),
+                    json!({"from":first,"to":frame.hour,"width":1}),
                     &top,
-                    &actors,
-                    &metadata,
-                    &oracle.histories,
-                    &fixture.store,
-                    &fixture.key,
-                    &flag,
-                )
-                .unwrap();
+                );
                 let ranked = reply_with_histories(
                     &oracle,
                     &top,

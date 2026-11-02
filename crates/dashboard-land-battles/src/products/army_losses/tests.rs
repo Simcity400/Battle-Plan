@@ -432,3 +432,68 @@ fn an_entry_written_again_in_the_same_month_never_takes_its_deleted_predecessors
     assert!(combat(&r).is_empty() && !r.empty_months.iter().any(|month| month.ledger == COMBAT_LEDGER));
     assert!(r.warnings.iter().any(|w| w.contains("another entry of the same month")), "{:?}", r.warnings);
 }
+
+/// `frame` as a row frame leaving `tables` to the native capture of a full recording.
+fn left_to_native(mut frame: DecodedFrame, tables: &[TableId]) -> DecodedFrame {
+    // Full leaves DivisionModelInputs out, so a frame in its mode marks it so.
+    for &table in tables.iter().chain(&[TableId::DivisionModelInputs]) {
+        *frame.tables[table.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+    }
+    frame
+}
+
+#[test]
+fn an_hour_left_to_the_native_capture_is_read_from_its_index_never_shown_as_unrecorded() {
+    let cut = left_to_native(frame(), &[TableId::CombatLogGroups, TableId::CombatLogManpower]);
+    let (source, root) = dashboard_base::test_fixtures::file_source(dashboard_base::test_fixtures::replay(vec![cut]));
+    let error = ArmyLosses::load(
+        &source,
+        &ArmyLossesParams { branch_id: "1".into(), hour: 60_000_001, tag: "GER".into() },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap_err()
+    .to_string();
+    drop(source);
+    std::fs::remove_dir_all(root).ok();
+    assert_eq!(
+        error,
+        "The recording holds [CombatLogGroups, CombatLogManpower] in its native capture, whose change-run index is not prepared yet"
+    );
+}
+
+#[test]
+fn a_walk_reaching_a_block_left_to_the_native_capture_leaves_its_months_unprepared_never_unread() {
+    let native: Vec<_> = recording_start()
+        .into_iter()
+        .map(|frame| left_to_native(frame, &[TableId::CombatLogEquipment, TableId::CombatLogMonths, TableId::SliceReads]))
+        .collect();
+    let rows = recording_start();
+    let later = (7, COMBAT_LEDGER, 60_000_004);
+    let found = ledgers::fold(
+        [block(&rows[3..], 60_000_004, 60_000_005, false), block(&native[..3], 60_000_001, 60_000_003, true)],
+        &[(11, january()), (11, later)],
+    )
+    .unwrap();
+    assert_eq!(found, [ledgers::Lookup::Unprepared, ledgers::Lookup::Unwitnessed { complete: true }],
+        "a month first written after the native block is settled by the row blocks after it");
+    assert_eq!(ledgers::fold([block(&native, 60_000_001, 60_000_005, true)], &wanted(january())).unwrap(),
+        [ledgers::Lookup::Unprepared]);
+}
+
+/// Earlier reads held only by the native capture.
+struct Native;
+impl ledgers::History for Native {
+    fn latest(&mut self, wanted: &[ledgers::Wanted]) -> io::Result<Vec<ledgers::Lookup>> {
+        Ok(vec![ledgers::Lookup::Unprepared; wanted.len()])
+    }
+}
+
+#[test]
+fn an_older_month_only_the_native_capture_holds_is_unknown_and_named_unprepared() {
+    let r = reply_with(&windowed(), "GER", &mut Native);
+    assert_eq!(combat(&r), [(MONTHS[1], "222"), (MONTHS[2], "333")], "the latest read's months stand");
+    assert_eq!(r.unknown_months.iter().map(|month| month.date).collect::<Vec<_>>(), [MONTHS[0]]);
+    assert!(r.warnings.iter().any(|w| w.contains("not prepared from native recordings yet (1)")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("not all recorded")), "{:?}", r.warnings);
+}

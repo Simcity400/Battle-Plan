@@ -19,7 +19,7 @@ use dashboard_base::{
     products::Product,
     products::country_groups::{HourSpan, war_ongoing},
 };
-use dashboard_text::metadata::{CountryKeys, branch_bounds, country_tables, slot_read};
+use dashboard_text::metadata::{CountryKeys, branch_bounds, country_tables};
 use replay::container::Replay;
 use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
@@ -35,13 +35,19 @@ use std::{
 use ts_rs::TS;
 
 #[cfg(test)]
-use dashboard_text::metadata::validate_campaign;
+use dashboard_text::metadata::{slot_read, validate_campaign};
 #[cfg(test)]
 use replay_frame::frame::FrameDecoder;
 
 pub struct PeaceDeals;
+pub mod emit;
 mod exact;
+pub mod facts;
 pub mod prepared;
+pub mod query;
+mod served;
+#[cfg(test)]
+mod columnar_tests;
 pub use exact::{PeaceCaptured, PeaceCapturedAction, PeaceCapturedSubject, PeaceCapturedTransfer};
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -297,6 +303,7 @@ struct PeaceCache(HashMap<u64, Arc<PeaceDealsReply>>);
 impl Product for PeaceDeals {
     const KEY: &'static str = "peace-deals";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = PeaceDealsParams;
     type Reply = PeaceDealsReply;
 
@@ -1190,6 +1197,12 @@ impl Scan {
     }
     #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        let read = slot_read(
+            replay_data::format::FormatVersion::read(self.format)?,
+            &frame.metrics,
+            TableId::PeaceConferences,
+            frame.hour,
+        );
         self.observe_changed(
             frame,
             &FrameChanges {
@@ -1198,9 +1211,17 @@ impl Scan {
                 slot_read: [true; replay_data::rows::TABLE_COUNT],
                 updates: None,
             },
+            read,
         )
     }
-    fn observe_changed(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
+    /// `frame` observed, its change facts `changes`; `read` is whether the hour read the
+    /// conference roster's slot.
+    fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        read: bool,
+    ) -> io::Result<()> {
         let hour = frame.hour;
         if let Some(prev) = self.previous_hour
             && prev.checked_add(1).is_some_and(|next| next < hour)
@@ -1256,13 +1277,7 @@ impl Scan {
         );
         let had_open = !self.open.is_empty();
         let had_active = self.has_active;
-        let roster_read = hour == self.first
-            || slot_read(
-                replay_data::format::FormatVersion::read(self.format)?,
-                &frame.metrics,
-                TableId::PeaceConferences,
-                hour,
-            );
+        let roster_read = hour == self.first || read;
         let roster = frame.complete::<tables::PeaceConferences>();
         let roster_complete = roster.is_ok();
         if roster_read && let Ok(rows) = roster {

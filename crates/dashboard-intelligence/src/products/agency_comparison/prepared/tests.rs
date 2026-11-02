@@ -351,26 +351,3 @@ fn intel_shared_driver_agencies_one_row_ignores_ten_times_closed_holders() {
     assert_eq!(scaled[0].row_visits, 1);
     assert_eq!(scaled[0].emitted, 1);
 }
-
-#[test]
-fn first_view_keeps_all_agencies_and_matches_hourly_values() {
-    let source = source(frame(0, 24));
-    let context = LoadContext { content: None };
-    let cancelled = AtomicBool::new(false);
-    let mut params = params();
-    params.first_hour = Some(0);
-    params.last_hour = Some(0);
-    let actual = first_view(&source, &params, &context, &cancelled).unwrap();
-    let scanned = super::super::oracle::scan(source.replay_ref(), 1, &cancelled).unwrap();
-    let expected = super::super::reply(
-        &source,
-        &params.selection,
-        &context,
-        &cancelled,
-        &scanned,
-        None,
-    )
-    .unwrap();
-    assert_eq!(actual["series"].as_array().unwrap().len(), 24);
-    assert_eq!(actual, serde_json::to_value(expected).unwrap());
-}

@@ -67,17 +67,31 @@ impl Warnings {
     }
     /// Each hour's count of each reason, in hour then reason order.
     pub(super) fn hourly(&self) -> Vec<(i32, &str, usize)> {
-        let mut hours: Vec<_> = self
-            .0
-            .iter()
-            .flat_map(|(reason, runs)| {
-                runs.iter().flat_map(move |run| {
-                    (run.0..=run.1).map(move |hour| (hour, reason.as_str(), run.2))
-                })
+        let runs = || self.0.values().flatten();
+        let (Some(first), Some(last)) =
+            (runs().map(|run| run.0).min(), runs().map(|run| run.1).max())
+        else {
+            return Vec::new();
+        };
+        // Reasons in order into each hour's list: hour then reason order without comparing text.
+        let mut hours: Vec<Vec<(&str, usize)>> =
+            vec![Vec::new(); (i64::from(last) - i64::from(first) + 1) as usize];
+        for (reason, runs) in &self.0 {
+            for run in runs {
+                for hour in run.0..=run.1 {
+                    hours[(i64::from(hour) - i64::from(first)) as usize]
+                        .push((reason.as_str(), run.2));
+                }
+            }
+        }
+        (first..=last)
+            .zip(hours)
+            .flat_map(|(hour, reasons)| {
+                reasons
+                    .into_iter()
+                    .map(move |(reason, count)| (hour, reason, count))
             })
-            .collect();
-        hours.sort_unstable();
-        hours
+            .collect()
     }
     /// Each reason's first hour and total count, in reason order.
     pub(super) fn totals(&self) -> impl Iterator<Item = (&str, i32, usize)> {

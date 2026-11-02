@@ -16,6 +16,17 @@ use replay_data::{rows::CountryLinkRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 
 #[test]
+fn native_walks_declare_their_reads_with_and_without_icons() {
+    for pictured in [false, true] {
+        let needs = columnar::needs(pictured).expect("the reads declare");
+        let held = |table: TableId| needs.frame.iter().any(|&(held, _)| held == table);
+        assert!(held(TableId::ProductionLines));
+        assert_eq!(held(TableId::CountryAppearance), pictured);
+        assert_eq!(held(TableId::States), pictured);
+    }
+}
+
+#[test]
 fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps() {
     use replay_data::{rows::CountryRow, rows::ProductionLineRow};
     let frames = (FIRST..=FIRST + 50)

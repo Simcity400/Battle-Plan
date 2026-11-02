@@ -15,13 +15,13 @@
 //! restart's, and goes on into its branch's later runs, carrying them as the row path's scan
 //! carries them across, resident or written whole ([`Operator::save`]). What only the hours
 //! before a walk know is left for the ordered scan: the template read hour is dated
-//! [`super::block::INHERITED`], and the presentations named from the restart's census are
+//! [`super::INHERITED`], and the presentations named from the restart's census are
 //! marked with the hour that census is taken to have been built, for the ordered scan to name
 //! again when it was built earlier ([`Hour::names`]).
 
 use super::{
-    ArmyName, DivisionLogKind, Event, IDENTITY_UNAVAILABLE, Presentation, TemplateName,
-    TemplateNaming, block::INHERITED, deletion_signature, display_naming, disposition, entry,
+    ArmyName, DivisionLogKind, Event, IDENTITY_UNAVAILABLE, INHERITED, Presentation, TemplateName,
+    TemplateNaming, deletion_signature, display_naming, disposition, entry,
 };
 use dashboard_text::metadata::{
     CountryKeys, LinkProjection, LinkTags, country_tables, link_slots, slot_read,
@@ -88,6 +88,9 @@ fn naming() -> io::Result<Vec<(TableId, Hold)>> {
         .map(|(table, fields)| (table, Hold::Fields(fields).of(table)))
         .collect())
 }
+
+/// The tables a projection reads.
+pub const TABLES: &[TableId] = &super::TABLES;
 
 /// What a projection reads of its walk's world: the naming tables by the fields it reads.
 pub fn needs() -> io::Result<Needs> {

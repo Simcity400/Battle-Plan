@@ -1,23 +1,31 @@
-//! Ships and current hull HP in each country's task-force roster, hour by hour.
-//! Each Ships row counts once; convoys outside that roster and stockpiles do not.
-//! The cached scan keeps both roster and logical ownership. Content only names
-//! the recorded sub-unit tokens and groups their native authored type masks.
+//! Ships and current hull HP in each country's task-force roster, hour by hour, prepared as the
+//! `navy` series family ([`facts`], [`emit`]) and answered from its publication ([`query`]),
+//! which the scoreboard reads too. Each Ships row counts once; convoys outside that roster and
+//! stockpiles do not. Both roster and logical ownership are kept. Content only names the
+//! recorded sub-unit tokens and groups their native authored type masks.
+
+pub mod emit;
+pub mod facts;
+pub mod query;
+#[cfg(any(test, feature = "test-support"))]
+mod scan;
+pub mod served;
 
 use dashboard_base::{
     catalogue,
     products::{
         Product,
         country_groups::HourSpan,
-        country_history::{self, CountryIdentityRun, Identity},
+        country_history::{self, CountryIdentityRun},
     },
     ranking,
     source::Source,
 };
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
-use dashboard_text::{catalogue::Catalogue, metadata::IdentityTrack};
+use dashboard_text::catalogue::Catalogue;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
         Arc,
@@ -28,6 +36,7 @@ use ts_rs::TS;
 
 pub struct NavySize;
 pub use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
+#[cfg(any(test, feature = "test-support"))]
 const CACHED_BRANCHES: usize = 2;
 const MAX_EXACT: i64 = (1 << 53) - 1;
 
@@ -161,6 +170,7 @@ impl ScannedNavy {
     }
 
     /// This scan's series of `spans`' tags only, each cut to its tag's spans.
+    #[cfg(any(test, feature = "test-support"))]
     fn held(
         &self,
         spans: &BTreeMap<String, Vec<HourSpan>>,
@@ -213,15 +223,6 @@ impl ScannedNavy {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct Track {
-    runs: [Vec<RawNavyRun>; 2],
-    strength_runs: [Vec<RawNavyRun>; 2],
-    last: Option<(Identity, i32)>,
-    segments: Vec<HourSpan>,
-    last_identity: IdentityTrack,
-}
-
 fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
     if cancelled.load(Ordering::Acquire) {
         Err(io::Error::new(
@@ -233,16 +234,17 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
     }
 }
 
-pub mod prepared;
-mod scan;
+#[cfg(any(test, feature = "test-support"))]
 use scan::scan;
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Scans {
-    entries: VecDeque<(u64, Arc<ScannedNavy>)>,
+    entries: std::collections::VecDeque<(u64, Arc<ScannedNavy>)>,
     runs: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn scanned_branch(
     source: &Source,
     branch: u64,
@@ -326,18 +328,93 @@ fn part_content(source: &Source, catalogue: Option<&Arc<Catalogue>>) -> Arc<Part
     }
     Arc::clone(&state.binding.as_ref().expect("navy part binding").1)
 }
-fn configure(source: &Source, context: &LoadContext) {
-    if let Ok(catalogue) = context
-        .content()
-        .and_then(|options| catalogue::catalogue(source, options))
-    {
-        content_units(&catalogue, &mut Vec::new());
-        part_content(source, Some(&catalogue));
-    }
+
+/// The part a recorded class counts under in `grouping`, and why it stays unresolved.
+/// Composite masks remain one broad class, so a multi-category ship counts once.
+fn class_part(
+    class_key: &ClassKey,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
+    grouping: NavyGrouping,
+    localise: &dyn Fn(&str) -> Option<String>,
+) -> (NavyPart, Vec<String>) {
+    let (token, spelling) = class_key;
+    let mut warnings = Vec::new();
+    let mut refusal = None;
+    let resolved = spelling.as_ref().zip(units).and_then(|(spelling, units)| {
+        let registered = match units.get(spelling) {
+            installed_content_core::unit_leader::SubUnit::Index(index) => {
+                units.name(index).and_then(Result::ok)
+            }
+            _ => None,
+        }?;
+        match grouping {
+            NavyGrouping::Class => Some((format!("class:{registered}"), localise(registered))),
+            NavyGrouping::Type => {
+                let mask = units.category(registered.as_bytes()).ok()?;
+                let types = match installed_content_core::equipment::category_names(mask) {
+                    Ok(types) => types,
+                    Err(bits) => {
+                        refusal = Some(format!("unknown native category bits {bits:#x}"));
+                        return None;
+                    }
+                };
+                if types.is_empty() {
+                    return None;
+                }
+                let name = types
+                    .iter()
+                    .map(|key| localise(key))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|names| names.join(" / "));
+                Some((format!("type:{mask}"), name))
+            }
+        }
+    });
+    let (key, name, unresolved) = match resolved {
+        Some((key, name)) => (key, name, false),
+        None => {
+            let visible = spelling
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map_or_else(
+                    || format!("Other / not identified (Sub-unit {token})"),
+                    str::to_owned,
+                );
+            let reason = refusal
+                .as_deref()
+                .unwrap_or("the recorded content does not resolve this ship class or broad role");
+            warnings.push(format!("{visible}: {reason}; kept as its own part."));
+            (
+                format!(
+                    "{}ship:{}",
+                    dashboard_base::products::equipment::UNRESOLVED_MARK,
+                    serde_json::to_string(&(token, spelling)).expect("class identity")
+                ),
+                Some("Ship class name unavailable".into()),
+                true,
+            )
+        }
+    };
+    (
+        NavyPart {
+            key,
+            name,
+            unresolved,
+        },
+        warnings,
+    )
+}
+
+/// The part key a recorded class counts under in `grouping`, as replies name it.
+pub(super) fn part_key(
+    class_key: &ClassKey,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
+    grouping: NavyGrouping,
+) -> String {
+    class_part(class_key, units, grouping, &|_: &str| None).0.key
 }
 
 /// Project recorded sub-unit tokens through the shared native content reader.
-/// Composite masks remain one broad class, so a multi-category ship counts once.
 fn parts(
     classes: &BTreeSet<u32>,
     catalogue: &[ClassKey],
@@ -351,76 +428,7 @@ fn parts(
     let mut warnings = Vec::new();
     for &class in classes {
         let class_key = &catalogue[class as usize];
-        let resolve = |class_key: &ClassKey| {
-            let (token, spelling) = class_key;
-            let mut warnings = Vec::new();
-            let mut refusal = None;
-            let resolved = spelling.as_ref().zip(units).and_then(|(spelling, units)| {
-                let registered = match units.get(spelling) {
-                    installed_content_core::unit_leader::SubUnit::Index(index) => {
-                        units.name(index).and_then(Result::ok)
-                    }
-                    _ => None,
-                }?;
-                match grouping {
-                    NavyGrouping::Class => {
-                        Some((format!("class:{registered}"), localise(registered)))
-                    }
-                    NavyGrouping::Type => {
-                        let mask = units.category(registered.as_bytes()).ok()?;
-                        let types = match installed_content_core::equipment::category_names(mask) {
-                            Ok(types) => types,
-                            Err(bits) => {
-                                refusal = Some(format!("unknown native category bits {bits:#x}"));
-                                return None;
-                            }
-                        };
-                        if types.is_empty() {
-                            return None;
-                        }
-                        let name = types
-                            .iter()
-                            .map(|key| localise(key))
-                            .collect::<Option<Vec<_>>>()
-                            .map(|names| names.join(" / "));
-                        Some((format!("type:{mask}"), name))
-                    }
-                }
-            });
-            let (key, name, unresolved) = match resolved {
-                Some((key, name)) => (key, name, false),
-                None => {
-                    let visible = spelling
-                        .as_deref()
-                        .filter(|name| !name.is_empty())
-                        .map_or_else(
-                            || format!("Other / not identified (Sub-unit {token})"),
-                            str::to_owned,
-                        );
-                    let reason = refusal.as_deref().unwrap_or(
-                        "the recorded content does not resolve this ship class or broad role",
-                    );
-                    warnings.push(format!("{visible}: {reason}; kept as its own part."));
-                    (
-                        format!(
-                            "{}ship:{}",
-                            dashboard_base::products::equipment::UNRESOLVED_MARK,
-                            serde_json::to_string(&(token, spelling)).expect("class identity")
-                        ),
-                        Some("Ship class name unavailable".into()),
-                        true,
-                    )
-                }
-            };
-            (
-                NavyPart {
-                    key,
-                    name,
-                    unresolved,
-                },
-                warnings,
-            )
-        };
+        let resolve = |class_key: &ClassKey| class_part(class_key, units, grouping, &localise);
         let resolved = match cache {
             Some(cache) => cache
                 .get_or_init(
@@ -639,6 +647,7 @@ fn checked_reply(reply: NavyReply) -> io::Result<NavyReply> {
 impl Product for NavySize {
     const KEY: &'static str = "navy-size";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = NavyParams;
     type Reply = NavyReply;
     fn types() -> Vec<String> {
@@ -668,6 +677,8 @@ impl Product for NavySize {
         }
         Ok(())
     }
+    /// The row census's reply: the parity oracle of the publication's.
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &NavyParams,
@@ -700,9 +711,11 @@ impl Product for NavySize {
 }
 
 #[cfg(test)]
+mod columnar_tests;
+#[cfg(test)]
 mod tests;
 
-pub(super) fn content_units(
+pub fn content_units(
     catalogue: &Arc<Catalogue>,
     warnings: &mut Vec<String>,
 ) -> Option<Arc<installed_content_core::unit_leader::SubUnits>> {

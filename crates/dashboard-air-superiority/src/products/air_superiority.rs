@@ -22,8 +22,11 @@ use dashboard_core::config::LoadContext;
 use dashboard_core::invalid;
 #[cfg(test)]
 use dashboard_text::metadata::recorded_rows;
-use dashboard_text::metadata::{check_cancel, link_slots, tagged_countries_indexed};
+use dashboard_text::metadata::check_cancel;
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::metadata::{link_slots, tagged_countries_indexed};
 use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::TableId, rows::tables};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -32,11 +35,14 @@ use std::{
 };
 
 mod assignment;
+// The row observer's block pre-pass: the reference a native port tests against.
+#[cfg(any(test, feature = "test-support"))]
 pub mod block;
 mod daily;
 mod model;
 pub mod prepared;
 mod scan;
+#[cfg(any(test, feature = "test-support"))]
 mod scores;
 pub use model::*;
 use scan::{DayCache, Snapshot, span};

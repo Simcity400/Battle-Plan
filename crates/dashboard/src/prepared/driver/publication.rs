@@ -3,9 +3,12 @@
 //! lane's batch whole or not at all, and commits together the batches ready while it commits.
 //! A batch carries the family's pages and, for each branch it touched, the family's ledger,
 //! emit state, projector carry and coverage page, then its publication root ([`roots`]), last.
+//! A lane cuts its batch and hands it off: a sealer seals, stages and commits it while the lane
+//! appends the next ([`Stage::send`], [`Publisher::sealing`]).
 //! The root's identity carries the family's version stamp, so opening a store keeps every family
 //! whose stamp is unchanged, clears every other, which prepares again alone, and resumes each
-//! family on each branch after its own last committed hour ([`Resume`]).
+//! family on each branch after its own last committed hour ([`Resume`]). Every error a stage
+//! returns is its family's alone, but publication's stop ([`halted`]), which every lane meets.
 //!
 //! Batches end where the recording says ([`ends_batch`]): after a branch's 1st, 2nd, 4th, 8th
 //! and 16th segment, then every 32nd, counted from the branch's start however preparation
@@ -15,13 +18,16 @@
 //! reaches the newest committed hour, and a later run goes on after that hour, never repeating
 //! one.
 
-use super::plan::{Lane, Owner, Plan};
-use super::registry::FamilyId;
+use super::plan::{Owner, Plan};
+use super::registry::{self, FamilyId};
 use crate::prepared::pipeline;
-use dashboard_base::prepared::roots::{self, Binding, Cursor, End, Held, Interval, Published};
+use dashboard_base::prepared::{
+    priority::Caller,
+    roots::{self, Binding, Cursor, End, Held, Interval, Published},
+};
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     io,
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
@@ -52,7 +58,8 @@ pub(crate) struct Family {
 }
 
 impl Family {
-    /// The families `plan` prepares of `names`, refusing one it lacks by name.
+    /// The families `plan` prepares of `names`, refusing one it lacks by name; a name of a
+    /// recording-wide job beside the families is that job, prepared as one of them.
     pub(crate) fn planned(plan: &Plan, names: &[&str]) -> io::Result<Vec<Self>> {
         names
             .iter()
@@ -63,10 +70,17 @@ impl Family {
                         format!("Unknown prepared family {name:?}"),
                     )
                 };
-                let family = plan.family(name).ok_or_else(unknown)?;
+                let (id, version) = match plan.family(name) {
+                    Some(family) => (family.id, family.version),
+                    None => {
+                        let id = FamilyId::publisher(name)?;
+                        let job = registry::job(id.name()).ok_or_else(unknown)?;
+                        (id, job.version)
+                    }
+                };
                 Ok(Self {
-                    id: family.id,
-                    version: family.version,
+                    id,
+                    version,
                     stamp: plan.stamp(name).ok_or_else(unknown)?,
                 })
             })
@@ -122,20 +136,51 @@ pub(crate) enum Stopped {
 
 impl Stopped {
     fn error(&self) -> io::Error {
-        match self {
-            Self::Cancelled => {
-                io::Error::new(io::ErrorKind::Interrupted, "Preparation was cancelled")
-            }
-            Self::Cleared => {
-                io::Error::new(io::ErrorKind::Interrupted, "Prepared data is being cleared")
-            }
-            Self::Uncertain(message) => io::Error::other(format!(
-                "A commit's outcome was uncertain ({message}); preparation goes on from what it \
-                 left durable"
-            )),
-            Self::Failed(message) => io::Error::other(message.to_string()),
-        }
+        let (kind, message): (io::ErrorKind, String) = match self {
+            Self::Cancelled => (io::ErrorKind::Interrupted, "Preparation was cancelled".into()),
+            Self::Cleared => (
+                io::ErrorKind::Interrupted,
+                "Prepared data is being cleared".into(),
+            ),
+            Self::Uncertain(message) => (
+                io::ErrorKind::Other,
+                format!(
+                    "A commit's outcome was uncertain ({message}); preparation goes on from what \
+                     it left durable"
+                ),
+            ),
+            Self::Failed(message) => (io::ErrorKind::Other, message.to_string()),
+        };
+        io::Error::new(kind, Halted(message))
     }
+}
+
+/// Publication stopped ([`Stopped`]): what every lane meets alike, never one family's own.
+#[derive(Debug)]
+struct Halted(String);
+
+impl std::fmt::Display for Halted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Halted {}
+
+/// Whether `error` is publication's stop, which ends every family's lane: the run's own failure.
+/// Any other error a stage returns is its family's alone.
+pub(crate) fn halted(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<Halted>())
+}
+
+/// Where a family's own fault is injected ([`Publisher::fail_family`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Own {
+    /// Sealing its batch, as a series it wrote outside its coverage does.
+    Seal,
+    /// Adopting its sealed batch into the group commit.
+    Adopt,
 }
 
 /// What a family's publication reached: from earlier runs, and committed or staged in this one.
@@ -267,6 +312,12 @@ struct Inner {
     stages: usize,
     committed: BTreeMap<(FamilyId, u64), Published>,
     progress: BTreeMap<FamilyId, Progress>,
+    /// Jobs lanes handed off, oldest first, by id; those sealed, until their lanes take them.
+    jobs: VecDeque<(u64, Job)>,
+    finished: BTreeMap<u64, Finished>,
+    jobs_handed: u64,
+    /// Sealers serve the jobs ([`Publisher::sealing`]).
+    sealing: bool,
 }
 
 /// The one root writer of a prepared store, and the coordinator of every family's batches.
@@ -281,6 +332,9 @@ pub(crate) struct Publisher<'s> {
     on_commit: Option<Box<dyn Fn() + Send + Sync + 's>>,
     #[cfg(test)]
     fault: Mutex<Option<Fault>>,
+    /// Each family's fault to come, and how many of those steps pass before it.
+    #[cfg(test)]
+    owned: Mutex<Vec<(FamilyId, Own, usize)>>,
 }
 
 impl<'s> Publisher<'s> {
@@ -338,8 +392,10 @@ impl<'s> Publisher<'s> {
         if !again.is_empty() {
             let owned: Vec<String> = writer
                 .section_names()
-                .filter(|section| {
-                    matches!(plan.owner(section), Some(Owner::Family(id)) if again.contains(&id))
+                .filter(|section| match plan.owner(section) {
+                    Some(Owner::Family(id)) => again.contains(&id),
+                    Some(Owner::Job(job)) => again.iter().any(|id| id.name() == job),
+                    _ => false,
                 })
                 .map(str::to_owned)
                 .collect();
@@ -382,11 +438,17 @@ impl<'s> Publisher<'s> {
                     stages: 0,
                     committed: kept,
                     progress,
+                    jobs: VecDeque::new(),
+                    finished: BTreeMap::new(),
+                    jobs_handed: 0,
+                    sealing: false,
                 }),
                 changed: Condvar::new(),
                 on_commit: None,
                 #[cfg(test)]
                 fault: Mutex::new(None),
+                #[cfg(test)]
+                owned: Mutex::new(Vec::new()),
             },
             resume,
         ))
@@ -401,6 +463,33 @@ impl<'s> Publisher<'s> {
     #[cfg(test)]
     pub(crate) fn fail_next_commit(&self, fault: Fault) {
         *self.fault.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
+    }
+
+    /// Fails `family`'s step `at` once `after` more of them passed.
+    #[cfg(test)]
+    pub(crate) fn fail_family(&self, family: FamilyId, at: Own, after: usize) {
+        self.owned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((family, at, after));
+    }
+
+    /// Whether `family`'s step `at` fails now.
+    #[cfg(test)]
+    fn faulted(&self, family: FamilyId, at: Own) -> bool {
+        let mut owned = self.owned.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(found) = owned
+            .iter()
+            .position(|&(faulty, step, _)| (faulty, step) == (family, at))
+        else {
+            return false;
+        };
+        if owned[found].2 > 0 {
+            owned[found].2 -= 1;
+            return false;
+        }
+        owned.remove(found);
+        true
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -424,10 +513,9 @@ impl<'s> Publisher<'s> {
             publisher: self,
             family,
             writer: None,
-            pending: None,
+            handed: None,
             steps: BTreeMap::new(),
-            writers: BTreeMap::new(),
-            queued: Vec::new(),
+            branches: BTreeMap::new(),
             ends: false,
         })
     }
@@ -462,8 +550,18 @@ impl<'s> Publisher<'s> {
     /// then remove. Lanes see the stop at their next call.
     pub(crate) fn stop(&self, stopped: Stopped) {
         let mut inner = self.lock();
-        inner.stopped.get_or_insert(stopped);
+        let stopped = inner.stopped.get_or_insert(stopped).clone();
         inner.queue.clear();
+        // Jobs no sealer took commit nothing now; their stages go.
+        let unsealed: Vec<(u64, Job)> = inner.jobs.drain(..).collect();
+        for &(id, _) in &unsealed {
+            inner.finished.insert(id, Finished::failed(stopped.error()));
+        }
+        drop(inner);
+        for (_, job) in unsealed {
+            self.dropped(job);
+        }
+        let mut inner = self.lock();
         self.changed.notify_all();
         while inner.committing || inner.stages > 0 {
             inner = self.wait_changed(inner);
@@ -524,7 +622,7 @@ impl<'s> Publisher<'s> {
             }
             if let Some(writer) = inner.writer.as_mut() {
                 let mut stage = writer.stage()?;
-                stage.guard_sections(self.plan.guard(Lane::Own(family.name())));
+                stage.guard_sections(self.plan.guard(family.name()));
                 inner.stages += 1;
                 return Ok(stage);
             }
@@ -647,6 +745,11 @@ impl<'s> Publisher<'s> {
         let mut outcomes = Vec::new();
         let mut adopted = Vec::new();
         for (ticket, batch) in group {
+            #[cfg(test)]
+            if self.faulted(batch.family, Own::Adopt) {
+                outcomes.push((ticket, Err(io::Error::other("Simulated adoption failure"))));
+                continue;
+            }
             match writer.adopt_all(batch.staged) {
                 Ok(()) => adopted.push((ticket, batch.family, batch.sealed)),
                 Err(error) => outcomes.push((ticket, Err(error))),
@@ -767,40 +870,290 @@ impl Drop for Leading<'_, '_> {
     }
 }
 
+/// A family's batch as its lane cut it: what a sealer, or the lane itself, seals, stages and
+/// queues for the next group commit ([`Publisher::seal`]).
+struct Job {
+    family: Family,
+    /// The stage the lane wrote the batch's pages in, once it needed one; else the job forks its
+    /// own.
+    writer: Option<store::Writer>,
+    sealings: Vec<Sealing>,
+    segments: u64,
+    prepared: u64,
+}
+
+/// A branch's step of a job: its cut, its series segment and the hierarchy it publishes into.
+struct Sealing {
+    branch: u64,
+    cut: roots::Cut,
+    pending: dashboard_series::Pending<'static>,
+    tree: dashboard_series::Tree,
+}
+
+/// What a job leaves its lane: the hierarchies it published into, by branch, and whether its
+/// batch was committed.
+struct Finished {
+    trees: Vec<(u64, dashboard_series::Tree)>,
+    outcome: io::Result<()>,
+}
+
+impl Finished {
+    fn failed(error: io::Error) -> Self {
+        Self {
+            trees: Vec::new(),
+            outcome: Err(error),
+        }
+    }
+}
+
+/// A stage a job holds, released once the job is done with it, however it ends.
+struct Release<'p, 's>(&'p Publisher<'s>);
+
+impl Drop for Release<'_, '_> {
+    fn drop(&mut self) {
+        self.0.released();
+    }
+}
+
+/// Stops the sealers once the work beside them ends, however it ends.
+struct Sealers<'p, 's>(&'p Publisher<'s>);
+
+impl Drop for Sealers<'_, '_> {
+    fn drop(&mut self) {
+        self.0.lock().sealing = false;
+        self.0.changed.notify_all();
+    }
+}
+
+impl<'s> Publisher<'s> {
+    /// Runs `work` beside `sealers` threads that seal the jobs lanes hand off ([`Stage::send`]),
+    /// each lane's in order: a lane goes on appending while its last batch seals and commits.
+    /// A job no sealer took when its lane needs it is sealed by the lane.
+    pub(crate) fn sealing<R>(&self, sealers: usize, work: impl FnOnce() -> R) -> R {
+        self.lock().sealing = true;
+        std::thread::scope(|scope| {
+            let stop = Sealers(self);
+            let caller = Caller::current();
+            for _ in 0..sealers {
+                let caller = caller.clone();
+                scope.spawn(move || {
+                    caller.enter();
+                    self.serve();
+                });
+            }
+            let done = work();
+            drop(stop);
+            done
+        })
+    }
+
+    /// Seals handed-off jobs, oldest first, until sealing stops.
+    fn serve(&self) {
+        let mut inner = self.lock();
+        while inner.sealing {
+            let Some((id, job)) = inner.jobs.pop_front() else {
+                inner = self.wait_changed(inner);
+                continue;
+            };
+            drop(inner);
+            let finished = self.seal(job);
+            inner = self.lock();
+            inner.finished.insert(id, finished);
+            self.changed.notify_all();
+        }
+    }
+
+    /// Hands `job` to the sealers; after a stop it fails at once.
+    fn hand(&self, job: Job) -> u64 {
+        let mut inner = self.lock();
+        let id = inner.jobs_handed;
+        inner.jobs_handed += 1;
+        if let Some(stopped) = &inner.stopped {
+            let failed = Finished::failed(stopped.error());
+            inner.finished.insert(id, failed);
+            drop(inner);
+            self.dropped(job);
+            return id;
+        }
+        inner.jobs.push_back((id, job));
+        drop(inner);
+        self.changed.notify_all();
+        id
+    }
+
+    /// Lets go of an unsealed job's stage.
+    fn dropped(&self, job: Job) {
+        if let Some(writer) = job.writer {
+            drop(writer);
+            self.released();
+        }
+    }
+
+    /// What job `id` left, sealing it here when no sealer took it.
+    fn finish(&self, id: u64) -> Finished {
+        let mut inner = self.lock();
+        loop {
+            if let Some(finished) = inner.finished.remove(&id) {
+                return finished;
+            }
+            if let Some(at) = inner.jobs.iter().position(|(queued, _)| *queued == id) {
+                let job = inner.jobs.remove(at).map(|(_, job)| job);
+                drop(inner);
+                return match job {
+                    Some(job) => self.seal(job),
+                    None => Finished::failed(io::Error::other("A handed-off batch was lost")),
+                };
+            }
+            inner = self.wait_changed(inner);
+        }
+    }
+
+    /// Drops job `id` unsealed, or waits for the sealer sealing it.
+    fn abandon(&self, id: u64) {
+        let mut inner = self.lock();
+        loop {
+            if inner.finished.remove(&id).is_some() {
+                return;
+            }
+            if let Some(at) = inner.jobs.iter().position(|(queued, _)| *queued == id) {
+                let job = inner.jobs.remove(at);
+                drop(inner);
+                if let Some((_, job)) = job {
+                    self.dropped(job);
+                }
+                return;
+            }
+            inner = self.wait_changed(inner);
+        }
+    }
+
+    /// Seals `job`: each branch's ledger, state, carry and series segment, then its root, and
+    /// its coverage page; stages it, queues it for the next group commit and waits for that,
+    /// leading it when no other does. A panic fails the job alone.
+    fn seal(&self, job: Job) -> Finished {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.sealed(job))) {
+            Ok(finished) => finished,
+            Err(_) => Finished::failed(io::Error::other("A batch's seal panicked")),
+        }
+    }
+
+    fn sealed(&self, job: Job) -> Finished {
+        let Job {
+            family,
+            writer,
+            sealings,
+            segments,
+            prepared,
+        } = job;
+        let mut writer = match writer {
+            Some(writer) => writer,
+            None => match self.fork(family.id) {
+                Ok(writer) => writer,
+                Err(error) => return Finished::failed(error),
+            },
+        };
+        let release = Release(self);
+        let name = family.id.name();
+        let mut sealed = Sealed {
+            published: Vec::with_capacity(sealings.len()),
+            segments,
+            prepared,
+        };
+        let mut trees = Vec::with_capacity(sealings.len());
+        let mut written = Ok(());
+        #[cfg(test)]
+        if self.faulted(family.id, Own::Seal) {
+            written = Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Simulated seal failure",
+            ));
+        }
+        let sealings = if written.is_ok() { sealings } else { Vec::new() };
+        for sealing in sealings {
+            let Sealing {
+                branch,
+                cut,
+                pending,
+                mut tree,
+            } = sealing;
+            let identity = self.binding.identity(branch, family.stamp);
+            let published = roots::write(&mut writer, name, branch, identity, cut, &pending, &mut tree)
+                .and_then(|published| {
+                    pipeline::write_family_page(&mut writer, name, branch, &published.frontier)
+                        .map(|()| published)
+                });
+            drop(pending);
+            match published {
+                Ok(published) => {
+                    trees.push((branch, tree));
+                    sealed.published.push((branch, published));
+                }
+                Err(error) => {
+                    written = Err(error);
+                    break;
+                }
+            }
+        }
+        let batch = match written {
+            Ok(()) => writer.into_staged().map(|staged| Batch {
+                family: family.id,
+                staged,
+                sealed,
+            }),
+            Err(error) => {
+                drop(writer);
+                Err(error)
+            }
+        };
+        let queued = batch.and_then(|batch| self.queue(batch));
+        drop(release);
+        Finished {
+            trees,
+            outcome: queued.and_then(|ticket| self.wait(ticket)),
+        }
+    }
+}
+
 /// What a family did on a branch in its open batch.
 struct Step {
-    /// The committed publication it follows.
-    previous: Option<Published>,
     /// Where the batch leaves it; None before its first hours of the branch.
     frontier: Option<roots::Frontier>,
     intervals: Vec<Interval>,
     state: Option<Vec<u8>>,
     carry: Option<Vec<u8>>,
-    /// The family's output on the series engine this batch, once it wrote any.
-    series: Option<roots::Series>,
     segments: u64,
     prepared: u64,
 }
 
-/// A family's lane: its open batch, written into a stage of its own.
+/// What a family's lane holds of a branch from batch to batch.
+struct Branch {
+    /// The family's last publication on the branch as the lane cut it: committed, or sealing
+    /// in the job the lane handed off last. None before its first.
+    last: Option<roots::Last>,
+    /// The committed publication the branch was taken up from, until its series writer goes
+    /// on from it.
+    resumes: Option<Published>,
+    /// The family's output on the series engine; its hierarchy is lent to the job sealing the
+    /// segment it cut last.
+    series: Option<roots::Series>,
+}
+
+/// A family's lane: its open batch, written into a stage of its own once it needs one.
 pub(crate) struct Stage<'p, 's> {
     publisher: &'p Publisher<'s>,
     family: Family,
     writer: Option<store::Writer>,
-    /// Its batch queued and not yet committed: the next forks once it is.
-    pending: Option<u64>,
+    /// Its batch handed off to the sealers and not yet finished: the next forks once it is.
+    handed: Option<u64>,
     steps: BTreeMap<u64, Step>,
-    /// Each branch's series writer after its last publication, and that publication's root: it
-    /// goes on from there as resuming the root would, without reading every key back.
-    writers: BTreeMap<u64, (u64, roots::Series)>,
-    /// The writers of the batch queued last: they go on only once it is committed.
-    queued: Vec<(u64, u64, roots::Series)>,
+    branches: BTreeMap<u64, Branch>,
     ends: bool,
 }
 
 impl Stage<'_, '_> {
+    /// The batch's stage: forked once the batch before is committed.
     fn writer(&mut self) -> io::Result<&mut store::Writer> {
-        self.wait_committed()?;
+        self.settle()?;
         if self.writer.is_none() {
             self.writer = Some(self.publisher.fork(self.family.id)?);
         }
@@ -819,70 +1172,101 @@ impl Stage<'_, '_> {
         self.family.id.name()
     }
 
-    /// The family's open batch on `branch`, following its committed publication there: the
-    /// batch the lane queued before is committed first, so the step goes on from it.
-    fn step(&mut self, branch: u64) -> io::Result<&mut Step> {
-        self.wait_committed()?;
-        let publisher = self.publisher;
-        let family = self.family;
-        Ok(self.steps.entry(branch).or_insert_with(|| {
-            let previous = publisher.committed(family.id, branch);
-            Step {
-                frontier: previous.as_ref().map(|previous| previous.frontier.clone()),
-                previous,
-                intervals: Vec::new(),
-                state: None,
-                carry: None,
-                series: None,
-                segments: 0,
-                prepared: 0,
-            }
-        }))
+    /// What the lane holds of `branch`: taken up from the family's committed publication there
+    /// when the lane first meets it.
+    fn branch(&mut self, branch: u64) -> io::Result<&mut Branch> {
+        if !self.branches.contains_key(&branch) {
+            let committed = self.publisher.committed(self.family.id, branch);
+            let last = match &committed {
+                Some(published) => {
+                    if published.identity
+                        != self.publisher.binding.identity(branch, self.family.stamp)
+                    {
+                        return Err(refused(
+                            "A family's publication goes on under another identity",
+                        ));
+                    }
+                    let name = self.family.id.name();
+                    Some(roots::Last::of(self.writer()?, name, branch, published)?)
+                }
+                None => None,
+            };
+            self.branches.insert(
+                branch,
+                Branch {
+                    last,
+                    resumes: committed,
+                    series: None,
+                },
+            );
+        }
+        self.branches
+            .get_mut(&branch)
+            .ok_or_else(|| io::Error::other("A stage lost a branch"))
     }
 
-    /// The series writer the family's output on `branch` goes into this batch, its hours
-    /// starting at `first_hour` when the branch has no publication yet; the batch's root cuts
-    /// it once the family's emit appended what is open through its last hour.
+    /// The family's open batch on `branch`, following its last publication there.
+    fn step(&mut self, branch: u64) -> io::Result<&mut Step> {
+        if !self.steps.contains_key(&branch) {
+            let frontier = self
+                .branch(branch)?
+                .last
+                .as_ref()
+                .map(|last| last.frontier.clone());
+            self.steps.insert(
+                branch,
+                Step {
+                    frontier,
+                    intervals: Vec::new(),
+                    state: None,
+                    carry: None,
+                    segments: 0,
+                    prepared: 0,
+                },
+            );
+        }
+        self.steps
+            .get_mut(&branch)
+            .ok_or_else(|| io::Error::other("A stage lost a step"))
+    }
+
     /// The rows its series writers hold, appended since its batch began.
     pub(crate) fn series_held(&self) -> usize {
-        self.steps
+        self.branches
             .values()
-            .filter_map(|step| step.series.as_ref())
+            .filter_map(|branch| branch.series.as_ref())
             .map(roots::Series::held_bytes)
             .fold(0, usize::saturating_add)
     }
 
+    /// The series writer the family's output on `branch` goes into, its hours starting at
+    /// `first_hour` when the branch has no publication yet; the batch's cut ends its segment
+    /// once the family's emit appended what is open through its last hour.
     pub(crate) fn series(
         &mut self,
         branch: u64,
         first_hour: i32,
     ) -> io::Result<&mut roots::Series> {
-        if self.step(branch)?.series.is_none() {
-            let previous = self.step(branch)?.previous.clone();
-            // Only a writer whose publication is the one committed goes on.
-            let kept = self
-                .writers
-                .remove(&branch)
-                .filter(|(root, _)| previous.as_ref().is_some_and(|previous| previous.root == *root))
-                .map(|(_, series)| series);
-            let series = match kept {
-                Some(series) => series,
-                None => {
-                    let identity = self.publisher.binding.identity(branch, self.family.stamp);
+        if self.branch(branch)?.series.is_none() {
+            let identity = self.publisher.binding.identity(branch, self.family.stamp);
+            let resumes = self.branch(branch)?.resumes.take();
+            let series = match &resumes {
+                Some(published) => {
                     let name = self.family.id.name();
                     roots::writer(
                         self.writer()?,
                         name,
                         branch,
                         identity,
-                        previous.as_ref(),
+                        Some(published),
                         first_hour,
                     )?
                 }
+                None => roots::fresh(identity, first_hour)?,
             };
-            self.step(branch)?.series = Some(series);
+            self.branch(branch)?.series = Some(series);
         }
-        self.step(branch)?
+        self.branch(branch)?
             .series
             .as_mut()
             .ok_or_else(|| io::Error::other("A stage lost its series writer"))
@@ -910,7 +1294,10 @@ impl Stage<'_, '_> {
             .last
             .checked_add(1)
             .ok_or_else(|| refused("Ordinal overflow"))?;
-        let bytes = self.writer()?.bytes_written();
+        let bytes = self
+            .writer
+            .as_ref()
+            .map_or(0, store::Writer::bytes_written);
         let publisher = self.publisher;
         let family = self.family;
         let step = self.step(hours.branch)?;
@@ -1049,108 +1436,111 @@ impl Stage<'_, '_> {
         self.ends
     }
 
-    /// Seals the open batch, each branch's ledger, state, carry and coverage page and then its
-    /// root, and queues it for the next group commit. The lane's next batch forks once it is
-    /// committed ([`Publisher::wait`]).
-    pub(crate) fn queue(&mut self) -> io::Result<u64> {
-        self.wait_committed()?;
-        if self.steps.is_empty() {
-            return Err(refused("A batch publishes no hours"));
-        }
-        let Some(mut writer) = self.writer.take() else {
-            return Err(io::Error::other("A stage is missing its writer"));
-        };
-        let steps = std::mem::take(&mut self.steps);
-        self.ends = false;
-        let batch = match self.seal(&mut writer, steps) {
-            Ok((sealed, writers)) => {
-                self.queued = writers;
-                writer.into_staged().map(|staged| Batch {
-                    family: self.family.id,
-                    staged,
-                    sealed,
-                })
-            }
-            Err(error) => {
-                drop(writer);
-                Err(error)
-            }
-        };
-        let queued = batch.and_then(|batch| self.publisher.queue(batch));
-        self.publisher.released();
-        let ticket = queued.inspect_err(|_| self.queued.clear())?;
-        self.pending = Some(ticket);
-        Ok(ticket)
-    }
-
-    /// Waits for the batch the lane queued last to be committed.
-    pub(crate) fn settle(&mut self) -> io::Result<()> {
-        self.wait_committed()
-    }
-
-    /// Waits for the batch the lane queued last: its writers go on once it is committed, and
-    /// none that one not committed left behind does.
-    fn wait_committed(&mut self) -> io::Result<()> {
-        let Some(ticket) = self.pending.take() else {
-            return Ok(());
-        };
-        let queued = std::mem::take(&mut self.queued);
-        self.publisher.wait(ticket)?;
-        for (branch, root, series) in queued {
-            self.writers.insert(branch, (root, series));
+    /// Hands the open batch off to be sealed and committed while the lane goes on: each branch's
+    /// ledger, state, carry and coverage page and then its root. Once the series writers hold
+    /// half of what every writer may, the lane waits for it.
+    pub(crate) fn send(&mut self) -> io::Result<()> {
+        let job = self.cut()?;
+        self.handed = Some(self.publisher.hand(job));
+        if roots::series_pressed() {
+            self.settle()?;
         }
         Ok(())
     }
 
-    /// Queues the open batch and waits for it to be committed.
+    /// Waits for the batch the lane handed off last to be committed, sealing it here when no
+    /// sealer took it.
+    pub(crate) fn settle(&mut self) -> io::Result<()> {
+        let Some(id) = self.handed.take() else {
+            return Ok(());
+        };
+        let finished = self.publisher.finish(id);
+        self.returned(finished.trees)?;
+        finished.outcome
+    }
+
+    /// Hands the open batch off and waits for it to be committed.
     #[cfg(test)]
     pub(crate) fn submit(&mut self) -> io::Result<()> {
-        self.queue()?;
+        self.send()?;
         self.settle()
     }
 
-    /// Seals each branch's step, with the series writer each goes on with and its root.
-    fn seal(
-        &self,
-        writer: &mut store::Writer,
-        steps: BTreeMap<u64, Step>,
-    ) -> io::Result<(Sealed, Vec<(u64, u64, roots::Series)>)> {
-        let name = self.family.id.name();
-        let mut sealed = Sealed::default();
-        let mut writers = Vec::new();
+    /// Cuts the open batch once the one before is committed: each branch's step after the
+    /// family's last publication there, and its series segment, whose hierarchy the job takes.
+    fn cut(&mut self) -> io::Result<Job> {
+        self.settle()?;
+        if self.steps.is_empty() {
+            return Err(refused("A batch publishes no hours"));
+        }
+        let steps = std::mem::take(&mut self.steps);
+        self.ends = false;
+        let mut sealings = Vec::with_capacity(steps.len());
+        let (mut segments, mut prepared) = (0, 0);
         for (branch, step) in steps {
             let Some(frontier) = step.frontier else {
                 continue;
             };
-            let identity = self.publisher.binding.identity(branch, self.family.stamp);
-            let (published, series) = roots::publish(
-                writer,
-                name,
-                branch,
-                identity,
-                step.previous.as_ref(),
+            self.series(branch, frontier.first_hour)?;
+            let held = self.branch(branch)?;
+            let (cut, checkpoint) = roots::cut(
+                &mut held.last,
                 roots::Step {
                     frontier,
                     intervals: &step.intervals,
-                    state: step.state.as_deref(),
-                    carry: step.carry.as_deref(),
-                    series: step.series,
+                    state: step.state,
+                    carry: step.carry,
                 },
             )?;
-            pipeline::write_family_page(writer, name, branch, &published.frontier)?;
-            sealed.segments += step.segments;
-            sealed.prepared += step.prepared;
-            if published.frontier.end.is_none() {
-                writers.push((branch, published.root, series));
+            let series = held
+                .series
+                .as_mut()
+                .ok_or_else(|| io::Error::other("A stage lost its series writer"))?;
+            let checkpoint = series.bytes(&checkpoint)?;
+            let pending = series.cut(cut.publication, checkpoint)?;
+            let tree = series.lend_tree()?;
+            // Nothing goes on from a branch that ended.
+            if cut.frontier.end.is_some() {
+                held.series = None;
             }
-            sealed.published.push((branch, published));
+            segments += step.segments;
+            prepared += step.prepared;
+            sealings.push(Sealing {
+                branch,
+                cut,
+                pending,
+                tree,
+            });
         }
-        Ok((sealed, writers))
+        Ok(Job {
+            family: self.family,
+            writer: self.writer.take(),
+            sealings,
+            segments,
+            prepared,
+        })
+    }
+
+    /// Takes back the hierarchies a job published into.
+    fn returned(&mut self, trees: Vec<(u64, dashboard_series::Tree)>) -> io::Result<()> {
+        for (branch, tree) in trees {
+            if let Some(series) = self
+                .branches
+                .get_mut(&branch)
+                .and_then(|branch| branch.series.as_mut())
+            {
+                series.return_tree(tree)?;
+            }
+        }
+        Ok(())
     }
 }
 
 impl Drop for Stage<'_, '_> {
     fn drop(&mut self) {
+        if let Some(id) = self.handed.take() {
+            self.publisher.abandon(id);
+        }
         if let Some(writer) = self.writer.take() {
             drop(writer);
             self.publisher.released();

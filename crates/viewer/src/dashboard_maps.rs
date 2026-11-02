@@ -1155,7 +1155,7 @@ impl DashboardMaps {
                         Some((recording.as_str(), &decisions)),
                     )
                     .map_err(|error| error.to_string())?;
-                    document.bind_source(Arc::clone(&source_handle), resolve.clone(), allow);
+                    document.bind_source(&source_handle);
                     if !job_alive.load(Ordering::Acquire) {
                         return Err("Map asset loading was cancelled".into());
                     }

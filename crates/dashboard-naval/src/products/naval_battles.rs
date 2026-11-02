@@ -17,8 +17,8 @@ use dashboard_core::{config::LoadContext, transport::json_len};
 use dashboard_text::metadata::{LinkTags, check_cancel};
 use replay::container::Replay;
 use replay_data::{
-    rows::NavalResultCountryRow, rows::NavalResultMemberRow, rows::NavalResultRow, rows::TableId,
-    rows::tables,
+    rows::NavalResultCountryRow, rows::NavalResultMemberRow, rows::NavalResultRow, rows::RowCodec,
+    rows::TableId, rows::tables,
 };
 use replay_frame::{frame::DecodedFrame, frame::SharedView};
 use serde::{Deserialize, Serialize};
@@ -214,12 +214,100 @@ struct Episode {
     runs: Vec<Run>,
 }
 
+/// A row as a saved state keeps it: its key, and its fields as the wire encodes them.
+#[derive(Serialize, Deserialize)]
+struct SavedRow {
+    key: [u64; 2],
+    fields: Vec<u8>,
+}
+
+impl SavedRow {
+    fn of<R: RowCodec>(row: &R) -> io::Result<Self> {
+        let mut fields = Vec::new();
+        row.encode_fields(&mut fields)?;
+        let key = row.key();
+        Ok(Self {
+            key: [(key >> 64) as u64, key as u64],
+            fields,
+        })
+    }
+
+    fn row<R: RowCodec>(&self) -> io::Result<R> {
+        let key = u128::from(self.key[0]) << 64 | u128::from(self.key[1]);
+        R::decode_fields(key, &mut replay_data::codec::Decoder::new(&self.fields))
+    }
+}
+
+fn saved_rows<R: RowCodec>(rows: &[R]) -> io::Result<Vec<SavedRow>> {
+    rows.iter().map(SavedRow::of).collect()
+}
+
+fn loaded_rows<R: RowCodec>(rows: &[SavedRow]) -> io::Result<Vec<R>> {
+    rows.iter().map(SavedRow::row).collect()
+}
+
+/// [`saved_rows`] as a field's serializer.
+fn serialize_rows<R: RowCodec, S: serde::Serializer>(
+    rows: &[R],
+    out: S,
+) -> Result<S::Ok, S::Error> {
+    saved_rows(rows)
+        .map_err(serde::ser::Error::custom)?
+        .serialize(out)
+}
+
+/// [`loaded_rows`] as a field's deserializer.
+fn deserialize_rows<'de, R: RowCodec, D: serde::Deserializer<'de>>(
+    input: D,
+) -> Result<Vec<R>, D::Error> {
+    loaded_rows(&Vec::<SavedRow>::deserialize(input)?).map_err(serde::de::Error::custom)
+}
+
 #[derive(Clone, PartialEq)]
 struct ResultInput {
     row: NavalResultRow,
     members: Option<Vec<NavalResultMemberRow>>,
     countries: Option<Vec<NavalResultCountryRow>>,
     classification: Option<[Vec<(u64, u8)>; 2]>,
+}
+
+/// A [`ResultInput`] as a saved state keeps it.
+#[derive(Serialize, Deserialize)]
+struct SavedInput {
+    row: SavedRow,
+    members: Option<Vec<SavedRow>>,
+    countries: Option<Vec<SavedRow>>,
+    classification: Option<[Vec<(u64, u8)>; 2]>,
+}
+
+impl Serialize for ResultInput {
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        let saved = (|| -> io::Result<SavedInput> {
+            Ok(SavedInput {
+                row: SavedRow::of(&self.row)?,
+                members: self.members.as_deref().map(saved_rows).transpose()?,
+                countries: self.countries.as_deref().map(saved_rows).transpose()?,
+                classification: self.classification.clone(),
+            })
+        })()
+        .map_err(serde::ser::Error::custom)?;
+        saved.serialize(out)
+    }
+}
+
+impl<'de> Deserialize<'de> for ResultInput {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        let saved = SavedInput::deserialize(input)?;
+        (|| -> io::Result<Self> {
+            Ok(Self {
+                row: saved.row.row()?,
+                members: saved.members.as_deref().map(loaded_rows).transpose()?,
+                countries: saved.countries.as_deref().map(loaded_rows).transpose()?,
+                classification: saved.classification,
+            })
+        })()
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ResultInput {
@@ -292,17 +380,13 @@ pub struct Scan {
     tag_identity: HashMap<u32, String>,
     links_known: bool,
     result_links_dirty: bool,
-    #[serde(skip)]
+    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     result_inputs: HashMap<u64, ResultInput>,
     #[serde(skip)]
     result_views: Vec<SharedView>,
-    #[serde(skip)]
     result_through: Option<i32>,
-    #[serde(skip)]
     result_present: Vec<usize>,
-    #[serde(skip)]
     result_incomplete: usize,
-    #[serde(skip)]
     combat_incomplete: usize,
     #[serde(with = "dashboard_core::map_pairs")]
     refusals: BTreeMap<(i32, String), usize>,
@@ -312,10 +396,8 @@ pub struct Scan {
     pages: BTreeMap<String, u64>,
     windows: dashboard_base::prepared::series::Accumulator,
     available: bool,
-    #[serde(skip)]
     dirty: BTreeSet<usize>,
     /// What the scan keeps of the hours it is given projected ([`columnar::Hour`]).
-    #[serde(skip)]
     projected: columnar::Carried,
 }
 

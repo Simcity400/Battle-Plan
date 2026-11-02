@@ -69,8 +69,11 @@ use ts_rs::TS;
 
 pub struct WarCasualties;
 pub mod breakdown;
+pub mod emit;
+pub mod facts;
 pub mod pairs;
 pub mod prepared;
+pub mod served;
 // Diplomacy tooltip localisation entry.
 pub const UNKNOWN_LABEL: &str = "CASUALTIES_UNKNOWN";
 
@@ -167,6 +170,7 @@ pub struct CasualtyReply {
 
 impl Product for WarCasualties {
     const KEY: &'static str = "war-casualties";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     const CONTENT_DEPENDENT: bool = true;
     type Params = CasualtyParams;
     type Reply = CasualtyReply;
@@ -290,6 +294,16 @@ impl Unknown {
         } else {
             self.valid &= value >= 0;
             self.new_max = self.new_max.max(value);
+        }
+    }
+    /// [`Self::relation`] of a spanning relation read again unchanged, for a country already
+    /// seen, whose total never reads `all_zero`.
+    fn unchanged(&mut self) {
+        self.present = true;
+        match self.delta {
+            None => self.delta = Some(0),
+            Some(0) => {}
+            Some(_) => self.valid = false,
         }
     }
     fn finish(&mut self) {
@@ -575,16 +589,6 @@ struct Scan {
     pair_hour: i32,
     #[serde(skip)]
     previous_generation: Option<u64>,
-    /// While a block's extract follows the scan, the relation lifetimes it
-    /// first holds, in the order it meets them.
-    #[serde(skip)]
-    inserted: Option<Vec<PairKey>>,
-    /// While a block's extract follows the scan, each country's unknown
-    /// losses since the block's first hour as they move for a country seen
-    /// before ([`Unknown::seen_total`]), by country index: zero from the
-    /// first hour on, whatever this scan's own totals.
-    #[serde(skip)]
-    relative: Option<Vec<Option<i64>>>,
 }
 impl Scan {
     fn new() -> Self {
@@ -613,8 +617,6 @@ impl Scan {
             pair_frontier: 0,
             pair_hour: 0,
             previous_generation: None,
-            inserted: None,
-            relative: None,
         }
     }
     fn country(&mut self, identity: Identity) -> usize {
@@ -789,74 +791,49 @@ impl Scan {
         self.pair_frontier = self.read;
         self.pair_hour = last;
     }
-    /// An hour a block's fold follows from its extract: an hourly supplying
-    /// read right after the hour observed last, keeping the census, every
-    /// holder's place and nothing to recover. What observing it does to this
-    /// scan but for the relations' counters (which the fold carries once,
-    /// after the block): the read sequence and relation frontier move to it;
-    /// when its relations were read again (`process`), the lifetimes first
-    /// held there (`inserted`, in the order met) are held; and each changed
-    /// tag (`tags`, in tag order: the endpoints of the relations read) is
-    /// sampled with its country's values there (`countries`, one per tag).
-    fn follow_hour(
+    /// The relation lifetime `first`-`second` from `start` read `values` at an hour continuing
+    /// the last read with the same relations ([`ScanFrames::moved`]): as [`Self::relation`] reads
+    /// it, the lifetime staying in the supplying generation, whose last read is the frontier.
+    fn relation_moved(
         &mut self,
-        hour: i32,
-        process: bool,
-        inserted: &[PairKey],
-        tags: &[String],
-        countries: &[Country],
-    ) {
-        for tag in tags {
-            self.materialize_tag(tag);
-        }
-        self.hour = Some(hour);
-        span_push(&mut self.observed, hour);
-        self.last_read = Some(hour);
-        self.read += 1;
-        self.touched.clear();
-        if process {
-            self.relations_begin();
-            for &key in inserted {
-                self.hold_lifetime(key);
+        first: usize,
+        second: usize,
+        start: i32,
+        values: [i64; 4],
+    ) -> io::Result<()> {
+        let (first, second, values) = if first < second {
+            (first, second, values)
+        } else {
+            (second, first, [values[1], values[0], values[3], values[2]])
+        };
+        for index in [first, second] {
+            let country = &mut self.countries[index];
+            if country.touched != self.read {
+                country.touched = self.read;
+                country.unknown.begin();
+                self.touched.push(index);
             }
         }
-        self.partial_changed.clear();
-        self.relations_advance();
-        for (tag, country) in tags.iter().zip(countries) {
-            let Some(&index) = self.live.get(tag) else {
-                continue;
-            };
-            if self.countries[index].relations == 0 {
-                continue;
-            }
-            let identity = self.identities[index];
-            let track = match self.tracks.get_mut(tag) {
-                Some(track) => track,
-                None => self.tracks.entry(tag.clone()).or_default(),
-            };
-            if track.sample(hour, identity, country) {
-                self.bound(hour);
-            }
-        }
-        if self.active_dirty {
-            self.active = self
-                .live
-                .iter()
-                .filter(|(_, index)| self.countries[**index].relations > 0)
-                .map(|(tag, _)| tag.clone())
-                .collect();
-            self.active_dirty = false;
-        }
-        for tag in tags {
-            if self.active.contains(tag)
-                && let Some(tail) = self
-                    .tracks
-                    .get_mut(tag)
-                    .and_then(|track| track.tail.as_mut())
-            {
-                tail.last = hour;
-            }
-        }
+        let generation = self.generation;
+        let pair = self
+            .pairs
+            .get_mut(&(first, second, start))
+            .filter(|pair| pair.generation == generation)
+            .ok_or_else(|| io::Error::other("A moved casualty relation was not read last"))?;
+        let spans = self.pair_frontier != 0 && self.pair_frontier + 1 == self.read;
+        let old = pair.values;
+        pair.values = values;
+        self.countries[first].taken += i128::from(values[0]) - i128::from(old[0]);
+        self.countries[first].dealt += i128::from(values[1]) - i128::from(old[1]);
+        self.countries[second].taken += i128::from(values[1]) - i128::from(old[1]);
+        self.countries[second].dealt += i128::from(values[0]) - i128::from(old[0]);
+        self.countries[first]
+            .unknown
+            .relation(values[2], spans.then_some(old[2]));
+        self.countries[second]
+            .unknown
+            .relation(values[3], spans.then_some(old[3]));
+        Ok(())
     }
     #[cfg(test)]
     fn begin_hour(&mut self, hour: i32, live: &BTreeMap<String, usize>, changed: bool, read: bool) {
@@ -991,31 +968,6 @@ impl Scan {
         if self.previous_generation.is_some() {
             pair.generation = self.generation;
         }
-        if self.pairs.len() > ordinal
-            && let Some(inserted) = &mut self.inserted
-        {
-            inserted.push((first, second, start));
-        }
-    }
-    /// A relation lifetime first held at this hour, as [`Self::relation`]
-    /// holds it, before the counters it carries are set.
-    fn hold_lifetime(&mut self, (first, second, start): PairKey) {
-        let ordinal = self.pairs.len();
-        let hour = self.hour.expect("relation hour");
-        let countries = &mut self.countries;
-        let active_dirty = &mut self.active_dirty;
-        self.pairs.entry((first, second, start)).or_insert_with(|| {
-            *active_dirty |= countries[first].relations == 0 || countries[second].relations == 0;
-            countries[first].relations += 1;
-            countries[second].relations += 1;
-            HeldPair {
-                values: [0; 4],
-                read: 0,
-                hour,
-                ordinal,
-                generation: u64::MAX,
-            }
-        });
     }
     fn relations_begin(&mut self) {
         self.previous_generation = Some(self.generation);
@@ -1041,14 +993,7 @@ impl Scan {
         self.partial_changed.clear();
         if read {
             for &index in &self.touched {
-                let unknown = &mut self.countries[index].unknown;
-                if let Some(relative) = &mut self.relative {
-                    if relative.len() <= index {
-                        relative.resize(index + 1, Some(0));
-                    }
-                    relative[index] = unknown.seen_total(relative[index]);
-                }
-                unknown.finish();
+                self.countries[index].unknown.finish();
             }
             if let Some(before_gap) = self.gap_read.take() {
                 // Key order, not hash order: `touched` is saved state.
@@ -1989,18 +1934,12 @@ struct ScanFrames {
     /// since operand reasons carry the hour they were read.
     #[serde(default)]
     name_digest: Option<[u8; 16]>,
-    /// Whether a frame since this was last cleared was other than an hourly
-    /// supplying read right after the hour before with a valid, unchanged
-    /// census and nothing to recover: one a block's fold cannot follow from
-    /// its extract ([`Scan::follow_hour`]).
+    /// Each country's relations in the rows last joined ([`Self::endpoints`]), by index.
     #[serde(skip)]
-    irregular: bool,
-    /// Whether the last frame read the relations again.
+    degrees: Vec<u32>,
+    /// Each country's relations [`Self::moved`] read this hour, by index; zero after it.
     #[serde(skip)]
-    processed: bool,
-    /// Whether the last frame named again.
-    #[serde(skip)]
-    renamed: bool,
+    moved_count: Vec<u32>,
 }
 impl ScanFrames {
     fn new(replay: &Replay, branch: u64) -> Self {
@@ -2027,9 +1966,8 @@ impl ScanFrames {
             name_entries: HashMap::new(),
             name_views: Vec::new(),
             name_digest: None,
-            irregular: false,
-            processed: false,
-            renamed: false,
+            degrees: Vec::new(),
+            moved_count: Vec::new(),
         }
     }
     /// Appends each tag whose naming operands differ from its latest entry. The
@@ -2098,14 +2036,6 @@ impl ScanFrames {
         self.changed_endpoints.clear();
         self.scan.advance_quiet(first, last);
     }
-    /// Name again from `snapshot` (the naming tables of an hour whose
-    /// naming inputs differ from the newest snapshot), as that hour's frame
-    /// does: a block's fold, at an hour its extract named again.
-    fn rename(&mut self, snapshot: replay_frame::frame::DecodedFrame) {
-        self.names(&snapshot);
-        self.name_digest = Some(name_digest(&snapshot));
-        self.name_snapshot = Some(snapshot);
-    }
     fn frame(&mut self, decoded: &replay_frame::frame::DecodedFrame, replay: &Replay) {
         self.frame_inputs(decoded, replay, None);
     }
@@ -2127,17 +2057,7 @@ impl ScanFrames {
         self.changed_tags.clear();
         self.changed_pairs.clear();
         self.changed_endpoints.clear();
-        self.processed = false;
-        self.renamed = false;
-        if self
-            .scan
-            .hour
-            .is_none_or(|hour| hour.checked_add(1) != Some(decoded.hour))
-        {
-            self.irregular = true;
-        }
         if validate_campaign(decoded, replay).is_err() {
-            self.irregular = true;
             self.changed_tags.extend(self.scan.active.iter().cloned());
             self.scan.gap();
             return;
@@ -2147,7 +2067,6 @@ impl ScanFrames {
             decoded.complete::<tables::CountryLinks>(),
             decoded.complete::<tables::WarRelations>(),
         ) else {
-            self.irregular = true;
             self.changed_tags.extend(self.scan.active.iter().cloned());
             self.scan.gap();
             return;
@@ -2168,7 +2087,6 @@ impl ScanFrames {
                     || before_links != &decoded.tables[TableId::CountryLinks.index()]
             });
         if changed {
-            self.irregular = true;
             self.live.clear();
             self.by_slot.clear();
             for country in countries {
@@ -2189,7 +2107,6 @@ impl ScanFrames {
             }
         }
         if !valid {
-            self.irregular = true;
             self.changed_tags.extend(self.scan.active.iter().cloned());
             self.forget_census();
             self.scan.gap();
@@ -2241,7 +2158,6 @@ impl ScanFrames {
             if rename {
                 self.names(&snapshot);
                 self.name_digest = Some(name_digest(&snapshot));
-                self.renamed = true;
             }
             self.name_snapshot = Some(snapshot);
         }
@@ -2292,9 +2208,14 @@ impl ScanFrames {
             self.relation_keys.clear();
             self.relation_keys
                 .extend(relations.iter().map(relation_key));
+            self.degrees.clear();
+            self.degrees.resize(self.scan.identities.len(), 0);
+            for &(first, second) in &self.endpoints {
+                self.degrees[first] += 1;
+                self.degrees[second] += 1;
+            }
         }
         if !valid {
-            self.irregular = true;
             self.changed_tags.extend(self.scan.active.iter().cloned());
             self.forget_census();
             self.scan.gap();
@@ -2306,9 +2227,6 @@ impl ScanFrames {
             TableId::WarRelations,
             decoded.hour,
         );
-        if !read || self.scan.gap_read.is_some() {
-            self.irregular = true;
-        }
         self.pending_relations |= !sparse
             || changed
             || changes.is_some_and(|changes| changes.rows_changed[TableId::WarRelations.index()])
@@ -2317,7 +2235,6 @@ impl ScanFrames {
                 .hour
                 .is_none_or(|hour| hour.checked_add(1) != Some(decoded.hour));
         let process = read && self.pending_relations;
-        self.processed = process;
         // A resumed observer rebuilds its lookup tables from this frame. Only
         // a changed native census closes continuity on a carried read.
         let holders_changed = changed && self.scan.live != self.live;
@@ -2444,6 +2361,133 @@ impl ScanFrames {
             self.scan.sample_changes(&self.changed_tags, read);
         }
     }
+    /// An hour continuing the hour observed last as an hourly supplying read, with the same
+    /// census and relation lifetimes and no gap to recover: what [`Self::frame_changes`] does
+    /// there, reading only the relations at `moved` (their places in the rows joined last, and
+    /// their counters as those rows order them) and the countries they join. Every other
+    /// relation was read again unchanged. `names` holds the naming tables' views where a naming
+    /// input was written.
+    fn moved(
+        &mut self,
+        hour: i32,
+        moved: &[(u32, [i64; 4])],
+        names: Option<(Vec<(TableId, SharedView)>, replay_frame::frame::Metrics)>,
+    ) -> io::Result<()> {
+        self.changed_tags.clear();
+        self.changed_pairs.clear();
+        self.changed_endpoints.clear();
+        if !self.quiet_continues(hour)
+            || !self.supplying_keys_current
+            || self.supplying_pairs.is_none()
+        {
+            return Err(io::Error::other(
+                "A casualty hour read by its changes does not continue the hour before",
+            ));
+        }
+        if let Some((views, metrics)) = names
+            && let Some(before) = &self.name_snapshot
+            && !views.iter().all(|(table, view)| {
+                !NAME_INPUTS.contains(table)
+                    || same_name_rows(*table, &before.tables[table.index()], view)
+            })
+        {
+            let mut snapshot = before.clone();
+            snapshot.hour = hour;
+            snapshot.metrics = metrics;
+            for (table, view) in views {
+                snapshot.tables[table.index()] = view;
+            }
+            self.names(&snapshot);
+            self.name_digest = Some(name_digest(&snapshot));
+            self.name_snapshot = Some(snapshot);
+        }
+        self.name_views.clear();
+        for &(place, _) in moved {
+            let (Some(&(first, second)), Some(&(_, _, start))) = (
+                self.endpoints.get(place as usize),
+                self.relation_keys.get(place as usize),
+            ) else {
+                return Err(io::Error::other("A moved casualty relation was not joined"));
+            };
+            for index in [first, second] {
+                if let Some(Some(tag)) = self.current_tags.get(index) {
+                    self.changed_tags.insert(tag.clone());
+                }
+            }
+            self.changed_pairs
+                .insert((first.min(second), first.max(second), start));
+        }
+        self.scan.materialize(&self.changed_tags);
+        self.scan
+            .begin_hour_inputs(hour, &self.live, false, true, true);
+        self.moved_count.resize(self.scan.identities.len(), 0);
+        for &(place, values) in moved {
+            let (first, second) = self.endpoints[place as usize];
+            self.moved_count[first] += 1;
+            self.moved_count[second] += 1;
+            let start = self.relation_keys[place as usize].2;
+            self.scan.relation_moved(first, second, start, values)?;
+        }
+        // A country's relations read again unchanged agree on no unknown losses.
+        for &index in &self.scan.touched {
+            if self.degrees.get(index).copied().unwrap_or(0) > self.moved_count[index] {
+                self.scan.countries[index].unknown.unchanged();
+            }
+            self.moved_count[index] = 0;
+        }
+        self.scan.end_hour_inputs(true, true);
+        self.scan.relations_advance();
+        self.scan.sample_changes(&self.changed_tags, true);
+        Ok(())
+    }
+}
+
+/// Whether [`ScanFrames::frame_inputs`] joins `frame` rather than taking it as a gap, in a
+/// recording of `campaign`: its campaign, complete countries, links and relations, each country
+/// mapped by its links to a slot and a tag of its own, and each relation between two of them,
+/// each lifetime once. A function of the frame alone, as the scan's joins are.
+pub(super) fn joins(frame: &replay_frame::frame::DecodedFrame, campaign: &[u8]) -> bool {
+    if let TableView::Complete(rows) = &*frame.tables[TableId::Campaign.index()]
+        && rows
+            .rows::<tables::Campaign>()
+            .is_none_or(|rows| rows.len() != 1 || rows[0].id != campaign)
+    {
+        return false;
+    }
+    let (Ok(countries), Ok(links), Ok(relations)) = (
+        frame.complete::<tables::Countries>(),
+        frame.complete::<tables::CountryLinks>(),
+        frame.complete::<tables::WarRelations>(),
+    ) else {
+        return false;
+    };
+    let slot = |raw: u32| {
+        links
+            .binary_search_by_key(&raw, |link| link.id)
+            .ok()
+            .map(|at| links[at].canonical_slot)
+    };
+    let mut slots = HashSet::with_capacity(countries.len());
+    let mut tags = HashSet::with_capacity(countries.len());
+    for country in countries {
+        if slot(country.id) != Some(country.canonical_slot)
+            || std::str::from_utf8(&country.tag).is_err()
+            || !slots.insert(country.canonical_slot)
+            || !tags.insert(country.tag.as_slice())
+        {
+            return false;
+        }
+    }
+    let endpoint = |raw: u32| slot(raw).filter(|slot| slots.contains(slot));
+    let mut lifetimes = HashSet::with_capacity(relations.len());
+    relations.iter().all(
+        |row| match (endpoint(row.first_country), endpoint(row.second_country)) {
+            (Some(first), Some(second)) if first != second => {
+                lifetimes.insert((first.min(second), first.max(second), row.start_hour))
+            }
+            _ => false,
+        },
+    )
 }
 fn scan_frames(
     replay: &Replay,
@@ -2485,6 +2529,91 @@ fn scan_frames(
     #[cfg(any(test, feature = "test-support"))]
     pairs.shrink_to_fit();
     Ok((builder.scan, pairs))
+}
+
+#[cfg(test)]
+impl Scan {
+    /// What a publication reads of the scan, its open samples sealed: two scans publishing alike
+    /// hold the same, however lazily they extended their runs or numbered their generations.
+    fn parity(&self) -> serde_json::Value {
+        let tracks: BTreeMap<&String, Vec<serde_json::Value>> = self
+            .tracks
+            .iter()
+            .map(|(tag, track)| {
+                let mut runs: Vec<Sample> = track.iter().collect();
+                if track.tail.is_some()
+                    && self.active.contains(tag)
+                    && let (Some(hour), Some(last)) = (self.hour, runs.last_mut())
+                {
+                    last.last = hour;
+                    if let Some(read) = self.last_read {
+                        last.confirmed = last.confirmed.max(read);
+                    }
+                }
+                let runs = runs
+                    .iter()
+                    .map(|run| {
+                        serde_json::json!([
+                            run.first,
+                            run.last,
+                            run.confirmed,
+                            run.identity,
+                            run.dealt.to_string(),
+                            run.taken.to_string(),
+                            run.unknown,
+                            run.at_least,
+                        ])
+                    })
+                    .collect();
+                (tag, runs)
+            })
+            .collect();
+        let pairs: BTreeMap<PairKey, serde_json::Value> = self
+            .pairs
+            .iter()
+            .map(|(&key, pair)| {
+                let read = if pair.generation == self.generation {
+                    self.pair_frontier
+                } else {
+                    pair.read
+                };
+                let value =
+                    serde_json::json!([pair.values, pair.ordinal, read, self.relation_hour(pair)]);
+                (key, value)
+            })
+            .collect();
+        let holders: BTreeMap<&String, BTreeSet<&Identity>> = self
+            .holders
+            .iter()
+            .map(|(tag, identities)| (tag, identities.iter().collect()))
+            .collect();
+        serde_json::json!({
+            "identities": self.identities,
+            "countries": self.countries.iter().map(|country| serde_json::json!([
+                country.dealt.to_string(),
+                country.taken.to_string(),
+                country.relations,
+                country.unknown.total,
+                country.unknown.seen,
+                country.at_least,
+            ])).collect::<Vec<_>>(),
+            "pairs": pairs.into_iter().collect::<Vec<_>>(),
+            "live": self.live,
+            "holders": holders,
+            "tracks": tracks,
+            "bounds": self.bounds,
+            "active": self.active,
+            "observed": self.observed,
+            "hour": self.hour,
+            "lastRead": self.last_read,
+            "read": self.read,
+            "incomplete": self.incomplete,
+            "gapRead": self.gap_read,
+            "pairFrontier": self.pair_frontier,
+            "pairHour": self.pair_hour,
+            "names": self.names.iter().map(|(tag, inputs)| (tag, inputs.len())).collect::<Vec<_>>(),
+        })
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

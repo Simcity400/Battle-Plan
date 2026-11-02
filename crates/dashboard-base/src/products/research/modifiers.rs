@@ -13,6 +13,15 @@ pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<
     let shared = &country[country.partition_point(|r| r.index < u32::MAX)..];
     let slot = &country[country.partition_point(|r| r.index < input.index)
         ..country.partition_point(|r| r.index <= input.index)];
+    scoped(input, shared, slot)
+}
+
+/// [`breakdown`] of `input`, from its owner's rows of the country scope (index `u32::MAX`) and
+/// of its slot, each in key order.
+pub(super) fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<ResearchModifiers> {
+    if input.technology_present == 0 {
+        return None;
+    }
     // No row-count cap: a sharing group writes one member row per country, so
     // any fixed limit would drop the breakdown for large groups. Every check
     // below is linear in these rows, or bounded by the 32 groups.

@@ -1030,13 +1030,12 @@ struct PressureFixture {
     pump: RealDriver,
     source: PressureSource,
     owner: engine_allocation::credit::MemoryBudget,
-    prepared: Option<(std::path::PathBuf, uuid::Uuid)>,
 }
 impl PressureFixture {
-    fn new(prepared: bool, shared: bool) -> Self {
-        Self::span(prepared, shared, 10, 15, 15)
+    fn new(shared: bool) -> Self {
+        Self::span(shared, 10, 15, 15)
     }
-    fn span(prepared: bool, shared: bool, first: Hour, last: Hour, endpoint: Hour) -> Self {
+    fn span(shared: bool, first: Hour, last: Hour, endpoint: Hour) -> Self {
         let replay = Arc::new(
             Replay::from_records(
                 b"campaign".to_vec(),
@@ -1051,13 +1050,6 @@ impl PressureFixture {
         let mut playback = Playback::unloaded(replay.clone())
             .unwrap()
             .with_change_budget(owner.clone());
-        let prepared = if prepared {
-            let (map, path, id) = super::super::tests::paged_map(&replay);
-            playback = playback.with_checkpoints(map);
-            Some((path, id))
-        } else {
-            None
-        };
         playback.seek(1, first).unwrap();
         let Current::Frame(initial) = playback.current() else {
             panic!("recorded first frame")
@@ -1086,7 +1078,6 @@ impl PressureFixture {
             pump,
             source,
             owner,
-            prepared,
         }
     }
     fn source_reply(&mut self) {
@@ -1249,98 +1240,90 @@ impl PressureFixture {
         assert!(self.pump.results.try_recv().is_err());
         self.close();
     }
-    fn close(mut self) {
+    fn close(self) {
         drop(self.pump);
         drop(self.source);
-        if let Some((path, id)) = self.prepared.take() {
-            let _ = store::Store::local(id).unwrap().clear();
-            let _ = std::fs::remove_file(path);
-        }
     }
 }
 
 #[test]
 fn intermediate_pressure_through_lane_and_coordinator_preserves_keep_borders_for_both_readers() {
-    for prepared in [false, true] {
-        for shared in [false, true] {
-            let mut f = PressureFixture::new(prepared, shared);
-            f.fold(11);
-            let pin = super::super::tests::source_frame(&f.source.client(), 1, 11);
-            let before = f
-                .pump
-                .driver
-                .decode
-                .as_ref()
-                .unwrap()
-                .colour
-                .as_ref()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .clone();
-            let held = f.pressure(12);
-            let after = f
-                .pump
-                .driver
-                .decode
-                .as_ref()
-                .unwrap()
-                .colour
-                .as_ref()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .clone();
-            assert!(Arc::ptr_eq(
-                before.as_ref().unwrap(),
-                after.as_ref().unwrap()
-            ));
-            assert_eq!(after.unwrap().mode, "border:10:11");
-            f.park_and_release(held);
-            assert!(f.pump.driver.history.is_some());
-            assert!(matches!(f.pump.driver.turn(), Turn::Progress));
-            while f.pump.driver.history.is_some() {
-                f.pump.next_event();
-            }
-            assert_eq!(f.pump.driver.decode.as_ref().unwrap().next_source, 13);
-            f.fold(13);
-            f.fold(14);
-            assert!(matches!(f.pump.driver.turn(), Turn::Progress));
-            f.source_reply();
-            drop(pin);
-            f.finish();
+    for shared in [false, true] {
+        let mut f = PressureFixture::new(shared);
+        f.fold(11);
+        let pin = super::super::tests::source_frame(&f.source.client(), 1, 11);
+        let before = f
+            .pump
+            .driver
+            .decode
+            .as_ref()
+            .unwrap()
+            .colour
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
+        let held = f.pressure(12);
+        let after = f
+            .pump
+            .driver
+            .decode
+            .as_ref()
+            .unwrap()
+            .colour
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert!(Arc::ptr_eq(
+            before.as_ref().unwrap(),
+            after.as_ref().unwrap()
+        ));
+        assert_eq!(after.unwrap().mode, "border:10:11");
+        f.park_and_release(held);
+        assert!(f.pump.driver.history.is_some());
+        assert!(matches!(f.pump.driver.turn(), Turn::Progress));
+        while f.pump.driver.history.is_some() {
+            f.pump.next_event();
         }
+        assert_eq!(f.pump.driver.decode.as_ref().unwrap().next_source, 13);
+        f.fold(13);
+        f.fold(14);
+        assert!(matches!(f.pump.driver.turn(), Turn::Progress));
+        f.source_reply();
+        drop(pin);
+        f.finish();
     }
 }
 
 #[test]
 fn endpoint_pressure_through_lane_and_coordinator_is_retried_and_never_cached_for_both_readers() {
-    for prepared in [false, true] {
-        for shared in [false, true] {
-            let mut f = PressureFixture::new(prepared, shared);
-            for hour in 11..=14 {
-                f.fold(hour);
-            }
-            let pin = super::super::tests::source_frame(&f.source.client(), 1, 14);
-            let held = f.pressure(15);
-            // A second client receives pressure, not a cached completed gap.
-            let (send, done) = mpsc::channel();
-            let second = f.source.client();
-            let _handle = second.post(next_id(), (1, 15), move |_, reply| {
-                send.send(reply).unwrap();
-            });
-            assert!(matches!(
-                done.recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
-                    .unwrap(),
-                source_mailbox::Reply::Pressure(_)
-            ));
-            f.park_and_release(held);
-            assert!(f.pump.driver.decode.is_none());
-            let retry = super::super::tests::source_frame(&f.source.client(), 1, 15);
-            assert!(matches!(retry, Current::Frame(ref frame) if frame.hour == 15));
-            drop((pin, retry));
-            f.finish();
+    for shared in [false, true] {
+        let mut f = PressureFixture::new(shared);
+        for hour in 11..=14 {
+            f.fold(hour);
         }
+        let pin = super::super::tests::source_frame(&f.source.client(), 1, 14);
+        let held = f.pressure(15);
+        // A second client receives pressure, not a cached completed gap.
+        let (send, done) = mpsc::channel();
+        let second = f.source.client();
+        let _handle = second.post(next_id(), (1, 15), move |_, reply| {
+            send.send(reply).unwrap();
+        });
+        assert!(matches!(
+            done.recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+                .unwrap(),
+            source_mailbox::Reply::Pressure(_)
+        ));
+        f.park_and_release(held);
+        assert!(f.pump.driver.decode.is_none());
+        let retry = super::super::tests::source_frame(&f.source.client(), 1, 15);
+        assert!(matches!(retry, Current::Frame(ref frame) if frame.hour == 15));
+        drop((pin, retry));
+        f.finish();
     }
 }
 

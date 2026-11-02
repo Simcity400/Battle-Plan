@@ -4,6 +4,7 @@ use super::assignment::{SideKey, native_side_keys};
 use super::assignment::{historical_anchors, resolve_keys};
 #[cfg(test)]
 use super::scores::ScoreRead;
+#[cfg(any(test, feature = "test-support"))]
 use super::scores::ScoreView;
 use super::{
     assignment::{AssignedSide, SideAnchors, assign_sides_with_anchors},
@@ -12,6 +13,7 @@ use super::{
 use dashboard_base::products::country_groups::Scan;
 #[cfg(test)]
 use replay_frame::frame::TableUpdate;
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use std::sync::Arc;
 
@@ -213,6 +215,7 @@ fn reason(reason: &str) -> AirCell {
     AirCell(Some(AirValue::Reason(reason.into())))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn check_country_tags(countries: &[replay_data::rows::CountryRow]) -> io::Result<()> {
     let unsupported = countries
         .iter()
@@ -398,6 +401,7 @@ pub(super) struct CountryScores {
     pub pairs: BTreeMap<(String, u32), (i64, i64)>,
     pub active: BTreeSet<u32>,
 }
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn score_countries(
     frame: &DecodedFrame,
 ) -> io::Result<(ScoreOperands, HashMap<u32, String>)> {
@@ -439,6 +443,7 @@ pub(super) fn country_scores(
     Ok(score_values(scores, operands, &owners))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn score_values(
     scores: ScoreView<'_>,
     operands: ScoreOperands,
@@ -883,6 +888,7 @@ pub(super) fn day_decoder(tables: &[TableId]) -> FrameDecoder {
     FrameDecoder::for_tables(&tables)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
     let mut result = Auxiliary::default();
     let Ok(wings) = frame.complete::<tables::AirWings>() else {
@@ -943,6 +949,7 @@ pub(super) fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn date_theatres(read: bool, hour: i32, known: bool, last_read: &mut Option<i32>) {
     if !known {
         *last_read = None;
@@ -971,10 +978,12 @@ fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxilia
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct AuxiliaryRead {
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     views: Vec<ViewIdentity>,
     value: Arc<Auxiliary>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl AuxiliaryRead {
     pub(super) fn read(
         &mut self,

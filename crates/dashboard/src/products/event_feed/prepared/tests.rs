@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    prepared::series::{LateIndex, Reader, tests::Fixture},
+    prepared::series::{Reader, tests::Fixture},
     products::country_history::HistoryScan,
 };
 use replay_data::{
@@ -15,30 +15,16 @@ struct Sources {
     #[serde(skip)]
     groups: country_groups::Scan,
     group_changes: country_groups::changes::Prepared,
-    subjects: subjects::Scan,
-    subject_changes: Accumulator,
-    subject_late: LateIndex,
-    ideas: idea_history::Scan,
-    idea_changes: idea_history::PreparedChanges,
-    focus: crate::prepared_focus::FocusIndex,
     identities: HistoryScan,
     facts: Observer,
-    projects: special_projects::prepared::Prepared,
 }
 impl Sources {
     fn new(source: &Source) -> Self {
         Self {
             groups: country_groups::Scan::new(source.replay_ref(), 1),
             group_changes: Default::default(),
-            subjects: subjects::Scan::new(source.replay_ref(), 1),
-            subject_changes: Default::default(),
-            subject_late: Default::default(),
-            ideas: idea_history::Scan::new(source.replay_ref(), 1),
-            idea_changes: Default::default(),
-            focus: Default::default(),
             identities: HistoryScan::new(false, &[]),
             facts: Default::default(),
-            projects: special_projects::prepared::Prepared::new(source.replay_ref(), 1),
         }
     }
     fn observe(
@@ -59,13 +45,6 @@ impl Sources {
         self.identities.observe(frame);
         self.group_changes
             .observe(&mut self.groups, frame, source, context)?;
-        self.subjects
-            .prepare_changes(frame, &mut self.subject_changes, &mut self.subject_late)?;
-        self.ideas
-            .prepare_changes(frame, &mut self.idea_changes, source, context)?;
-        self.focus
-            .observe_frame(source.replay_ref(), frame, cancelled)?;
-        self.projects.observe(source, context, frame, cancelled)?;
         self.facts
             .observe(source.replay_ref(), frame, &self.identities, cancelled)
     }
@@ -76,18 +55,6 @@ impl Sources {
         append: bool,
         cancelled: &AtomicBool,
     ) {
-        self.publish_with_projects(fixture, source, append, cancelled, true);
-    }
-    // Hand-authored completion-stream fixtures are the sole publisher of that
-    // section; an empty observer batch over the same hours would overlap it.
-    fn publish_with_projects(
-        &mut self,
-        fixture: &mut Fixture,
-        source: &Source,
-        append: bool,
-        cancelled: &AtomicBool,
-        projects: bool,
-    ) {
         let mut writer = if append {
             fixture.append_writer()
         } else {
@@ -97,29 +64,7 @@ impl Sources {
         self.group_changes
             .flush(&mut writer, 1, &self.groups, cancelled)
             .unwrap();
-        self.subject_changes
-            .flush(&mut writer, "subject-changes-1", 0, cancelled)
-            .unwrap();
-        crate::prepared::series::write_catalogue(
-            &mut writer,
-            "subject-changes",
-            1,
-            &BTreeMap::new(),
-            &(
-                self.subjects.observed,
-                self.subjects.change_warnings(),
-                &self.subject_late,
-            ),
-        )
-        .unwrap();
-        self.ideas
-            .flush_changes(&mut writer, 1, &mut self.idea_changes, cancelled)
-            .unwrap();
-        self.focus.flush(&mut writer, cancelled).unwrap();
         self.facts.flush(&mut writer, 1, cancelled).unwrap();
-        if projects {
-            self.projects.flush(&mut writer, 1, cancelled).unwrap();
-        }
         writer
             .write_at("groups", 0, &self.groups.saved_bytes().unwrap()[..])
             .unwrap();
@@ -146,8 +91,22 @@ impl Sources {
     }
 }
 
-/// The prepared feed's page, the stockpile increases its nukes family publishes read from the
-/// recording's rows, as that family's own tests hold its publication to them.
+thread_local! {
+    /// The completions a test hands the feed in place of those its recording's rows give.
+    static PROJECTS: std::cell::RefCell<Option<Arc<special_projects::query::Feed>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `run` with the feed reading `projects` for its completions.
+fn with_projects<T>(projects: special_projects::query::Feed, run: impl FnOnce() -> T) -> T {
+    PROJECTS.with_borrow_mut(|held| *held = Some(Arc::new(projects)));
+    let ran = run();
+    PROJECTS.with_borrow_mut(|held| *held = None);
+    ran
+}
+
+/// The prepared feed's page, what the families the segment driver prepares publish for it read
+/// from the recording's rows, as those families' own tests hold their publications to them.
 fn query(
     source: &Source,
     params: query::Params,
@@ -161,7 +120,27 @@ fn query(
         .parse()
         .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
     let nukes = country_nukes::row::feed(&source.replay(), branch, cancelled)?;
-    super::query(source, params, context, store, key, Some(&nukes), cancelled)
+    let subjects = subjects::row::feed(&source.replay(), branch, cancelled)?;
+    let focus = crate::prepared_focus::row::feed(&source.replay(), branch, cancelled)?;
+    let ideas = idea_history::row_feed(&source.replay(), branch, cancelled)?;
+    let projects = match PROJECTS.with_borrow(Clone::clone) {
+        Some(projects) => projects,
+        None => {
+            // The oracle's own read of the recording is no read of the feed's.
+            let scanned = crate::blocks::SCANNED_BLOCKS.with_borrow(Clone::clone);
+            let projects = special_projects::row::feed(source, branch, context, cancelled)?;
+            crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|held| *held = scanned);
+            Arc::new(projects)
+        }
+    };
+    let families = query::Families {
+        nukes: &nukes,
+        subjects: &subjects,
+        focus: &focus,
+        ideas: &ideas,
+        projects: &projects,
+    };
+    super::query(source, params, context, store, key, Some(families), cancelled)
 }
 
 fn actor(index: u32) -> EventFeedCountry {
@@ -450,48 +429,6 @@ fn prepared_feed_sources_equal_their_change_builders_across_commits_resume_appen
             changes.sort_by_key(&order);
             wanted.sort_by_key(order);
             assert_eq!(changes, wanted);
-            let starts: Vec<subjects::SubjectStart> =
-                rows(&fixture, "subject-changes-1", &[0, 1 << 63], &cancelled);
-            assert_eq!(
-                serde_json::to_value(starts).unwrap(),
-                serde_json::to_value(
-                    &subjects::scanned_branch(&source, 1, &cancelled)
-                        .unwrap()
-                        .starts
-                )
-                .unwrap()
-            );
-            let additions: Vec<idea_history::Addition> =
-                rows(&fixture, "idea-changes-1", &[0, 1, 2, 3], &cancelled);
-            let ideas = idea_history::scanned_branch(&source, 1, &cancelled).unwrap();
-            let actual: Vec<_> = additions
-                .iter()
-                .map(|event| (&event.tag, &event.span.token, event.span.first_hour))
-                .collect();
-            let wanted: Vec<_> = ideas
-                .countries
-                .iter()
-                .flat_map(|(tag, scanned)| {
-                    idea_history::named_additions(scanned)
-                        .map(move |(span, _)| (tag, &span.token, span.first_hour))
-                })
-                .collect();
-            assert_eq!(actual, wanted);
-            // Published across commits and resumes, the completions are those
-            // one uninterrupted fold of every hour gives.
-            let completions: Vec<crate::products::national_focus::FocusCompletion> =
-                rows(&fixture, "focus-completions-1", &[0], &cancelled);
-            let mut original = crate::prepared_focus::FocusIndex::default();
-            for frame in &seen {
-                original
-                    .observe_frame(source.replay_ref(), frame, &cancelled)
-                    .unwrap();
-            }
-            original.fold_held(&cancelled).unwrap();
-            // The debug trace follows country folds; published calls follow
-            // their stable chronological order, including the same-hour ties.
-            original.seen.sort_by_key(|completion| completion.hour);
-            assert_eq!(completions, original.seen);
             let facts: Vec<Fact> = rows(&fixture, "event-feed-facts-1", &FACT_KEYS, &cancelled);
             assert_eq!(
                 facts
@@ -723,26 +660,6 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
 }
 
-pub(crate) fn assert_store_pages(source: &Source, store: &store::Store, key: &store::SourceKey) {
-    let context = LoadContext { content: None };
-    let flag = AtomicBool::new(false);
-    let feed = build(source, 1, &context, &flag).unwrap();
-    let mut expected = semantic(&reply(&feed, "1", feed.first, feed.last, true));
-    expected.sort_by_key(|row| std::cmp::Reverse(row["hour"].as_i64().unwrap()));
-    assert_eq!(
-        pages(
-            source,
-            store,
-            key,
-            &context,
-            feed.last,
-            7,
-            expected.len().div_ceil(7) + 1
-        ),
-        expected
-    );
-}
-
 #[test]
 fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries() {
     for count in [101, 1_001] {
@@ -888,12 +805,12 @@ fn project_change(
     native: i32,
     read: i32,
     tag: Option<&str>,
-) -> special_projects::prepared::completion_stream::Change {
+) -> special_projects::emit::Change {
     let date = special_projects::ProjectDate {
         hour: native,
         exact: true,
     };
-    special_projects::prepared::completion_stream::Change {
+    special_projects::emit::Change {
         id,
         identity: (1, 100_000),
         local_id: id as u32,
@@ -919,8 +836,6 @@ fn project_change(
 
 #[test]
 fn prepared_feed_obsolete_project_pages_advance_to_live_rows_after_resume_and_append() {
-    use crate::prepared::series::{self, Run};
-    use special_projects::prepared::completion_stream as stream;
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let frames: Vec<_> = [100, 110, 119, 120, 130]
@@ -932,77 +847,25 @@ fn prepared_feed_obsolete_project_pages_advance_to_live_rows_after_resume_and_ap
     for frame in &frames {
         sources.observe(frame, &source, &flag).unwrap();
     }
-    sources.publish_with_projects(&mut fixture, &source, false, &flag, false);
+    sources.publish(&mut fixture, &source, false, &flag);
 
     // Topic operands, not a composed feed. Three newest bounded rows become
     // obsolete; an older live episode and a delayed replacement remain.
-    let mut values = Accumulator::default();
-    let mut metadata = stream::Metadata {
-        available: true,
-        ..Default::default()
-    };
-    values.through(100);
-    values
-        .event(
-            stream::KEY,
-            103,
-            &project_change(3, 103, 103, Some("mod-old-live")),
-        )
-        .unwrap();
-    values.push(
-        stream::episode_key(3).unwrap(),
-        Run::new(103, 119, 0, false),
+    let projects = special_projects::query::Feed::of(
+        vec![
+            project_change(3, 103, 103, Some("mod-old-live")),
+            project_change(0, 110, 110, Some("mod-A")),
+            project_change(1, 110, 110, Some("mod-B")),
+            project_change(2, 110, 110, Some("mod-C")),
+            project_change(0, 110, 120, None),
+            project_change(1, 100, 120, Some("mod-B")),
+            project_change(2, 110, 120, None),
+        ],
+        true,
+        Vec::new(),
+        None,
     );
-    for (id, tag) in [(0, "mod-A"), (1, "mod-B"), (2, "mod-C")] {
-        let ordinal = values.state(stream::KEY).unwrap().events;
-        values
-            .event(stream::KEY, 110, &project_change(id, 110, 110, Some(tag)))
-            .unwrap();
-        values.push(
-            stream::episode_key(id).unwrap(),
-            Run::new(110, 119, i128::from(ordinal), false),
-        );
-    }
-    values.through(119);
-    let mut writer = fixture.writer();
-    values
-        .flush(&mut writer, &stream::section(1), 0, &flag)
-        .unwrap();
-    series::write_catalogue(&mut writer, stream::FAMILY, 1, &BTreeMap::new(), &metadata).unwrap();
-    writer.commit().unwrap();
-    values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
-    metadata = serde_json::from_slice(&serde_json::to_vec(&metadata).unwrap()).unwrap();
-
-    values.through(120);
-    for change in [
-        project_change(0, 110, 120, None),
-        project_change(1, 100, 120, Some("mod-B")),
-        project_change(2, 110, 120, None),
-    ] {
-        let ordinal = values.state(stream::KEY).unwrap().events;
-        values.event(stream::KEY, 120, &change).unwrap();
-        metadata
-            .late
-            .insert(change.date.hour, 120, stream::KEY, ordinal);
-        if change.completion.is_some() {
-            values.push(
-                stream::episode_key(change.id).unwrap(),
-                Run::new(120, 130, i128::from(ordinal), false),
-            );
-        }
-    }
-    values.push(
-        stream::episode_key(3).unwrap(),
-        Run::new(120, 130, 0, false),
-    );
-    values.through(130);
-    let mut writer = fixture.append_writer();
-    values
-        .flush(&mut writer, &stream::section(1), 0, &flag)
-        .unwrap();
-    series::write_catalogue(&mut writer, stream::FAMILY, 1, &BTreeMap::new(), &metadata).unwrap();
-    writer.commit().unwrap();
-
+    with_projects(projects, || {
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
     let first = query(
         &source,
@@ -1058,12 +921,11 @@ fn prepared_feed_obsolete_project_pages_advance_to_live_rows_after_resume_and_ap
             "mod_project_3"
         ]
     );
+    });
 }
 
 #[test]
 fn prepared_feed_projects_seek_tag_order_with_late_rows_and_withdrawals_at_one_read() {
-    use crate::prepared::series::{self, Run};
-    use special_projects::prepared::completion_stream as stream;
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let frames: Vec<_> = [100, 110]
@@ -1075,41 +937,21 @@ fn prepared_feed_projects_seek_tag_order_with_late_rows_and_withdrawals_at_one_r
     for frame in &frames {
         sources.observe(frame, &source, &flag).unwrap();
     }
-    sources.publish_with_projects(&mut fixture, &source, false, &flag, false);
-    let mut values = Accumulator::default();
-    let mut metadata = stream::Metadata {
-        available: true,
-        ..Default::default()
-    };
-    values.through(100);
-    for (ordinal, change) in [
-        project_change(0, 103, 110, Some("mod-A")),
-        project_change(1, 110, 110, Some("mod-B")),
-        project_change(2, 110, 110, Some("mod-C")),
-        project_change(3, 110, 110, None),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        values.event(stream::KEY, 110, &change).unwrap();
-        metadata
-            .late
-            .insert(change.date.hour, 110, stream::KEY, ordinal as u64);
-        if change.completion.is_some() {
-            values.push(
-                stream::episode_key(change.id).unwrap(),
-                Run::new(110, 110, ordinal as i128, false),
-            );
-        }
-    }
-    values.through(110);
-    let mut writer = fixture.writer();
-    values
-        .flush(&mut writer, &stream::section(1), 0, &flag)
-        .unwrap();
-    series::write_catalogue(&mut writer, stream::FAMILY, 1, &BTreeMap::new(), &metadata).unwrap();
-    writer.commit().unwrap();
-    let reached = pages(&source, &fixture.store, &fixture.key, &context, 110, 1, 4);
+    sources.publish(&mut fixture, &source, false, &flag);
+    let projects = special_projects::query::Feed::of(
+        vec![
+            project_change(0, 103, 110, Some("mod-A")),
+            project_change(1, 110, 110, Some("mod-B")),
+            project_change(2, 110, 110, Some("mod-C")),
+            project_change(3, 110, 110, None),
+        ],
+        true,
+        Vec::new(),
+        None,
+    );
+    let reached = with_projects(projects, || {
+        pages(&source, &fixture.store, &fixture.key, &context, 110, 1, 4)
+    });
     assert_eq!(
         reached
             .iter()
@@ -1313,8 +1155,6 @@ fn prepared_feed_strike_only_campaign_keeps_recorded_types_and_stockpile_refusal
 
 #[test]
 fn prepared_feed_ordinary_project_after_many_late_rows_reads_only_its_raw_page() {
-    use crate::prepared::series::{self, Run};
-    use special_projects::prepared::completion_stream as stream;
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let frames: Vec<_> = [100, 8_000]
@@ -1326,46 +1166,15 @@ fn prepared_feed_ordinary_project_after_many_late_rows_reads_only_its_raw_page()
     for frame in &frames {
         sources.observe(frame, &source, &flag).unwrap();
     }
-    sources.publish_with_projects(&mut fixture, &source, false, &flag, false);
-    let mut values = Accumulator::default();
-    let mut metadata = stream::Metadata {
-        available: true,
-        ..Default::default()
-    };
-    values.through(100);
-    for ordinal in 0..50 {
-        let change = project_change(ordinal, 1_000, 8_000, Some(&format!("mod-A-{ordinal:05}")));
-        values.event(stream::KEY, 8_000, &change).unwrap();
-        metadata.late.insert(1_000, 8_000, stream::KEY, ordinal);
-    }
-    values
-        .event(
-            stream::KEY,
-            8_000,
-            &project_change(50, 8_000, 8_000, Some("mod-Z")),
-        )
-        .unwrap();
-    values.push(
-        stream::episode_key(50).unwrap(),
-        Run::new(8_000, 8_000, 50, false),
-    );
-    values.through(8_000);
-    let mut writer = fixture.writer();
-    values
-        .flush(&mut writer, &stream::section(1), 0, &flag)
-        .unwrap();
-    series::write_catalogue(
-        &mut writer,
-        stream::FAMILY,
-        1,
-        &BTreeMap::from([("completions".into(), stream::KEY)]),
-        &metadata,
-    )
-    .unwrap();
-    writer.commit().unwrap();
+    sources.publish(&mut fixture, &source, false, &flag);
+    let mut changes: Vec<_> = (0..50)
+        .map(|ordinal| project_change(ordinal, 1_000, 8_000, Some(&format!("mod-A-{ordinal:05}"))))
+        .collect();
+    changes.push(project_change(50, 8_000, 8_000, Some("mod-Z")));
+    let projects = special_projects::query::Feed::of(changes, true, Vec::new(), None);
     query::EVENT_ROWS_READ.with(|count| count.set(0));
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
-    let page = query(
+    let page = with_projects(projects, || query(
         &source,
         query::Params {
             branch_id: "1".into(),
@@ -1380,7 +1189,7 @@ fn prepared_feed_ordinary_project_after_many_late_rows_reads_only_its_raw_page()
         &fixture.store,
         &fixture.key,
         &flag,
-    )
+    ))
     .unwrap()
     .unwrap();
     assert_eq!(page.reply.rows.len(), 1);

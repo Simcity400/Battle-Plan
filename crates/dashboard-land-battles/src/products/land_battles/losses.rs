@@ -1,11 +1,39 @@
 //! Hourly observer counters and post-flush FinalizeCombat results.
 use super::*;
-use replay_data::{rows::LandSideLosses, rows::Recorded};
+use replay_data::{rows::LandCombatResultsRow, rows::LandSideLosses, rows::Recorded};
+use std::mem::size_of;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SideLossInputs {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SideLossInputs {
     manpower: Option<i32>,
     equipment: Option<Vec<(u64, i64)>>,
+}
+impl SideLossInputs {
+    /// The bytes it holds on the heap.
+    pub(super) fn heap(&self) -> usize {
+        self.equipment.as_ref().map_or(0, |equipment| {
+            equipment.capacity() * size_of::<(u64, i64)>()
+        })
+    }
+}
+/// Each side's hourly counters as LandCombatProgress records them, attacker then defender.
+pub(super) fn progress_inputs(
+    row: &replay_data::rows::LandCombatProgressRow,
+) -> [SideLossInputs; 2] {
+    let manpower = |value: &Recorded<i32>| match value {
+        Recorded::Value(value) => Some(*value),
+        Recorded::NotRecorded => None,
+    };
+    [
+        SideLossInputs {
+            manpower: manpower(&row.attacker_manpower_loss),
+            equipment: amounts(&row.attacker_equipment_losses),
+        },
+        SideLossInputs {
+            manpower: manpower(&row.defender_manpower_loss),
+            equipment: amounts(&row.defender_equipment_losses),
+        },
+    ]
 }
 fn amounts(value: &Recorded<Vec<replay_data::rows::LandEquipmentLoss>>) -> Option<Vec<(u64, i64)>> {
     match value {
@@ -188,6 +216,12 @@ impl Census {
         })
     }
     fn design(&mut self, hour: i32, variant: u64) -> usize {
+        if let Some(&(design, named)) = self.named.get(&variant) {
+            if !named {
+                self.unnamed.push((hour, variant));
+            }
+            return design;
+        }
         let name = self.variants.current(variant).and_then(|raw| {
             dashboard_base::products::equipment::variant_names(
                 raw,
@@ -197,18 +231,46 @@ impl Census {
             )
             .0
         });
-        if name.is_none() {
-            self.warn(
-                hour,
-                format!("Equipment variant {variant}: name not recorded or content unavailable"),
-            );
+        let named = name.is_some();
+        if !named {
+            self.unnamed.push((hour, variant));
         }
         // The handle keeps designs with identical display names apart.
-        self.designs.intern(LandEquipmentDesign {
+        let design = self.designs.intern(LandEquipmentDesign {
             name,
             variant: variant.to_string(),
-        })
+        });
+        self.named.insert(variant, (design, named));
+        design
     }
+    /// Warns of each unnamed design read since, once an hour with the count of its reads.
+    pub(super) fn warn_unnamed(&mut self) {
+        if self.unnamed.is_empty() {
+            return;
+        }
+        let mut unnamed = std::mem::take(&mut self.unnamed);
+        unnamed.sort_unstable();
+        for reads in unnamed.chunk_by(|left, right| left == right) {
+            let (hour, variant) = reads[0];
+            self.warnings.add(
+                hour,
+                format!("Equipment variant {variant}: name not recorded or content unavailable"),
+                reads.len(),
+            );
+        }
+        unnamed.clear();
+        self.unnamed = unnamed;
+    }
+    /// Forgets the designs of the variants whose names `changed` moved.
+    pub(super) fn renamed(
+        &mut self,
+        changed: &[(u64, dashboard_base::products::equipment::VariantVersion)],
+    ) {
+        for (variant, _) in changed {
+            self.named.remove(variant);
+        }
+    }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn observe_losses(&mut self, frame: &DecodedFrame, opened: Option<&[u64]>) {
         let progress = slot_read(
             self.format,
@@ -235,49 +297,51 @@ impl Census {
                 open
             }
         };
+        #[cfg(test)]
+        {
+            self.work.row_visits += open
+                .iter()
+                .filter(|(combat, _)| {
+                    progress.is_some_and(|progress| {
+                        progress
+                            .binary_search_by_key(combat, |row| row.combat)
+                            .is_ok()
+                    })
+                })
+                .count();
+        }
+        self.read_losses(frame.hour, open, |combat| {
+            progress.and_then(|progress| {
+                progress
+                    .binary_search_by_key(&combat, |row| row.combat)
+                    .ok()
+                    .map(|at| progress_inputs(&progress[at]))
+            })
+        });
+    }
+    /// The hourly counters `progress` reads at `hour` for each of `open`'s battles, by its
+    /// combat: none where they were not read.
+    pub(super) fn read_losses(
+        &mut self,
+        hour: i32,
+        open: Vec<(u64, usize)>,
+        progress: impl Fn(u64) -> Option<[SideLossInputs; 2]>,
+    ) {
         for (combat, at) in open {
             #[cfg(test)]
             {
                 self.work.history_visits += 1;
             }
-            let row = progress.and_then(|progress| {
-                progress
-                    .binary_search_by_key(&combat, |row| row.combat)
-                    .ok()
-                    .map(|at| &progress[at])
-            });
-            #[cfg(test)]
-            {
-                self.work.row_visits += usize::from(row.is_some());
-            }
-            let losses = row.map(|row| {
-                [
-                    SideLossInputs {
-                        manpower: match row.attacker_manpower_loss {
-                            Recorded::Value(value) => Some(value),
-                            Recorded::NotRecorded => None,
-                        },
-                        equipment: amounts(&row.attacker_equipment_losses),
-                    },
-                    SideLossInputs {
-                        manpower: match row.defender_manpower_loss {
-                            Recorded::Value(value) => Some(value),
-                            Recorded::NotRecorded => None,
-                        },
-                        equipment: amounts(&row.defender_equipment_losses),
-                    },
-                ]
-            });
-            if let Some(losses) = losses {
+            if let Some(losses) = progress(combat) {
                 // Repeated confirmations need no repeated values in the reply.
                 if self.episodes[&at].loss_inputs.as_ref() == Some(&losses) {
                     continue;
                 }
-                let sides = self.side_reads(frame.hour, &losses);
+                let sides = self.side_reads(hour, &losses);
                 let episode = held(&mut self.episodes, at);
                 episode.loss_inputs = Some(losses);
                 episode.losses.push(LossRead {
-                    hour: frame.hour,
+                    hour,
                     terminal: false,
                     sides: Ok(sides),
                 });
@@ -294,13 +358,14 @@ impl Census {
                     continue;
                 }
                 episode.losses.push(LossRead {
-                    hour: frame.hour,
+                    hour,
                     terminal: false,
                     sides: Err(reason.into()),
                 });
             }
         }
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn observe_results(&mut self, frame: &DecodedFrame, labels: bool) -> io::Result<()> {
         if !slot_read(
             self.format,
@@ -324,15 +389,34 @@ impl Census {
         if results.is_empty() {
             return Ok(());
         }
+        self.read_results(
+            frame.branch,
+            labels,
+            (coverage.from_hour, coverage.to_hour),
+            results,
+        )
+        .map(drop)
+    }
+    /// The finalizers a complete read under the coverage of the hours after `from_hour`
+    /// through `to_hour`, the read's own hour, holds in table order. Returns the combats whose
+    /// open battle they ended.
+    pub(super) fn read_results<'r>(
+        &mut self,
+        branch: u64,
+        labels: bool,
+        (from_hour, to_hour): (i32, i32),
+        results: impl IntoIterator<Item = &'r LandCombatResultsRow>,
+    ) -> io::Result<Vec<u64>> {
         // Finalizers match the preceding accepted live endpoint, including
         // constant-counter reads deferred since the last publication.
         self.materialize()?;
+        let mut ended = Vec::new();
         for result in results {
             #[cfg(test)]
             {
                 self.work.row_visits += 1;
             }
-            if result.end_hour <= coverage.from_hour || result.end_hour > coverage.to_hour {
+            if result.end_hour <= from_hour || result.end_hour > to_hour {
                 continue;
             }
             let mut countries = [Vec::new(), Vec::new()];
@@ -355,15 +439,12 @@ impl Census {
                 countries_unknown[index] |= countries[index].is_empty();
             }
             let latest = self.latest.get(&result.combat).copied();
-            let existing = latest.filter(|at| {
-                self.episodes[at].ends(result.province, result.end_hour, coverage.from_hour)
-            });
+            let existing = latest
+                .filter(|at| self.episodes[at].ends(result.province, result.end_hour, from_hour));
             // A paged battle ended before `paged_before`, so only a finalizer
             // whose coverage reaches back past it can end one.
-            let pending = latest.is_none()
-                && self
-                    .paged_before
-                    .is_some_and(|before| coverage.from_hour < before);
+            let pending =
+                latest.is_none() && self.paged_before.is_some_and(|before| from_hour < before);
             let at = existing.unwrap_or_else(|| {
                 let at = self.reserve();
                 if !pending {
@@ -372,7 +453,7 @@ impl Census {
                 self.episodes.insert(
                     at,
                     Episode {
-                        id: format!("{}:{}:result:{}", frame.branch, result.combat, result.id),
+                        id: format!("{branch}:{}:result:{}", result.combat, result.id),
                         province: result.province,
                         start: BattleMoment {
                             hour: result.end_hour,
@@ -421,7 +502,7 @@ impl Census {
                 countries_unknown,
             });
             episode.end = Some((
-                frame.hour,
+                to_hour,
                 BattleEnd::Moment(BattleMoment {
                     hour: result.end_hour,
                     bound: BattleBound::Exact,
@@ -434,19 +515,20 @@ impl Census {
             });
             if self.open.get(&result.combat) == Some(&at) {
                 self.open.remove(&result.combat);
+                ended.push(result.combat);
             }
             if pending {
                 self.dirty.remove(&at);
                 let own = self.episodes.remove(&at).expect("finalizer's own battle");
                 self.pending.push(Pending {
                     combat: result.combat,
-                    from_hour: coverage.from_hour,
+                    from_hour,
                     at,
                     own,
                 });
             }
         }
-        Ok(())
+        Ok(ended)
     }
 }
 impl Episode {

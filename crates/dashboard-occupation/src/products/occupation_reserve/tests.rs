@@ -464,12 +464,12 @@ fn occupation_reserve_public_query_shape_and_cancellation() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let cold = super::query(&query).unwrap();
+    let cold = super::answer(&query, || query.open::<OccupationReserveObserver>()).unwrap();
     assert!(cold["window"]["series"].as_array().unwrap().is_empty());
     let mut scan = Scan::<OccupationReserveObserver>::default();
     observe(&mut scan, &frame);
     publish(&mut scan, &fixture);
-    let value = super::query(&query).unwrap();
+    let value = super::answer(&query, || query.open::<OccupationReserveObserver>()).unwrap();
     assert!(!value["window"]["series"].as_array().unwrap().is_empty());
     let decoded: std::collections::BTreeSet<_> = value
         .as_object()
@@ -556,5 +556,114 @@ fn occupation_reserve_untimed_baseline_and_partial_inventory_never_prove_zero() 
             .series
             .iter()
             .all(|s| s.runs.iter().all(|r| r.0 == 102))
+    );
+}
+
+fn native_tables(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame: &DecodedFrame) {
+    use dashboard_keyed::native::testing::write;
+    use replay_data::rows::tables;
+    write::<tables::CountryOccupationReserveManpower>(walk, frame);
+    write::<tables::OccupationSettings>(walk, frame);
+    write::<tables::CountryLinks>(walk, frame);
+    write::<tables::Countries>(walk, frame);
+}
+
+/// GER holds ITA's 500 in reserve; ITA becomes RSI at hour 130, between the occupation walk's
+/// daily reads at 123 and 147. As recorded, that walk's read is timed on OccupationSettings
+/// alone. GER's reserve grows to 650 at 147 and the reserve is unavailable at 152 and 153.
+fn reserve(hour: i32) -> DecodedFrame {
+    let mut frame = world_frame(hour, false);
+    if hour >= 130
+        && let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"RSI".to_vec();
+    }
+    *frame.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(
+            [21, 9001]
+                .map(|country| OccupationSettingsRow {
+                    country,
+                    ..Default::default()
+                })
+                .into(),
+        ));
+    *frame.tables[TableId::CountryOccupationReserveManpower.index()] = if (152..154)
+        .contains(&hour)
+    {
+        TableView::Unavailable {
+            reason: "Synthetic reserve refusal".into(),
+        }
+    } else {
+        TableView::Complete(TableRows::CountryOccupationReserveManpower(vec![
+            CountryOccupationReserveManpowerRow {
+                country: 9001,
+                ordinal: 0,
+                source_country: 21,
+                amount: if hour >= 147 { 650 } else { 500 },
+            },
+        ]))
+    };
+    frame.metrics.table_ns[TableId::OccupationSettings.index()] = u64::from(hour % 24 == 3);
+    frame
+}
+
+/// The native publication holds what the walk's scan holds of the same hours, whatever
+/// segments start, wherever the publisher cuts and after a resume: an identity change waits
+/// for the next read, which dates the reserve again.
+#[test]
+fn the_native_publication_holds_what_the_walks_scan_holds() {
+    let frames: Vec<_> = (123..=160).map(reserve).collect();
+    for (starts, cuts, resume) in [
+        (&[][..], &[160][..], None),
+        (&[5, 10][..], &[127, 140, 160][..], Some(140)),
+        (&[1, 7, 24, 29, 30][..], &[129, 147, 152, 160][..], Some(147)),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (native, walked) = dashboard_keyed::native::testing::assert_published_as_walked::<
+            OccupationReserveObserver,
+        >(&frames, native_tables, starts, cuts, resume, &label);
+        assert_eq!(native.observer.sources, walked.observer.sources, "{label}");
+        assert_eq!(native.observer.holders, walked.observer.holders, "{label}");
+    }
+    let hours = dashboard_keyed::native::testing::operate::<OccupationReserveObserver>(
+        &frames,
+        &[10],
+        native_tables,
+    );
+    let published =
+        dashboard_keyed::native::testing::publish_hours(hours, 1, &[140, 160], Some(140));
+    let (_, window) = published.read::<OccupationReserveObserver>(123, 160, None);
+    assert_eq!(
+        window
+            .known
+            .iter()
+            .map(|span| (span.first_hour, span.last_hour))
+            .collect::<Vec<_>>(),
+        [(123, 129), (147, 151), (154, 160)]
+    );
+    let runs = |name: &str| {
+        window
+            .series
+            .iter()
+            .find(|series| series.name == name)
+            .map(|series| series.runs.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        runs("GER@7|0|amount"),
+        [
+            (123, 129, "500".to_owned(), true),
+            (147, 151, "650".to_owned(), true),
+            (154, 160, "650".to_owned(), true)
+        ]
+    );
+    assert_eq!(runs("ITA@8|holder"), [(123, 129, "1".to_owned(), true)]);
+    assert_eq!(
+        runs("RSI@8|holder"),
+        [
+            (147, 151, "1".to_owned(), true),
+            (154, 160, "1".to_owned(), true)
+        ]
     );
 }

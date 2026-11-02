@@ -1,6 +1,6 @@
 use crate::{
     add,
-    budget::{Budget, Slab},
+    budget::{Admission, Slab},
     codec::Binary,
     format::{BLOCK, EVENTS, Entry, Late, Node},
     invalid,
@@ -36,7 +36,7 @@ pub(crate) struct EventSet<'a> {
     spans: Slab<'a, Span>,
 }
 impl<'a> EventSet<'a> {
-    fn new(budget: &'a Budget, selected: &[Selection<'_>]) -> io::Result<Self> {
+    fn new(budget: Admission<'a>, selected: &[Selection<'_>]) -> io::Result<Self> {
         let capacity = selected.iter().try_fold(0_usize, |count, s| {
             count
                 .checked_add(s.membership.map_or(0, |s| s.len()))

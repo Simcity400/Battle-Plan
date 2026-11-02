@@ -1359,7 +1359,7 @@ fn build(
             ),
         );
     }
-    let subject_scan = subjects::scanned_branch(source, branch, cancelled)?;
+    let subject_scan = subjects::row::scanned_branch(source, branch, cancelled)?;
     builder
         .feed
         .warnings
@@ -1964,7 +1964,7 @@ fn focus_completion_rows(
     needed.insert(TableId::Clock);
     needed.insert(TableId::Campaign);
     let needed: Vec<_> = needed.into_iter().collect();
-    let mut focus = crate::prepared_focus::FocusIndex::default();
+    let mut focus = crate::prepared_focus::row::FocusIndex::default();
     let mut frames = BTreeMap::new();
     crate::blocks::scan_blocks(
         replay,

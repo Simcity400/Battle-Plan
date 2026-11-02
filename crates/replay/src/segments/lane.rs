@@ -58,7 +58,7 @@ impl Credit {
         self.committed.fetch_add(bytes, Ordering::SeqCst);
         Reserved {
             credit: self,
-            left: Cell::new(bytes),
+            left: AtomicUsize::new(bytes),
         }
     }
 
@@ -84,25 +84,30 @@ impl Credit {
     }
 }
 
-/// What a walk reserved as it started: spent as it projects, taken back as a chunk of items
-/// that spill closes, the rest given back once dropped.
+/// What a walk reserved as it started: spent as its families project, on whichever worker,
+/// taken back as a chunk of items that spill closes, the rest given back once dropped.
 pub(super) struct Reserved<'c> {
     credit: &'c Credit,
-    left: Cell<usize>,
+    left: AtomicUsize,
 }
 
 impl Reserved<'_> {
     /// Spends up to `bytes` of what is left: the bytes spent.
     fn spend(&self, bytes: usize) -> usize {
-        let spent = bytes.min(self.left.get());
-        self.left.set(self.left.get() - spent);
+        let mut spent = 0;
+        let _ = self
+            .left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                spent = bytes.min(left);
+                Some(left - spent)
+            });
         self.credit.committed.fetch_sub(spent, Ordering::SeqCst);
         spent
     }
 
     /// Takes back `bytes` it spent on a chunk that closed, for the walk's next.
     fn refill(&self, bytes: usize) {
-        self.left.set(self.left.get() + bytes);
+        self.left.fetch_add(bytes, Ordering::SeqCst);
         self.credit.committed.fetch_add(bytes, Ordering::SeqCst);
     }
 }
@@ -111,7 +116,7 @@ impl Drop for Reserved<'_> {
     fn drop(&mut self) {
         self.credit
             .committed
-            .fetch_sub(self.left.get(), Ordering::SeqCst);
+            .fetch_sub(*self.left.get_mut(), Ordering::SeqCst);
     }
 }
 
@@ -160,8 +165,8 @@ impl<'r> Shared<'r> {
     }
 }
 
-/// A walk's view of what its families share: what it reserved, and the family whose code runs,
-/// which the run's own code it calls back into clears.
+/// A walk's view of what its families share, on one worker: what the walk reserved, and the
+/// family whose code runs there, which the run's own code it calls back into clears.
 #[derive(Clone, Copy)]
 pub(super) struct Context<'c> {
     pub(super) shared: &'c Shared<'c>,

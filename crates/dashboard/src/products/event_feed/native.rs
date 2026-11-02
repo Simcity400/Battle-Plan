@@ -15,12 +15,15 @@ use replay_data::{
     event_feed_rows::EventFeedRoute,
     event_feed_rows::EventFeedScriptChange,
     event_feed_rows::EventFeedSource,
-    event_feed_rows::decisions::{DecisionState, Operation},
-    event_feed_rows::state::{Change, HeldPayloads, PackHeader, PreparedHistory},
+    event_feed_rows::decisions::Operation,
+    event_feed_rows::state::{HeldPayloads, PackHeader, PreparedHistory},
     rows::Recorded,
 };
 #[cfg(test)]
-use replay_data::{rows::TableId, rows::tables};
+use replay_data::{
+    event_feed_rows::decisions::DecisionState, event_feed_rows::state::Change, rows::TableId,
+    rows::tables,
+};
 #[cfg(test)]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
@@ -41,6 +44,7 @@ fn roster(event: &EventFeedEvent) -> bool {
 
 /// The final roster rebuilds' inputs, from their owners as `reduce`, reducing `pack`, leaves
 /// each at its rebuild.
+#[cfg(test)]
 fn rosters(
     pack: &EventFeedHistoryRow,
     reduce: impl FnOnce(&mut dyn FnMut(&DecisionState, Change<'_>) -> io::Result<()>) -> io::Result<()>,
@@ -80,6 +84,7 @@ impl Projection {
     pub(super) fn losses(&mut self, replay: &Replay, branch: u64) {
         self.event_losses = replay.event_losses(branch).collect();
     }
+    #[cfg(test)]
     pub(super) fn append_named(
         &mut self,
         builder: &mut Builder,
@@ -447,6 +452,7 @@ impl Projection {
         Ok(())
     }
     /// After a reduction: the read's last occurrence, and its retained-state observation.
+    #[cfg(test)]
     pub(super) fn retain(
         &mut self,
         builder: &mut Builder,

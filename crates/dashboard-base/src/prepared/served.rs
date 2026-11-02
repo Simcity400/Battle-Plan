@@ -36,6 +36,9 @@ pub trait Ask {
     fn ask(&mut self, product: &str, params: Value) -> io::Result<Option<Value>>;
     /// Every country `branch`'s identity history names, in tag order.
     fn countries(&mut self, branch: u64) -> io::Result<Vec<String>>;
+    /// Every native country holding a tag in `branch`'s identity history, as its tag,
+    /// canonical slot and id, in that order.
+    fn holders(&mut self, branch: u64) -> io::Result<Vec<(String, u32, u32)>>;
 }
 
 /// One branch of the recording, as plans choose its hours, windows and spans.

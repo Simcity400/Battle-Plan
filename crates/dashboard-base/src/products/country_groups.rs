@@ -46,6 +46,7 @@ use ts_rs::TS;
 
 pub mod changes;
 pub mod prepared;
+pub mod served;
 
 pub struct CountryGroups;
 
@@ -231,6 +232,7 @@ pub struct CountryGroupReply {
 impl Product for CountryGroups {
     const KEY: &'static str = "country-groups";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CountryGroupParams;
     type Reply = CountryGroupReply;
 
@@ -988,6 +990,7 @@ pub struct Scan {
 /// change facts: the held country keys and war operands (as digests), the
 /// last observed hour and the next war expiry. Two scans holding equal inputs
 /// find the same hours of one block unchanged.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct QuietInputs {
     countries: Option<u64>,
@@ -1813,16 +1816,19 @@ impl Scan {
         Ok(state)
     }
     pub fn new(replay: &Replay, branch: u64) -> Self {
+        Self::within(
+            replay
+                .branches
+                .iter()
+                .find(|start| start.id == branch)
+                .map(|start| branch_bounds(replay, start)),
+        )
+    }
+    /// A scan of a branch whose first and last hours are `bounds`.
+    pub fn within(bounds: Option<(i32, i32)>) -> Self {
         let mut scan = Self::default();
-        scan.continuation.bounds = replay
-            .branches
-            .iter()
-            .find(|start| start.id == branch)
-            .map(|start| branch_bounds(replay, start));
-        scan.continuation.previous_hour = scan
-            .continuation
-            .bounds
-            .and_then(|(first, _)| first.checked_sub(1));
+        scan.continuation.bounds = bounds;
+        scan.continuation.previous_hour = bounds.and_then(|(first, _)| first.checked_sub(1));
         scan
     }
     pub fn begin_block(&mut self) {
@@ -1865,6 +1871,7 @@ impl Scan {
     }
     /// What, besides an hour's own change facts, decides whether
     /// [`Self::advance_changed`] leaves the scan unchanged at that hour.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn quiet_inputs(&self) -> QuietInputs {
         use std::hash::{Hash, Hasher};
         let state = &self.continuation;
@@ -2829,17 +2836,23 @@ impl Scan {
         Ok(())
     }
     pub fn finish(&mut self, replay: &Replay, branch: u64) {
-        self.seal();
-        self.continuation.bounds = replay
-            .branches
-            .iter()
-            .find(|start| start.id == branch)
-            .map(|start| branch_bounds(replay, start));
         self.continuation.blocks = replay
             .index
             .iter()
             .filter(|block| block.branch == branch)
             .count();
+        self.finish_within(
+            replay
+                .branches
+                .iter()
+                .find(|start| start.id == branch)
+                .map(|start| branch_bounds(replay, start)),
+        );
+    }
+    /// [`Self::finish`] of a branch whose first and last hours are `bounds`.
+    pub fn finish_within(&mut self, bounds: Option<(i32, i32)>) {
+        self.seal();
+        self.continuation.bounds = bounds;
         self.unobserved = self.continuation.unobserved.clone();
         let unobserved = &mut self.unobserved;
         let bounds = self.continuation.bounds;
@@ -2963,6 +2976,12 @@ impl Scan {
         self.identity_changes = identity_changes;
         self.unobserved = self.continuation.unobserved.clone();
         Ok(approximate)
+    }
+
+    /// The prepared prefix alone, its hours after the frontier pending rather than unobserved:
+    /// a native recording's row frames hold no group table to sample.
+    pub fn unsampled_tail(&mut self) {
+        self.unobserved = self.continuation.unobserved.clone();
     }
 
     /// Holds the last observation through `through` as unchanged hours, and

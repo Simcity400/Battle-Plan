@@ -1,26 +1,25 @@
+use super::walk::Walk;
 use super::*;
-use crate::products::politics_state::tests::{Changed, balance, countries, frame, member, set};
-use dashboard_base::prepared::series::tests::Fixture;
+use crate::products::politics_state::tests::{balance, countries, frame, member, set};
 use replay_data::rows::*;
-use replay_frame::frame::TableView;
+use replay_frame::frame::{DecodedFrame, TableView};
 
-fn publish(state: &mut Prepared, fixture: &Fixture) {
+/// The reply to `params` through `through` of `state` published, the same however it is cut.
+fn ask(state: &Walk, params: PoliticsHistoryParams, through: i32) -> PoliticsHistoryReply {
     let flag = AtomicBool::new(false);
-    let mut writer = fixture.writer();
-    state.flush(&mut writer, 1, &flag).unwrap();
-    writer.commit().unwrap();
-}
-
-fn ask(fixture: &Fixture, params: PoliticsHistoryParams, through: i32) -> PoliticsHistoryReply {
-    query(
-        &fixture.store,
-        &fixture.key,
-        &params,
-        Some(through),
-        None,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
+    let [whole, cut] = state.publish();
+    let reply = whole
+        .read(|snapshot, directory| query(snapshot, directory, &params, Some(through), None, &flag))
+        .unwrap();
+    let again = cut
+        .read(|snapshot, directory| query(snapshot, directory, &params, Some(through), None, &flag))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&reply).unwrap(),
+        serde_json::to_value(&again).unwrap(),
+        "the same reply however the walk is cut"
+    );
+    reply
 }
 
 fn params(mode: PoliticsHistoryMode, tag: Option<&str>) -> PoliticsHistoryParams {
@@ -74,8 +73,7 @@ fn run(first: i32, last: i32, value: &str) -> PoliticsRun {
 
 #[test]
 fn election_runs_change_only_with_the_schedule_and_never_cross_a_gap() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     let schedule = |held: Recorded<bool>, next: i32| PoliticsRow {
         country: 1,
         // Interval zero keeps the stored date: the next election is the last.
@@ -97,8 +95,7 @@ fn election_runs_change_only_with_the_schedule_and_never_cross_a_gap() {
         politics(&mut at, vec![row]);
         state.step(&at);
     }
-    publish(&mut state, &fixture);
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 105);
+    let reply = ask(&state, params(PoliticsHistoryMode::Elections, None), 105);
     let history = &reply.elections[0];
     assert_eq!(history.tags[0].tag, "ELA");
     // Known "not held" is its own value, an unrecorded one has no run.
@@ -129,8 +126,7 @@ fn election_runs_change_only_with_the_schedule_and_never_cross_a_gap() {
 
 #[test]
 fn elections_are_held_only_by_countries_owning_states() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     let row = PoliticsRow {
         country: 1,
         last_election: engine_native::cdate::HOUR_EPOCH + 1936 * 365 * 24,
@@ -146,8 +142,7 @@ fn elections_are_held_only_by_countries_owning_states() {
         politics(&mut at, vec![row.clone()]);
         state.step(&at);
     }
-    publish(&mut state, &fixture);
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 103);
+    let reply = ask(&state, params(PoliticsHistoryMode::Elections, None), 103);
     assert_eq!(
         reply.elections[0].held,
         vec![run(100, 100, "1"), run(101, 101, "0"), run(103, 103, "1")]
@@ -164,8 +159,7 @@ fn elections_are_held_only_by_countries_owning_states() {
 
 #[test]
 fn a_holder_whose_eligibility_is_refused_throughout_is_still_listed() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     // Its eligibility and interval are never read; its stored last election is.
     let row = PoliticsRow {
         country: 1,
@@ -181,8 +175,7 @@ fn a_holder_whose_eligibility_is_refused_throughout_is_still_listed() {
         politics(&mut at, vec![row.clone()]);
         state.step(&at);
     }
-    publish(&mut state, &fixture);
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 101);
+    let reply = ask(&state, params(PoliticsHistoryMode::Elections, None), 101);
     assert_eq!(reply.elections.len(), 1);
     let history = &reply.elections[0];
     assert!(history.held.is_empty());
@@ -192,9 +185,8 @@ fn a_holder_whose_eligibility_is_refused_throughout_is_still_listed() {
 
 #[test]
 fn country_history_follows_the_holder_not_a_reused_tag() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
-    let observe = |state: &mut Prepared, hour, slot_tag: &[(u32, u32, &str)], value| {
+    let mut state = Walk::default();
+    let observe = |state: &mut Walk, hour, slot_tag: &[(u32, u32, &str)], value| {
         let mut at = frame(hour);
         countries(&mut at, slot_tag, &[]);
         set(
@@ -216,10 +208,9 @@ fn country_history_follows_the_holder_not_a_reused_tag() {
     observe(&mut state, 101, &[(1, 1, "BPA")], -20_000);
     // The holder takes another tag, and a new holder takes the old one.
     observe(&mut state, 102, &[(1, 1, "BPZ"), (2, 2, "BPA")], -30_000);
-    publish(&mut state, &fixture);
     // Every holder that held the tag, each whole: the caller picks the one
     // holding it at its hour.
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Country, Some("BPA")), 102);
+    let reply = ask(&state, params(PoliticsHistoryMode::Country, Some("BPA")), 102);
     assert_eq!(
         reply.holder_balances.iter().map(|holder| holder.holder.as_str()).collect::<Vec<_>>(),
         ["1", "2"]
@@ -239,7 +230,7 @@ fn country_history_follows_the_holder_not_a_reused_tag() {
     // Content is unavailable: names are absent, never invented.
     assert!(reply.names.is_empty());
     // Asking by the new tag finds the same holder, BPA-era history included.
-    let by_new = ask(&fixture, params(PoliticsHistoryMode::Country, Some("BPZ")), 102);
+    let by_new = ask(&state, params(PoliticsHistoryMode::Country, Some("BPZ")), 102);
     assert_eq!(by_new.holder_balances.len(), 1);
     assert_eq!(by_new.holder_balances[0].balances[0].values.len(), 3);
     assert_eq!(by_new.known, vec![span(100, 102)]);
@@ -247,9 +238,8 @@ fn country_history_follows_the_holder_not_a_reused_tag() {
 
 #[test]
 fn exile_and_balance_histories_cover_every_holder_with_independent_fields() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
-    let observe = |state: &mut Prepared, hour: i32, leaders: Recorded<Option<i32>>, host: i32| {
+    let mut state = Walk::default();
+    let observe = |state: &mut Walk, hour: i32, leaders: Recorded<Option<i32>>, host: i32| {
         let mut at = frame(hour);
         countries(&mut at, &[(1, 1, "EXA"), (2, 2, "HSA"), (3, 3, "BPC")], &[]);
         set(
@@ -291,8 +281,7 @@ fn exile_and_balance_histories_cover_every_holder_with_independent_fields() {
     observe(&mut state, 101, Some(0).into(), 2);
     // The government returns home: a nonpositive host is no exile.
     observe(&mut state, 102, Some(0).into(), 0);
-    publish(&mut state, &fixture);
-    let reply = ask(&fixture, window(100, 102), 102);
+    let reply = ask(&state, window(100, 102), 102);
     assert_eq!(reply.exile_history.len(), 1);
     assert_eq!(reply.known, vec![span(100, 102)]);
     let exile = &reply.exile_history[0];
@@ -303,7 +292,7 @@ fn exile_and_balance_histories_cover_every_holder_with_independent_fields() {
     assert_eq!(exile.manpower, vec![run(100, 101, "12400")]);
     // An unrecorded field leaves only its own value unknown; a known zero stays.
     assert_eq!(exile.leaders, vec![run(101, 101, "0")]);
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Balances, None), 102);
+    let reply = ask(&state, params(PoliticsHistoryMode::Balances, None), 102);
     let holder = |tag: &str| {
         reply
             .holder_balances
@@ -331,8 +320,7 @@ fn exile_and_balance_histories_cover_every_holder_with_independent_fields() {
 
 #[test]
 fn an_unreadable_balance_table_leaves_values_unknown_not_ended_wrongly() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     let mut at = frame(100);
     countries(&mut at, &[(1, 1, "BPA")], &[]);
     set(
@@ -352,8 +340,7 @@ fn an_unreadable_balance_table_leaves_values_unknown_not_ended_wrongly() {
         reason: "not recorded".into(),
     };
     state.step(&next);
-    publish(&mut state, &fixture);
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Country, Some("BPA")), 101);
+    let reply = ask(&state, params(PoliticsHistoryMode::Country, Some("BPA")), 101);
     assert_eq!(reply.holder_balances[0].balances[0].values, vec![run(100, 100, "1")]);
     // Hour 101 was not read: the run's end there is unknown, not an ending.
     assert_eq!(reply.known, vec![span(100, 100)]);
@@ -367,8 +354,7 @@ fn an_unreadable_balance_table_leaves_values_unknown_not_ended_wrongly() {
 
 #[test]
 fn equal_records_stay_apart_and_shared_ones_are_witnessed_at_their_read() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     let mut at = frame(100);
     countries(&mut at, &[(1, 1, "BPA"), (2, 2, "BPB"), (3, 3, "BPC")], &[]);
     // Two records of one balance with every field equal, and a third member
@@ -384,8 +370,7 @@ fn equal_records_stay_apart_and_shared_ones_are_witnessed_at_their_read() {
         TableRows::PowerBalanceMembers(vec![member(0, 0, 1), member(0, 1, 3), member(1, 0, 2)]),
     );
     state.step(&at);
-    publish(&mut state, &fixture);
-    let reply = ask(&fixture, params(PoliticsHistoryMode::Balances, None), 100);
+    let reply = ask(&state, params(PoliticsHistoryMode::Balances, None), 100);
     let record = |tag: &str| {
         let holder = reply
             .holder_balances
@@ -402,8 +387,7 @@ fn equal_records_stay_apart_and_shared_ones_are_witnessed_at_their_read() {
 // regression: d12ed98d96 Answer the politics review: read coverage, record identity and dated ordering
 #[test]
 fn an_exile_window_clips_carried_daily_reads_and_needs_bounds() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     const EXILES: u32 = 8;
     const DAYS: i32 = 8;
     const FIRST: i32 = 96;
@@ -461,26 +445,19 @@ fn an_exile_window_clips_carried_daily_reads_and_needs_bounds() {
                     .collect(),
             ),
         );
-        let changed = if (hour - FIRST) % 6 == 0 {
-            Changed::fields(TableId::CountryStabilityInputs, &["exile_legitimacy", "exile_manpower"])
-                .and(TableId::SliceReads, &["sample_hour"])
-        } else {
-            Changed::default()
-        };
-        state.observe_changes(&at, &changed).unwrap();
+        state.step(&at);
     }
-    // Only the hours a read changed observed the exiles, every accepted hour between carried.
+    // Only the hours a read changed read the exiles, every walked hour between carried.
     assert_eq!(
         state
-            .observed
+            .observed()
             .iter()
             .filter(|(_, part)| *part == Part::Exiles)
             .count(),
         (DAYS * 4) as usize
     );
-    publish(&mut state, &fixture);
     let (from, to) = (last - 7 * 24 + 1, last);
-    let reply = ask(&fixture, window(from, to), last);
+    let reply = ask(&state, window(from, to), last);
     assert_eq!(reply.exile_history.len(), EXILES as usize);
     assert_eq!(reply.known, vec![span(from, to)]);
     for (index, exile) in reply.exile_history.iter().enumerate() {
@@ -497,28 +474,27 @@ fn an_exile_window_clips_carried_daily_reads_and_needs_bounds() {
     }
     assert!(dashboard_base::products::check_reply_budget(&reply).is_ok());
     // A history without its window is refused, not answered whole.
+    let [whole, _] = state.publish();
     assert!(
-        query(
-            &fixture.store,
-            &fixture.key,
-            &params(PoliticsHistoryMode::Exiles, None),
-            Some(last),
-            None,
-            &AtomicBool::new(false),
-        )
-        .is_err()
+        whole
+            .read(|snapshot, directory| query(
+                snapshot,
+                directory,
+                &params(PoliticsHistoryMode::Exiles, None),
+                Some(last),
+                None,
+                &AtomicBool::new(false),
+            ))
+            .is_err()
     );
 }
 
 #[test]
-fn unavailable_parts_count_their_catalogue_without_numeric_runs() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
-    let mut expected = Metadata {
-        tags: BTreeMap::from([(3, vec![(10, "AAA".to_owned())])]),
-        ..Default::default()
-    };
-    for hour in [10, 11] {
+fn unavailable_parts_hold_no_values_and_count_each_refusal_per_hour_it_held() {
+    let mut state = Walk::default();
+    let mut expected = Vec::new();
+    // Five hours, cut and restarted across: one refusal each, read at 10 and carried.
+    for hour in 10..=14 {
         let mut at = frame(hour);
         countries(&mut at, &[(7, 3, "AAA")], &[]);
         for (table, scope) in [
@@ -530,52 +506,75 @@ fn unavailable_parts_count_their_catalogue_without_numeric_runs() {
             *at.tables[table.index()] = TableView::Unavailable {
                 reason: "fixture refusal".into(),
             };
-            expected.refusals.insert(
-                format!(
-                    "{scope} unavailable: hour {hour} {table:?} is unavailable: fixture refusal"
-                ),
-                1,
-            );
+            if hour == 10 {
+                expected.push(format!(
+                    "5 refused political state reads: {scope} unavailable: {table:?} is unavailable: fixture refusal"
+                ));
+            }
         }
         state.step(&at);
-        assert_eq!(state.values.bytes(), 0, "no part supplied numeric values");
-        assert_eq!(state.metadata, expected);
-        let pending = state.bytes();
-        let text = serde_json::to_vec(&(BTreeMap::<String, u64>::new(), &expected)).unwrap();
-        assert_eq!(
-            pending,
-            text.len(),
-            "exact text of all four named refusals and the holder"
-        );
-        let mut writer = fixture.writer();
-        let before = writer.payload_bytes_change();
-        state
-            .flush(&mut writer, 1, &AtomicBool::new(false))
-            .unwrap();
-        assert!(writer.payload_bytes_change() - before <= 8 * pending as i128);
-        assert_eq!(
-            state.bytes(),
-            0,
-            "publication releases the catalogue charge"
-        );
-        writer.commit().unwrap();
-        let (_, metadata) =
-            series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, FAMILY, 1)
-                .unwrap()
-                .unwrap();
-        assert_eq!(
-            metadata, expected,
-            "accounting preserves every refusal and its order"
-        );
     }
+    expected.sort();
+    for mode in [
+        PoliticsHistoryMode::Elections,
+        PoliticsHistoryMode::Balances,
+    ] {
+        let reply = ask(&state, params(mode, None), 14);
+        assert!(reply.known.is_empty());
+        assert!(reply.elections.is_empty());
+        assert!(reply.holder_balances.is_empty());
+        assert_eq!(reply.warnings, expected);
+    }
+    let [whole, _] = state.publish();
+    whole.read(|snapshot, directory| {
+        // The holder is named, and holds no value.
+        assert_eq!(
+            tags(snapshot, directory).unwrap(),
+            BTreeMap::from([(3, vec![(10, "AAA".to_owned())])])
+        );
+        let holders = holders(directory);
+        assert_eq!(holders.len(), 0, "no part supplied a holder's value");
+    });
+}
+
+/// Two hours of one balance refused for a member with no identity, the refusal holding over
+/// both: counted once for each hour it held.
+#[test]
+fn a_refusal_counts_every_hour_it_holds() {
+    let mut state = Walk::default();
+    let at = |hour: i32| -> DecodedFrame {
+        let mut at = frame(hour);
+        countries(&mut at, &[(1, 1, "BPA")], &[]);
+        set(
+            &mut at,
+            TableId::PowerBalances,
+            TableRows::PowerBalances(vec![balance(0, "mod_balance", 1)]),
+        );
+        set(
+            &mut at,
+            TableId::PowerBalanceMembers,
+            TableRows::PowerBalanceMembers(vec![member(0, 0, 1), member(0, 1, 9)]),
+        );
+        at
+    };
+    for hour in 100..=104 {
+        state.step(&at(hour));
+    }
+    let reply = ask(&state, params(PoliticsHistoryMode::Balances, None), 104);
+    assert_eq!(
+        reply.warnings,
+        ["5 refused political state reads: a balance member has no identity, so no shown balance is known"]
+    );
+    // The holder's value stands; which balance it is shown is unknown.
+    assert_eq!(reply.holder_balances[0].balances[0].values, vec![run(100, 104, "1")]);
+    assert!(reply.holder_balances[0].shown.is_empty());
 }
 
 #[test]
 fn an_exile_or_schedule_naming_a_country_with_no_identity_leaves_its_hour_unknown() {
-    let fixture = Fixture::new();
-    let mut state = Prepared::default();
+    let mut state = Walk::default();
     // EXA (1) is exiled to HSA (2); raw 9 is a country no link names.
-    let observe = |state: &mut Prepared, hour: i32, exiles: Vec<(u32, Recorded<Option<i32>>)>, schedules: &[u32]| {
+    let observe = |state: &mut Walk, hour: i32, exiles: Vec<(u32, Recorded<Option<i32>>)>, schedules: &[u32]| {
         let mut at = frame(hour);
         countries(&mut at, &[(1, 1, "EXA"), (2, 2, "HSA")], &[]);
         owned_states(&mut at, &[(1, 3), (2, 3)]);
@@ -612,13 +611,12 @@ fn an_exile_or_schedule_naming_a_country_with_no_identity_leaves_its_hour_unknow
     // The host was not recorded.
     observe(&mut state, 103, vec![(1, Recorded::NotRecorded)], &[1]);
     observe(&mut state, 104, vec![(1, Some(2).into())], &[1]);
-    publish(&mut state, &fixture);
-    let exiles = ask(&fixture, window(100, 104), 104);
+    let exiles = ask(&state, window(100, 104), 104);
     assert_eq!(exiles.known, vec![span(100, 100), span(104, 104)]);
     for reason in ["an exile's host has no identity", "a government in exile has no identity", "an exile host is not recorded"] {
         assert!(exiles.warnings.iter().any(|warning| warning.contains(reason)), "{reason}");
     }
-    let elections = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 104);
+    let elections = ask(&state, params(PoliticsHistoryMode::Elections, None), 104);
     assert_eq!(elections.known, vec![span(100, 100), span(102, 104)]);
     assert!(elections.warnings.iter().any(|warning| warning.contains("election schedule's country has no identity")));
 }

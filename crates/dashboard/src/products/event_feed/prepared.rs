@@ -2,11 +2,14 @@
 use super::*;
 use crate::prepared::series::Accumulator;
 use dashboard_base::prepared::entries::{self, Entries};
+#[cfg(test)]
 use dashboard_base::prepared::kept::Reduced;
+#[cfg(test)]
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryExperienceGainRow, rows::RelationTupleRow,
     rows::SliceReadRow, rows::TableId, rows::TableRows, rows::tables,
 };
+#[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 
 pub(crate) const FACT_KEYS: [u64; 56] = [
@@ -570,6 +573,7 @@ fn charge_key(row: &EventFeedRow, occurrence: &Occurrence) -> Option<ChargeKey> 
 /// captured over the mutation's hour, summed per currency as realized.
 /// Anything else proves nothing, so its execution keeps no cost; a currency
 /// with no attributed change is not listed.
+#[cfg(test)]
 pub(crate) fn charges(frame: &DecodedFrame) -> BTreeMap<ChargeKey, Vec<ScriptCost>> {
     let (Ok(changes), Ok(coverage)) = (
         frame.complete::<tables::CountryPowerChanges>(),
@@ -650,6 +654,7 @@ pub(crate) mod tests;
 /// is read by neither. The links, the event packs and the strikes are kept
 /// as read: the links are told apart by allocation, the packs and strikes
 /// are this hour's. Kept hours whose reduced rows are equal share one view.
+#[cfg(test)]
 pub(crate) struct KeptFrames {
     countries: Reduced<replay_data::rows::CountryRow>,
     counters: Reduced<CountryCounterInputRow>,
@@ -658,6 +663,7 @@ pub(crate) struct KeptFrames {
     slices: Reduced<SliceReadRow>,
 }
 
+#[cfg(test)]
 impl Default for KeptFrames {
     fn default() -> Self {
         Self {
@@ -670,6 +676,7 @@ impl Default for KeptFrames {
     }
 }
 
+#[cfg(test)]
 impl KeptFrames {
     /// `frame` as the feed and the identity history read it.
     pub(crate) fn kept(&mut self, frame: &DecodedFrame) -> DecodedFrame {
@@ -786,6 +793,7 @@ impl Default for Observer {
     }
 }
 impl Observer {
+    #[cfg(test)]
     pub(crate) fn observe(
         &mut self,
         replay: &replay::container::Replay,
@@ -985,9 +993,6 @@ impl Observer {
     pub(super) fn end_hour(&mut self) {
         self.diagnostics.feed.items.clear();
         self.diagnostics.item_keys.clear();
-    }
-    pub(crate) fn bytes(&self) -> usize {
-        self.events.bytes()
     }
     pub(crate) fn flush(
         &mut self,

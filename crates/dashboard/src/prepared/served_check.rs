@@ -67,17 +67,28 @@ impl Owner {
 }
 
 /// The products `family` serves, as the registry lists them, each asked by
-/// its plan or else the generic one; a plan several of them share, once.
+/// its plan or else the generic one; a plan several of them share, once. A
+/// recording-wide job serves the products it gates.
 pub fn owners(family: &str) -> io::Result<Vec<Owner>> {
     use super::driver::registry;
-    let id = registry::FamilyId::parse(family)?;
-    let descriptor = registry::FAMILIES
-        .iter()
-        .find(|descriptor| descriptor.id == id)
-        .ok_or_else(|| invalid(format!("Unknown prepared family {family:?}")))?;
+    let job = registry::job(family);
+    let queries = match job {
+        Some(job) => job.gates,
+        None => {
+            let id = registry::FamilyId::parse(family)?;
+            registry::FAMILIES
+                .iter()
+                .find(|descriptor| descriptor.id == id)
+                .ok_or_else(|| invalid(format!("Unknown prepared family {family:?}")))?
+                .queries
+        }
+    };
     let mut owners: Vec<Owner> = Vec::new();
-    for &name in descriptor.queries {
-        let owner = match crate::products::find(name).and_then(|product| product.served) {
+    for &name in queries {
+        let plan = crate::products::find(name)
+            .and_then(|product| product.served)
+            .or_else(|| unnamed_plan(name));
+        let owner = match plan {
             Some(plan) => Owner::Plan(name, plan),
             None => Owner::Generic(name),
         };
@@ -90,6 +101,17 @@ pub fn owners(family: &str) -> io::Result<Vec<Owner>> {
         }
     }
     Ok(owners)
+}
+
+/// The plan of a prepared query no product is named after.
+fn unnamed_plan(name: &str) -> Option<&'static Plan> {
+    match name {
+        "game-score" => Some(&crate::products::game_score::served::PLAN),
+        "focus-hour" | "focus-unavailable" | "focus-order-page" | "focus-completions" => {
+            Some(&crate::prepared_focus::served::PLAN)
+        }
+        _ => None,
+    }
 }
 
 /// Asks `product`'s branch-wide request on each branch: all a product
@@ -182,13 +204,68 @@ struct Recorder<'a, 's, 'w> {
     serve: &'a mut (dyn FnMut(&str, &Value) -> Reply + 's),
     out: &'a mut (dyn Write + 'w),
     seen: HashSet<String>,
-    countries: BTreeMap<u64, Vec<String>>,
+    countries: BTreeMap<u64, Discovered>,
     owner: &'static str,
     tally: Recorded,
     limit: usize,
 }
 
+/// A branch's countries as its identity history names them.
+#[derive(Default)]
+struct Discovered {
+    /// In tag order.
+    tags: Vec<String>,
+    /// Each tag's native countries, as tag, canonical slot and id, in that order.
+    holders: Vec<(String, u32, u32)>,
+}
+
 impl Recorder<'_, '_, '_> {
+    /// `branch`'s countries. Discovery, not one of the owner's exchanges: neither recorded nor
+    /// counted, so a store holding the checked family alone is compared on that family's
+    /// replies.
+    fn discover(&mut self, branch: u64) -> &Discovered {
+        if !self.countries.contains_key(&branch) {
+            let reply = (self.serve)(
+                "country-identities",
+                &json!({ "branchId": branch.to_string() }),
+            );
+            let data = match reply {
+                Reply::Answered(mut reply) => reply.get_mut("data").map(Value::take),
+                Reply::Refused(_) => None,
+            };
+            let countries = data
+                .as_ref()
+                .and_then(|data| data.get("countries"))
+                .and_then(Value::as_object);
+            let mut tags: Vec<String> = countries
+                .map(|countries| countries.keys().cloned().collect())
+                .unwrap_or_default();
+            tags.sort_unstable();
+            tags.dedup();
+            let number = |value: &Value, field: &str| {
+                value
+                    .get(field)
+                    .and_then(Value::as_u64)
+                    .and_then(|number| u32::try_from(number).ok())
+            };
+            let mut holders = Vec::new();
+            for (tag, country) in countries.into_iter().flatten() {
+                let identities = country.get("identities").and_then(Value::as_array);
+                for identity in identities.into_iter().flatten() {
+                    if let (Some(slot), Some(id)) =
+                        (number(identity, "slot"), number(identity, "countryId"))
+                    {
+                        holders.push((tag.clone(), slot, id));
+                    }
+                }
+            }
+            holders.sort_unstable();
+            holders.dedup();
+            self.countries.insert(branch, Discovered { tags, holders });
+        }
+        &self.countries[&branch]
+    }
+
     /// The arrays of `name`'s replies whose order means nothing, as its plan says.
     fn unordered(&self, name: &str) -> &'static [&'static [&'static str]] {
         self.owners
@@ -252,29 +329,11 @@ impl Ask for Recorder<'_, '_, '_> {
     }
 
     fn countries(&mut self, branch: u64) -> io::Result<Vec<String>> {
-        if let Some(held) = self.countries.get(&branch) {
-            return Ok(held.clone());
-        }
-        // Discovery, not one of the owner's exchanges: neither recorded nor counted, so a store
-        // holding the checked family alone is compared on that family's replies.
-        let reply = (self.serve)(
-            "country-identities",
-            &json!({ "branchId": branch.to_string() }),
-        );
-        let data = match reply {
-            Reply::Answered(mut reply) => reply.get_mut("data").map(Value::take),
-            Reply::Refused(_) => None,
-        };
-        let mut tags: Vec<String> = data
-            .as_ref()
-            .and_then(|data| data.get("countries"))
-            .and_then(Value::as_object)
-            .map(|countries| countries.keys().cloned().collect())
-            .unwrap_or_default();
-        tags.sort_unstable();
-        tags.dedup();
-        self.countries.insert(branch, tags.clone());
-        Ok(tags)
+        Ok(self.discover(branch).tags.clone())
+    }
+
+    fn holders(&mut self, branch: u64) -> io::Result<Vec<(String, u32, u32)>> {
+        Ok(self.discover(branch).holders.clone())
     }
 }
 
@@ -345,7 +404,20 @@ pub fn check(
     transcript: &mut dyn BufRead,
     serve: &mut dyn FnMut(&str, &Value) -> Reply,
 ) -> io::Result<Report> {
-    let mut report = Report::default();
+    check_ignoring(transcript, serve, &[])
+}
+
+/// [`check`], not comparing what lies at an `ignored` path (dotted from the root, `*` for any).
+pub fn check_ignoring(
+    transcript: &mut dyn BufRead,
+    serve: &mut dyn FnMut(&str, &Value) -> Reply,
+    ignored: &[Vec<String>],
+) -> io::Result<Report> {
+    let mut report = Report {
+        ignored: ignored.iter().map(|path| path.join(".")).collect(),
+        patterns: ignored.to_vec(),
+        ..Report::default()
+    };
     let mut line = String::new();
     loop {
         line.clear();
@@ -394,6 +466,10 @@ fn in_form(form: fn(&Value) -> io::Result<Value>, reply: &Reply) -> Reply {
 pub struct Report {
     pub queries: usize,
     pub differing: usize,
+    /// The paths not compared.
+    pub ignored: Vec<String>,
+    #[serde(skip)]
+    patterns: Vec<Vec<String>>,
     /// By product, or by product and the series family kind it routes by.
     pub products: BTreeMap<String, Tally>,
 }
@@ -454,7 +530,12 @@ impl Report {
             Some(Value::Null) => tally.pending += 1,
             Some(_) => tally.answered += 1,
         }
-        if let Some(difference) = difference(&exchange.reply, candidate, &exchange.unordered) {
+        if let Some(difference) = difference_ignoring(
+            &exchange.reply,
+            candidate,
+            &exchange.unordered,
+            &self.patterns,
+        ) {
             self.differing += 1;
             tally.differing += 1;
             if tally.first.is_none() {
@@ -476,13 +557,23 @@ pub fn difference(
     candidate: &Reply,
     unordered: &[Vec<String>],
 ) -> Option<Difference> {
+    difference_ignoring(reference, candidate, unordered, &[])
+}
+
+/// [`difference`], passing over what lies at an `ignored` path.
+fn difference_ignoring(
+    reference: &Reply,
+    candidate: &Reply,
+    unordered: &[Vec<String>],
+    ignored: &[Vec<String>],
+) -> Option<Difference> {
     let side = |reply: &Reply| match reply {
         Reply::Answered(reply) => Side::Value(reply.clone()),
         Reply::Refused(why) => Side::Refused(why.clone()),
     };
     match (reference, candidate) {
         (Reply::Answered(reference), Reply::Answered(candidate)) => {
-            first(reference, candidate, &mut Vec::new(), unordered)
+            first(reference, candidate, &mut Vec::new(), unordered, ignored)
         }
         (Reply::Refused(reference), Reply::Refused(candidate)) if reference == candidate => None,
         _ => Some(Difference {
@@ -540,12 +631,27 @@ fn unordered_at(path: &[Step], unordered: &[Vec<String>]) -> bool {
         })
 }
 
+/// Whether `path` is one of the `ignored` paths.
+fn ignored_at(path: &[Step], ignored: &[Vec<String>]) -> bool {
+    ignored.iter().any(|pattern| {
+        pattern.len() == path.len()
+            && pattern
+                .iter()
+                .zip(path)
+                .all(|(want, step)| want == "*" || matches!(step, Step::Key(key) if key == want))
+    })
+}
+
 fn first(
     reference: &Value,
     candidate: &Value,
     path: &mut Vec<Step>,
     unordered: &[Vec<String>],
+    ignored: &[Vec<String>],
 ) -> Option<Difference> {
+    if ignored_at(path, ignored) {
+        return None;
+    }
     match (reference, candidate) {
         (Value::Object(held), Value::Object(other)) => {
             let mut keys: Vec<&String> = held.keys().chain(other.keys()).collect();
@@ -553,8 +659,12 @@ fn first(
             keys.dedup();
             for key in keys {
                 path.push(Step::Key(key.clone()));
+                if ignored_at(path, ignored) {
+                    path.pop();
+                    continue;
+                }
                 let found = match (held.get(key), other.get(key)) {
-                    (Some(a), Some(b)) => first(a, b, path, unordered),
+                    (Some(a), Some(b)) => first(a, b, path, unordered, ignored),
                     (a, b) => Some(differs(path, a, b)),
                 };
                 path.pop();
@@ -565,13 +675,17 @@ fn first(
             None
         }
         (Value::Array(held), Value::Array(other)) if unordered_at(path, unordered) => {
-            multiset(held, other, path)
+            multiset(held, other, path, ignored)
         }
         (Value::Array(held), Value::Array(other)) => {
             for at in 0..held.len().max(other.len()) {
                 path.push(Step::Index(at));
+                if ignored_at(path, ignored) {
+                    path.pop();
+                    continue;
+                }
                 let found = match (held.get(at), other.get(at)) {
-                    (Some(a), Some(b)) => first(a, b, path, unordered),
+                    (Some(a), Some(b)) => first(a, b, path, unordered, ignored),
                     (a, b) => Some(differs(path, a, b)),
                 };
                 path.pop();
@@ -588,13 +702,34 @@ fn first(
 }
 
 /// The first element one array holds more often than the other.
-fn multiset(reference: &[Value], candidate: &[Value], path: &mut Vec<Step>) -> Option<Difference> {
-    let mut surplus: HashMap<String, isize> = HashMap::new();
-    for item in candidate {
-        *surplus.entry(canonical(item)).or_default() += 1;
+fn multiset(
+    reference: &[Value],
+    candidate: &[Value],
+    path: &mut Vec<Step>,
+    ignored: &[Vec<String>],
+) -> Option<Difference> {
+    // An element path matches only `*`, so ignoring one ignores them all.
+    path.push(Step::Index(0));
+    let every = ignored_at(path, ignored);
+    path.pop();
+    if every {
+        return None;
+    }
+    // An element's ignored members are left out of what it is counted as.
+    let mut key = |item: &Value| {
+        path.push(Step::Index(0));
+        let text = canonical_at(item, path, ignored);
+        path.pop();
+        text
+    };
+    let reference_keys: Vec<String> = reference.iter().map(&mut key).collect();
+    let candidate_keys: Vec<String> = candidate.iter().map(&mut key).collect();
+    let mut surplus: HashMap<&str, isize> = HashMap::new();
+    for item in &candidate_keys {
+        *surplus.entry(item).or_default() += 1;
     }
     for (at, item) in reference.iter().enumerate() {
-        let count = surplus.entry(canonical(item)).or_default();
+        let count = surplus.entry(&reference_keys[at]).or_default();
         if *count == 0 {
             path.push(Step::Index(at));
             let found = differs(path, Some(item), None);
@@ -604,7 +739,7 @@ fn multiset(reference: &[Value], candidate: &[Value], path: &mut Vec<Step>) -> O
         *count -= 1;
     }
     for (at, item) in candidate.iter().enumerate() {
-        if let Some(count) = surplus.get_mut(&canonical(item))
+        if let Some(count) = surplus.get_mut(candidate_keys[at].as_str())
             && *count > 0
         {
             path.push(Step::Index(at));
@@ -616,21 +751,33 @@ fn multiset(reference: &[Value], candidate: &[Value], path: &mut Vec<Step>) -> O
     None
 }
 
-/// `value`'s text with every object's members in key order.
-fn canonical(value: &Value) -> String {
+/// `value` at `path` as text, every object's members in key order and `ignored` paths left out.
+fn canonical_at(value: &Value, path: &mut Vec<Step>, ignored: &[Vec<String>]) -> String {
     match value {
         Value::Object(members) => {
             let mut keys: Vec<&String> = members.keys().collect();
             keys.sort_unstable();
-            let fields: Vec<String> = keys
-                .into_iter()
-                .map(|key| format!("{}:{}", Value::from(key.as_str()), canonical(&members[key])))
-                .collect();
+            let mut fields = Vec::with_capacity(keys.len());
+            for key in keys {
+                path.push(Step::Key(key.clone()));
+                if !ignored_at(path, ignored) {
+                    let text = canonical_at(&members[key], path, ignored);
+                    fields.push(format!("{}:{text}", Value::from(key.as_str())));
+                }
+                path.pop();
+            }
             format!("{{{}}}", fields.join(","))
         }
         Value::Array(items) => {
-            let items: Vec<String> = items.iter().map(canonical).collect();
-            format!("[{}]", items.join(","))
+            let mut texts = Vec::with_capacity(items.len());
+            for (at, item) in items.iter().enumerate() {
+                path.push(Step::Index(at));
+                if !ignored_at(path, ignored) {
+                    texts.push(canonical_at(item, path, ignored));
+                }
+                path.pop();
+            }
+            format!("[{}]", texts.join(","))
         }
         other => other.to_string(),
     }

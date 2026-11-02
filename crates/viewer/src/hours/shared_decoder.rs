@@ -3,8 +3,6 @@
 use super::*;
 
 pub struct SharedDecoder {
-    #[cfg(test)]
-    pub(super) state: Arc<Mutex<DecoderState>>,
     actor: Actor,
 }
 pub(super) struct DecoderState {
@@ -53,24 +51,10 @@ impl SharedDecoder {
             playback: Playback::unloaded(replay)?.with_display_changes(),
             frames: BTreeMap::new(),
         }));
-        let actor = Actor::start(state.clone())?;
-        Ok(Self {
-            #[cfg(test)]
-            state,
-            actor,
-        })
+        let actor = Actor::start(state)?;
+        Ok(Self { actor })
     }
-    pub fn seed(&self, mut playback: Playback) -> io::Result<()> {
-        // Source loaders, never the coordinator/UI, bind the committed reader.
-        if let Some(source) = playback.checkpoint_source() {
-            match source.open() {
-                Ok(Some(checkpoints)) => playback = playback.with_checkpoints(checkpoints),
-                Ok(None) => {}
-                Err(error) => eprintln!(
-                    "Map checkpoint binding unavailable: {error}; using the replay reader"
-                ),
-            }
-        }
+    pub fn seed(&self, playback: Playback) -> io::Result<()> {
         let (send, result) = mpsc::sync_channel(1);
         self.actor
             .events

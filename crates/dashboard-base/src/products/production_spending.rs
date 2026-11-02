@@ -909,6 +909,9 @@ fn reply_inner(
 impl Product for ProductionSpending {
     const KEY: &'static str = "production-spending";
     const CONTENT_DEPENDENT: bool = true;
+    // Production's whole family: equipment produced and both spending views.
+    const SERVED: Option<&'static crate::prepared::served::Plan> =
+        Some(&crate::prepared_production::served::PLAN);
     type Params = ProductionSpendingParams;
     type Reply = ProductionSpendingReply;
 

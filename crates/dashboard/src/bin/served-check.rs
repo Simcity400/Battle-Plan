@@ -4,7 +4,7 @@
 //! candidate store and compares the replies
 //! ([`dashboard::prepared::served_check`]).
 //! `served-check record --family F --recording R --store S --work W --out T [--columnar C]`
-//! `served-check check --recording R --store S --work W --reference T --report P`
+//! `served-check check --recording R --store S --work W --reference T --report P [--ignore PATH]...`
 //! Both also take `[--game G --user U]` (else BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR)
 //! and `[--allow-unverified]`. A store is its folder,
 //! `…\HOI4Replay\prepared\<store>`; `--work` keeps the content cache.
@@ -26,7 +26,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const USAGE: &str =
     "served-check record --family F --recording R --store S --work W --out T [--columnar C]
-served-check check --recording R --store S --work W --reference T --report P
+served-check check --recording R --store S --work W --reference T --report P [--ignore PATH]...
 each also [--game G --user U] [--allow-unverified]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -45,6 +45,8 @@ struct Options {
     report: Option<PathBuf>,
     game: Option<PathBuf>,
     user: Option<PathBuf>,
+    /// Dotted reply paths not compared, `*` for any member or element.
+    ignore: Vec<Vec<String>>,
     allow_unverified: bool,
 }
 
@@ -69,6 +71,13 @@ impl Options {
                 Some("--report") => options.report = path,
                 Some("--game") => options.game = path,
                 Some("--user") => options.user = path,
+                Some("--ignore") => options.ignore.push(
+                    value
+                        .to_string_lossy()
+                        .split('.')
+                        .map(str::to_owned)
+                        .collect(),
+                ),
                 _ => return Err(invalid(USAGE)),
             }
         }
@@ -199,9 +208,11 @@ fn check(
         return Err(invalid("The transcript's branches are not the recording's"));
     }
     let started = Instant::now();
-    let report = served_check::check(&mut transcript, &mut |product: &str, params: &Value| {
-        served.serve(product, params)
-    })?;
+    let report = served_check::check_ignoring(
+        &mut transcript,
+        &mut |product: &str, params: &Value| served.serve(product, params),
+        &options.ignore,
+    )?;
     std::fs::write(
         path,
         serde_json::to_vec_pretty(&json!({

@@ -1,28 +1,26 @@
 //! Faction states prepared from a columnar walk. Each segment's projection starts cold, as a
-//! row block's first hour reads every input anew, and then follows only what each hour
-//! changed: the walker's change facts name the rows; an hour none of whose changes the
-//! projection reads is projected without a frame; otherwise its tables come from the walk's
-//! shared frame ([`dashboard_world`]), Countries by its tags and slots alone, and the trigger
-//! tables no lane declares are asked for only at an hour a dynamic text or scripted programme
-//! name reads anew. Programme operands come from the walk's own supplying reads, or the
-//! recording's for a read before the segment. The ordered emit, the block fold's own, numbers
-//! and publishes.
-use super::{
-    block,
-    prepared::{ACCOUNT_FIELDS, CHANNELS, Edits, Frames, Projected, Runtime, Supplying},
-};
+//! walk's first hour reads every input anew, and then follows only what each hour changed: the
+//! walker's change facts name the rows; an hour none of whose changes the projection reads is
+//! projected without a frame, a held dynamic text checked against those facts alone; otherwise
+//! its tables come from the walk's shared frame ([`dashboard_world`]), Countries by its tags and
+//! slots alone. A dynamic text read again or evaluated reads the trigger tables, which the
+//! projection keeps itself, each built at its first ask and patched at later ones by the rows
+//! the hours since changed. Programme operands come from the walk's own supplying reads, or the
+//! recording's for a read before the segment. The ordered emit ([`super::emit`]) numbers and
+//! publishes.
+use super::prepared::{ACCOUNT_FIELDS, CHANNELS, Edits, Frames, Projected, Runtime, Supplying};
 use dashboard_base::{
     Source, catalogue,
     metadata::{slot_read, slot_reads},
     prepared::frame_changes::{FrameChanges, field_mask},
-    products::{LoadContext, faction_details::selectors},
-    triggers::inputs::{TableChange, TableChanges},
+    products::faction_details::selectors,
+    triggers::inputs::{self as reuse, TableChange, TableChanges},
 };
 use dashboard_world::{Hold, Needs, World};
 use replay::{
-    columnar_frames::metrics,
+    columnar_frames::{Views, metrics},
     columns,
-    segments::{self, Item, Operator, Sink, Start, State},
+    segments::{self, Item, Manifest, Operator, Sink, Start, State},
 };
 use replay_data::{
     cadence::STAGGER_PERIOD,
@@ -30,13 +28,51 @@ use replay_data::{
     rows::{DeltaRow, TABLE_COUNT, TableId, full_mask},
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, not_selected};
+use replay_frame::frame::{DecodedFrame, NOT_SELECTED, SharedView, TableView, not_selected};
 use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, LazyLock, atomic::AtomicBool},
 };
+
+/// The family's own tables.
+pub const TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::ReservedCountryNaming,
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::FactionAccounts,
+    TableId::FactionProjection,
+    TableId::FactionUnlocks,
+    TableId::FactionGoalStatus,
+    TableId::FactionGoalEntries,
+    TableId::FactionRules,
+    TableId::FactionPrograms,
+    TableId::FactionMinimumUpgrades,
+    TableId::FactionDoctrine,
+    TableId::FactionManpower,
+    TableId::LexicalTokens,
+    TableId::ProjectPrograms,
+    TableId::Projects,
+    // A dynamic rule or doctrine name is expanded for the viewing country.
+    TableId::LocalPlayer,
+];
+
+/// Every table a walk decodes for the family: its own and the trigger kit's, which a dynamic
+/// name can read beyond them.
+pub fn tables() -> &'static [TableId] {
+    static WHOLE: LazyLock<Vec<TableId>> = LazyLock::new(|| {
+        let mut tables = TABLES.to_vec();
+        tables.extend_from_slice(dashboard_base::triggers::RECORDED_TABLES);
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    });
+    &WHOLE
+}
 
 /// The programme tables with the naming and the dictionary they name by.
 const PROGRAMME_FRAME: [TableId; 7] = [
@@ -66,7 +102,7 @@ fn held(tables: impl IntoIterator<Item = TableId>) -> io::Result<Vec<(TableId, H
 }
 
 /// What a projection reads of its walk's world: its own tables, the programmes and the
-/// naming. The other trigger tables are asked for at the hours a text reads them.
+/// naming. The trigger tables a dynamic text reads are the projection's own.
 pub fn needs() -> io::Result<Needs> {
     Ok(Needs {
         frame: held(own_tables().into_iter().chain(PROGRAMMES).chain(NAMING))?,
@@ -96,18 +132,40 @@ const PROGRAMMES: [TableId; 2] = [TableId::ProjectPrograms, TableId::Projects];
 /// The tables an hour's own frame holds: the family's but naming and programmes, and the
 /// relations a held dynamic text's reuse dates its spans by.
 fn own_tables() -> Vec<TableId> {
-    let mut own: Vec<TableId> = block::TABLES
+    let mut own: Vec<TableId> = TABLES
         .iter()
         .copied()
         .filter(|table| !NAMING.contains(table) && !PROGRAMMES.contains(table))
         .collect();
     for table in [TableId::WarRelations, TableId::Subjects] {
-        if block::whole_tables().contains(&table) && !own.contains(&table) {
+        if tables().contains(&table) && !own.contains(&table) {
             own.push(table);
         }
     }
     own
 }
+
+/// The tables whose changes the hour's evaluation reads as rows: the own frame's, the naming's
+/// and the programmes'.
+fn watched() -> &'static [TableId] {
+    static WATCHED: LazyLock<Vec<TableId>> = LazyLock::new(|| {
+        let mut watched = own_tables();
+        watched.extend(NAMING);
+        watched.extend(PROGRAMMES);
+        watched.sort_unstable();
+        watched.dedup();
+        watched
+    });
+    &WATCHED
+}
+
+/// The tables a held text's reuse dates by: the links whose countries own its rows, and the
+/// relations whose spans end.
+const SPANS: [(TableId, Hold); 3] = [
+    (TableId::CountryLinks, Hold::Whole),
+    (TableId::WarRelations, Hold::Whole),
+    (TableId::Subjects, Hold::Whole),
+];
 
 /// Whether the hour's changes of `table`, one of the own frame's, may change what the
 /// projection reads: `whole` when its status changed or the walk started.
@@ -129,7 +187,7 @@ fn reads_change(state: &State, table: TableId, whole: bool) -> io::Result<bool> 
         // Only their rows name owners; their values are read nowhere.
         TableId::FactionProjection | TableId::FactionUnlocks => rows,
         TableId::FactionAccounts => rows || written() & *ACCOUNT_FIELDS != 0,
-        // Read only by a held dynamic text, which projects every hour.
+        // Read only by a held dynamic text, which each hour checks.
         TableId::WarRelations | TableId::Subjects => false,
         _ => rows || written() != 0,
     })
@@ -162,17 +220,51 @@ enum Edit {
     Rows(Vec<DeltaRow>, Vec<u128>),
 }
 
-/// What the hour changed in each table the walk reads, each found when first asked.
-struct Changes<'h> {
-    state: &'h State,
-    format: FormatVersion,
-    /// The tables the hour may have changed anywhere: a walk's start, or a changed status.
-    whole: [bool; TABLE_COUNT],
-    edits: [OnceCell<Edit>; TABLE_COUNT],
-    flags: FrameChanges,
+impl Edit {
+    fn change(&self) -> TableChange<'_> {
+        match self {
+            Edit::Same => TableChange::Same,
+            Edit::Any => TableChange::Any,
+            Edit::Rows(rows, deleted) => TableChange::Rows(rows, deleted),
+        }
+    }
 }
 
-impl Changes<'_> {
+/// What the hour changed in each table the walk reads, each found when first asked.
+struct Moved<'h> {
+    state: &'h State,
+    world: &'h World,
+    format: FormatVersion,
+    /// A walk's start: every table may have changed anywhere.
+    restart: bool,
+    /// The fields of each table a held text reads: a change to none of them is told by the
+    /// fields the hour wrote, without its rows.
+    read: &'h [u64; TABLE_COUNT],
+    edits: [OnceCell<Edit>; TABLE_COUNT],
+}
+
+impl<'h> Moved<'h> {
+    fn new(
+        (state, world): (&'h State, &'h World),
+        format: FormatVersion,
+        restart: bool,
+        read: &'h [u64; TABLE_COUNT],
+    ) -> Self {
+        Self {
+            state,
+            world,
+            format,
+            restart,
+            read,
+            edits: std::array::from_fn(|_| OnceCell::new()),
+        }
+    }
+
+    /// Whether `table`'s status may differ from the hour before's.
+    fn whole(&self, table: TableId) -> bool {
+        self.restart || self.world.restated(table)
+    }
+
     fn edit(&self, id: TableId) -> Edit {
         let (Ok(changes), Ok(held)) = (
             columns::changes(self.state, id),
@@ -181,7 +273,7 @@ impl Changes<'_> {
             return Edit::Any;
         };
         // A truncated table is read anew each hour, as the row decoder's view of it is.
-        if self.whole[id.index()]
+        if self.whole(id)
             || changes.truncated
             || matches!(
                 columns::status(self.state, id),
@@ -231,16 +323,67 @@ impl Changes<'_> {
     fn get(&self, table: TableId) -> &Edit {
         self.edits[table.index()].get_or_init(|| self.edit(table))
     }
-}
 
-impl TableChanges for Changes<'_> {
-    fn table(&self, table: TableId) -> TableChange<'_> {
-        match self.get(table) {
-            Edit::Same => TableChange::Same,
-            Edit::Any => TableChange::Any,
-            Edit::Rows(rows, deleted) => TableChange::Rows(rows, deleted),
+    /// `table`'s change told by the fields the hour wrote, when its rows would tell a held
+    /// text no more: no row came or went, and no held text reads a field written.
+    fn by_fields(&self, table: TableId) -> Option<TableChange<'static>> {
+        if self.whole(table) {
+            return Some(TableChange::Any);
+        }
+        let changes = columns::changes(self.state, table).ok()?;
+        if changes.truncated
+            || !changes.inserted.is_empty()
+            || !changes.deleted.is_empty()
+            || matches!(
+                columns::status(self.state, table),
+                columns::Status::Truncated { .. }
+            )
+        {
+            return None;
+        }
+        let fields = table.last_change().fields(table, self.format.version());
+        // A row of an older format reads its unrecorded fields anew.
+        let older = fields < table.schema().len();
+        let every = full_mask(fields);
+        let mut written = 0;
+        for &mask in changes.masks.iter().chain(&changes.fill_masks) {
+            // A row given every field reads as one inserted.
+            if older || mask == every {
+                return None;
+            }
+            written |= mask;
+        }
+        if written == 0 {
+            Some(TableChange::Same)
+        } else if written & self.read[table.index()] == 0 {
+            Some(TableChange::Fields(written))
+        } else {
+            None
         }
     }
+}
+
+impl TableChanges for Moved<'_> {
+    fn table(&self, table: TableId) -> TableChange<'_> {
+        let index = table.index();
+        // A table the walk does not read is the hour before's: every frame holds it unselected.
+        if self.state.skips(index) || self.state.status(index).is_none() {
+            return TableChange::Same;
+        }
+        if let Some(edit) = self.edits[index].get() {
+            return edit.change();
+        }
+        match self.by_fields(table) {
+            Some(change) => change,
+            None => self.get(table).change(),
+        }
+    }
+}
+
+/// The hour's changes as the projection reads them.
+struct Changes<'h> {
+    moved: Moved<'h>,
+    flags: FrameChanges,
 }
 
 impl Edits for Changes<'_> {
@@ -248,14 +391,17 @@ impl Edits for Changes<'_> {
         &self.flags
     }
     fn rows(&self, table: TableId) -> Option<(&[DeltaRow], &[u128])> {
-        match self.get(table) {
+        match self.moved.get(table) {
             Edit::Same => Some((&[], &[])),
             Edit::Any => None,
             Edit::Rows(rows, deleted) => Some((rows, deleted)),
         }
     }
     fn tables(&self) -> &dyn TableChanges {
-        self
+        &self.moved
+    }
+    fn restated(&self, table: TableId) -> bool {
+        self.moved.whole(table)
     }
 }
 
@@ -269,19 +415,141 @@ enum Read {
     Lost,
 }
 
-/// The hour's own frame, and the frames a programme or dynamic text asks for, taken from the
-/// walk's frame when first asked.
+/// The tables a dynamic text reads beyond the hour's own frame, and Countries whole: one view
+/// of each for the walk, built at its first ask, then noted every hour by slot and patched at
+/// each later ask by the rows changed since, so an ask costs what changed, not what is held.
+struct Trigger {
+    /// Every table of [`tables`], Countries among them.
+    views: Views,
+    /// Whether each table's view is built, and so noted, since the walk's start.
+    held: [bool; TABLE_COUNT],
+    /// Some table is held.
+    holds: bool,
+    /// The tables an ask builds, kept from ask to ask.
+    wanted: Vec<TableId>,
+    /// One view apart for each table a frame leaves unselected, so a text reading one is not
+    /// taken to read them all.
+    holes: Vec<SharedView>,
+    /// Frames built for dynamic texts, and tables built anew for them.
+    #[cfg(test)]
+    built: usize,
+    #[cfg(test)]
+    anew: u32,
+}
+
+impl Trigger {
+    fn new(format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut views = Views::new(tables(), format, mode)?.by_slot();
+        #[cfg(test)]
+        views.time_builds(true);
+        Ok(Self {
+            views,
+            held: [false; TABLE_COUNT],
+            holds: false,
+            wanted: Vec::new(),
+            holes: Vec::new(),
+            #[cfg(test)]
+            built: 0,
+            #[cfg(test)]
+            anew: 0,
+        })
+    }
+
+    /// Notes the hour's edits of the held tables: a walk's start holds none, building each
+    /// anew at its next ask.
+    fn hour(&mut self, state: &State, manifest: &Manifest<'_>, restart: bool) -> io::Result<()> {
+        if restart {
+            self.held = [false; TABLE_COUNT];
+            self.holds = false;
+        } else if !self.holds {
+            return Ok(());
+        }
+        let held = &self.held;
+        self.views
+            .note_tables(state, manifest, restart, &|table| held[table.index()])
+    }
+
+    /// `own` with each of `tables` the walk reads and Countries whole, every other table
+    /// unselected.
+    fn frame(
+        &mut self,
+        state: &State,
+        own: &DecodedFrame,
+        tables: &[TableId],
+    ) -> io::Result<DecodedFrame> {
+        #[cfg(test)]
+        {
+            self.built += 1;
+        }
+        let mut frame = DecodedFrame {
+            branch: own.branch,
+            hour: own.hour,
+            tables: std::array::from_fn(|index| own.tables[index].clone()),
+            metrics: own.metrics.clone(),
+        };
+        self.wanted.clear();
+        for &table in tables.iter().chain(&[TableId::Countries]) {
+            let index = table.index();
+            let walked = !state.skips(index) && state.status(index).is_some();
+            if walked
+                && (table == TableId::Countries || frame.tables[index].is_not_selected())
+                && self.views.selected().binary_search(&table).is_ok()
+            {
+                self.wanted.push(table);
+            }
+        }
+        self.wanted.sort_unstable();
+        self.wanted.dedup();
+        self.views
+            .update_tables(state, own.hour, &self.wanted, None)?;
+        #[cfg(test)]
+        {
+            self.anew += self.views.times().anew.0;
+        }
+        for &table in &self.wanted {
+            let index = table.index();
+            self.held[index] = true;
+            frame.tables[index] = self
+                .views
+                .view(table)
+                .ok_or_else(|| io::Error::other("A trigger table was not built"))?
+                .clone()
+                .with_sampled_at(state.sampled_at(index));
+        }
+        self.holds |= !self.wanted.is_empty();
+        if self.holes.is_empty() {
+            self.holes = (0..TABLE_COUNT)
+                .map(|_| {
+                    SharedView::from(TableView::Unavailable {
+                        reason: NOT_SELECTED.into(),
+                    })
+                })
+                .collect();
+        }
+        for (view, hole) in frame.tables.iter_mut().zip(&self.holes) {
+            if view.is_not_selected() {
+                *view = hole.clone();
+            }
+        }
+        Ok(frame)
+    }
+}
+
+/// The hour's own frame, and the frames a programme or dynamic text asks for, built when first
+/// asked.
 struct Hourly<'p, 'h, 'a> {
     own: &'p DecodedFrame,
     hour: &'p segments::Hour<'h, World>,
-    /// [`PROGRAMME_FRAME`], and every table the projection or a dynamic text reads, as the
-    /// walk's frame is asked for them.
+    /// [`PROGRAMME_FRAME`] as the walk's frame is asked for it.
     asks: &'p Asks,
+    trigger: &'p RefCell<Trigger>,
     read: Read,
     source: &'a Source,
     /// The recording's supplying reads, for a read before the walk or one it passed.
     lookback: RefCell<Option<Supplying<'a>>>,
     programmes: OnceCell<Result<DecodedFrame, String>>,
+    reading: OnceCell<Result<DecodedFrame, String>>,
     whole: OnceCell<Result<DecodedFrame, String>>,
 }
 
@@ -299,6 +567,23 @@ impl<'a> Hourly<'_, '_, 'a> {
             .map_err(|reason| io::Error::other(reason.clone()))
     }
 
+    /// The own frame with `tables` built for a dynamic text, held in `cell`.
+    fn evaluation<'c>(
+        &self,
+        cell: &'c OnceCell<Result<DecodedFrame, String>>,
+        tables: &[TableId],
+    ) -> io::Result<&'c DecodedFrame> {
+        cell.get_or_init(|| {
+            let _cpu = ::replay_frame::cpu::scope("faction trigger frame", None);
+            self.trigger
+                .borrow_mut()
+                .frame(self.hour.state, self.own, tables)
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|reason| io::Error::other(reason.clone()))
+    }
+
     fn lookback<T>(&self, read: impl FnOnce(&mut Supplying<'a>) -> io::Result<T>) -> io::Result<T> {
         let mut lookback = self.lookback.borrow_mut();
         let (source, branch) = (self.source, self.own.branch);
@@ -311,16 +596,14 @@ impl Frames for Hourly<'_, '_, '_> {
         self.own
     }
     fn whole(&self) -> io::Result<&DecodedFrame> {
-        self.whole
-            .get_or_init(|| {
-                let _cpu = ::replay_frame::cpu::scope("faction trigger frame", None);
-                self.hour
-                    .world
-                    .frame_held(self.hour.state, &self.asks.followed)
-                    .map_err(|error| error.to_string())
-            })
-            .as_ref()
-            .map_err(|reason| io::Error::other(reason.clone()))
+        self.evaluation(&self.whole, tables())
+    }
+    fn reading(&self, tables: &[TableId]) -> io::Result<&DecodedFrame> {
+        // The whole frame holds every table a reading asks for.
+        if let Some(Ok(whole)) = self.whole.get() {
+            return Ok(whole);
+        }
+        self.evaluation(&self.reading, tables)
     }
     fn read_hour(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>> {
         match self.read {
@@ -362,23 +645,24 @@ impl Frames for Hourly<'_, '_, '_> {
 struct Asks {
     own: Vec<(TableId, Hold)>,
     programmes: Vec<(TableId, Hold)>,
-    followed: Vec<(TableId, Hold)>,
 }
 
-/// A segment's projection. It starts cold at every start, as each row block reads its first
+/// A segment's projection. It starts cold at every start, as a walk reads its first
 /// hour anew; what earlier segments published is the emit's.
 pub struct Projector<'a> {
     format: FormatVersion,
     source: &'a Source,
     cat: Option<Arc<catalogue::Catalogue>>,
-    /// Every table the projection or a dynamic text reads.
-    followed: Vec<TableId>,
     /// The tables whose changes decide whether an hour is evaluated.
     own_tables: Vec<TableId>,
     asks: Asks,
+    trigger: RefCell<Trigger>,
+    /// The fields of each table the held dynamic texts read.
+    read_fields: Box<[u64; TABLE_COUNT]>,
+    /// A frame kept from hour to hour, holding none of the walk's views between them.
+    kept: Option<DecodedFrame>,
     /// The walk named the countries since its start.
     named: bool,
-    shapes: [Option<columns::Status>; TABLE_COUNT],
     country_mask: u64,
     runtime: Runtime,
     read: Read,
@@ -394,20 +678,15 @@ pub struct Projector<'a> {
 }
 
 impl<'a> Projector<'a> {
-    /// A projection reading the recording's content as the row path does, and programme
-    /// operands it did not walk to from `source`.
+    /// A projection of a recording at `format` captured in `mode`, naming by `cat`, the
+    /// recorded stack's catalogue, and reading programme operands it did not walk to from
+    /// `source`.
     pub fn new(
-        format: FormatVersion,
-        _: CaptureMode,
+        (format, mode): (FormatVersion, CaptureMode),
         source: &'a Source,
-        context: &LoadContext,
+        cat: Option<Arc<catalogue::Catalogue>>,
     ) -> io::Result<Self> {
-        let cat = context
-            .content
-            .as_ref()
-            .and_then(|options| catalogue::catalogue(source, options).ok());
         let own = own_tables();
-        let followed = block::whole_tables().to_vec();
         Ok(Self {
             format,
             source,
@@ -416,11 +695,11 @@ impl<'a> Projector<'a> {
             asks: Asks {
                 own: held(own.iter().copied().chain(NAMING))?,
                 programmes: held(PROGRAMME_FRAME)?,
-                followed: held(followed.iter().copied())?,
             },
             own_tables: own,
-            followed,
-            shapes: [None; TABLE_COUNT],
+            trigger: RefCell::new(Trigger::new(format, mode)?),
+            read_fields: Box::new([0; TABLE_COUNT]),
+            kept: None,
             country_mask: field_mask(TableId::Countries, &["canonical_slot", "tag"]),
             runtime: Runtime::exact(),
             read: Read::Unseen,
@@ -431,6 +710,35 @@ impl<'a> Projector<'a> {
             evaluated: 0,
         })
     }
+}
+
+#[cfg(test)]
+impl Projector<'_> {
+    /// Frames built for dynamic texts since the projection started.
+    pub(super) fn trigger_frames(&self) -> usize {
+        self.trigger.borrow().built
+    }
+
+    /// Trigger tables built anew since the projection started, rather than patched or kept.
+    pub(super) fn trigger_tables_anew(&self) -> u32 {
+        self.trigger.borrow().anew
+    }
+}
+
+/// The kept frame, empty of the walk's views.
+fn taken(kept: &mut Option<DecodedFrame>) -> DecodedFrame {
+    kept.take().unwrap_or_else(|| DecodedFrame {
+        branch: 0,
+        hour: 0,
+        tables: std::array::from_fn(|_| not_selected()),
+        metrics: Default::default(),
+    })
+}
+
+/// Keeps `frame` for the next hour, giving back the walk's views `asks` gave it.
+fn keep(kept: &mut Option<DecodedFrame>, mut frame: DecodedFrame, asks: &[(TableId, Hold)]) {
+    dashboard_world::release(&mut frame, asks);
+    *kept = Some(frame);
 }
 
 impl Operator<World> for Projector<'_> {
@@ -457,7 +765,7 @@ impl Operator<World> for Projector<'_> {
         out: &mut dyn Sink<Hour>,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("faction projection", None);
-        let state = hour.state;
+        let (state, world) = (hour.state, hour.world);
         // A walk's start reads every input anew.
         let restart =
             hour.opens || self.last.and_then(|last| last.checked_add(1)) != Some(hour.hour);
@@ -465,16 +773,18 @@ impl Operator<World> for Projector<'_> {
             self.runtime = Runtime::exact();
             self.named = false;
         }
-        let metrics = metrics(hour.manifest);
-        let mut whole = [false; TABLE_COUNT];
+        self.trigger
+            .get_mut()
+            .hour(state, hour.manifest, restart)?;
+        self.runtime.gather_reads(&mut self.read_fields);
+        let whole = |table: TableId| restart || world.restated(table);
         let mut changed = [false; TABLE_COUNT];
-        for &table in &self.followed {
-            let index = table.index();
-            let now = columns::status(state, table);
-            whole[index] = restart || self.shapes[index] != Some(now);
-            self.shapes[index] = Some(now);
-            changed[index] = whole[index]
-                || matches!(now, columns::Status::Truncated { .. })
+        for &table in watched() {
+            changed[table.index()] = whole(table)
+                || matches!(
+                    columns::status(state, table),
+                    columns::Status::Truncated { .. }
+                )
                 || columns::changes(state, table).is_ok_and(|edits| {
                     !edits.changed.is_empty()
                         || !edits.fill_slots.is_empty()
@@ -483,6 +793,7 @@ impl Operator<World> for Projector<'_> {
                         || edits.truncated
                 });
         }
+        let metrics = metrics(hour.manifest);
         self.read =
             if !columns::complete(state, TableId::ProjectPrograms) || (restart && !hour.opens) {
                 Read::Lost
@@ -502,9 +813,9 @@ impl Operator<World> for Projector<'_> {
         };
         let slots = slot_reads(self.format, &metrics, hour.hour);
         let renamed = !self.named
-            || whole[TableId::Countries.index()]
+            || whole(TableId::Countries)
             || changed[TableId::CountryLinks.index()]
-            || hour.world.touched(TableId::Countries, self.country_mask);
+            || world.touched(TableId::Countries, self.country_mask);
         // Programme operands move only for factions that hold programmes.
         let programmes = columns::complete(state, TableId::FactionPrograms)
             && columns::table(state, TableId::FactionPrograms)?
@@ -518,7 +829,18 @@ impl Operator<World> for Projector<'_> {
             if evaluated {
                 break;
             }
-            evaluated = reads_change(state, table, whole[table.index()])?;
+            evaluated = reads_change(state, table, whole(table))?;
+        }
+        if !evaluated && self.runtime.holds_dynamic() {
+            // Each held text is checked by the hour's change facts alone.
+            let mut frame = taken(&mut self.kept);
+            world.frame_held_into(state, &SPANS, &mut frame)?;
+            let moved = Moved::new((state, world), self.format, restart, &self.read_fields);
+            let since = reuse::Since::hour_before(&frame, &moved);
+            let fresh = self.runtime.check_held(since.as_ref(), hour.hour);
+            drop(since);
+            keep(&mut self.kept, frame, &SPANS);
+            evaluated = !fresh;
         }
         if !evaluated {
             let reads = CHANNELS.map(|(_, table)| slots[table.index()]);
@@ -537,12 +859,10 @@ impl Operator<World> for Projector<'_> {
         // The projection reads countries by their naming alone.
         changed[TableId::Countries.index()] = renamed;
         changed[TableId::CountryLinks.index()] = renamed;
-        let frame = hour.world.frame_held(state, &self.asks.own)?;
+        let mut frame = taken(&mut self.kept);
+        world.frame_held_into(state, &self.asks.own, &mut frame)?;
         let edits = Changes {
-            state,
-            format: self.format,
-            whole,
-            edits: std::array::from_fn(|_| OnceCell::new()),
+            moved: Moved::new((state, world), self.format, restart, &self.read_fields),
             flags: FrameChanges::rebuilt(&frame, self.format, !restart, |table| {
                 changed[table.index()]
             }),
@@ -552,16 +872,19 @@ impl Operator<World> for Projector<'_> {
             own: &frame,
             hour,
             asks: &self.asks,
+            trigger: &self.trigger,
             read: self.read,
             source: self.source,
             lookback: RefCell::new(None),
             programmes: OnceCell::new(),
+            reading: OnceCell::new(),
             whole: OnceCell::new(),
         };
         let projected =
             self.runtime
                 .project(&frames, &edits, self.cat.as_deref(), &self.cancelled)?;
-        drop(frames);
+        drop((frames, edits));
+        keep(&mut self.kept, frame, &self.asks.own);
         self.last = Some(hour.hour);
         out.push(Hour {
             branch: hour.branch,

@@ -170,7 +170,8 @@ impl Product for Wargoals {
         tables.extend(installed_content_country_names::country_names::TABLES);
         tables.sort_by_key(|t| t.index());
         tables.dedup();
-        let frame = read(&tables)?;
+        let mut frame = read(&tables)?;
+        dashboard_base::prepared::query::native::fill(source, &mut frame, &tables, cancelled)?;
         let (_, slot) = selected_country(
             frame.complete::<tables::Countries>()?,
             frame.complete::<tables::CountryLinks>()?,

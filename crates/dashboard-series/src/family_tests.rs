@@ -314,3 +314,89 @@ fn a_saved_carry_loads_back_the_same() {
     assert_eq!(Carry::load(&bytes).unwrap(), carry);
     assert!(Carry::load(&bytes[..bytes.len() - 1]).is_err());
 }
+
+/// A supplied value starts a run of its own at its hour, even equal to the run before and
+/// across a cut and a saved carry, while the equal values read between continue it.
+#[test]
+fn supplied_values_start_their_own_runs_across_a_cut_and_a_saved_carry() {
+    let budget = Budget::new(64 << 20);
+    let cache = Cache::new(&budget);
+    let mut pages = Memory::default();
+    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut actors = Actors::new(SCHEMA);
+    let mut carry = Carry::default();
+    let actor = actors.actor(&mut writer, b"T", 0).unwrap();
+    let place = Place {
+        actor,
+        measure: 0,
+        dimension: None,
+    };
+    let key = actors
+        .key(&mut writer, place, (RunMode::Exact, 0), None)
+        .unwrap();
+    let read = |hour: i32| {
+        Some(Read {
+            holder: Some(7),
+            read: Some(hour),
+            identity_first: Some(0),
+            presented: false,
+        })
+    };
+    let mut root = 0;
+    for (generation, (first, last)) in [(0, 30), (31, 70)].into_iter().enumerate() {
+        for hour in first..=last {
+            match hour {
+                0 | 24 | 48 => {
+                    carry
+                        .supplied(&mut writer, key, hour, 5, hour == 0)
+                        .unwrap();
+                    carry.evidence(&mut writer, key, hour, read(hour)).unwrap();
+                }
+                60 => {
+                    carry.value(&mut writer, key, hour, None, false).unwrap();
+                    carry.evidence(&mut writer, key, hour, None).unwrap();
+                }
+                _ if hour < 60 => {
+                    assert!(!carry.value(&mut writer, key, hour, Some(5), false).unwrap());
+                }
+                _ => {}
+            }
+        }
+        carry.cut(&mut writer, last).unwrap();
+        let generation = generation as u64 + 1;
+        root = publish(
+            &mut writer,
+            &mut pages,
+            &cache,
+            Publication {
+                generation,
+                segment: generation - 1,
+                accepted: span(0, last),
+                reached: last,
+                refusal: None,
+            },
+            Blob::EMPTY,
+        )
+        .unwrap();
+        let mut saved = Vec::new();
+        carry.save(&mut saved).unwrap();
+        carry = Carry::load(&saved).unwrap();
+    }
+    let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
+    for (hour, expected) in [
+        (10, Some((0, 23, true))),
+        (30, Some((24, 47, false))),
+        (31, Some((24, 47, false))),
+        (59, Some((48, 59, false))),
+        (60, None),
+    ] {
+        let found = match snapshot.value_at(key, hour).unwrap() {
+            Observation::Value { run, evidence } => {
+                assert_eq!(evidence.supplying_read, Some(run.span.first), "hour {hour}");
+                Some((run.span.first, run.span.last, run.break_before))
+            }
+            _ => None,
+        };
+        assert_eq!(found, expected, "hour {hour}");
+    }
+}

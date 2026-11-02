@@ -292,7 +292,7 @@ impl<'a> Pending<'a> {
                 dictionary: dictionary.finish(io)?,
                 blocks,
                 data: w.data.finish(io)?,
-                heap: write_heap(io, &c.heap)?,
+                heap: write_heap(io, c.heap.whole())?,
             }),
         };
         let mut header = Sink::default();

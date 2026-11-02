@@ -441,6 +441,8 @@ fn project<'a>(
 
 impl Product for CasualtyBreakdown {
     const KEY: &'static str = "casualty-breakdown";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::served::PLAN);
     const CONTENT_DEPENDENT: bool = true;
     type Params = CasualtyBreakdownParams;
     type Reply = CasualtyBreakdownReply;

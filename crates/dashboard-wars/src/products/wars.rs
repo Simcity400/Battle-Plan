@@ -1,22 +1,21 @@
 //! Native, viewpoint-dependent war blobs with explicitly app-owned continuity.
 //! The game stores no group identity or participant join/leave dates.
-pub mod block;
+pub mod emit;
+pub mod facts;
+mod inputs;
 mod labels;
 mod naming;
 mod native;
 mod participation;
 pub use participation::{WarContributionCountry, WarContributionGroup};
-pub mod prepared;
-mod published;
-#[cfg(any(test, feature = "test-support"))]
-pub use published::tail_reads as published_tail_reads;
+pub mod query;
+pub mod served;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
-#[cfg(any(test, feature = "test-support"))]
-pub use walks::decoded_inputs as walks_decoded_inputs;
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(test)]
 pub(crate) mod tests;
-mod walks;
 
 use dashboard_base::{
     Source,
@@ -143,7 +142,7 @@ pub struct WarTimeline {
     open_relations: HashMap<(WarRelationKey, bool), usize>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct WarRelationKey {
+pub struct WarRelationKey {
     pub first: (u32, u32),
     pub second: (u32, u32),
     pub start: i32,
@@ -234,6 +233,7 @@ impl Product for Wars {
             WarContributionCountry::decl(),
         ]
     }
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         p.branch_id
             .parse::<u64>()
@@ -372,8 +372,6 @@ fn read_hour(
     cat: Option<&Catalogue>,
     losses: bool,
 ) -> HourRead {
-    #[cfg(any(test, feature = "test-support"))]
-    walks::READ.with(|count| count.set(count.get() + 1));
     identities
         .map_or_else(
             || Ok(view.map(str::to_owned)),

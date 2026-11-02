@@ -1,6 +1,8 @@
 //! A recording's change-run index ([`replay::columnar_runs`]), prepared from its native columnar
 //! recordings, one per capture, in a folder of its prepared store's, which Clear removes with
-//! the store: the viewer's map reads its hours from it in place of walking the recording.
+//! the store: the viewer's map reads its hours from it in place of walking the recording, and
+//! an hour's product reader the tables its row frames leave to the native capture
+//! ([`dashboard_base::prepared::query::native`]).
 
 use crate::Source;
 use replay::{
@@ -21,20 +23,49 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-/// The tables read from the index at query time: the map's.
+/// The tables read from the index at query time: the map's, and those the hour readers of
+/// division careers, division templates, the training queue, army losses, war goals, faction
+/// details, the politics details, regional weather and doctrine descriptions read, in table
+/// order.
 pub fn tables() -> &'static [TableId] {
-    dashboard_base::prepared_map::selected_tables()
+    static TABLES: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
+        use dashboard_army::products::{division_careers, division_templates, training_queue};
+        use dashboard_weather::products::regional_weather;
+        let map = dashboard_base::map_tables::selected_tables();
+        let queue = training_queue::read_tables();
+        let read: [&[TableId]; 14] = [
+            &division_careers::TABLES,
+            &division_templates::TABLES,
+            queue.as_slice(),
+            &dashboard_land_battles::products::army_losses::TABLES,
+            &dashboard_base::products::equipment::DESIGN_TABLES,
+            &dashboard_base::products::place_names::NAME_TABLES,
+            dashboard_wars::products::wargoals::TABLES,
+            &installed_content_country_names::country_names::TABLES,
+            dashboard_base::products::faction_details::TABLES,
+            dashboard_politics::products::politics_state::EXILE_TABLES,
+            dashboard_politics::products::politics_state::BALANCE_TABLES,
+            regional_weather::PROVINCE_TABLES,
+            regional_weather::CHOICE_TABLES,
+            dashboard_doctrine_mastery::products::doctrine_mastery::description_tables(),
+        ];
+        TableId::ALL
+            .into_iter()
+            .filter(|table| map.contains(table) || read.iter().any(|tables| tables.contains(table)))
+            .collect()
+    });
+    &TABLES
 }
 
 /// The folder of `source`'s prepared store holding its index, or why its native recordings were
 /// refused, placed from the recording it loaded, which is not read again.
 pub fn folder(source: &Source) -> io::Result<PathBuf> {
-    Ok(dashboard_base::prepared::recording_folder(source)?.join("change-runs"))
+    dashboard_base::prepared::query::native::index_folder(source)
 }
 
 /// Where `source`'s index is kept ([`folder`]).
 pub fn path(source: &Source) -> io::Result<PathBuf> {
-    Ok(folder(source)?.join("index.h4runs"))
+    dashboard_base::prepared::query::native::index_path(source)
 }
 
 /// Where why `source`'s native recordings were refused is kept ([`folder`]).

@@ -88,13 +88,9 @@ fn environment(
     cat: &catalogue::Catalogue,
     faction: u64,
     text: &str,
+    held: Option<&ViewerText<'_>>,
 ) -> Result<String, String> {
-    let raw = frame
-        .complete::<tables::LocalPlayer>()
-        .map_err(|why| why.to_string())?
-        .first()
-        .and_then(|row| row.viewing_country())
-        .ok_or("Faction text requires the selected country")?;
+    let raw = super::viewer::viewing(frame)?.ok_or("Faction text requires the selected country")?;
     let slot = crate::metadata::link_slot(
         frame
             .complete::<tables::CountryLinks>()
@@ -102,8 +98,11 @@ fn environment(
         raw,
     )
     .ok_or("Faction text's selected country has no link")?;
-    ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, slot)
-        .expand_faction(text, faction)
+    match held {
+        Some(held) => held.with(slot, |scripted| scripted.expand_faction(text, faction))?,
+        None => ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, slot)
+            .expand_faction(text, faction),
+    }
 }
 pub(super) fn rule(
     frame: &DecodedFrame,
@@ -111,6 +110,17 @@ pub(super) fn rule(
     row: &FactionRuleRow,
     cat: Option<&catalogue::Catalogue>,
     expand: bool,
+) -> FactionRuleDetail {
+    rule_in(frame, faction, row, cat, expand, None)
+}
+/// [`rule`], a dynamic name expanded in `held` when given.
+pub(super) fn rule_in(
+    frame: &DecodedFrame,
+    faction: u64,
+    row: &FactionRuleRow,
+    cat: Option<&catalogue::Catalogue>,
+    expand: bool,
+    held: Option<&ViewerText<'_>>,
 ) -> FactionRuleDetail {
     let mut value = FactionRuleDetail {
         ordinal: row.ordinal,
@@ -128,7 +138,7 @@ pub(super) fn rule(
             .localise(spelling.as_bytes())
             .map_err(|why| why.to_string())?;
         if expand && text.contains('[') {
-            text = environment(frame, cat, faction, &text)?;
+            text = environment(frame, cat, faction, &text, held)?;
         }
         value.name = Some(catalogue::plain_text(&text)?);
         Ok(())
@@ -144,7 +154,17 @@ pub(super) fn doctrine(
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
 ) -> FactionRuleDetail {
-    doctrine_named(frame, faction, row, cat, true)
+    doctrine_named(frame, faction, row, cat, true, None)
+}
+/// [`doctrine`], a dynamic name expanded in `held` when given.
+pub(super) fn doctrine_in(
+    frame: &DecodedFrame,
+    faction: u64,
+    row: &FactionDoctrineRow,
+    cat: Option<&catalogue::Catalogue>,
+    held: Option<&ViewerText<'_>>,
+) -> FactionRuleDetail {
+    doctrine_named(frame, faction, row, cat, true, held)
 }
 fn doctrine_named(
     frame: &DecodedFrame,
@@ -152,6 +172,7 @@ fn doctrine_named(
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
     expand: bool,
+    held: Option<&ViewerText<'_>>,
 ) -> FactionRuleDetail {
     let mut detail = FactionRuleDetail {
         ordinal: row.ordinal,
@@ -169,7 +190,7 @@ fn doctrine_named(
             .localise(spelling.as_bytes())
             .map_err(|why| why.to_string())?;
         if expand && text.contains('[') {
-            text = environment(frame, cat, faction, &text)?;
+            text = environment(frame, cat, faction, &text, held)?;
         }
         detail.name = Some(catalogue::plain_text(&text)?);
         Ok(())
@@ -323,7 +344,7 @@ pub(super) fn needs_environment(
     }
     if let Ok(rows) = frame.complete::<tables::FactionDoctrine>() {
         for row in selected(rows, faction, |row| row.faction) {
-            if doctrine_named(frame, faction, row, Some(cat), false)
+            if doctrine_named(frame, faction, row, Some(cat), false, None)
                 .name
                 .is_some_and(|text| text.contains('['))
             {
@@ -618,6 +639,53 @@ mod tests {
         *frame.tables[TableId::FactionDoctrine.index()] = doctrines(2);
         assert!(needs_environment(&frame, 7, &cat));
         assert!(!needs_environment(&frame, 8, &cat), "another faction's doctrine");
+    }
+    /// A dynamic name expanded in the hour's shared text reads as one expanded alone, and
+    /// records the selected country's reads, never the tables the shared text is built from.
+    #[test]
+    fn a_shared_viewer_text_names_alike_and_records_none_of_the_tables_it_is_built_from() {
+        use crate::triggers::inputs::{Key, capture};
+        use replay_data::rows::LocalPlayerRow;
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n MOD_SCRIPTED_RULE:0 \"[ROOT.GetTag] rule\"\n",
+        )]);
+        let mut frame = crate::test_fixtures::source(1, 100, Some(0));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 1,
+                literal: b"MOD_SCRIPTED_RULE".to_vec(),
+            }]));
+        *frame.tables[TableId::LocalPlayer.index()] =
+            TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+                country: 9001,
+                observer_country: 0,
+            }]));
+        let row = FactionRuleRow {
+            faction: 7,
+            ordinal: 0,
+            token: 1,
+        };
+        let alone = rule(&frame, 7, &row, Some(&cat), true);
+        let text = ViewerText::new(&frame, &cat);
+        for _ in 0..2 {
+            let (shared, inputs) =
+                capture(&frame, || rule_in(&frame, 7, &row, Some(&cat), true, Some(&text)));
+            assert_eq!((&shared.name, &shared.reason), (&alone.name, &alone.reason));
+            let read: Vec<TableId> = inputs
+                .keys()
+                .filter_map(|key| match key {
+                    Key::Table(table) | Key::Fields(table, _) => Some(*table),
+                    _ => None,
+                })
+                .collect();
+            assert!(read.contains(&TableId::LocalPlayer), "{read:?}");
+            for built in [TableId::Countries, TableId::States, TableId::Politics] {
+                assert!(!read.contains(&built), "{built:?}: {read:?}");
+            }
+        }
     }
     #[test]
     fn faction_companion_details_keep_sibling_facts_and_idle_programme_without_content() {

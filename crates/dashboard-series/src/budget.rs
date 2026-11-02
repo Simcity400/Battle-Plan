@@ -1,3 +1,4 @@
+use crate::cache::Cache;
 use std::{
     io,
     mem::size_of,
@@ -26,11 +27,7 @@ impl Budget {
     }
 
     pub fn admit(&self, bytes: usize) -> io::Result<Lease<'_>> {
-        self.reserve(bytes)?;
-        Ok(Lease {
-            budget: self,
-            bytes,
-        })
+        Admission::from(self).admit(bytes)
     }
     pub(crate) fn reserve(&self, bytes: usize) -> io::Result<()> {
         self.used
@@ -47,25 +44,74 @@ impl Budget {
     }
 }
 
-pub struct Lease<'a> {
+/// Where working memory is admitted from: a budget, and the page cache that shares it when
+/// readers admit through the cache. The cache's unpinned pages give way before an admission
+/// is refused, so decoded pages never starve a reader of the memory it works in.
+#[derive(Clone, Copy)]
+pub struct Admission<'a> {
     budget: &'a Budget,
+    cache: Option<&'a Cache<'a>>,
+}
+
+impl<'a> Admission<'a> {
+    pub fn admit(self, bytes: usize) -> io::Result<Lease<'a>> {
+        self.reserve(bytes)?;
+        Ok(Lease {
+            admission: self,
+            bytes,
+        })
+    }
+
+    fn reserve(&self, bytes: usize) -> io::Result<()> {
+        match (self.budget.reserve(bytes), self.cache) {
+            (Err(_), Some(cache)) => cache.reserve_evicting(bytes),
+            (reserved, _) => reserved,
+        }
+    }
+}
+
+impl<'a> From<&'a Budget> for Admission<'a> {
+    fn from(budget: &'a Budget) -> Self {
+        Self {
+            budget,
+            cache: None,
+        }
+    }
+}
+
+impl<'a> From<&'a Cache<'a>> for Admission<'a> {
+    fn from(cache: &'a Cache<'a>) -> Self {
+        Self {
+            budget: cache.budget(),
+            cache: Some(cache),
+        }
+    }
+}
+
+pub struct Lease<'a> {
+    admission: Admission<'a>,
     bytes: usize,
 }
 impl Lease<'_> {
+    /// The bytes it holds.
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// Admits `bytes` more under this lease.
     pub(crate) fn grow(&mut self, bytes: usize) -> io::Result<()> {
-        self.budget.reserve(bytes)?;
+        self.admission.reserve(bytes)?;
         self.bytes += bytes;
         Ok(())
     }
-    fn shrink(&mut self, bytes: usize) {
+    pub(crate) fn shrink(&mut self, bytes: usize) {
         self.bytes -= bytes;
-        self.budget.release(bytes);
+        self.admission.budget.release(bytes);
     }
 }
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        self.budget.release(self.bytes);
+        self.admission.budget.release(self.bytes);
     }
 }
 
@@ -80,11 +126,11 @@ impl<'a, T> Slab<'a, T> {
         self.lease.bytes
     }
 
-    pub fn new(budget: &'a Budget, capacity: usize) -> io::Result<Self> {
+    pub fn new(admission: impl Into<Admission<'a>>, capacity: usize) -> io::Result<Self> {
         let bytes = capacity
             .checked_mul(size_of::<T>())
             .ok_or_else(engine_allocation::oom)?;
-        let lease = budget.admit(bytes)?;
+        let lease = admission.into().admit(bytes)?;
         Ok(Self {
             values: engine_allocation::vec(capacity)?,
             lease,

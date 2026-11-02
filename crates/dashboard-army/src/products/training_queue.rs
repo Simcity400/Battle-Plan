@@ -13,7 +13,11 @@
 //! priority and location take the game's text for its controls; a division's
 //! own distribution priority copies its order's and is not shown again.
 use super::army_content::{self, Refusals};
-use dashboard_base::{prepared::query::progressive, products::Product, source::Source};
+use dashboard_base::{
+    prepared::query::{native, progressive},
+    products::Product,
+    source::Source,
+};
 use dashboard_core::config::LoadContext;
 use dashboard_text::catalogue::Catalogue;
 use replay_data::rows::{TableId, tables};
@@ -44,7 +48,7 @@ const NAMING: [TableId; 8] = [
 ];
 
 /// The queue's read: what names it, and every operand its priority names' scripted text may read.
-fn read_tables() -> Vec<TableId> {
+pub fn read_tables() -> Vec<TableId> {
     let mut tables = QUEUE.to_vec();
     tables.extend(NAMING);
     tables.extend_from_slice(dashboard_text::scripted_text::TABLES);
@@ -211,7 +215,7 @@ impl Product for TrainingQueue {
                     cancelled,
                 )?
                 .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
-                let read = progressive::latest_read(
+                let read = native::latest_read(
                     source,
                     branch,
                     p.hour,
@@ -234,13 +238,13 @@ impl Product for TrainingQueue {
                 };
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;
-                let designs = progressive::latest_read(
+                let designs = native::latest_read(
                     source,
                     branch,
                     read.hour,
                     TableId::VariantDefinitions,
                     replay_data::cadence::STAGGER_PERIOD,
-                    &dashboard_base::products::equipment::VariantCatalogue::TABLES,
+                    &dashboard_base::products::equipment::DESIGN_TABLES,
                     cancelled,
                 )?;
                 let names = cat.as_ref().map(|cat| {

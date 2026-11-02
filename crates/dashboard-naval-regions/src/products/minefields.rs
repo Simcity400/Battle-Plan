@@ -8,17 +8,16 @@
 use crate::shared::{self, Choice};
 use dashboard_base::{
     catalogue::{self, Refusals},
-    prepared::{
-        prepass::{Family, HeldBytes},
-        query::progressive,
-    },
+    prepared::{prepass::HeldBytes, query::native},
     products::{Product, ReplyWarnings},
 };
+#[cfg(test)]
+use dashboard_base::prepared::prepass::Family;
 use dashboard_keyed::{
     Delta, Observer, Values,
     delta::same_rows,
     countries::Countries,
-    query::{KeyedWindow, Query},
+    query::{KeyedWindow, Opened, Query},
 };
 use replay::container::TableFields;
 use replay_data::{
@@ -33,6 +32,8 @@ use std::{
     io,
 };
 use ts_rs::TS;
+
+mod served;
 
 pub struct Minefields;
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
@@ -112,6 +113,7 @@ impl ReplyWarnings for Reply {
 impl Product for Minefields {
     const KEY: &'static str = "minefields";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = Params;
     type Reply = Reply;
     fn validate(p: &Params) -> Result<(), &'static str> {
@@ -319,6 +321,7 @@ fn count(notes: &mut BTreeMap<String, u64>, reason: &str, count: u64, add: bool)
 
 const UNLINKED: &str = "Minefield owner country link is unavailable";
 
+#[cfg(test)]
 pub static FAMILY: Family = dashboard_keyed::block::family::<MinefieldsObserver>(
     "minefields",
     "minefields.extract",
@@ -333,6 +336,7 @@ impl Observer for MinefieldsObserver {
         TableId::Countries,
     ];
     const READ: TableId = TableId::NavalRegionalMines;
+    #[cfg(test)]
     fn family() -> &'static Family {
         &FAMILY
     }
@@ -492,7 +496,22 @@ impl MinefieldsObserver {
 // The owner part of the count of vectors the hour holds but cannot name.
 const UNNAMED: &str = "?";
 
+/// The reply to `q` from the family's native publication.
 pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+    answer(q, || q.open_native::<MinefieldsObserver>())
+}
+
+/// The reply to `q` from the walk's pages.
+#[cfg(test)]
+pub(crate) fn row_query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+    answer(q, || q.open::<MinefieldsObserver>())
+}
+
+/// The reply to `q` from the family's publication `open` opens.
+pub(crate) fn answer<'q>(
+    q: &'q Query<'_>,
+    open: impl FnOnce() -> io::Result<Option<Opened<'q, MinefieldsObserver>>>,
+) -> io::Result<serde_json::Value> {
     let params = shared::params::<Minefields>(q)?;
     if matches!(params.view, View::Reports) {
         return reports(q, &params);
@@ -503,7 +522,7 @@ pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
         .as_ref()
         .map_or_else(|_| Vec::new(), |l| l.warnings.clone());
     let mut ids = BTreeSet::new();
-    let window = match q.open::<MinefieldsObserver>()? {
+    let window = match open()? {
         Some(mut o) => {
             warnings.extend(shared::warnings(&o.scan.observer.refusals));
             for name in o.scan.names() {
@@ -572,7 +591,7 @@ fn reports(q: &Query<'_>, p: &Params) -> io::Result<serde_json::Value> {
         TableId::CountryCounterInputs,
         TableId::ReservedCountryNaming,
     ];
-    let Some(frame) = progressive::frame_at(q.source, q.branch, hour, tables, q.cancelled)? else {
+    let Some(frame) = native::frame_at(q.source, q.branch, hour, tables, q.cancelled)? else {
         reply
             .warnings
             .push("1 standing mine report list not shown: requested hour is not recorded".into());

@@ -111,7 +111,7 @@ fn ask(
     prefix: &Prefix,
     content: Option<&dashboard_core::config::ContentOptions>,
 ) -> Value {
-    query(&Query {
+    let query = Query {
         source,
         params,
         content,
@@ -120,8 +120,8 @@ fn ask(
         branch: 1,
         prefix,
         cancelled: &AtomicBool::new(false),
-    })
-    .unwrap()
+    };
+    answer(&query, || query.open::<DoctrineMasteryObserver>()).unwrap()
 }
 
 fn runs(window: &KeyedWindow, name: &str) -> Vec<(i32, i32, String, bool)> {
@@ -1301,4 +1301,299 @@ fn s2_recorded_tree_distinguishes_unknown_rewards_from_authored_empty() {
         empty["folders"][0]["tracks"][0]["subdoctrines"][0]["rewards"],
         json!([])
     );
+}
+
+fn native_tables(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame: &DecodedFrame) {
+    use dashboard_keyed::native::testing::write;
+    use replay_data::rows::tables;
+    write::<tables::DoctrineCountries>(walk, frame);
+    write::<tables::DoctrineFolders>(walk, frame);
+    write::<tables::DoctrineTracks>(walk, frame);
+    write::<tables::CountryLinks>(walk, frame);
+    write::<tables::Countries>(walk, frame);
+    write::<tables::LexicalTokens>(walk, frame);
+}
+
+/// From 100, the tracks read every hour: a track's mastery moving every third hour, a second
+/// track from 105 whose subdoctrine is chosen at 108, a subdoctrine completed at 110, no token
+/// spelled before 103, the tracks unavailable at 115 and 116, and a gap after 119.
+fn native_scenario() -> Vec<DecodedFrame> {
+    (100..=130)
+        .filter(|hour| !(120..123).contains(hour))
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if let TableView::Complete(TableRows::DoctrineTracks(rows)) =
+                &mut *frame.tables[TableId::DoctrineTracks.index()]
+            {
+                rows[0].mastery = i64::from(hour / 3);
+                if hour >= 105 {
+                    rows.push(DoctrineTrackRow {
+                        slot: 7,
+                        folder: 2,
+                        ordinal: 1,
+                        sub_doctrine: (hour >= 108).then_some(13),
+                        mastery: i64::from(hour),
+                        ..Default::default()
+                    });
+                }
+            }
+            if hour >= 110
+                && let TableView::Complete(TableRows::DoctrineFolders(rows)) =
+                    &mut *frame.tables[TableId::DoctrineFolders.index()]
+            {
+                rows[0].completed_subdoctrines.push(13);
+            }
+            if hour < 103 {
+                *frame.tables[TableId::LexicalTokens.index()] =
+                    TableView::Complete(TableRows::LexicalTokens(Vec::new()));
+            }
+            if (115..117).contains(&hour) {
+                *frame.tables[TableId::DoctrineTracks.index()] = TableView::Unavailable {
+                    reason: "Synthetic tracks refusal".into(),
+                };
+            }
+            frame.metrics.table_ns[TableId::DoctrineTracks.index()] = 1;
+            frame
+        })
+        .collect()
+}
+
+/// The native publication holds the runs, known hours, reads and names the walk's scan holds
+/// of the same hours, with the tokens numbered and spelled and the folders witnessed alike,
+/// whatever segments start, wherever the publisher cuts and after a resume.
+#[test]
+fn the_native_publication_holds_what_the_walks_scan_holds() {
+    let frames = native_scenario();
+    for (starts, cuts, resume) in [
+        (&[][..], &[130][..], None),
+        // A resumed emit's next hour starts a segment, as the driver resumes.
+        (&[4, 9, 13][..], &[104, 112, 130][..], Some(112)),
+        (
+            &[3, 15, 16, 20][..],
+            &[102, 115, 119, 124, 130][..],
+            Some(119),
+        ),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (native, walked) = dashboard_keyed::native::testing::assert_published_as_walked::<
+            DoctrineMasteryObserver,
+        >(&frames, native_tables, starts, cuts, resume, &label);
+        assert_eq!(
+            serde_json::to_value(&native.observer.tokens).unwrap(),
+            serde_json::to_value(&walked.observer.tokens).unwrap(),
+            "{label}: tokens"
+        );
+        assert_eq!(
+            serde_json::to_value(&native.observer.folders).unwrap(),
+            serde_json::to_value(&walked.observer.folders).unwrap(),
+            "{label}: folders"
+        );
+    }
+}
+
+/// The observer with no keeper: its segments keep its tables' views, the backend's other path.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+struct Viewed(DoctrineMasteryObserver);
+
+impl Observer for Viewed {
+    const NAME: &'static str = <DoctrineMasteryObserver as Observer>::NAME;
+    const TABLES: &'static [TableId] = <DoctrineMasteryObserver as Observer>::TABLES;
+    const READ: TableId = <DoctrineMasteryObserver as Observer>::READ;
+
+    fn family() -> &'static dashboard_base::prepared::prepass::Family {
+        <DoctrineMasteryObserver as Observer>::family()
+    }
+
+    fn fields() -> std::io::Result<Vec<replay::container::TableFields>> {
+        <DoctrineMasteryObserver as Observer>::fields()
+    }
+
+    fn observe(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        values: &mut Values,
+    ) -> std::io::Result<bool> {
+        self.0.observe(format, frame, values)
+    }
+}
+
+/// From 200, beside `frame`'s GER: GER's second track from 203 with a subdoctrine never spelled,
+/// ITA's slot, folder and track, ITA renamed RMN for 206..210, GER's expiry occurrences alone
+/// moving at 208, GER's second track gone for 211..215, an unrelated token from 212, GER's
+/// subdoctrine respelled from 213, ITA's status naming another country for 216..218, ITA's
+/// folder gone for 219..222, the countries unavailable for 224..226 and the dictionary for
+/// 227..229, and a gap after 230. Nothing the observer reads changes at 205.
+fn segmented_scenario() -> Vec<DecodedFrame> {
+    (200..=236)
+        .filter(|hour| !(231..233).contains(hour))
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if let TableView::Complete(TableRows::DoctrineCountries(rows)) =
+                &mut *frame.tables[TableId::DoctrineCountries.index()]
+            {
+                if hour >= 208 {
+                    rows[0].expiry_events = 10;
+                }
+                rows.push(DoctrineCountryRow {
+                    slot: 8,
+                    country: if (216..218).contains(&hour) { 9999 } else { 21 },
+                    expiry_events: 0,
+                });
+            }
+            if !(219..222).contains(&hour)
+                && let TableView::Complete(TableRows::DoctrineFolders(rows)) =
+                    &mut *frame.tables[TableId::DoctrineFolders.index()]
+            {
+                rows.push(DoctrineFolderRow {
+                    slot: 8,
+                    ordinal: 0,
+                    folder: 10,
+                    grand_doctrine: None,
+                    completed_subdoctrines: Vec::new(),
+                });
+            }
+            if let TableView::Complete(TableRows::DoctrineTracks(rows)) =
+                &mut *frame.tables[TableId::DoctrineTracks.index()]
+            {
+                rows[0].mastery = i64::from(hour / 3);
+                if hour >= 203 && !(211..215).contains(&hour) {
+                    rows.push(DoctrineTrackRow {
+                        slot: 7,
+                        folder: 2,
+                        ordinal: 1,
+                        sub_doctrine: Some(13),
+                        mastery: i64::from(hour / 2),
+                        ..Default::default()
+                    });
+                }
+                rows.push(DoctrineTrackRow {
+                    slot: 8,
+                    folder: 0,
+                    ordinal: 0,
+                    mastery: 5,
+                    ..Default::default()
+                });
+            }
+            if (206..210).contains(&hour)
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                // Countries are by id: ITA's 21 first.
+                rows[0].tag = b"RMN".to_vec();
+            }
+            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                &mut *frame.tables[TableId::LexicalTokens.index()]
+            {
+                if hour >= 213 {
+                    rows[2].literal = b"mod_sub_b".to_vec();
+                }
+                if hour >= 212 {
+                    rows.push(LexicalTokenRow {
+                        token: 99,
+                        literal: b"unrelated".to_vec(),
+                    });
+                }
+            }
+            if (224..226).contains(&hour) {
+                *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+                    reason: "Synthetic countries refusal".into(),
+                };
+            }
+            if (227..229).contains(&hour) {
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+                    reason: "Synthetic dictionary refusal".into(),
+                };
+            }
+            frame.metrics.table_ns[TableId::DoctrineTracks.index()] = 1;
+            frame
+        })
+        .collect()
+}
+
+/// `frames`' publication by `O`'s native backend, as a reply reads it: the names, every name's
+/// window, and the observer.
+fn native_publication<O: Observer>(
+    frames: &[DecodedFrame],
+    starts: &[usize],
+    cuts: &[i32],
+    resume: Option<i32>,
+) -> (Vec<String>, KeyedWindow, Value) {
+    use dashboard_keyed::native::testing::{operate, publish_hours};
+    let (from, to) = (frames[0].hour, frames[frames.len() - 1].hour);
+    let hours = operate::<O>(frames, starts, native_tables);
+    let published = publish_hours::<O>(hours, frames[0].branch, cuts, resume);
+    let (scan, window) = published.read::<O>(from, to, None);
+    let observer = serde_json::to_value(&scan.observer).unwrap();
+    (scan.names().to_vec(), window, observer)
+}
+
+/// The layouts of segment starts (frame indices), cuts and resumes the scenario is published
+/// with; a resumed emit's next hour starts a segment, as the driver resumes.
+const LAYOUTS: [(&[usize], &[i32], Option<i32>); 4] = [
+    (&[], &[236], None),
+    (&[5, 6, 13, 24, 27], &[204, 212, 236], Some(212)),
+    (
+        &[2, 8, 9, 16, 17, 19, 22, 25, 26, 28, 29],
+        &[208, 217, 225, 230, 236],
+        Some(225),
+    ),
+    (
+        &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+        ],
+        &[210, 236],
+        Some(210),
+    ),
+];
+
+/// The keeper's publication, its hours kept as the rows they changed, holds what the tables'
+/// views publish: the names in the same order, every name's runs, the known hours and reads,
+/// and the observer with its tokens, folders and refusal counts, whatever segments start and
+/// after a resume.
+#[test]
+fn the_keeper_publishes_what_the_tables_views_publish() {
+    let frames = segmented_scenario();
+    for (starts, cuts, resume) in LAYOUTS {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (names, window, observer) =
+            native_publication::<DoctrineMasteryObserver>(&frames, starts, cuts, resume);
+        let (viewed_names, viewed, viewed_observer) =
+            native_publication::<Viewed>(&frames, starts, cuts, resume);
+        assert_eq!(names, viewed_names, "{label}: names");
+        assert_eq!(window.known, viewed.known, "{label}: known hours");
+        assert_eq!(window.reads, viewed.reads, "{label}: reads");
+        assert_eq!(window.series.len(), viewed.series.len(), "{label}: series");
+        for (series, viewed) in window.series.iter().zip(&viewed.series) {
+            assert_eq!(series.name, viewed.name, "{label}: series order");
+            assert_eq!(series.runs, viewed.runs, "{label}: {}'s runs", series.name);
+        }
+        assert_eq!(observer, viewed_observer, "{label}: the observer");
+        let refusals = &observer["refusals"];
+        for (owner, why) in [
+            ("GER@7", "token 13 spelling is not recorded"),
+            ("ITA@8", "doctrine slot 8 country identity differs"),
+            ("ITA@8", "track 0 has no witnessed folder 0"),
+            ("", "Countries: Synthetic countries refusal"),
+        ] {
+            assert!(
+                refusals[owner][why].as_u64().is_some_and(|count| count > 0),
+                "{label}: {owner} {why}"
+            );
+        }
+        assert!(
+            names.iter().any(|name| name == "RMN@8|present"),
+            "{label}: the renamed country"
+        );
+        dashboard_keyed::native::testing::assert_published_as_walked::<DoctrineMasteryObserver>(
+            &frames,
+            native_tables,
+            starts,
+            cuts,
+            resume,
+            &label,
+        );
+    }
 }

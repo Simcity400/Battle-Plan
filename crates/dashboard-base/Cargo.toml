@@ -14,10 +14,7 @@ doctest = false
 test-support = ["dashboard-core/test-support", "dashboard-text/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-province-area/test-support", "installed-content-regions/test-support", "installed-content-settings/test-support", "installed-content-states/test-support"]
 
 [dependencies]
-content-witness.workspace = true
 product-codec.workspace = true
-map-display-data.workspace = true
-map-snow.workspace = true
 engine-projects.workspace = true
 replay.workspace = true
 engine-allocation.workspace = true
@@ -44,10 +41,10 @@ replay-derive.workspace = true
 replay-frame.workspace = true
 job-priority.workspace = true
 blake3.workspace = true
-sha2.workspace = true
 dashboard-core.workspace = true
 dashboard-series.workspace = true
 dashboard-text.workspace = true
+dashboard-world.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 store = { path = "../store" }

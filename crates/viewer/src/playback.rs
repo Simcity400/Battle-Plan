@@ -1,13 +1,40 @@
 //! Exact-hour playback through the shared replay decoder, with one cached block.
 
-use std::{io, ops::ControlFlow, sync::Arc};
+use std::{io, sync::Arc};
 
 use crate::blocks::BlockReader;
+use crate::map_binding::MapBinding;
 use replay::container::Replay;
 use replay_data::{BranchId, Hour, SessionId, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableView};
 
-pub use dashboard_base::prepared_map::Current;
+/// What a playback holds for its hour: the decoded frame, shared so the
+/// window can hand it between threads without a copy, the gap it falls in, or
+/// why its map is not read yet.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Current {
+    Frame(Arc<DecodedFrame>),
+    Gap {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+    /// The recording holds the hour, but its session is still being recorded:
+    /// the map holds its hours once the session's native recording lands.
+    Pending {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+    /// The hour's map cannot be shown: the change-run index serving the recording cannot be
+    /// read, or the map needs more memory than its reader may ever hold. Refused by name,
+    /// never the recording's gap.
+    Refused {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+}
 
 struct CachedBlock {
     index: usize,
@@ -39,16 +66,16 @@ pub struct Playback {
     /// Reads blocks ahead of this playback and frees passed ones elsewhere;
     /// without one, blocks are read and freed on the calling thread.
     reader: Option<Arc<BlockReader>>,
-    checkpoints: Option<crate::map_checkpoints::PreparedMap>,
-    checkpoint_source: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
-    /// The map's hours from the binding's change-run index, which replace the prepared map and
-    /// the replay's blocks once open; `map_refused` once it failed to open.
+    map_binding: Option<Arc<MapBinding>>,
+    /// The map's hours from the binding's change-run index, which replace the replay's blocks
+    /// once open; `map_failure`, why the index serving the replay could not be read, refuses
+    /// the map until it is bound again.
     map: Option<crate::map_source::MapSource>,
-    map_refused: bool,
-    page_workers: usize,
+    map_failure: Option<String>,
+    map_workers: usize,
     source_path: Option<bool>,
     #[cfg(test)]
-    source_paths: Vec<(Hour, bool, Option<Hour>)>,
+    source_paths: Vec<(Hour, bool)>,
     #[cfg(test)]
     block_loads: usize,
 }
@@ -83,11 +110,10 @@ impl Playback {
             cache: None,
             change_budget: engine_allocation::credit::display_products().clone(),
             reader: None,
-            checkpoints: None,
-            checkpoint_source: None,
+            map_binding: None,
             map: None,
-            map_refused: false,
-            page_workers: 1,
+            map_failure: None,
+            map_workers: 1,
             source_path: None,
             #[cfg(test)]
             source_paths: Vec::new(),
@@ -101,10 +127,6 @@ impl Playback {
         if let Some(cache) = &mut self.cache {
             cache.decoder = std::mem::take(&mut cache.decoder).with_change_facts(budget.clone());
         }
-        self.checkpoints = self
-            .checkpoints
-            .take()
-            .map(|reader| reader.with_change_facts(budget.clone()));
         self
     }
 
@@ -133,142 +155,90 @@ impl Playback {
         self
     }
 
-    /// Uses prepared selected-table checkpoints on the hour-builder thread.
-    /// Hours outside the accepted prefix retain the ordinary replay reader.
-    pub fn with_checkpoints(
-        mut self,
-        mut checkpoints: crate::map_checkpoints::PreparedMap,
-    ) -> Self {
-        debug_assert!(Arc::ptr_eq(checkpoints.replay_handle(), &self.replay));
-        checkpoints.set_page_workers(self.page_workers);
-        self.checkpoints = Some(checkpoints.with_change_facts(self.change_budget.clone()));
-        self
-    }
-
-    pub fn with_page_workers(mut self, workers: usize) -> Self {
-        self.page_workers = workers;
-        if let Some(map) = &mut self.checkpoints {
-            map.set_page_workers(workers);
-        }
+    pub fn with_map_workers(mut self, workers: usize) -> Self {
+        self.map_workers = workers;
         if let Some(map) = &mut self.map {
             map.set_workers(workers);
         }
         self
     }
 
-    pub fn with_checkpoint_source(
-        mut self,
-        source: Arc<crate::map_checkpoints::CheckpointSource>,
-    ) -> Self {
-        self.bind_checkpoint_source(source);
+    pub fn with_map_binding(mut self, binding: Arc<MapBinding>) -> Self {
+        self.bind_map(binding);
         self
     }
 
-    pub fn bind_checkpoint_source(
-        &mut self,
-        source: Arc<crate::map_checkpoints::CheckpointSource>,
-    ) {
-        debug_assert!(Arc::ptr_eq(&source.replay_handle(), &self.replay));
-        self.checkpoint_source = Some(source);
+    pub fn bind_map(&mut self, binding: Arc<MapBinding>) {
+        debug_assert!(Arc::ptr_eq(&binding.replay_handle(), &self.replay));
+        self.map_binding = Some(binding);
         // The binding's change-run index, if any, opens again on the next read.
         self.map = None;
-        self.map_refused = false;
+        self.map_failure = None;
     }
 
-    pub fn checkpoint_source(&self) -> Option<Arc<crate::map_checkpoints::CheckpointSource>> {
-        self.checkpoint_source.clone()
+    pub fn map_binding(&self) -> Option<Arc<MapBinding>> {
+        self.map_binding.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn checkpoint_metrics(&self) -> Option<(u64, u64, u64)> {
-        self.checkpoints
-            .as_ref()
-            .map(|map| (map.applied_frames, map.checkpoint_reads, map.source_reads))
-    }
-
-    fn refresh_checkpoints(&mut self, branch: BranchId, hour: Hour) {
-        if self.map.is_some() {
-            return;
+    /// Opens the binding's change-run index once it serves the replay; resource pressure leaves
+    /// it to be opened again.
+    fn refresh_map(&mut self) -> io::Result<()> {
+        if self.map.is_some() || self.map_failure.is_some() {
+            return Ok(());
         }
-        let Some(source) = &self.checkpoint_source else {
-            return;
+        let Some(binding) = &self.map_binding else {
+            return Ok(());
         };
-        if !self.map_refused {
-            let opened = source.columnar().and_then(|columnar| {
-                columnar
-                    .map(|columnar| {
-                        columnar.open(
-                            Arc::clone(&self.replay),
-                            self.change_budget.clone(),
-                            self.page_workers,
-                        )
-                    })
-                    .transpose()
-            });
-            match opened {
-                Ok(Some(map)) => {
-                    self.map = Some(map);
-                    self.checkpoints = None;
-                    return;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    self.map_refused = true;
-                    eprintln!("Change-run map source unavailable: {error}; using the replay reader")
-                }
-            }
-        }
-        if self
-            .checkpoints
-            .as_ref()
-            .is_some_and(|map| map.covers(branch, hour))
-        {
-            return;
-        }
-        match source.open() {
-            Ok(Some(mut checkpoints)) => {
-                checkpoints.set_page_workers(self.page_workers);
-                self.checkpoints = Some(checkpoints.with_change_facts(self.change_budget.clone()));
-            }
-            Ok(None) => {}
+        let opened = binding.columnar().and_then(|columnar| {
+            columnar
+                .map(|columnar| {
+                    columnar.open(
+                        Arc::clone(&self.replay),
+                        self.change_budget.clone(),
+                        self.map_workers,
+                    )
+                })
+                .transpose()
+        });
+        match opened {
+            Ok(map) => self.map = map,
+            Err(error) if resource_pending(&error) => return Err(error),
             Err(error) => {
-                eprintln!("Map checkpoint binding unavailable: {error}; using the replay reader")
+                self.map_failure = Some(format!(
+                    "the change-run index serving this recording cannot be read: {error}"
+                ))
             }
         }
+        Ok(())
     }
 
-    fn note_source(&mut self, branch: BranchId, hour: Hour, prepared: bool) {
+    fn note_source(&mut self, branch: BranchId, hour: Hour, indexed: bool) {
         let profiling = viewer_foundation::profile_writer::profiling();
         // Tests follow the source without printing it.
         #[cfg(not(test))]
         if !profiling {
             return;
         }
-        if self.source_path == Some(prepared) {
+        if self.source_path == Some(indexed) {
             return;
         }
-        self.source_path = Some(prepared);
-        let through = self
-            .checkpoints
-            .as_ref()
-            .and_then(|map| prepared_through(map, branch));
+        self.source_path = Some(indexed);
         #[cfg(test)]
-        self.source_paths.push((hour, prepared, through));
+        self.source_paths.push((hour, indexed));
         if profiling {
             let thread = std::thread::current();
             viewer_foundation::profile_writer::profile_print(source_path_line(
                 thread.name().unwrap_or("unnamed"),
                 branch,
                 hour,
-                prepared,
-                through,
+                indexed,
             ));
         }
     }
 
-    /// Each change of source so far: hour, prepared or not, accepted end.
+    /// Each change of source so far: hour, and whether the change-run index served it.
     #[cfg(test)]
-    pub(crate) fn source_paths(&self) -> &[(Hour, bool, Option<Hour>)] {
+    pub(crate) fn source_paths(&self) -> &[(Hour, bool)] {
         &self.source_paths
     }
 
@@ -332,9 +302,6 @@ impl Playback {
 
     /// The timeline includes explicitly lost hours at either end of a branch.
     pub fn range(&self, branch: BranchId) -> Option<(Hour, Hour)> {
-        if let Some(range) = self.checkpoints.as_ref().and_then(|map| map.range(branch)) {
-            return Some(range);
-        }
         let start = self
             .replay
             .branches
@@ -368,19 +335,13 @@ impl Playback {
     /// decoder applied in that hour's block when it is still before `hour`,
     /// else keyframe - 1 (i64 permits Hour::MIN - 1). None when no block holds it,
     /// or when the block failed at or before `hour`: that seek is a gap with no
-    /// walk at all.
+    /// walk at all. A refused map reads the hour alone, with no walk before it.
     pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
         if let Some(map) = &self.map {
             return map.walk_start(branch, hour);
         }
-        if let Some(checkpoints) = &self.checkpoints
-            && checkpoints.covers(branch, hour)
-        {
-            return checkpoints
-                .walk_start(branch, hour)
-                .ok()
-                .flatten()
-                .map(i64::from);
+        if self.map_failure.is_some() {
+            return Some(i64::from(hour));
         }
         let index = self.replay.index.iter().position(|index| {
             index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
@@ -464,80 +425,9 @@ impl Playback {
         Ok(())
     }
 
-    pub fn page_skip(&self) -> (Option<&'static str>, Option<Hour>) {
-        if self.map.is_some() {
-            return (Some("change-run-map"), None);
-        }
-        self.checkpoints
-            .as_ref()
-            .map_or((Some("no-prepared-map"), None), |map| {
-                (map.page_skip, map.held_hour())
-            })
-    }
-
-    pub fn page_entry(&self, branch: BranchId, from: Hour, limit: Hour) -> Option<Hour> {
-        self.checkpoints
-            .as_ref()
-            .filter(|map| map.covers(branch, limit))
-            .and_then(|map| map.page_entry(branch, from, limit))
-    }
-
-    pub fn page_fallbacks(&self) -> u64 {
-        self.checkpoints
-            .as_ref()
-            .map_or(0, |map| map.page_fallbacks)
-    }
-
-    pub fn advance_pages(
-        &mut self,
-        branch: BranchId,
-        hour: Hour,
-        visit_from: Hour,
-        mut wanted: impl FnMut() -> bool,
-    ) -> io::Result<ControlFlow<(), Option<Hour>>> {
-        if !wanted() {
-            return Ok(ControlFlow::Break(()));
-        }
-        self.refresh_checkpoints(branch, hour);
-        let Some(checkpoints) = self.checkpoints.as_mut() else {
-            return Ok(ControlFlow::Continue(None));
-        };
-        let reached = match checkpoints.advance_pages(branch, hour, visit_from, &mut wanted) {
-            Ok(ControlFlow::Break(())) => return Ok(ControlFlow::Break(())),
-            Ok(ControlFlow::Continue(Some(reached))) => {
-                if let Some(passed) = checkpoints.release_passed_source() {
-                    match &self.reader {
-                        Some(reader) => reader.drop_later(passed),
-                        None => drop(passed),
-                    }
-                }
-                self.branch = branch;
-                self.hour = reached;
-                self.current = gap(branch, reached, "hour has not been decoded".into());
-                self.materialized = false;
-                self.cache = None;
-                self.note_source(branch, reached, true);
-                Some(reached)
-            }
-            Ok(ControlFlow::Continue(None)) => None,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                return Ok(ControlFlow::Break(()));
-            }
-            Err(error) if resource_pending(&error) => return Err(error),
-            Err(_) if !wanted() => return Ok(ControlFlow::Break(())),
-            Err(error) => {
-                // Prepared files are disposable, as on every other route.
-                eprintln!("Map checkpoint unavailable: {error}; using the replay reader");
-                self.checkpoints = None;
-                None
-            }
-        };
-        Ok(ControlFlow::Continue(reached))
-    }
-
     /// Reads `hour` of `branch`, handing `passed` earlier hours on the way: every one a
-    /// block or the prepared map decodes. A change-run map builds the hour alone, so the hours
-    /// before it a caller lacks are asked for after it.
+    /// block decodes. A change-run map builds the hour alone, so the hours before it a caller
+    /// lacks are asked for after it; an index that cannot be read refuses it by name.
     fn seek_to(
         &mut self,
         branch: BranchId,
@@ -552,13 +442,13 @@ impl Playback {
         if !self.replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(unknown_branch(branch));
         }
-        self.refresh_checkpoints(branch, hour);
+        self.refresh_map()?;
         let cached_output =
             self.branch == branch && self.hour == hour && self.cache.is_some() && self.materialized;
         if !cached_output || !materialize {
             // This decode lane's old output is no longer needed. Displayed
             // hours retained by other owners stay immutable; without one the
-            // prepared decoder can apply deltas in its existing row storage.
+            // decoder can apply deltas in its existing row storage.
             self.current = gap(branch, hour, "hour has not been decoded".into());
             self.materialized = false;
         }
@@ -571,33 +461,16 @@ impl Playback {
             self.note_source(branch, hour, true);
             return Ok(());
         }
-        if let Some(checkpoints) = &mut self.checkpoints {
-            let prepared = checkpoints.read_shared_cancellable(
+        if let Some(reason) = self.map_failure.clone() {
+            self.branch = branch;
+            self.hour = hour;
+            self.current = Current::Refused {
                 branch,
                 hour,
-                &mut passed,
-                self.branch == branch && self.hour <= hour,
-                materialize,
-                cancelled,
-            );
-            match prepared {
-                Ok(Some(current)) => {
-                    self.branch = branch;
-                    self.hour = hour;
-                    self.current = current;
-                    self.cache = None;
-                    self.note_source(branch, hour, true);
-                    return Ok(());
-                }
-                Ok(None) => {}
-                Err(error) if resource_pending(&error) => return Err(error),
-                Err(error) => {
-                    // Prepared files are disposable. Their disappearance or a
-                    // rejected cache page cannot refuse a readable recording.
-                    eprintln!("Map checkpoint unavailable: {error}; using the replay reader");
-                    self.checkpoints = None;
-                }
-            }
+                reason,
+            };
+            self.cache = None;
+            return Ok(());
         }
         self.note_source(branch, hour, false);
         if cached_output && materialize {
@@ -773,50 +646,25 @@ fn unknown_branch(branch: BranchId) -> io::Error {
     )
 }
 
-fn prepared_through(map: &crate::map_checkpoints::PreparedMap, branch: BranchId) -> Option<Hour> {
-    let (first, last) = map.range(branch)?;
-    if !map.covers(branch, first) {
-        return None;
-    }
-    let (mut covered, mut beyond) = (i64::from(first), i64::from(last) + 1);
-    while beyond - covered > 1 {
-        let middle = covered + (beyond - covered) / 2;
-        let hour = Hour::try_from(middle).expect("between two hours");
-        if map.covers(branch, hour) {
-            covered = middle;
-        } else {
-            beyond = middle;
-        }
-    }
-    Some(Hour::try_from(covered).expect("an hour"))
-}
-
-fn source_path_line(
-    thread: &str,
-    branch: BranchId,
-    hour: Hour,
-    prepared: bool,
-    through: Option<Hour>,
-) -> String {
+fn source_path_line(thread: &str, branch: BranchId, hour: Hour, indexed: bool) -> String {
     format!(
-        "PROFILE source_path thread={} branch={branch} hour={hour} path={} prepared_through={}",
+        "PROFILE source_path thread={} branch={branch} hour={hour} path={}",
         thread.replace(char::is_whitespace, "_"),
-        if prepared { "prepared" } else { "ordinary" },
-        through.map_or_else(|| "none".to_owned(), |hour| hour.to_string()),
+        if indexed { "change-run" } else { "ordinary" },
     )
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     #[test]
-    fn source_path_line_names_the_thread_source_and_accepted_end() {
+    fn source_path_line_names_the_thread_and_source() {
         assert_eq!(
-            source_path_line("hour decoder", 1, 101, true, Some(101)),
-            "PROFILE source_path thread=hour_decoder branch=1 hour=101 path=prepared prepared_through=101"
+            source_path_line("hour decoder", 1, 101, true),
+            "PROFILE source_path thread=hour_decoder branch=1 hour=101 path=change-run"
         );
         assert_eq!(
-            source_path_line("map source decoder", 7, -3, false, None),
-            "PROFILE source_path thread=map_source_decoder branch=7 hour=-3 path=ordinary prepared_through=none"
+            source_path_line("map source decoder", 7, -3, false),
+            "PROFILE source_path thread=map_source_decoder branch=7 hour=-3 path=ordinary"
         );
     }
 

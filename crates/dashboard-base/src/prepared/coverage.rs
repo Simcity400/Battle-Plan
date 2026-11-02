@@ -1,14 +1,10 @@
-//! Each branch's published coverage page: the accepted extent every prepared
-//! query reads before its own pages. The pipeline writes the page, with the
-//! families' refusals beside the extent.
-//!
-//! A family prepared on its own publishes its own coverage and refusals,
-//! which only the pipeline's registry names. The dashboard installs its
-//! [`Gates`] once, and readers here ask them through [`product_coverage`],
-//! [`ranges`] and [`refusal`]; with none installed every family is prepared
-//! hour by hour, so a product waits for the branch's coverage and no family
-//! refuses it or leaves a hole in it. With them installed, every page they
-//! answer from is decoded once per publication ([`super::gates`]).
+//! The coverage pages every prepared query reads before its own pages: each family and job
+//! publishes its own coverage and refusals of a branch, which only the dashboard's registry
+//! names. The dashboard installs its [`Gates`] once, and readers here ask them through
+//! [`product_coverage`], [`ranges`] and [`refusal`], every page they answer from decoded once
+//! per publication ([`super::gates`]). With none installed, as in the tests of the crates below
+//! the dashboard, a product waits for the store's own coverage page of the branch
+//! ([`coverage_section`]), and no family refuses it or leaves a hole in it.
 //!
 //! Every query is declared by its entry point before any reader runs, with the hours its request
 //! names and the first hole its gate leaves there ([`Entry::declare`]). Readers name no hours that
@@ -25,7 +21,7 @@ use std::{
     sync::{OnceLock, atomic::AtomicBool},
 };
 
-/// What the pipeline answers for the families prepared on their own.
+/// What the dashboard answers from the pages of its families and jobs.
 pub trait Gates: Sync {
     /// The refusal `query` answers with on `branch`, if a family it reads
     /// refused the branch at or before the hours declared ([`declared`]).
@@ -50,14 +46,6 @@ pub trait Gates: Sync {
         through: Option<i32>,
         cancelled: &AtomicBool,
     ) -> io::Result<Ranges>;
-    /// The hourly walk's coverage on `branch` ([`coverage`]).
-    fn walk(
-        &self,
-        source: &Source,
-        content: Option<&ContentOptions>,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Option<Coverage>>;
 }
 
 static GATES: OnceLock<&'static dyn Gates> = OnceLock::new();
@@ -160,9 +148,9 @@ pub fn product_coverage(
     Ok(ranges(source, content, branch, product, None, cancelled)?.coverage)
 }
 
-/// The status entry of the hourly walk's coverage in a reply's gate: the
-/// preparation status lists it as `coverage`, and each family prepared on its
-/// own under its name in `families`.
+/// The status entry of the coverage every family published alike in a reply's gate, which
+/// the preparation status lists as `coverage`; each family and job is listed under its name in
+/// `families`.
 pub const WALK: &str = "walk";
 
 thread_local! {
@@ -182,8 +170,8 @@ pub fn note_short(entry: &'static str) {
 }
 
 /// Run `query`, with the status entries whose coverage it found short on the
-/// branches it read ([`note_short`]): the hourly walk's ([`WALK`]) or a
-/// family's prepared on its own. A reply that is pending or partial waits for
+/// branches it read ([`note_short`]): a family's or job's, or the shared coverage
+/// ([`WALK`]). A reply that is pending or partial waits for
 /// them, and its client re-asks when one of them moves.
 pub fn waiting<T>(query: impl FnOnce() -> T) -> (T, BTreeSet<&'static str>) {
     // The collection this one runs inside, restored however `query` ends.
@@ -265,7 +253,7 @@ pub fn ranges(
     let mut ranges = match GATES.get() {
         Some(gates) => gates.ranges(source, content, branch, product, through, cancelled)?,
         None => Ranges {
-            coverage: coverage(source, content, branch, cancelled)?,
+            coverage: stored(source, content, branch, cancelled)?,
             holes: Vec::new(),
         },
     };
@@ -328,7 +316,7 @@ pub fn refusal(
 /// version is prepared again whole, and coverage of another is refused. What
 /// one family publishes has a version of its own in the driver's registry,
 /// whose change prepares that family again alone.
-pub const SCHEMA: u32 = 56;
+pub const SCHEMA: u32 = 57;
 
 /// Accepted extent, distinct from a complete source's timeline and recorded gaps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -341,17 +329,13 @@ pub struct Coverage {
     pub complete: bool,
 }
 
-const WALK_PAGE: &str = "preparation-coverage-";
+const STORE_PAGE: &str = "preparation-coverage-";
 const FAMILY_PAGE: &str = "preparation-family-";
 
-/// The hourly walk's coverage page of a branch.
+/// The store's own coverage page of a branch, which a product waits for with no gates
+/// installed.
 pub fn coverage_section(branch: u64) -> String {
-    format!("{WALK_PAGE}{branch}")
-}
-
-/// The branch whose hourly walk's coverage page `section` is.
-pub fn walk_of(section: &str) -> Option<u64> {
-    branch_of(section.strip_prefix(WALK_PAGE)?)
+    format!("{STORE_PAGE}{branch}")
 }
 
 /// A family's or job's coverage page of one branch, with its refusals there.
@@ -406,24 +390,12 @@ impl Page {
     }
 }
 
-/// The section of the version stamps the hourly walk's and its families'
-/// pages were published under.
-pub const VERSIONS: &str = "preparation-versions-v1";
-
-/// The section a native recording's preparation marks its store with: the mark of the plan
-/// its publications follow. A store without it was prepared from the row recording.
+/// The section a preparation marks its store with: the mark of what its publications follow.
+/// A store without it holds no preparation's publication.
 pub const PLAN: &str = "preparation-plan-v1";
 
-/// The version stamps a row preparation's pages were published under: the
-/// hourly walk's, and each family prepared on its own's, by name. It is
-/// written with every checkpoint, so it always names the pages beside it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Versions {
-    pub walk: u64,
-    pub families: BTreeMap<String, u64>,
-}
-
-/// Publishes accepted coverage for family tests that write their own prepared files.
+/// Publishes the store's own coverage page, for family tests that write their own prepared
+/// files ([`coverage_section`]).
 #[cfg(any(test, feature = "test-support"))]
 pub fn publish_coverage(
     writer: &mut store::Writer,
@@ -445,23 +417,36 @@ pub fn publish_coverage(
     )
 }
 
-/// The hourly walk's coverage on `branch`, from the gates installed ([`Gates::walk`]), ending
-/// before the declared request's first hole.
-pub fn coverage(
-    source: &Source,
-    content: Option<&ContentOptions>,
+/// Publishes the coverage page of the family or job `name` on `branch`, with no refusal, for
+/// family tests that write their own prepared files and ask the dashboard's gates.
+#[cfg(any(test, feature = "test-support"))]
+pub fn publish_family_coverage(
+    writer: &mut store::Writer,
+    name: &str,
     branch: u64,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<Coverage>> {
-    let coverage = match GATES.get() {
-        Some(gates) => gates.walk(source, content, branch, cancelled)?,
-        None => published_walk(source, content, branch, cancelled)?,
+    first_hour: i32,
+    last_hour: i32,
+    complete: bool,
+) -> io::Result<()> {
+    let page = Page {
+        coverage: Coverage {
+            schema: SCHEMA,
+            first_hour,
+            last_hour,
+            complete,
+        },
+        refused: BTreeMap::new(),
     };
-    Ok(coverage.map(before_hole))
+    writer.write_at(
+        &family_section(name, branch),
+        0,
+        serde_json::to_vec(&page)?.as_slice(),
+    )
 }
 
-/// The hourly walk's coverage on `branch`, read from the published store.
-pub fn published_walk(
+/// The store's own coverage page of `branch`, which a product waits for with no gates
+/// installed ([`coverage_section`]).
+pub fn stored(
     source: &Source,
     content: Option<&ContentOptions>,
     branch: u64,

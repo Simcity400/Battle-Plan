@@ -156,6 +156,33 @@ impl Shape {
             .is_some_and(|placed| (placed.run, placed.last) >= next)
     }
 
+    /// The first segment of `branch` holding an hour after `frontier`, a family's last on it, or
+    /// the branch's first segment without one, and the first ordinal of it after `frontier`. None
+    /// when the recording holds nothing of the branch after it.
+    pub(crate) fn unpublished(
+        &self,
+        branch: u64,
+        frontier: Option<&Frontier>,
+    ) -> Option<(usize, u32)> {
+        let next = frontier.map(|frontier| (frontier.next.run, frontier.next.ordinal));
+        self.placed
+            .iter()
+            .enumerate()
+            .filter(|(_, placed)| placed.branch == branch)
+            .find_map(|(at, placed)| match next {
+                None => Some((at, placed.first)),
+                Some((run, ordinal)) if (placed.run, placed.last) >= (run, ordinal) => {
+                    let first = if placed.run == run {
+                        placed.first.max(ordinal)
+                    } else {
+                        placed.first
+                    };
+                    Some((at, first))
+                }
+                Some(_) => None,
+            })
+    }
+
     /// Whether a family's committed `frontier` on `branch` stands for `recording` as it is: the
     /// recording still holds the branch's input it accepted through its last hour, and it ended
     /// there, or the recording holds nothing of the branch after it, or it keeps the state its

@@ -23,7 +23,7 @@ use std::{
     sync::{Mutex, PoisonError},
 };
 
-mod emit;
+pub mod emit;
 mod joins;
 
 pub use emit::Emit;

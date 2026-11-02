@@ -51,6 +51,26 @@ pub fn doctrine(
 ) -> FactionRuleDetail {
     companions::doctrine(frame, faction, row, cat)
 }
+/// [`rule`], a dynamic name expanded in `held`, the shared text of `frame` and `cat`.
+pub fn rule_in(
+    frame: &DecodedFrame,
+    faction: u64,
+    row: &FactionRuleRow,
+    cat: Option<&catalogue::Catalogue>,
+    held: Option<&ViewerText<'_>>,
+) -> FactionRuleDetail {
+    companions::rule_in(frame, faction, row, cat, true, held)
+}
+/// [`doctrine`], a dynamic name expanded in `held`, the shared text of `frame` and `cat`.
+pub fn doctrine_in(
+    frame: &DecodedFrame,
+    faction: u64,
+    row: &FactionDoctrineRow,
+    cat: Option<&catalogue::Catalogue>,
+    held: Option<&ViewerText<'_>>,
+) -> FactionRuleDetail {
+    companions::doctrine_in(frame, faction, row, cat, held)
+}
 pub fn programme(
     frame: &DecodedFrame,
     reference: u64,

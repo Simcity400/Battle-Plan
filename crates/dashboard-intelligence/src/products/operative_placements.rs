@@ -467,6 +467,8 @@ impl Scan {
 impl Product for OperativePlacements {
     const KEY: &'static str = "operative-placements";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::intelligence_prepared::served::PLAN);
     type Params = OperativePlacementParams;
     type Reply = OperativePlacementReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

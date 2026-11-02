@@ -7,7 +7,7 @@ use dashboard_base::{
     prepared::{
         coverage::{Coverage, SCHEMA},
         prefix::Prefix,
-        query::frames,
+        query::{frames, progressive},
         series::tests::Fixture,
     },
     products::ReplyWarnings,

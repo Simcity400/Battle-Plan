@@ -210,6 +210,7 @@ impl Inputs {
                 .sum::<usize>()
             + self.countries.capacity() * size_of::<([u32; 3], Option<u32>)>()
     }
+    #[cfg(test)]
     pub fn captured(state: &DecisionState, change: Change<'_>, covered: bool) -> Self {
         let mut members = Vec::new();
         for container in 0..CONTAINERS as u8 {

@@ -1,13 +1,12 @@
 //! A moment index and visible cells composed from the existing prepared suppliers.
 use super::*;
 use crate::products::army_size;
-use crate::products::parts_race_prepared::Family;
 use crate::{
     metadata::check_cancel,
     prepared::series::{self, Reader},
 };
 use dashboard_base::prepared::published;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -130,7 +129,7 @@ fn prefix(
         let coverage = &suppliers[product];
         joint.last_hour = joint.last_hour.min(coverage.last_hour);
         joint.complete &= coverage.complete;
-        if !coverage.complete && hour > coverage.last_hour && column.factory_count().is_none() {
+        if !coverage.complete && hour > coverage.last_hour {
             preparing.insert(column);
         }
     }
@@ -138,82 +137,6 @@ fn prefix(
         crate::prepared::prefix::Prefix::new(source, branch, joint, Some(hour)),
         preparing,
     ))
-}
-
-struct Binding {
-    family: &'static str,
-    section: String,
-    field: Option<&'static str>,
-    coverage: Option<String>,
-}
-fn binding(column: ScoreboardColumnKey, branch: u64) -> io::Result<Binding> {
-    use ScoreboardColumnKey::*;
-    let (family, section, field, coverage) = if let Some(mode) = column.factory_count() {
-        let index = country_factories::prepared::channel(&country_factories::FactoryTop {
-            count: 1,
-            mode,
-            groups: Vec::new(),
-        });
-        (
-            "factories",
-            format!("factories-values-{branch}-{index}"),
-            Some(""),
-            None,
-        )
-    } else {
-        match column {
-            Planes => {
-                let selection = air_force::prepared::Air::selection(
-                    json!({"branchId":branch.to_string(),"tags":[],"top":null,"measure":"planes","ownership":"roster"}),
-                )?;
-                (
-                    "air",
-                    format!("air-values-{branch}-{}", selection.channel),
-                    Some(""),
-                    Some(format!("air-mixes-{branch}")),
-                )
-            }
-            Ships => {
-                let selection = navy::prepared::Navy::selection(
-                    json!({"branchId":branch.to_string(),"tags":[],"top":null,"measure":"ships","ownership":"roster","grouping":"class"}),
-                )?;
-                (
-                    "navy",
-                    format!("navy-values-{branch}-{}", selection.channel),
-                    Some(""),
-                    Some(format!("navy-mixes-{branch}-{}", selection.channel)),
-                )
-            }
-            PoliticalPower => (
-                "measure",
-                format!("measure-pp-{branch}"),
-                Some("politicalPower"),
-                None,
-            ),
-            CommandPower => (
-                "measure",
-                format!("measure-cp-{branch}"),
-                Some("commandPower"),
-                None,
-            ),
-            Territory => (
-                "territory",
-                format!(
-                    "territory-values-{branch}-{}",
-                    crate::products::territory::prepared::NATIVE_OWNED_STATES
-                ),
-                None,
-                None,
-            ),
-            _ => return Err(crate::invalid("Missing prepared scoreboard supplier")),
-        }
-    };
-    Ok(Binding {
-        family,
-        section,
-        field,
-        coverage,
-    })
 }
 
 fn amounts(
@@ -386,67 +309,7 @@ fn cells(
                 .collect(),
         ));
     }
-    let binding = binding(column, branch)?;
-    let Some((keys, metadata)) =
-        series::read_catalogue::<Value>(store, source_key, binding.family, branch)?
-    else {
-        return Ok(None);
-    };
-    match column {
-        Planes => {
-            let scanned: air_force::ScannedAir = serde_json::from_value(metadata[0].clone())?;
-            crate::products::require_displayable_tags(&scanned.undisplayable_tags)?;
-        }
-        Ships => {
-            let scanned: navy::ScannedNavy = serde_json::from_value(metadata[0].clone())?;
-            crate::products::require_displayable_tags(&scanned.undisplayable_tags)?;
-        }
-        Factories | FactoriesBuilt | FactoriesTopbar => {
-            factory_warnings(&serde_json::from_value(metadata)?, warnings)
-        }
-        _ => {}
-    }
-    let selected: Vec<_> = rows
-        .iter()
-        .map(|(tag, _)| {
-            keys.get(
-                &binding
-                    .field
-                    .map_or_else(|| tag.clone(), |field| series::field_key(tag, field)),
-            )
-            .copied()
-        })
-        .collect();
-    let mut reader = Reader::new(store, source_key, binding.section, cancelled)?;
-    let values = amounts(&mut reader, &selected, hour)?;
-    let reads = if !with_reads {
-        vec![None; values.len()]
-    } else if let Some(section) = binding.coverage {
-        amounts(
-            &mut Reader::new(store, source_key, section, cancelled)?,
-            &selected,
-            hour,
-        )?
-        .into_iter()
-        .map(|covered| covered.map(|_| i128::from(hour)))
-        .collect()
-    } else {
-        values
-            .iter()
-            .map(|value| value.map(|_| i128::from(hour)))
-            .collect()
-    };
-    Ok(Some(
-        values
-            .into_iter()
-            .zip(reads)
-            .map(|(amount, read)| Cell {
-                amount,
-                read_hour: read.map(|hour| hour as i32),
-                at_least: false,
-            })
-            .collect(),
-    ))
+    Err(crate::invalid("Missing prepared scoreboard supplier"))
 }
 
 /// Stability or war support at `hour` from the stability family's publication, dated by
@@ -494,6 +357,53 @@ fn stability_cells(
     ))
 }
 
+/// Political or command power at `hour` from the balances' publication, dated `hour` where the
+/// country held a value then; none before the family publishes the branch.
+fn measure_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    column: ScoreboardColumnKey,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    use crate::products::country_balances;
+    check_cancel(cancelled)?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let measure = if column == ScoreboardColumnKey::PoliticalPower {
+        "politicalPower"
+    } else {
+        "commandPower"
+    };
+    let Some(opened) = published::open(
+        source,
+        content,
+        country_balances::NAME,
+        country_balances::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let found = opened.read(cancelled, |snapshot, directory| {
+        country_balances::query::cells(snapshot, directory, &tags, measure, hour)
+    })?;
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|amount| Cell {
+                amount,
+                read_hour: amount.filter(|_| with_reads).map(|_| hour),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
 /// Owner manpower at `hour` from the army family's publication, dated `hour` where the
 /// country's army was known then; none before the family publishes the branch.
 fn army_cells(
@@ -518,6 +428,123 @@ fn army_cells(
             .map(|(amount, known)| Cell {
                 amount,
                 read_hour: (with_reads && known).then_some(hour),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// Owned states at `hour` from territory's publication, the native counter its holder read,
+/// dated `hour` where it held one; none before the family publishes the branch.
+fn territory_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    use crate::products::territory;
+    check_cancel(cancelled)?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(opened) = published::open(
+        source,
+        content,
+        "territory",
+        territory::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let found = opened.read(cancelled, |snapshot, directory| {
+        territory::query::owned_states(snapshot, directory, &tags, hour)
+    })?;
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|amount| Cell {
+                amount,
+                read_hour: amount.filter(|_| with_reads).map(|_| hour),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// Roster planes at `hour` from the air family's publication, dated `hour` where the country's
+/// census was read then; none before the family publishes the branch.
+fn air_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    check_cancel(cancelled)?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(opened) = published::open(source, content, "air", air_force::emit::SCHEMA, branch)?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let (found, scanned) = opened.read(cancelled, |snapshot, directory| {
+        Ok((
+            air_force::query::cells(snapshot, directory, &tags, hour)?,
+            air_force::query::scanned(directory),
+        ))
+    })?;
+    crate::products::require_displayable_tags(&scanned.undisplayable_tags)?;
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|(amount, read)| Cell {
+                amount,
+                read_hour: (with_reads && read).then_some(hour),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// Roster ships at `hour` from the navy family's publication, dated `hour` where the country's
+/// census was read then; none before the family publishes the branch.
+fn navy_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    check_cancel(cancelled)?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(opened) = published::open(source, content, "navy", navy::emit::SCHEMA, branch)?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let (found, scanned) = opened.read(cancelled, |snapshot, directory| {
+        Ok((
+            navy::query::cells(snapshot, directory, &tags, hour)?,
+            navy::query::scanned(directory),
+        ))
+    })?;
+    crate::products::require_displayable_tags(&scanned.undisplayable_tags)?;
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|(amount, read)| Cell {
+                amount,
+                read_hour: (with_reads && read).then_some(hour),
                 at_least: false,
             })
             .collect(),
@@ -569,61 +596,81 @@ fn nukes_cells(
     ))
 }
 
-/// A moment beyond accepted preparation, read from its own frame: the
-/// identity join preparation runs on that frame, and the stateless factory
-/// sample. An unrecorded hour reads nothing, so every cell stays unknown.
+/// Factory counts over every group at `hour` from the factories family's publication, dated
+/// `hour` where the country's values were known then; none before the family publishes the
+/// branch.
+#[allow(clippy::too_many_arguments)]
+fn factory_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    column: ScoreboardColumnKey,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    warnings: &mut Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    check_cancel(cancelled)?;
+    let mode = column
+        .factory_count()
+        .ok_or_else(|| crate::invalid("Missing factory scoreboard column"))?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(opened) = published::open(
+        source,
+        content,
+        "factories",
+        country_factories::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let (found, scanned) = opened.read(cancelled, |snapshot, directory| {
+        Ok((
+            country_factories::query::cells(snapshot, directory, &tags, mode, hour)?,
+            country_factories::query::scanned(directory),
+        ))
+    })?;
+    factory_warnings(&scanned, warnings);
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|amount| Cell {
+                amount,
+                read_hour: amount.filter(|_| with_reads).map(|_| hour),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// A moment beyond accepted preparation, read from its own frame: the identity join
+/// preparation runs on that frame. An unrecorded hour reads nothing.
 fn sample_moment(
     source: &Source,
     branch: u64,
     hour: i32,
     cancelled: &AtomicBool,
-) -> io::Result<(
-    country_history::RecordedHistories,
-    crate::prepared::query::progressive::Samples,
-)> {
+) -> io::Result<country_history::RecordedHistories> {
     let frame = crate::prepared::query::progressive::frame_at(
         source,
         branch,
         hour,
-        country_factories::prepared::TABLES,
+        &[
+            replay_data::rows::TableId::Countries,
+            replay_data::rows::TableId::CountryLinks,
+        ],
         cancelled,
     )?;
     let mut identities = country_history::HistoryScan::new(false, &[]);
-    let mut samples = crate::prepared::query::progressive::Samples::new();
     if let Some(frame) = &frame {
         identities.observe(frame);
-        samples = country_factories::prepared::sample(frame, None)?;
     }
     check_cancel(cancelled)?;
-    Ok((identities.finish(), samples))
-}
-
-/// Factory cells from one sampled frame, dated as the prepared channel dates them.
-fn sampled_cells(
-    samples: &crate::prepared::query::progressive::Samples,
-    column: ScoreboardColumnKey,
-    rows: &[(String, CountryIdentityRun)],
-    hour: i32,
-    with_reads: bool,
-) -> io::Result<Vec<Cell>> {
-    let mode = column
-        .factory_count()
-        .ok_or_else(|| crate::invalid("Missing sampled scoreboard supplier"))?;
-    rows.iter()
-        .map(|(tag, identity)| {
-            let amount = country_factories::prepared::sampled_count(
-                samples,
-                tag,
-                (identity.slot, identity.country_id),
-                mode,
-            )?;
-            Ok(Cell {
-                amount,
-                read_hour: amount.filter(|_| with_reads).map(|_| hour),
-                at_least: false,
-            })
-        })
-        .collect()
+    Ok(identities.finish())
 }
 
 pub(crate) fn query(
@@ -664,10 +711,13 @@ pub(crate) fn query(
         {
             return Err(crate::invalid("Invalid scoreboard index selection"));
         }
-        let accepted = match crate::prepared::pipeline::coverage(
+        // The coverage every column's family and the identities share, which a native store
+        // publishes where the walk's own never is.
+        let accepted = match crate::prepared::pipeline::product_coverage(
             source,
             context.content.as_ref(),
             branch,
+            <Scoreboard as Product>::KEY,
             cancelled,
         ) {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
@@ -676,9 +726,7 @@ pub(crate) fn query(
         let complete = accepted.as_ref().is_some_and(|coverage| coverage.complete);
         // Beyond accepted preparation, or beyond the coverage of a supplier
         // whose pages a needed column reads (one prepared on its own may be
-        // behind the branch), a moment answers only when one frame proves
-        // every cell it needs: the native factory counts. Other columns
-        // carry cumulative or carried facts and stay pending.
+        // behind the branch), a column stays pending.
         let needed: Vec<ScoreboardColumnKey> = if params.index {
             std::iter::once(params.sort)
                 .chain(
@@ -758,7 +806,7 @@ pub(crate) fn query(
             type Identities = BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>;
             let exact: Identities = sampled
                 .as_ref()
-                .map(|(moment, _)| {
+                .map(|moment| {
                     moment
                         .countries
                         .iter()
@@ -788,7 +836,7 @@ pub(crate) fn query(
                 &params.selection.tags,
                 cancelled,
             )?;
-            if let Some((moment, _)) = &sampled {
+            if let Some(moment) = &sampled {
                 joined.unreadable_territory += moment.unreadable_territory;
                 joined.unresolved_countries += moment.unresolved_countries;
                 joined.unnamed += moment.unnamed;
@@ -803,10 +851,17 @@ pub(crate) fn query(
             if preparing.contains(&column) {
                 return Ok(Some(vec![Cell::default(); rows.len()]));
             }
-            match &sampled {
-                Some((_, samples)) if column.factory_count().is_some() => {
-                    sampled_cells(samples, column, rows, params.hour, with_reads).map(Some)
-                }
+            match column {
+                _ if column.factory_count().is_some() => factory_cells(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    column,
+                    rows,
+                    (params.hour, with_reads),
+                    warnings,
+                    cancelled,
+                ),
                 _ if matches!(
                     column,
                     ScoreboardColumnKey::Stability | ScoreboardColumnKey::WarSupport
@@ -822,7 +877,46 @@ pub(crate) fn query(
                         cancelled,
                     )
                 }
+                _ if matches!(
+                    column,
+                    ScoreboardColumnKey::PoliticalPower | ScoreboardColumnKey::CommandPower
+                ) =>
+                {
+                    measure_cells(
+                        source,
+                        context.content.as_ref(),
+                        branch,
+                        column,
+                        rows,
+                        (params.hour, with_reads),
+                        cancelled,
+                    )
+                }
                 _ if column == ScoreboardColumnKey::ArmySize => army_cells(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    rows,
+                    (params.hour, with_reads),
+                    cancelled,
+                ),
+                _ if column == ScoreboardColumnKey::Territory => territory_cells(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    rows,
+                    (params.hour, with_reads),
+                    cancelled,
+                ),
+                _ if column == ScoreboardColumnKey::Planes => air_cells(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    rows,
+                    (params.hour, with_reads),
+                    cancelled,
+                ),
+                _ if column == ScoreboardColumnKey::Ships => navy_cells(
                     source,
                     context.content.as_ref(),
                     branch,

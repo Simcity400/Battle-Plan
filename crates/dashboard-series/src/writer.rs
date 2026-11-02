@@ -1,7 +1,8 @@
 use crate::{
     add,
-    budget::{Budget, Slab},
+    budget::Budget,
     cache::Cache,
+    chunked::Chunked,
     codec::Binary,
     format::{Definition, Meta, NodeRef, Root, State},
     hierarchy, invalid,
@@ -98,31 +99,70 @@ pub(crate) struct EvidenceRow {
 
 /// The rows one segment appended, in append order.
 pub(crate) struct Columns<'a> {
-    pub runs: Slab<'a, RunRow>,
-    pub evidence: Slab<'a, EvidenceRow>,
-    pub domain_rows: Slab<'a, EvidenceRow>,
-    pub events: Slab<'a, EventView>,
-    pub keys: Slab<'a, Touch<Edge>>,
-    pub domains: Slab<'a, Touch<DomainEdge>>,
-    pub definitions: Slab<'a, Definition>,
-    pub metadata: Slab<'a, Meta>,
-    pub heap: Slab<'a, u8>,
+    pub runs: Chunked<'a, RunRow>,
+    pub evidence: Chunked<'a, EvidenceRow>,
+    pub domain_rows: Chunked<'a, EvidenceRow>,
+    pub events: Chunked<'a, EventView>,
+    pub keys: Chunked<'a, Touch<Edge>>,
+    pub domains: Chunked<'a, Touch<DomainEdge>>,
+    pub definitions: Chunked<'a, Definition>,
+    pub metadata: Chunked<'a, Meta>,
+    pub heap: Chunked<'a, u8>,
     pub last: i32,
 }
 impl<'a> Columns<'a> {
     fn new(budget: &'a Budget) -> io::Result<Self> {
         Ok(Self {
-            runs: Slab::new(budget, 0)?,
-            evidence: Slab::new(budget, 0)?,
-            domain_rows: Slab::new(budget, 0)?,
-            events: Slab::new(budget, 0)?,
-            keys: Slab::new(budget, 0)?,
-            domains: Slab::new(budget, 0)?,
-            definitions: Slab::new(budget, 0)?,
-            metadata: Slab::new(budget, 0)?,
-            heap: Slab::new(budget, 0)?,
+            runs: Chunked::new(budget)?,
+            evidence: Chunked::new(budget)?,
+            domain_rows: Chunked::new(budget)?,
+            events: Chunked::new(budget)?,
+            keys: Chunked::new(budget)?,
+            domains: Chunked::new(budget)?,
+            definitions: Chunked::new(budget)?,
+            metadata: Chunked::new(budget)?,
+            heap: Chunked::new(budget)?,
             last: i32::MIN,
         })
+    }
+}
+
+/// The published hierarchy of a writer's sealed segments, which [`Tree::publish`] adds each next
+/// one to. A writer lends it out so the segment it cut seals and publishes on another thread
+/// while it appends the next ([`Writer::lend_tree`]).
+pub struct Tree {
+    identity: Identity,
+    nodes: Vec<NodeRef>,
+    sealed: u64,
+}
+
+impl Tree {
+    /// Adds the next sealed segment to the hierarchy, merging any 16 complete
+    /// siblings, and writes the publication's root.
+    pub fn publish(
+        &mut self,
+        io: &mut impl PageWrite,
+        cache: &Cache<'_>,
+        sealed: Sealed,
+    ) -> io::Result<PageId> {
+        if sealed.node.first != self.sealed {
+            return Err(invalid("series segments must be published in order"));
+        }
+        let next = add(self.sealed, 1)?;
+        let mut nodes = self.nodes.clone();
+        nodes.push(sealed.node);
+        hierarchy::settle(io, cache, &mut nodes)?;
+        let root = hierarchy::write_root(
+            io,
+            &Root {
+                identity: self.identity,
+                state: sealed.state,
+                nodes: nodes.clone(),
+            },
+        )?;
+        self.nodes = nodes;
+        self.sealed = next;
+        Ok(root)
     }
 }
 
@@ -145,8 +185,10 @@ pub struct Writer<'a> {
     domain_ids: HashMap<u64, u32>,
     domains: Vec<DomainEdge>,
     columns: Columns<'a>,
-    nodes: Vec<NodeRef>,
-    sealed: u64,
+    /// None while lent out.
+    tree: Option<Tree>,
+    /// The cells [`Self::cells`] encodes before it appends them at once.
+    encoded: Vec<u8>,
 }
 
 impl<'a> Writer<'a> {
@@ -196,8 +238,12 @@ impl<'a> Writer<'a> {
             domain_ids: HashMap::new(),
             domains: Vec::new(),
             columns: Columns::new(budget)?,
-            nodes: Vec::new(),
-            sealed: 0,
+            tree: Some(Tree {
+                identity,
+                nodes: Vec::new(),
+                sealed: 0,
+            }),
+            encoded: Vec::new(),
         })
     }
 
@@ -229,8 +275,11 @@ impl<'a> Writer<'a> {
             .nodes
             .iter()
             .try_fold(0, |n, node| add(n, node.segments))?;
-        writer.sealed = writer.segment;
-        writer.nodes = root.nodes;
+        writer.tree = Some(Tree {
+            identity,
+            nodes: root.nodes,
+            sealed: writer.segment,
+        });
         reader.definitions(io, &mut |definition| writer.restore(definition))?;
         if writer.keys.len() as u64 != root.state.next_key {
             return Err(invalid("series key count"));
@@ -409,7 +458,12 @@ impl<'a> Writer<'a> {
         let hash = if spec.dimensions.len == 0 {
             [0; 32]
         } else {
-            *blake3::hash(self.held(spec.dimensions)?).as_bytes()
+            let (start, end) = self.held(spec.dimensions)?;
+            let mut hasher = blake3::Hasher::new();
+            for piece in self.columns.heap.pieces(start, end) {
+                hasher.update(piece);
+            }
+            *hasher.finalize().as_bytes()
         };
         let lookup = SpecKey {
             schema: spec.schema,
@@ -688,7 +742,8 @@ impl<'a> Writer<'a> {
         self.columns.metadata.push(Meta { id, value })
     }
 
-    fn held(&self, blob: Blob) -> io::Result<&[u8]> {
+    /// Where `blob` lies in the segment's heap.
+    fn held(&self, blob: Blob) -> io::Result<(usize, usize)> {
         let start = blob
             .at
             .checked_sub(self.heap)
@@ -699,7 +754,7 @@ impl<'a> Writer<'a> {
             .and_then(|len| start.checked_add(len))
             .filter(|end| *end <= self.columns.heap.len())
             .ok_or_else(|| invalid("key dimensions must be written in the current segment"))?;
-        Ok(&self.columns.heap[start..end])
+        Ok((start, end))
     }
     pub fn blob(&mut self, input: &mut impl Read, len: u64) -> io::Result<Blob> {
         if len == 0 {
@@ -727,34 +782,43 @@ impl<'a> Writer<'a> {
         Ok(Blob { at, len })
     }
     pub fn text(&mut self, text: &str) -> io::Result<Blob> {
-        self.blob(&mut text.as_bytes(), text.len() as u64)
+        self.bytes(text.as_bytes())
     }
-    pub fn cells(&mut self, input: impl IntoIterator<Item = Cell>) -> io::Result<Blob> {
-        let input = input.into_iter();
-        let held = self.columns.heap.len();
-        let at = add(self.heap, held as u64)?;
-        self.columns
-            .heap
-            .reserve(input.size_hint().0.saturating_mul(Cell::SIZE))?;
-        let mut len = 0_u64;
-        for cell in input {
-            let appended = cell
-                .bytes()
-                .and_then(|bytes| self.columns.heap.extend(&bytes))
-                .and_then(|()| add(len, Cell::SIZE as u64));
-            match appended {
-                Ok(next) => len = next,
-                Err(error) => {
-                    self.columns.heap.truncate(held);
-                    return Err(error);
-                }
-            }
+    /// `bytes` as a blob, copied once.
+    pub fn bytes(&mut self, bytes: &[u8]) -> io::Result<Blob> {
+        if bytes.is_empty() {
+            return Ok(Blob::EMPTY);
         }
-        Ok(if len == 0 {
-            Blob::EMPTY
-        } else {
-            Blob { at, len }
+        let at = add(self.heap, self.columns.heap.len() as u64)?;
+        add(at, bytes.len() as u64)?;
+        self.columns.heap.extend(bytes)?;
+        Ok(Blob {
+            at,
+            len: bytes.len() as u64,
         })
+    }
+    /// `input` as a list blob: every cell encoded first, then appended at once, so a refused
+    /// cell or a refused admission appends nothing.
+    pub fn cells(&mut self, input: impl IntoIterator<Item = Cell>) -> io::Result<Blob> {
+        let mut encoded = std::mem::take(&mut self.encoded);
+        encoded.clear();
+        let appended = (|| {
+            for cell in input {
+                let bytes = cell.bytes()?;
+                engine_allocation::reserve(&mut encoded, bytes.len())?;
+                encoded.extend_from_slice(&bytes);
+            }
+            if encoded.is_empty() {
+                return Ok(Blob::EMPTY);
+            }
+            let at = add(self.heap, self.columns.heap.len() as u64)?;
+            let len = encoded.len() as u64;
+            add(at, len)?;
+            self.columns.heap.extend(&encoded)?;
+            Ok(Blob { at, len })
+        })();
+        self.encoded = encoded;
+        appended
     }
 
     /// Closes the segment: its rows must lie within the publication's accepted hours.
@@ -831,32 +895,35 @@ impl<'a> Writer<'a> {
         Ok(pending)
     }
 
-    /// Adds the next sealed segment to the hierarchy, merging any 16 complete
-    /// siblings, and writes the publication's root.
+    /// Adds the next sealed segment to the hierarchy, merging any 16 complete siblings, and
+    /// writes the publication's root.
     pub fn publish(
         &mut self,
         io: &mut impl PageWrite,
         cache: &Cache<'_>,
         sealed: Sealed,
     ) -> io::Result<PageId> {
-        if sealed.node.first != self.sealed {
-            return Err(invalid("series segments must be published in order"));
+        self.tree
+            .as_mut()
+            .ok_or_else(|| invalid("series hierarchy lent out"))?
+            .publish(io, cache, sealed)
+    }
+
+    /// Lends out its hierarchy: the segments it cuts publish into it elsewhere, in order, until
+    /// [`Self::return_tree`] takes it back.
+    pub fn lend_tree(&mut self) -> io::Result<Tree> {
+        self.tree
+            .take()
+            .ok_or_else(|| invalid("series hierarchy lent out"))
+    }
+
+    /// Takes back the hierarchy [`Self::lend_tree`] lent, with what was published into it.
+    pub fn return_tree(&mut self, tree: Tree) -> io::Result<()> {
+        if self.tree.is_some() || tree.identity != self.identity {
+            return Err(invalid("series hierarchy returned to another writer"));
         }
-        let next = add(self.sealed, 1)?;
-        let mut nodes = self.nodes.clone();
-        nodes.push(sealed.node);
-        hierarchy::settle(io, cache, &mut nodes)?;
-        let root = hierarchy::write_root(
-            io,
-            &Root {
-                identity: self.identity,
-                state: sealed.state,
-                nodes: nodes.clone(),
-            },
-        )?;
-        self.nodes = nodes;
-        self.sealed = next;
-        Ok(root)
+        self.tree = Some(tree);
+        Ok(())
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::{
     add,
-    budget::{Budget, Lease, Slab},
+    budget::{Admission, Lease, Slab},
     cache::Cache,
     codec::{Binary, Decode, Encode},
     format::{Definition, Entry, Meta, Node, NodeRef, Root},
@@ -165,7 +165,7 @@ fn cancelled(flag: Option<&AtomicBool>) -> io::Result<()> {
 /// snapshot keeps only its root, node headers and key definitions it read.
 pub struct Snapshot<'a, P> {
     pub(crate) io: Access<'a, P>,
-    pub(crate) budget: &'a Budget,
+    pub(crate) budget: Admission<'a>,
     pub(crate) reader: Reader<'a>,
     defs: HashMap<u64, Option<Definition>>,
     cancelled: Option<&'a AtomicBool>,
@@ -193,7 +193,7 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
         if reader.root().identity != identity {
             return Err(invalid("series snapshot identity mismatch"));
         }
-        let budget = cache.budget();
+        let budget = Admission::from(cache);
         Ok(Self {
             io: Access {
                 inner: io,
@@ -2574,7 +2574,8 @@ fn repeated(mut summary: Summary, blocks: u64, size: i64) -> io::Result<Summary>
     }
     let shift = (blocks - 1) as i64 * size;
     let contiguous = i64::from(summary.last_hour) + 1 == i64::from(summary.first_hour) + size;
-    if summary.has_break
+    // As `Summary::merge` folding the copies: only one unbroken stretch carries its value on.
+    if summary.last_value_hour != summary.first_hour
         || !contiguous
         || summary.min_value != summary.max_value
         || summary.first_value != summary.last_value

@@ -399,9 +399,9 @@ fn restored_intelligence_observer_publishes_what_continuous_observation_publishe
                     &source,
                     &content,
                     input,
-                    changes,
-                    &fixture.store,
-                    &fixture.key,
+                    (changes, None),
+                    &|_| false,
+                    Some((&fixture.store, &fixture.key)),
                     &flag,
                 )
                 .unwrap()
@@ -412,7 +412,13 @@ fn restored_intelligence_observer_publishes_what_continuous_observation_publishe
                 .unwrap();
             observer.flush(writer, 1, &flag).unwrap();
         },
-        |fixture| Observer::load(&fixture.store, &fixture.key, Some(&fixture.key), 1).unwrap(),
+        |fixture| {
+            Observer::read_saved(1, &mut |section: &str| {
+                fixture.store.read(&fixture.key, section, 0)
+            })
+            .unwrap()
+            .unwrap()
+        },
     );
 }
 
@@ -459,121 +465,6 @@ fn intel_shared_driver_roster_one_row_ignores_ten_times_departed_handles() {
     assert_eq!(scaled[0].emitted, 1);
 }
 
-#[test]
-fn first_view_selects_requested_holders_before_reply_budgeting() {
-    let mut other = row(2);
-    other.roster_country = 9;
-    other.owner_country = 9;
-    let frames = (0..=1)
-        .map(|hour| frame(hour, true, vec![row(1), other.clone()]))
-        .collect();
-    let memory = source(frames);
-    let (source, root) = test_fixtures::file_source(
-        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
-    );
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    let params = params(Some(base()), Some(base() + 1));
-    let reply = first_view(&source, &params, &context, &flag).unwrap();
-    let countries = reply["countries"].as_array().unwrap();
-    assert_eq!(
-        countries.len(),
-        1,
-        "an unrequested roster must not reach the reply"
-    );
-    assert_eq!(countries[0]["tag"], "all!countries");
-    assert_eq!(countries[0]["operatives"].as_array().unwrap().len(), 1);
-    let mut absent = params;
-    absent.tags = vec!["unseen holder".into()];
-    let empty = first_view(&source, &absent, &context, &flag).unwrap();
-    assert!(empty["countries"].as_array().unwrap().is_empty());
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn first_view_keeps_selected_string_provenance_and_follows_native_aliases() {
-    let mut other = row(2);
-    other.roster_country = 9;
-    other.owner_country = 9;
-    other.name = b"Unselected operative".to_vec().into();
-    // This holder's missing assignment reason must not enter the selected dictionary.
-    other.action_variant = Some(u32::MAX);
-    let frames = (0..=1)
-        .map(|hour| {
-            let mut input = frame(hour, true, vec![row(1), other.clone()]);
-            if hour == 1 {
-                let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut *input.tables[TableId::Countries.index()]
-                else {
-                    panic!("countries");
-                };
-                rows[0].tag = b"renamed holder".to_vec();
-            }
-            input
-        })
-        .collect();
-    let memory = source(frames);
-    let (source, root) =
-        test_fixtures::file_source(Replay::open(memory.replay_ref().bytes().to_vec()).unwrap());
-    let context = LoadContext { content: None };
-    let flag = AtomicBool::new(false);
-    let mut params = params(Some(base()), Some(base() + 1));
-    params.include_departed = false;
-    let reply = first_view(&source, &params, &context, &flag).unwrap();
-    let countries = reply["countries"].as_array().unwrap();
-    assert_eq!(
-        countries.len(),
-        2,
-        "both aliases of the selected native holder"
-    );
-    for country in countries {
-        assert_ne!(country["tag"], "target old");
-        let identities = country["identities"].as_array().unwrap();
-        assert_eq!(identities.len(), 1);
-        assert_eq!(identities[0]["slot"], 1);
-        assert_eq!(identities[0]["countryId"], 7);
-        for read in country["observed"].as_array().unwrap() {
-            assert!(
-                read["firstHour"].as_i64().unwrap() >= identities[0]["firstHour"].as_i64().unwrap()
-            );
-            assert!(
-                read["lastHour"].as_i64().unwrap() <= identities[0]["lastHour"].as_i64().unwrap()
-            );
-        }
-        assert_eq!(country["operatives"].as_array().unwrap().len(), 1);
-        let entry = &country["operatives"][0];
-        assert_eq!(entry["id"], "1");
-        assert_eq!(
-            entry["preparing"],
-            serde_json::json!(["joinedHour", "departedHour"])
-        );
-        let value = &entry["runs"][0]["value"];
-        for field in ["portraitMissing", "experienceMissing", "assignmentMissing"] {
-            let reason = value[field].as_u64().unwrap() as usize;
-            assert!(
-                reply["reasons"][reason].is_string(),
-                "{field} retains its reason"
-            );
-        }
-    }
-    assert!(reply["reasons"].as_array().unwrap().iter().all(|reason| {
-        !reason
-            .as_str()
-            .unwrap()
-            .contains("Unsupported operative mission variant")
-    }));
-    let reads = dashboard_base::prepared::query::frames::reads(&source);
-    assert_eq!(
-        first_view(&source, &params, &context, &flag).unwrap(),
-        reply
-    );
-    assert_eq!(
-        dashboard_base::prepared::query::frames::reads(&source),
-        reads
-    );
-    let _ = std::fs::remove_dir_all(root);
-}
-
 #[derive(Default)]
 struct IdentityProgress(Option<dashboard_base::prepared::coverage::Coverage>);
 
@@ -605,23 +496,12 @@ impl dashboard_base::prepared::coverage::Gates for IdentityGates {
             {
                 Some(coverage)
             }
-            _ => dashboard_base::prepared::coverage::published_walk(
-                source, content, branch, cancelled,
-            )?,
+            _ => dashboard_base::prepared::coverage::stored(source, content, branch, cancelled)?,
         };
         Ok(dashboard_base::prepared::coverage::Ranges {
             coverage,
             holes: Vec::new(),
         })
-    }
-    fn walk(
-        &self,
-        source: &Source,
-        content: Option<&dashboard_base::products::ContentOptions>,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Option<dashboard_base::prepared::coverage::Coverage>> {
-        dashboard_base::prepared::coverage::published_walk(source, content, branch, cancelled)
     }
 }
 
@@ -755,24 +635,14 @@ fn assert_selection_pending(reply: &serde_json::Value) {
 #[test]
 fn a_local_holder_does_not_complete_a_branch_wide_tag_selection() {
     let (source, root, frames) = historical_roster(false);
-    let cold = historical_day(&source);
-    assert_selection_pending(&cold);
-    assert_eq!(cold["countries"][0]["tag"], "A");
-    assert!(
-        cold["countries"][0]["operatives"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    // The accepted early alias adds B's known operative before reaching the day.
-    publish_roster_prefix(&source, &frames, 23);
-    let early = historical_day(&source);
-    assert_selection_pending(&early);
-    assert_eq!(early["countries"][1]["tag"], "B");
-    assert_eq!(early["countries"][1]["operatives"][0]["id"], "1");
-    publish_roster_prefix(&source, &frames, 48);
-    assert_selection_pending(&historical_day(&source));
-    publish_roster_prefix(&source, &frames, 119);
+    // Short of the day, the reply holds nothing and leaves the day pending.
+    for prefix in [23, 47] {
+        publish_roster_prefix(&source, &frames, prefix);
+        let early = historical_day(&source);
+        assert_selection_pending(&early);
+        assert!(early["countries"].as_array().unwrap().is_empty());
+    }
+    publish_prefixes(&source, &frames, 119, 119);
     let reply = historical_day(&source);
     assert_eq!(reply["pending"], serde_json::json!([]));
     assert!(reply.get("preparing").is_none());
@@ -819,51 +689,6 @@ fn a_local_holder_does_not_complete_a_branch_wide_tag_selection() {
         serde_json::to_value(&exact_country.operatives[0].runs[0].value).unwrap(),
         "the historical selection keeps the prepared hour's recorded values"
     );
-    store.clear().unwrap();
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn a_future_alias_adds_its_holder_to_the_cached_day_before_selection_completes() {
-    use dashboard_base::prepared::query::{frames as cached_frames, observations};
-    let (source, root, frames) = historical_roster(true);
-    let cold = historical_day(&source);
-    assert_selection_pending(&cold);
-    assert!(cold.as_object().unwrap().contains_key("selectionCoverage"));
-    assert!(cold["selectionCoverage"].is_null());
-    assert_eq!(historical_day(&source), cold);
-    assert_eq!(observations::usage(&source, "operatives-roster:day").2, 1);
-    let reads = cached_frames::reads(&source);
-    publish_roster_prefix(&source, &frames, 48);
-    let before = historical_day(&source);
-    assert_selection_pending(&before);
-    assert_eq!(before["selectionCoverage"]["lastHour"], base() + 48);
-    assert_eq!(before["countries"].as_array().unwrap().len(), 1);
-    assert_eq!(before["countries"][0]["operatives"][0]["id"], "1");
-    assert_eq!(observations::usage(&source, "operatives-roster:day").2, 2);
-    publish_roster_prefix(&source, &frames, 96);
-    let later = historical_day(&source);
-    assert_selection_pending(&later);
-    assert_eq!(later["selectionCoverage"]["lastHour"], base() + 96);
-    assert_eq!(later["selectionCoverage"]["complete"], false);
-    for field in ["preparedCoverage", "pending", "preparing"] {
-        assert_eq!(later[field], before[field], "only identity progress moves");
-    }
-    assert_eq!(later["countries"][0]["tag"], "B");
-    assert_eq!(later["countries"][1]["tag"], "C");
-    assert_eq!(later["countries"][1]["operatives"][0]["id"], "2");
-    assert_eq!(historical_day(&source), later);
-    assert_eq!(observations::usage(&source, "operatives-roster:day").2, 3);
-    publish_roster_prefix(&source, &frames, 119);
-    let resolved = historical_day(&source);
-    assert_eq!(resolved["selectionCoverage"]["complete"], true);
-    assert_eq!(resolved["pending"], serde_json::json!([]));
-    assert!(resolved.get("preparing").is_none());
-    assert_eq!(resolved["countries"][1]["operatives"][0]["id"], "2");
-    assert_eq!(historical_day(&source), resolved);
-    assert_eq!(observations::usage(&source, "operatives-roster:day").2, 4);
-    assert_eq!(cached_frames::reads(&source), reads);
-    let (store, _) = dashboard_base::prepared::files(&source, None).unwrap();
     store.clear().unwrap();
     let _ = std::fs::remove_dir_all(root);
 }

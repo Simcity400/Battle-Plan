@@ -362,6 +362,9 @@ struct ScannedAgencies {
     native_countries: super::operative_rows::CountryInputs,
     #[serde(skip)]
     agency_slots: Option<(HashMap<u32, Option<usize>>, usize)>,
+    /// The agencies' view `agency_slots` was built from: the same view gives the same slots.
+    #[serde(skip)]
+    agency_view: Option<replay_frame::frame::SharedView>,
     #[serde(skip)]
     acquired: Option<(HashMap<u32, ScannedUpgrades>, ScannedUpgrades)>,
 }
@@ -380,6 +383,19 @@ impl From<AgencyUpgrades> for ScannedUpgrades {
 impl ScannedAgencies {
     fn observe_upgrades(&mut self, hour: i32, tag: &str, upgrades: impl Into<ScannedUpgrades>) {
         let upgrades = upgrades.into();
+        let read_hour = upgrades.read_hour;
+        self.observe_upgrades_read(hour, tag, &upgrades, read_hour);
+    }
+
+    /// [`Self::observe_upgrades`] of `upgrades` read at `read_hour`, copied only where they
+    /// differ from those held.
+    fn observe_upgrades_read(
+        &mut self,
+        hour: i32,
+        tag: &str,
+        upgrades: &ScannedUpgrades,
+        read_hour: Option<i32>,
+    ) {
         let Some(track) = self.tracks.get_mut(tag) else {
             return;
         };
@@ -411,12 +427,12 @@ impl ScannedAgencies {
             {
                 Arc::clone(&previous.items)
             }
-            _ => upgrades.items,
+            _ => Arc::clone(&upgrades.items),
         };
         let upgrades = ScannedUpgrades {
-            read_hour: upgrades.read_hour,
-            unavailable: upgrades.unavailable,
-            nonnegative_level_sum: upgrades.nonnegative_level_sum,
+            read_hour,
+            unavailable: upgrades.unavailable.clone(),
+            nonnegative_level_sum: upgrades.nonnegative_level_sum.clone(),
             items,
         };
         if entry.first_hour == hour {
@@ -553,6 +569,9 @@ fn roster_counts(
 }
 
 impl ScannedAgencies {
+    /// Observes `frame`'s agencies into the tracks. Into `active`, each tag the countries resolve
+    /// with its identity, where `fresh`; else `active` is the map an earlier hour of the same
+    /// countries gave, kept as it is.
     #[allow(clippy::type_complexity)]
     fn observe_frame_countries(
         &mut self,
@@ -560,8 +579,11 @@ impl ScannedAgencies {
         replay: &Replay,
         inputs: &super::operative_rows::CountryInputs,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
-    ) -> io::Result<(BTreeMap<String, Identity>, usize, BTreeMap<u8, usize>)> {
-        let mut active = BTreeMap::new();
+        (active, fresh): (&mut BTreeMap<String, Identity>, bool),
+    ) -> io::Result<(usize, BTreeMap<u8, usize>)> {
+        if fresh {
+            active.clear();
+        }
         let mut roster_unresolved = 0;
         let mut roster_unsupported = BTreeMap::new();
         let roster_read = membership_read(frame);
@@ -570,7 +592,7 @@ impl ScannedAgencies {
             self.note_roster_read(frame.hour);
         }
         let Some((countries, links)) = inputs.complete() else {
-            return Ok((active, roster_unresolved, roster_unsupported));
+            return Ok((roster_unresolved, roster_unsupported));
         };
         self.held_rosters
             .retain(|_, held| held.hour.checked_add(1) == Some(frame.hour));
@@ -587,11 +609,18 @@ impl ScannedAgencies {
                 }),
             }
         }
+        let view = &frame.tables[TableId::IntelligenceAgencies.index()];
         if self.agency_slots.is_none()
             || inputs.changed
-            || changes
-                .is_none_or(|changes| changes.rows_changed[TableId::IntelligenceAgencies.index()])
+            || changes.is_none_or(|changes| {
+                changes.rows_changed[TableId::IntelligenceAgencies.index()]
+                    && self
+                        .agency_view
+                        .as_ref()
+                        .is_none_or(|built| !replay_frame::frame::SharedView::ptr_eq(built, view))
+            })
         {
+            self.agency_view = changes.is_some().then(|| view.clone());
             #[cfg(test)]
             super::intelligence_prepared::work(|work| {
                 work.row_visits += rows.map_or(0, |rows| rows.len())
@@ -679,6 +708,8 @@ impl ScannedAgencies {
                 .collect();
             self.acquired = Some((acquired, default));
         }
+        // Each country's acquired levels are copied only where they differ from those held.
+        let acquired = self.acquired.take();
         for (tag, lookup) in &inputs.tagged {
             let Some((index, slot)) = *lookup else {
                 continue;
@@ -702,7 +733,9 @@ impl ScannedAgencies {
             } else {
                 None
             };
-            active.insert(tag.to_owned(), (slot, country.id));
+            if fresh {
+                active.insert(tag.to_owned(), (slot, country.id));
+            }
             self.observe(
                 frame.hour,
                 tag,
@@ -721,13 +754,13 @@ impl ScannedAgencies {
                 .last_change()
                 .present(replay.format.version())
             {
-                let (acquired, default) = self.acquired.as_ref().expect("current acquired levels");
-                let mut read = acquired.get(&slot).unwrap_or(default).clone();
-                read.read_hour = Some(frame.hour);
-                self.observe_upgrades(frame.hour, tag, read);
+                let (acquired, default) = acquired.as_ref().expect("current acquired levels");
+                let read = acquired.get(&slot).unwrap_or(default);
+                self.observe_upgrades_read(frame.hour, tag, read, Some(frame.hour));
             }
         }
-        Ok((active, roster_unresolved, roster_unsupported))
+        self.acquired = acquired;
+        Ok((roster_unresolved, roster_unsupported))
     }
 }
 
@@ -1115,6 +1148,8 @@ fn reply(
 impl Product for AgencyComparison {
     const KEY: &'static str = "agency-comparison";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::intelligence_prepared::served::PLAN);
     type Params = AgencyComparisonParams;
     type Reply = AgencyComparisonReply;
 

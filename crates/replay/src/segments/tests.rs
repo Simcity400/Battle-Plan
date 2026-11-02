@@ -1409,7 +1409,7 @@ fn chunks_close_at_their_size_and_spill_past_the_budget() {
     let gauge = Gauge::new();
     let signal = Signal {
         schedule: Mutex::new(Schedule::new(2, vec![true]).unwrap()),
-        changed: Condvar::new(),
+        board: Board::default(),
         stopped: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
     };
@@ -2366,7 +2366,7 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
     let settings = settings(2, 4);
     let signal = Signal {
         schedule: Mutex::new(Schedule::new(segments.len(), vec![false]).unwrap()),
-        changed: Condvar::new(),
+        board: Board::default(),
         stopped: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
     };
@@ -2387,7 +2387,7 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
     };
     let claim = |schedule: &mut Schedule| {
         schedule
-            .pick(&run.plan, &settings, &run.shared.credit, &mut |_| true)
+            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| true)
             .unwrap()
             .map(|task| match task {
                 Task::Walk { at, .. } => ("walk", at),
@@ -2474,7 +2474,7 @@ fn a_walk_holding_a_segment_finds_its_failed_write_out_being_written() {
     let settings = settings(2, 4);
     let signal = Signal {
         schedule: Mutex::new(Schedule::new(segments.len(), vec![true]).unwrap()),
-        changed: Condvar::new(),
+        board: Board::default(),
         stopped: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
     };
@@ -2496,7 +2496,7 @@ fn a_walk_holding_a_segment_finds_its_failed_write_out_being_written() {
     };
     let claim = |schedule: &mut Schedule| {
         schedule
-            .pick(&run.plan, &settings, &run.shared.credit, &mut |_| true)
+            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| true)
             .unwrap()
             .map(|task| match task {
                 Task::Walk { at, .. } => ("walk", at),

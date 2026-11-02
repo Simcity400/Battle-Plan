@@ -1,4 +1,6 @@
 mod binary;
+#[cfg(test)]
+mod columnar_parity;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod keys;
@@ -920,12 +922,15 @@ impl CountryState {
         mine.sort_by_key(|row| row.handle);
         let modifier_country = match input.modifier_countries.get(&identity.1) {
             Some(country) => {
-                if self.last_modifier_country.as_deref() != Some(country) {
-                    let country = Arc::new(country.clone());
-                    self.events.countries.push(Arc::clone(&country));
+                if self
+                    .last_modifier_country
+                    .as_ref()
+                    .is_none_or(|last| !Arc::ptr_eq(last, country) && **last != **country)
+                {
+                    self.events.countries.push(Arc::clone(country));
                     self.country_at = Some((self.events.countries.len() - 1) as u32);
-                    self.touch(modifier_country_bytes(&country));
-                    self.last_modifier_country = Some(country);
+                    self.touch(modifier_country_bytes(country));
+                    self.last_modifier_country = Some(Arc::clone(country));
                 }
                 self.last_modifier_country.clone()
             }
@@ -1358,6 +1363,10 @@ pub struct Directory {
     pub commits: u64,
     /// Every tag the branch prepared a place for.
     pub tags: Vec<String>,
+    /// Prepared from a native recording: its publisher's frontier, not `tags`, says when it is
+    /// current, and the tags a later preparation names need no marking here.
+    #[serde(default)]
+    pub native: bool,
 }
 
 /// What icon rules read beyond the catalogue: only an hour that chooses icons depends on them.
@@ -1483,6 +1492,67 @@ impl TagCountry {
         match self {
             Self::Projected(country) => Some(country),
             _ => None,
+        }
+    }
+}
+
+/// One hour as the fold reads it: a row frame with its changes, or a native walk's facts of
+/// the frame of its hour.
+enum Observed<'a> {
+    Frame {
+        replay: &'a Replay,
+        frame: &'a DecodedFrame,
+        changes: &'a crate::prepared::frame_changes::FrameChanges,
+    },
+    Native(&'a mut super::columnar::Hour),
+}
+
+impl Observed<'_> {
+    fn hour(&self) -> i32 {
+        match self {
+            Self::Frame { frame, .. } => frame.hour,
+            Self::Native(hour) => hour.hour,
+        }
+    }
+
+    fn quiet(&mut self, world: &mut World, evidence: bool) -> bool {
+        match self {
+            Self::Frame {
+                replay,
+                frame,
+                changes,
+            } => world.quiet(replay, frame, changes, evidence),
+            Self::Native(hour) => world.quiet_native(hour, evidence),
+        }
+    }
+
+    fn evidence(&self, world: &mut World) -> ReadEvidence {
+        match self {
+            Self::Frame { replay, frame, .. } => world.evidence(replay, frame),
+            Self::Native(hour) => world.evidence_native(hour),
+        }
+    }
+
+    fn identity_changed(&self, world: &World) -> bool {
+        match self {
+            Self::Frame { frame, changes, .. } => world.identity_changed(frame, changes),
+            Self::Native(hour) => world.identity_changed_native(hour),
+        }
+    }
+
+    fn extract(
+        &mut self,
+        world: &mut World,
+        icons: Option<&IconContent>,
+        previous: Option<HourInput>,
+    ) -> io::Result<HourInput> {
+        match self {
+            Self::Frame {
+                replay,
+                frame,
+                changes,
+            } => world.extract_cached(replay, frame, icons, &BTreeSet::new(), previous, changes),
+            Self::Native(hour) => world.extract_native(hour, icons, previous),
         }
     }
 }
@@ -1710,6 +1780,7 @@ impl Prepared {
                 localised: icons.is_some_and(|icons| icons.catalogue.is_some()),
                 commits: 0,
                 tags: Vec::new(),
+                native: false,
             },
             next_history: 2,
             chunks: 0,
@@ -1753,6 +1824,7 @@ impl Prepared {
         let changes = self.world.changes(replay, frame);
         self.observe_changed(&mut Through(writer), replay, frame, icons, &changes)
     }
+    #[cfg(test)]
     fn observe_changed(
         &mut self,
         pages: &mut dyn Pages,
@@ -1761,18 +1833,34 @@ impl Prepared {
         icons: Option<&IconContent>,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<bool> {
+        self.observe_hour(
+            pages,
+            &mut Observed::Frame {
+                replay,
+                frame,
+                changes,
+            },
+            icons,
+        )
+    }
+
+    /// Folds one hour, whatever it is read from; whether it was more than a quiet hour.
+    fn observe_hour(
+        &mut self,
+        pages: &mut dyn Pages,
+        observed: &mut Observed<'_>,
+        icons: Option<&IconContent>,
+    ) -> io::Result<bool> {
+        let hour = observed.hour();
         if self
             .quiet
-            .is_some_and(|(_, last)| last.checked_add(1) != Some(frame.hour))
+            .is_some_and(|(_, last)| last.checked_add(1) != Some(hour))
         {
             self.drain_quiet(pages)?;
         }
-        if self
-            .world
-            .quiet(replay, frame, changes, self.evidence_ready)
-        {
+        if observed.quiet(&mut self.world, self.evidence_ready) {
             if self.evidence_ready {
-                let mut evidence = self.world.evidence(replay, frame);
+                let mut evidence = observed.evidence(&mut self.world);
                 let input = self.last_input.as_ref().expect("unchanged census operands");
                 let previous = self.evidence.last();
                 if evidence.lines_read
@@ -1816,8 +1904,8 @@ impl Prepared {
                     self.evidence.push(evidence);
                 }
             }
-            let first = self.quiet.map_or(frame.hour, |span| span.0);
-            self.quiet = Some((first, frame.hour));
+            let first = self.quiet.map_or(hour, |span| span.0);
+            self.quiet = Some((first, hour));
             return Ok(false);
         }
         if !self.evidence.is_empty() {
@@ -1833,17 +1921,10 @@ impl Prepared {
                 input.design_revision,
             )
         });
-        if self.world.identity_changed(frame, changes) {
+        if observed.identity_changed(&self.world) {
             self.drain_quiet(pages)?;
         }
-        let mut input = self.world.extract_cached(
-            replay,
-            frame,
-            icons,
-            &BTreeSet::new(),
-            self.last_input.take(),
-            changes,
-        )?;
+        let mut input = observed.extract(&mut self.world, icons, self.last_input.take())?;
         let signature = (
             input.lines_complete,
             input.output_complete,
@@ -2002,6 +2083,33 @@ impl Prepared {
         )
     }
 
+    /// The spellings a native walk read, which its resume takes up ([`super::columnar::Branch::save`]).
+    pub(super) fn spellings(&self) -> &BTreeMap<u32, String> {
+        self.world.spellings()
+    }
+
+    pub(super) fn take_spellings(&mut self, spellings: BTreeMap<u32, String>) {
+        self.world.take_spellings(spellings);
+    }
+
+    /// Folds one hour of a native recording ([`super::columnar`]): its facts are what the fold
+    /// reads of the frame of its hour.
+    pub fn observe_facts<W: Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        mut hour: super::columnar::Hour,
+        icons: Option<&IconContent>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.world.native_hour(&mut hour);
+        self.observe_due(
+            &mut Through(writer),
+            &mut Observed::Native(&mut hour),
+            icons,
+            cancelled,
+        )
+    }
+
     fn observe_frame(
         &mut self,
         pages: &mut dyn Pages,
@@ -2011,7 +2119,27 @@ impl Prepared {
         cancelled: &AtomicBool,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        if !self.observe_changed(pages, replay, frame, icons, changes)? {
+        self.observe_due(
+            pages,
+            &mut Observed::Frame {
+                replay,
+                frame,
+                changes,
+            },
+            icons,
+            cancelled,
+        )
+    }
+
+    /// Folds one hour, and flushes once what it holds is due.
+    fn observe_due(
+        &mut self,
+        pages: &mut dyn Pages,
+        observed: &mut Observed<'_>,
+        icons: Option<&IconContent>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if !self.observe_hour(pages, observed, icons)? {
             if crate::prepared::pages::publication_due(true, false, false, || {
                 (self.world.pending_bytes + self.evidence_bytes, 0)
             }) {
@@ -2827,6 +2955,27 @@ impl Prepared {
         )
     }
 
+    /// Publishes what the fold holds of a native recording's hours through `last_hour`, as
+    /// [`Self::publish`] does through a row block: `last_block` is the replay's last block of
+    /// the branch once its every hour is folded. The coverage page is the native publisher's.
+    pub fn publish_native<W: Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        last_hour: Option<i32>,
+        last_block: Option<(i32, i32, u64)>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let pages: &mut dyn Pages = &mut Through(writer);
+        self.flush_into(pages, cancelled)?;
+        if let Some(hour) = last_hour {
+            self.directory.coverage.last_hour = hour;
+        }
+        self.directory.last_block = last_block;
+        self.directory.coverage.complete = last_block.is_some();
+        self.directory.native = true;
+        self.commit(pages)
+    }
+
     fn write_directory(&mut self, pages: &mut dyn Pages) -> io::Result<()> {
         self.directory.tags = self.tag_names.iter().cloned().collect();
         crate::prepared::series::write_reply(
@@ -2963,7 +3112,7 @@ impl Prepared {
     }
 
     fn restore_from(
-        mut directory: Directory,
+        directory: Directory,
         replay: &Replay,
         pages: &mut dyn Pages,
     ) -> io::Result<Self> {
@@ -2978,6 +3127,27 @@ impl Prepared {
             })
             .cloned()
             .ok_or_else(|| crate::invalid("Production cursor differs from recording prefix"))?;
+        Self::restored(directory, Some(processed), replay, pages)
+    }
+
+    /// The fold of a native recording's hours going on from its last commit, which `directory`
+    /// names: it follows no row block.
+    pub fn resume_native<W: Pages + ?Sized>(
+        directory: Directory,
+        replay: &Replay,
+        writer: &mut W,
+    ) -> io::Result<Self> {
+        Self::restored(directory, None, replay, &mut Through(writer))
+    }
+
+    /// The fold `directory`'s commit left, after the row block `processed` when it followed one.
+    fn restored(
+        mut directory: Directory,
+        processed: Option<BlockIndex>,
+        replay: &Replay,
+        pages: &mut dyn Pages,
+    ) -> io::Result<Self> {
+        let branch = directory.branch;
         let (_, commit) = read::commit(pages, branch, directory.commits)?;
         let mut restored = Restored::default();
         for &range in &commit.ledger {
@@ -3049,7 +3219,7 @@ impl Prepared {
         let tag_names = directory.tags.iter().cloned().collect();
         let aliases_spans = std::mem::take(&mut record.spans);
         Ok(Self {
-            processed: Some(processed),
+            processed,
             block_failed: false,
             deferred: Vec::new(),
             deferred_breaks: false,
@@ -3696,13 +3866,25 @@ pub fn current(
     {
         return Ok(false);
     }
-    let tags: BTreeSet<&str> = directory.tags.iter().map(String::as_str).collect();
     Ok(source.with_metadata(|metadata| {
-        metadata
-            .countries
-            .iter()
-            .all(|country| tags.contains(country.tag.as_str()))
+        names_every(
+            &directory,
+            metadata.countries.iter().map(|country| country.tag.as_str()),
+        )
     }))
+}
+
+/// Whether `directory` marks each of `tags` as its preparation's: a row preparation reconciles
+/// the tags a later preparation names into it; a native one's frontier alone says it is current.
+pub(super) fn names_every<'t>(
+    directory: &Directory,
+    tags: impl IntoIterator<Item = &'t str>,
+) -> bool {
+    if directory.native {
+        return true;
+    }
+    let held: BTreeSet<&str> = directory.tags.iter().map(String::as_str).collect();
+    tags.into_iter().all(|tag| held.contains(tag))
 }
 
 /// The prepared index a query reads, its content checked as the old pages were.

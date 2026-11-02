@@ -1,6 +1,4 @@
-use dashboard_base::prepared::facts::{
-    Facts, Limits, MemoryBudget, Namespace, PagedMap, ReadPhase, Status,
-};
+use dashboard_base::prepared::facts::{Facts, Limits, MemoryBudget, Namespace, Status};
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::Cell,
@@ -308,7 +306,7 @@ fn large_indivisible_spill_has_no_uncharged_pack_buffer() {
 }
 
 #[test]
-fn commit_peak_stays_bounded_across_growing_map_history_and_run_doublings() {
+fn commit_peak_stays_bounded_while_a_fact_history_grows() {
     let _serial = MEASUREMENTS.lock().unwrap_or_else(|e| e.into_inner());
     let id = uuid::Uuid::new_v4();
     let root = std::env::temp_dir().join(format!("private-fact-commit-{id}"));
@@ -325,48 +323,39 @@ fn commit_peak_stays_bounded_across_growing_map_history_and_run_doublings() {
             cache_bytes: 4096,
             page_bytes: 2048,
         };
-        let mut map = PagedMap::<u32, u64>::new(
+        let mut facts = Facts::<u32, u64>::new(
             Namespace::new("compaction", 1, "latest").unwrap(),
             budget.clone(),
             limits,
         )
         .unwrap();
         let mut writer = store.replace(key.clone()).unwrap();
-        let mut first = None;
         let mut scratch = [0; 8192];
-        for batch in 1..=128u64 {
+        for batch in 1..=128_i32 {
             for step in 0..256 {
-                map.put(&mut writer, 1, (batch - 1) * 256 + step).unwrap();
+                let hour = (batch - 1) * 256 + step;
+                facts
+                    .append(&mut writer, 1, hour, hour, Status::Value(hour as u64))
+                    .unwrap();
             }
-            let checkpoint = map.checkpoint(batch).unwrap();
-            if first.is_none() {
-                first = Some(checkpoint);
-            }
+            facts.checkpoint(&mut writer, batch as u64).unwrap();
             let credit = budget.admit(scratch.len()).unwrap();
             let baseline = LIVE.load(Ordering::Relaxed);
             PEAK.store(baseline, Ordering::Relaxed);
             writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();
             let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
             drop(credit);
-            let (sections, runs, files, buffer) = writer.resident_metadata();
-            assert_eq!(sections, 2);
-            assert!(runs <= 64);
+            let (_, _, files, buffer) = writer.resident_metadata();
             assert_eq!(buffer, 0);
-            assert_eq!(map.len(), 1);
             assert!(
                 peak <= (128 << 10) + files * 4096,
-                "commit peak follows historical ranges: batch={batch}, ranges={}, peak={peak}, files={files}",
-                batch * 512
+                "commit peak follows historical ranges: batch={batch}, peak={peak}, files={files}"
             );
             assert!(budget.peak() <= budget.limit());
-            if batch.is_power_of_two() {
-                assert_eq!(runs, 2, "whole-history doubling was not reached");
-            }
         }
-        let old = PagedMap::<u32, u64>::restore(&first.unwrap(), budget.clone(), limits).unwrap();
-        let phase = ReadPhase::new(&mut writer, budget.clone(), limits.cache_bytes).unwrap();
-        assert_eq!(*old.get(&phase, &1).unwrap().unwrap(), 255);
-        assert_eq!(*map.get(&phase, &1).unwrap().unwrap(), 128 * 256 - 1);
+        let mut reader = facts.reader(&mut writer).unwrap();
+        assert!(reader.at(&1, 0).unwrap().is_some());
+        assert!(reader.at(&1, 128 * 256 - 1).unwrap().is_some());
     }
     store.clear().unwrap();
     fs::remove_dir_all(root).unwrap();

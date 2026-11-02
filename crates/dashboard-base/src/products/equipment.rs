@@ -4,6 +4,7 @@
 //! by the engine's own classifiers. Products about equipment (stockpile,
 //! production lines, production) read them here, never a copy.
 
+pub mod columnar;
 pub mod designs;
 pub mod production;
 
@@ -904,6 +905,16 @@ impl VariantReads {
         built
     }
 }
+
+/// What a design is named from at one supplying read of its definitions: [`raw_variant`]'s
+/// definitions, tokens and [`Tags::new`]'s countries.
+pub const DESIGN_TABLES: [TableId; 5] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::LexicalTokens,
+    TableId::VariantDefinitions,
+];
 
 /// Every variant's naming operands over a branch, with where they are known. The
 /// variant table is read in its own daily slot and names hold until the next read,

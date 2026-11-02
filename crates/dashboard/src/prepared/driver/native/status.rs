@@ -19,12 +19,28 @@ use std::{
     io::{self, Read},
 };
 
-/// The recording-wide jobs a native preparation runs: the campaign map, which the viewer reads
-/// from the change-run index ([`crate::prepared::change_runs`]).
+/// The recording-wide jobs a native preparation runs before its run: the campaign map, which the
+/// viewer reads from the change-run index ([`crate::prepared::change_runs`]). Those its run
+/// prepares among the families are the plan's ([`Plan::jobs`]).
 pub(crate) const JOBS: &[&str] = &["map"];
 
+/// Whether a native preparation of `plan` runs the recording-wide job `name`.
+fn runs(plan: &Plan, name: &str) -> bool {
+    JOBS.contains(&name) || plan.jobs().contains(&name)
+}
+
+/// The names a native preparation of `plan` prepares in its run: the families it prepares
+/// natively, and the jobs among them.
+fn members(plan: &Plan) -> impl Iterator<Item = &'static str> + '_ {
+    plan.families()
+        .iter()
+        .filter(|family| plan.backend(family.id.name()) == Some(Backend::Segments))
+        .map(|family| family.id.name())
+        .chain(plan.jobs().iter().copied())
+}
+
 /// The label of the status row `name` reports to first, else its name.
-fn label(status: &[&str], name: &'static str) -> &'static str {
+pub(crate) fn label(status: &[&str], name: &'static str) -> &'static str {
     status
         .first()
         .and_then(|row| registry::STATUS.iter().find(|(id, _)| id == row))
@@ -33,7 +49,7 @@ fn label(status: &[&str], name: &'static str) -> &'static str {
 
 /// Every family and recording-wide job `plan` refuses, by name, with why.
 pub(crate) fn refused(plan: &Plan) -> Vec<(&'static str, String)> {
-    let unavailable = |label: &str| format!("{label} is not prepared from native recordings yet");
+    let unavailable = dashboard_base::prepared::query::native::unprepared;
     plan.families()
         .iter()
         .filter(|family| plan.backend(family.id.name()) == Some(Backend::Unavailable))
@@ -44,7 +60,7 @@ pub(crate) fn refused(plan: &Plan) -> Vec<(&'static str, String)> {
         .chain(
             registry::JOBS
                 .iter()
-                .filter(|job| !JOBS.contains(&job.name))
+                .filter(|job| !runs(plan, job.name))
                 .map(|job| (job.name, unavailable(label(&[job.name], job.name)))),
         )
         .collect()
@@ -84,8 +100,8 @@ pub(crate) fn held(store: &store::Store) -> io::Result<Option<Vec<u8>>> {
 }
 
 /// Writes the coordinator's pages for `plan` over `shape` with `mark`: a page refusing each name
-/// `plan` refuses on every branch from its first hour, and, of each family `plan` prepares
-/// natively, no coverage page of a branch it publishes no root of: a refusal of it before it had
+/// `plan` refuses on every branch from its first hour, and, of each family and job `plan`'s run
+/// prepares, no coverage page of a branch it publishes no root of: a refusal of it before it had
 /// a native backend.
 pub(crate) fn coordinate(
     writer: &mut store::Writer,
@@ -118,16 +134,12 @@ pub(crate) fn coordinate(
             )?;
         }
     }
-    let native = plan
-        .families()
-        .iter()
-        .filter(|family| plan.backend(family.id.name()) == Some(Backend::Segments));
-    for family in native {
+    for name in members(plan) {
         for &branch in shape.branches().keys() {
-            let page = coverage::family_section(family.id.name(), branch);
+            let page = coverage::family_section(name, branch);
             if writer.range_count(&page)?.is_some()
                 && writer
-                    .range_count(&roots::root_section(family.id.name(), branch))?
+                    .range_count(&roots::root_section(name, branch))?
                     .is_none()
             {
                 writer.clear(&page)?;
@@ -206,35 +218,7 @@ pub(crate) fn accepted(
             });
             continue;
         };
-        let (mut done, mut terminal) = (0, true);
-        let mut errors: Vec<String> = failed.get(&family.id).cloned().into_iter().collect();
-        let mut coverage = BTreeMap::new();
-        for &branch in shape.branches().keys() {
-            let Some(frontier) = frontier(family.id, branch) else {
-                terminal = false;
-                continue;
-            };
-            done += frontier.segments;
-            let complete = terminal_in(shape, branch, &frontier);
-            terminal &= complete;
-            if let Some(end) = &frontier.end {
-                errors.push(ended(branch, end));
-            }
-            coverage.insert(
-                branch.to_string(),
-                Coverage {
-                    schema: coverage::SCHEMA,
-                    first_hour: frontier.first_hour,
-                    last_hour: frontier.last_hour,
-                    complete,
-                },
-            );
-        }
-        let state = match (errors.is_empty(), terminal) {
-            (false, _) => State::Failed,
-            (true, true) => State::Ready,
-            (true, false) => State::Preparing,
-        };
+        let (state, done, errors, coverage) = progress(shape, family.id, frontier, failed);
         sections.push(section(
             state,
             done,
@@ -242,20 +226,64 @@ pub(crate) fn accepted(
         ));
         families.insert(family.id.name().to_owned(), coverage);
     }
+    // A job has no status row; its coverage is listed beside the families'.
+    for &job in prepared.iter().filter(|id| plan.jobs().contains(&id.name())) {
+        let (_, _, _, coverage) = progress(shape, job, frontier, failed);
+        families.insert(job.name().to_owned(), coverage);
+    }
+    // A job holds back no hour of the timeline.
     let working: Vec<FamilyId> = prepared
         .iter()
         .copied()
-        .filter(|family| !failed.contains_key(family))
+        .filter(|family| !failed.contains_key(family) && plan.family(family.name()).is_some())
         .collect();
     Accepted {
         sections,
         bytes,
-        // Row-block counters: a native preparation has no row blocks.
-        next_block: 0,
-        new_blocks: 0,
         coverage: shared(shape, &working, frontier),
         families,
     }
+}
+
+/// Where `id`'s publication stands on every branch of `shape`, as `frontier` gives its committed
+/// frontiers and `failed` its failure: its state, the segments it processed, why it failed or
+/// ended a branch, and its coverage by branch.
+fn progress(
+    shape: &Shape,
+    id: FamilyId,
+    frontier: &dyn Fn(FamilyId, u64) -> Option<Frontier>,
+    failed: &BTreeMap<FamilyId, String>,
+) -> (State, u64, Vec<String>, BTreeMap<String, Coverage>) {
+    let (mut done, mut terminal) = (0, true);
+    let mut errors: Vec<String> = failed.get(&id).cloned().into_iter().collect();
+    let mut coverage = BTreeMap::new();
+    for &branch in shape.branches().keys() {
+        let Some(frontier) = frontier(id, branch) else {
+            terminal = false;
+            continue;
+        };
+        done += frontier.segments;
+        let complete = terminal_in(shape, branch, &frontier);
+        terminal &= complete;
+        if let Some(end) = &frontier.end {
+            errors.push(ended(branch, end));
+        }
+        coverage.insert(
+            branch.to_string(),
+            Coverage {
+                schema: coverage::SCHEMA,
+                first_hour: frontier.first_hour,
+                last_hour: frontier.last_hour,
+                complete,
+            },
+        );
+    }
+    let state = match (errors.is_empty(), terminal) {
+        (false, _) => State::Failed,
+        (true, true) => State::Ready,
+        (true, false) => State::Preparing,
+    };
+    (state, done, errors, coverage)
 }
 
 /// Whether `frontier` leaves its family nothing of `branch` in the recording `shape` places.

@@ -283,9 +283,6 @@ pub struct Content {
     /// from; `None` when they are unreadable, which leaves the maps silent.
     pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
-    pub map_export: dashboard_base::map_export::Background,
-    map_export_visual_mods: bool,
-    map_export_layers: installed_content_core::ResolvedLayers,
     // borders
     /// `map/terrain/border_*_0.dds` and `strait.dds`.
     pub border_assets: BorderAssets,
@@ -1338,7 +1335,7 @@ impl Document {
     ) -> io::Result<Self> {
         let path = fs::canonicalize(path)?;
         let replay = Arc::new(Replay::open_path(&path)?);
-        let source = Arc::new(dashboard::Source::from_replay(
+        let source = dashboard::Source::from_replay(
             dashboard::SourceKey {
                 source_id: format!("native-map:{}", path.display()),
                 revision: dashboard::protocol::replay_revision(&path)?,
@@ -1346,7 +1343,7 @@ impl Document {
             path.clone(),
             Arc::clone(&replay),
             &std::sync::atomic::AtomicBool::new(false),
-        )?);
+        )?;
         let mut document = Self::load_shared(
             &path,
             options,
@@ -1357,43 +1354,28 @@ impl Document {
             texture_quality,
             None,
         )?;
-        document.bind_source(source, options.clone(), allow_unverified);
+        document.bind_source(&source);
         Ok(document)
     }
 
-    /// Binds worker playback to the host's committed prepared files. It does
-    /// not start preparation or read a campaign's hourly history.
-    pub fn bind_source(
-        &mut self,
-        source: Arc<dashboard::Source>,
-        options: ResolveOptions,
-        allow_unverified: bool,
-    ) {
+    /// Binds worker playback to the change-run index preparation writes in `source`'s store.
+    /// It does not start preparation or read a campaign's hourly history.
+    pub fn bind_source(&mut self, source: &dashboard::Source) {
         self.playback
-            .bind_checkpoint_source(crate::map_checkpoints::CheckpointSource::new(
-                source,
-                Some(dashboard::products::ContentOptions {
-                    options,
-                    allow_unverified,
-                    presentation: Default::default(),
-                }),
-            ));
+            .bind_map(crate::map_binding::MapBinding::new(source));
     }
 
     /// Serves the map from `index`, a change-run index of this replay's native columnar
-    /// recording, in place of the one preparation writes in the replay's store and of the
-    /// prepared map. False, the binding unchanged, when it is of another campaign, does not hold
-    /// exactly the hours the replay records, or lacks a map table.
+    /// recording, in place of the one preparation writes in the replay's store. False, the
+    /// binding unchanged, when it is of another campaign, does not hold exactly the hours the
+    /// replay records, or lacks a map table.
     pub fn bind_columnar(&mut self, index: replay::columnar_runs::IndexFile) -> bool {
         let replay = self.playback.replay_handle();
         let Some(columnar) = crate::map_source::Columnar::verify(&replay, Arc::new(index)) else {
             return false;
         };
-        let binding = match self.playback.checkpoint_source() {
-            Some(source) => source.with_columnar(columnar),
-            None => crate::map_checkpoints::CheckpointSource::columnar_only(replay, columnar),
-        };
-        self.playback.bind_checkpoint_source(binding);
+        self.playback
+            .bind_map(crate::map_binding::MapBinding::columnar_only(replay, columnar));
         true
     }
 
@@ -2725,9 +2707,6 @@ impl Document {
         .with_snow(snow_content);
         let content = Content {
             products,
-            map_export: Default::default(),
-            map_export_visual_mods: content.layers.presentation().shows_visual_mods(),
-            map_export_layers: content.layers.clone(),
             radar_centers,
             resource_icons,
             adjacency_icons,
@@ -2809,10 +2788,8 @@ impl Document {
             province_geometry,
             province_geometry_build,
         };
-        let content = Arc::new(content);
-        Self::bind_map_export(&content, &playback.replay_handle());
         Ok(Self {
-            content,
+            content: Arc::new(content),
             playback,
             hour_fraction: initial.hour_fraction,
             demilitarized_override: BTreeSet::new(),
@@ -2822,7 +2799,6 @@ impl Document {
     /// Presentation state over verified content; the coordinator supplies the
     /// first decoded frame without synchronous work on the UI thread.
     pub fn from_content(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
-        Self::bind_map_export(&content, &replay);
         Ok(Self {
             content,
             playback: Playback::unloaded(replay)?,
@@ -2838,58 +2814,12 @@ impl Document {
         replay: Arc<Replay>,
         initial: &InitialHour,
     ) -> io::Result<Self> {
-        Self::bind_map_export(&content, &replay);
         Ok(Self {
             content,
             playback: Self::initial_playback(replay, initial)?,
             hour_fraction: initial.hour_fraction,
             demilitarized_override: BTreeSet::new(),
         })
-    }
-
-    fn bind_map_export(content: &Arc<Content>, replay: &Arc<Replay>) {
-        let weak = Arc::downgrade(content);
-        let _ = content
-            .map_export
-            .start(Arc::clone(replay), move |replay, check| {
-                check()?;
-                let (key, limits, path) = {
-                    let content = weak.upgrade().ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::Interrupted, "snow content retired")
-                    })?;
-                    if content.map_export_visual_mods {
-                        return Err(invalid(
-                            "snow export: visual-mod post-processing is unsupported",
-                        ));
-                    }
-                    let cells = &content.products.snow_content()?.cells;
-                    let winter = content.assets.post.volumes.winter();
-                    let inputs =
-                        dashboard_base::map_export::Inputs::load(&content.map_export_layers)?;
-                    let key = dashboard_base::map_export::Key::for_loaded_inputs(
-                        &inputs,
-                        dashboard_base::map_export::PRODUCER_VERSION,
-                    )?;
-                    let live_key = dashboard_base::map_export::Key::for_inputs(
-                        Ok((cells, &winter)),
-                        dashboard_base::map_export::PRODUCER_VERSION,
-                    )?;
-                    if key.inputs != live_key.inputs {
-                        return Err(invalid(
-                            "map export snow content differs from the loaded viewer",
-                        ));
-                    }
-                    (
-                        key,
-                        dashboard_base::map_export::Limits::new(cells, &winter),
-                        content.source_path.clone(),
-                    )
-                };
-                let store = dashboard_base::prepared::recording_store(&path)?;
-                let key = key.bind_store_recording(replay, &store, check)?;
-                check()?;
-                dashboard_base::map_export::Reader::bind(store, key, limits, check)
-            });
     }
 
     fn initial_playback(replay: Arc<Replay>, initial: &InitialHour) -> io::Result<Playback> {
@@ -3335,20 +3265,6 @@ impl<'a> Hour<'a> {
 
     pub fn rail_product(&self) -> io::Result<Arc<map_products::landscape::RailProduct>> {
         self.product_hour.rails(&self.rail_geometry, &self.bridges)
-    }
-
-    #[cfg(test)]
-    pub fn rail_mesh_full_of(&self, network: &rail_layer::RailNetwork) -> io::Result<RailMesh> {
-        self.rail_geometry.build_network(network)
-    }
-
-    #[cfg(test)]
-    pub fn rail_mesh_from(
-        &self,
-        base: Option<&rail_layer::RailBase>,
-        network: &Arc<rail_layer::RailNetwork>,
-    ) -> io::Result<(RailMesh, rail_layer::RailBase)> {
-        self.rail_geometry.build_from(base, network)
     }
 
     // orders: the viewing country's battle plan

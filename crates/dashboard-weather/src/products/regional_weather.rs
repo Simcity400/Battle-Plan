@@ -14,13 +14,14 @@
 //! through the shared frame cache, independently of the history prefix.
 
 use dashboard_base::{
-    prepared::query::progressive,
+    prepared::query::native,
     products::{Product, ReplyWarnings},
 };
 use dashboard_keyed::{
     daily,
-    query::{self as keyed, KeyedSeries, KeyedWindow, Query},
+    query::{self as keyed, KeyedSeries, KeyedWindow, Opened, Query},
 };
+use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io};
 use ts_rs::TS;
@@ -30,6 +31,7 @@ pub mod block;
 mod columns;
 mod content;
 mod provinces;
+mod served;
 mod temperature;
 #[cfg(test)]
 mod tests;
@@ -37,6 +39,10 @@ mod tests;
 pub struct RegionalWeather;
 
 pub const TEMPERATURE_REFUSAL: &str = "Temperature unavailable: preparation has not bound the recorded content stack; call regional_weather::block::Observer::bind before folding each branch";
+/// The tables the provinces view reads at its hour.
+pub const PROVINCE_TABLES: &[TableId] = provinces::TABLES;
+/// The tables the modifier and theatre choices read at the last weather hour.
+pub const CHOICE_TABLES: &[TableId] = content::AUXILIARY_TABLES;
 /// Raw temperature units per degree Celsius (fixed5).
 pub const TEMPERATURE_SCALE: i64 = replay_data::temperature::SCALE;
 /// Raw modifier entries use the recording's fixed5 units, without clamping,
@@ -183,6 +189,7 @@ impl ReplyWarnings for RegionalWeatherResponse {
 impl Product for RegionalWeather {
     const KEY: &'static str = "regional-weather";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = RegionalWeatherParams;
     type Reply = RegionalWeatherResponse;
 
@@ -250,10 +257,18 @@ pub fn content_warnings(
     Ok(warnings)
 }
 
-/// Prepared weather runs, restricted to the requested regions. A cold query
-/// returns the same reply contract with an empty window; the caller marks the
-/// accepted prefix and pending tail on the root object.
+/// Prepared weather runs, restricted to the requested regions, from the family's native
+/// publication. A cold query returns the same reply contract with an empty window; the caller
+/// marks the accepted prefix and pending tail on the root object.
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+    respond(query, || query.open_native::<block::Observer>())
+}
+
+/// The reply to `query` from the family's publication `open` opens.
+fn respond<'q>(
+    query: &'q Query<'_>,
+    open: impl FnOnce() -> io::Result<Option<Opened<'q, block::Observer>>>,
+) -> io::Result<serde_json::Value> {
     let params = keyed::params::<RegionalWeather>(query)?;
     if params.view == RegionalWeatherView::Provinces {
         return provinces::query(query, &params);
@@ -277,7 +292,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     let mut window = keyed::empty(first, last);
     let mut temperature = TEMPERATURE_REFUSAL.to_owned();
     let mut warnings = Vec::new();
-    if let Some(mut opened) = query.open::<block::Observer>()? {
+    if let Some(mut opened) = open()? {
         temperature = opened.scan.observer.temperature_status().to_owned();
         warnings.extend(opened.scan.observer.temperature_warnings());
         for name in opened.scan.names() {
@@ -326,7 +341,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     // One reached metadata frame, shared by the frame cache. The numerical
     // history above never seeks frames or reconstructs the branch on request.
     let auxiliary = match auxiliary_hour {
-        Some(hour) => match progressive::frame_at(
+        Some(hour) => match native::frame_at(
             query.source,
             query.branch,
             hour,

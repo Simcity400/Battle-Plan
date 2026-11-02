@@ -8,7 +8,7 @@ use super::{
 use dashboard_base::{
     catalogue::{self, KeyedResults, Refusals},
     content,
-    prepared::query::progressive,
+    prepared::query::native,
     products::{LoadContext, place_names},
 };
 use dashboard_keyed::query::{self as keyed, Query};
@@ -19,7 +19,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 
 // The shared at-frame place-name reader's selected inputs, plus province
 // weather. Campaign is included by the frame cache as well.
-const TABLES: &[TableId] = &[
+pub(super) const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
@@ -200,7 +200,7 @@ pub(super) fn query(
     // This view is a transient read independent of the preparation prefix.
     // Never read a prior hour or scan the branch to fill a missing operand.
     let frame =
-        match progressive::frame_at(query.source, query.branch, hour, TABLES, query.cancelled) {
+        match native::frame_at(query.source, query.branch, hour, TABLES, query.cancelled) {
             Ok(frame) => frame.filter(|frame| frame.hour == hour),
             Err(error) if retryable(&error) => return Err(error),
             Err(error) => {

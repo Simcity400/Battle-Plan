@@ -123,9 +123,7 @@ pub struct Prepared {
     facts: NameFacts,
     events: series::Accumulator,
     windows: series::Accumulator,
-    #[serde(skip)]
     pending: BTreeMap<u32, sinkings::ShipEvent>,
-    #[serde(skip)]
     patches: BTreeMap<u32, AttributionPatch>,
 }
 fn window_at(windows: &[HourSpan], hour: i32) -> usize {

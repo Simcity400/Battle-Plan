@@ -1,5 +1,5 @@
 //! The map's hours from a recording's change-run index: frames of the map tables moved to and
-//! built at any hour, in place of prepared map checkpoints and pages.
+//! built at any hour.
 
 use crate::playback::Current;
 use engine_allocation::credit::MemoryBudget;
@@ -23,7 +23,7 @@ impl Columnar {
     /// exactly the hours the replay records of the sessions it does not hold pending, or lacks
     /// a map table.
     pub fn verify(replay: &Replay, file: Arc<IndexFile>) -> Option<Arc<Self>> {
-        (file.records(replay) && file.holds(dashboard_base::prepared_map::selected_tables()))
+        (file.records(replay) && file.holds(dashboard_base::map_tables::selected_tables()))
             .then(|| Arc::new(Self { file }))
     }
 
@@ -37,7 +37,7 @@ impl Columnar {
     ) -> io::Result<MapSource> {
         let snapshots = Snapshots::new(
             Arc::clone(&self.file),
-            dashboard_base::prepared_map::selected_tables(),
+            dashboard_base::map_tables::selected_tables(),
             replay.format,
             replay.capture_mode,
             workers,

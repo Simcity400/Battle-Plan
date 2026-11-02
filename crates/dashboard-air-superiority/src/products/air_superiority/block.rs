@@ -36,7 +36,9 @@
 
 use super::{
     DAY_HOURS,
-    prepared::{PairDiff, Prepared, ProjectionMark, ROSTER_TABLES, ScoreIdentity, Scored},
+    prepared::{
+        PairDiff, Prepared, ProjectionMark, ROSTER_TABLES, ScoreIdentity, Scored, groups_section,
+    },
     scan, scores,
 };
 use dashboard_base::prepared::kept::{Observed, Reduced, consecutive, kept_changes, observe_hours};
@@ -100,12 +102,9 @@ pub static FAMILY: Family = Family {
     start,
 };
 
-/// The groups' sections air superiority keeps under its own names: its read
-/// of the groups, the change publisher's pages and catalogue, and the change
-/// publisher's continuation.
-pub fn groups_section(branch: u64) -> String {
-    format!("air-superiority-groups-{branch}")
-}
+/// The groups' sections air superiority keeps under its own names besides its
+/// read of the groups ([`groups_section`]): the change publisher's pages and
+/// catalogue, and the change publisher's continuation.
 pub const GROUP_CHANGES: &str = "air-superiority-group-changes";
 pub fn state_section(branch: u64) -> String {
     format!("air-superiority-group-state-{branch}")

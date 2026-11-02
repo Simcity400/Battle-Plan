@@ -88,7 +88,11 @@ fn world(countries: u32, hour: i32) -> DecodedFrame {
         &mut frame,
         TableId::ReservedCountryNaming,
         TableRows::ReservedCountryNaming(vec![rows::ReservedCountryNamingRow {
-            tag: if h >= 28 { b"RSV".to_vec() } else { b"RES".to_vec() },
+            tag: if h >= 28 {
+                b"RSV".to_vec()
+            } else {
+                b"RES".to_vec()
+            },
             built: (h % 3) as u8,
             ..Default::default()
         }]),
@@ -164,7 +168,11 @@ fn world(countries: u32, hour: i32) -> DecodedFrame {
                     type_id: 4,
                     ordinal: 0,
                     first_country: raw(i),
-                    second_country: if h >= 21 { raw((i + 2) % n) } else { raw((i + 1) % n) },
+                    second_country: if h >= 21 {
+                        raw((i + 2) % n)
+                    } else {
+                        raw((i + 1) % n)
+                    },
                     start_hour: h,
                     ..Default::default()
                 })
@@ -264,7 +272,10 @@ fn world(countries: u32, hour: i32) -> DecodedFrame {
             vector[0].region = 74;
         }
         // Zero mines are no amount row under the witness.
-        for region in REGIONS.into_iter().filter(|&region| laid(region) && i % 5 != 1) {
+        for region in REGIONS
+            .into_iter()
+            .filter(|&region| laid(region) && i % 5 != 1)
+        {
             vector.push(rows::NavalRegionalMineRow {
                 country: raw(i),
                 kind: 1,
@@ -392,13 +403,16 @@ fn replies(
             cancelled: &flag,
         };
         replies.push(if std::ptr::eq(fixture, supremacy) {
-            naval_supremacy::query(&q).unwrap()
+            naval_supremacy::row_query(&q).unwrap()
         } else {
-            minefields::query(&q).unwrap()
+            minefields::row_query(&q).unwrap()
         });
     };
     for tag in tags {
-        ask(json!({"branchId": "1", "tag": tag, "daily": true}), supremacy);
+        ask(
+            json!({"branchId": "1", "tag": tag, "daily": true}),
+            supremacy,
+        );
         ask(
             json!({"branchId": "1", "tag": tag, "daily": true, "firstHour": first + 2, "lastHour": last - 2}),
             supremacy,
@@ -453,5 +467,71 @@ fn changed_naval_hours_publish_and_reply_exactly_as_whole_hours_across_blocks_an
 fn fifteen_hundred_countries_contesting_seas_publish_exactly_as_whole_hours() {
     let tags: Vec<String> = [0, 1, 749, 1499].into_iter().map(tag).collect();
     check(1500, 14..=21, &[3], &tags);
+}
 
+/// Writes each table the families read as the native recorder writes it; a table the frame
+/// does not record is left out, as the recorder leaves it.
+fn native_tables(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame: &DecodedFrame) {
+    use dashboard_keyed::native::testing::write;
+    fn held<T: replay_data::rows::TableSchema>(
+        walk: &mut replay::columnar_frames::synthetic::Synthetic,
+        frame: &DecodedFrame,
+    ) {
+        if matches!(
+            &*frame.tables[T::ID.index()],
+            TableView::Complete(_) | TableView::Unavailable { .. }
+        ) {
+            write::<T>(walk, frame);
+        }
+    }
+    held::<tables::NavalRegionalMines>(walk, frame);
+    held::<tables::NavalSupremacy>(walk, frame);
+    held::<tables::CountryLinks>(walk, frame);
+    held::<tables::Countries>(walk, frame);
+    held::<tables::FactionMembers>(walk, frame);
+    held::<tables::Subjects>(walk, frame);
+    held::<tables::WarRelations>(walk, frame);
+    held::<tables::AirCountryRelations>(walk, frame);
+    held::<tables::RelationTuples>(walk, frame);
+    held::<tables::CountryCounterInputs>(walk, frame);
+    held::<tables::ReservedCountryNaming>(walk, frame);
+}
+
+/// The native publications hold the names, runs, known hours and reads the walk's scans hold of
+/// the same hours, whatever segments start, wherever the publisher cuts and after a resume.
+#[test]
+fn the_native_publications_hold_what_the_walks_scans_hold() {
+    use dashboard_keyed::native::testing::assert_published_as_walked;
+    let frames = worlds(12, 7..=40);
+    for (starts, cuts, resume) in [
+        (&[][..], &[40][..], None),
+        (&[5, 11][..], &[12, 23, 40][..], Some(23)),
+        (&[3, 9, 16, 17, 29][..], &[9, 16, 21, 33, 40][..], Some(21)),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (native, walked) = assert_published_as_walked::<MinefieldsObserver>(
+            &frames,
+            native_tables,
+            starts,
+            cuts,
+            resume,
+            &format!("minefields, {label}"),
+        );
+        assert_eq!(
+            native.observer.refusals, walked.observer.refusals,
+            "minefields, {label}: refusals"
+        );
+        let (native, walked) = assert_published_as_walked::<NavalSupremacyObserver>(
+            &frames,
+            native_tables,
+            starts,
+            cuts,
+            resume,
+            &format!("naval supremacy, {label}"),
+        );
+        assert_eq!(
+            native.observer.refusals, walked.observer.refusals,
+            "naval supremacy, {label}: refusals"
+        );
+    }
 }

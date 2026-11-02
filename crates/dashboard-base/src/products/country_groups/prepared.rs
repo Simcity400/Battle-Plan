@@ -15,7 +15,10 @@
 //! must hold the inputs the worker's scan held there; otherwise the rest of
 //! the block is observed hour by hour.
 
+// Release reads only TABLES: the rest is the row pre-pass air superiority's extract reads.
+#[cfg(any(test, feature = "test-support"))]
 use super::{QuietInputs, Scan, changes::Prepared as Changes, projected_countries};
+#[cfg(any(test, feature = "test-support"))]
 use crate::{
     Source,
     metadata::CountryKeys,
@@ -25,11 +28,16 @@ use crate::{
     },
     products::LoadContext,
 };
+#[cfg(any(test, feature = "test-support"))]
 use replay::{
     container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
 };
-use replay_data::{format::FormatVersion, rows::TableId, rows::TableRows, rows::tables};
+use replay_data::rows::TableId;
+#[cfg(any(test, feature = "test-support"))]
+use replay_data::{format::FormatVersion, rows::TableRows, rows::tables};
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
+#[cfg(any(test, feature = "test-support"))]
 use std::{any::Any, io, ops::Range, sync::Arc};
 
 /// The tables the groups read.
@@ -45,6 +53,7 @@ pub const TABLES: &[TableId] = &[
     TableId::Capitulation,
 ];
 
+#[cfg(any(test, feature = "test-support"))]
 pub static FAMILY: Family = Family {
     name: "groups",
     extract: "groups.extract",
@@ -58,6 +67,7 @@ pub static FAMILY: Family = Family {
 /// The fields of the groups' tables that the scan and the change publisher
 /// read, so that a block is read only at the hours they change. Campaign is
 /// checked on every read and read by nothing else here.
+#[cfg(any(test, feature = "test-support"))]
 fn fields() -> io::Result<Vec<TableFields>> {
     Ok(vec![
         // Country keys (`CountryKeys`): the id (the row key), canonical slot
@@ -87,6 +97,7 @@ fn fields() -> io::Result<Vec<TableFields>> {
     ])
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn start(_: FormatVersion) -> Box<dyn Extract> {
     Box::new(BlockExtract {
         scan: None,
@@ -99,6 +110,7 @@ fn start(_: FormatVersion) -> Box<dyn Extract> {
 
 /// One hour of a block's facts, in hour order.
 // Keep observed frames inline to preserve kept-hour allocation and byte accounting.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::large_enum_variant)]
 enum Hour {
     /// An hour the groups observe, with its frame and change facts.
@@ -115,6 +127,7 @@ enum Hour {
     },
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct BlockFacts {
     hours: Vec<Hour>,
     /// Frames the extract observed.
@@ -122,6 +135,7 @@ struct BlockFacts {
     frames: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct BlockExtract {
     scan: Option<Scan>,
     hours: Vec<Hour>,
@@ -132,6 +146,7 @@ struct BlockExtract {
     frames: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl BlockExtract {
     /// The frame as the groups read it: the countries reduced to their keys.
     fn kept(&mut self, frame: &DecodedFrame) -> DecodedFrame {
@@ -169,6 +184,7 @@ impl BlockExtract {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Extract for BlockExtract {
     /// What the block's facts hold: each kept frame's views once, its change
     /// facts and the hours kept between them.
@@ -252,10 +268,12 @@ impl Extract for BlockExtract {
 
 /// The groups' observation of one hour's outcome: `Ok(true)` while the
 /// groups go on, `Ok(false)` once they refused the branch.
+#[cfg(any(test, feature = "test-support"))]
 pub type Observed<'a> = dyn FnMut(i32, io::Result<()>) -> io::Result<bool> + 'a;
 
 /// Fold one block's facts into the carried groups, after the block began.
 /// Returns how it folded and the last hour it reached.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 pub fn fold(
     scan: &mut Scan,
@@ -333,6 +351,7 @@ pub fn fold(
 /// Observe the block hour by hour from `from` (every hour without it), with
 /// the change facts of the block alone, as hourly preparation does. Returns
 /// the last hour observed.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 pub fn observe_block(
     scan: &mut Scan,

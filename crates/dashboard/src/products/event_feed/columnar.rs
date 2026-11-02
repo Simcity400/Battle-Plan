@@ -1382,15 +1382,49 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.settle()?;
-        crate::prepared::pipeline::write_feed_identities(writer, branch, &mut self.identities)?;
+        write_identities(writer, branch, &mut self.identities)?;
         self.feed.flush(writer, branch, cancelled)
     }
 
     pub fn save_state(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
         self.settle()?;
         self.counters.settle(&mut self.feed.diplomacy);
-        crate::prepared::pipeline::save_feed(writer, branch, &self.feed)
+        save_feed(writer, branch, &self.feed)
     }
+}
+
+/// The identity history sealed and written whole under the feed's name, also its continuation.
+pub(crate) fn write_identities(
+    writer: &mut store::Writer,
+    branch: u64,
+    identities: &mut HistoryScan,
+) -> io::Result<()> {
+    identities.seal();
+    writer.write_at(
+        &format!("event-feed-identities-{branch}"),
+        0,
+        serde_json::to_vec(&*identities)?.as_slice(),
+    )
+}
+
+/// The feed's continuation, compressed.
+pub(crate) fn save_feed(
+    writer: &mut store::Writer,
+    branch: u64,
+    feed: &Observer,
+) -> io::Result<()> {
+    let encoder = zstd::stream::Encoder::new(Vec::new(), 1)?;
+    let mut encoded = io::BufWriter::with_capacity(1 << 20, encoder);
+    serde_json::to_writer(&mut encoded, feed)?;
+    let bytes = encoded
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)?
+        .finish()?;
+    writer.write_at(
+        &crate::prepared::driver::registry::continuation_section("event_feed", branch),
+        0,
+        bytes.as_slice(),
+    )
 }
 
 /// A pack observed in order, as the row path observes it: its notices and reduction, then its

@@ -244,6 +244,11 @@ impl Prepared {
             let next = self.tags.len() as u64;
             self.tags.entry(tag.clone()).or_insert(next);
         }
+        if let Some(last) = previous.filter(|_| !contiguous) {
+            for state in &mut self.channels {
+                state.values.gap(last);
+            }
+        }
         let live = self.live.as_ref().expect("configured holders");
         // Read only where a channel writes every live tag's rank again.
         let mut live_tags: Option<BTreeSet<&str>> = None;
@@ -251,12 +256,11 @@ impl Prepared {
             check_cancel(flag)?;
             let params = selection(0, index);
             let state = &mut self.channels[index];
-            state.values.advance(hour)?;
             for identity in &removed {
                 let holder = self.actors[&actor(*identity)];
                 for field in [0, 1, 2, 3, 6, 7, 8, 9] {
                     let key = field_key(holder, field);
-                    if state.values.state(key).is_some() {
+                    if state.values.held(key) {
                         state.values.observe(key, hour, None, false);
                     }
                 }
@@ -308,15 +312,15 @@ impl Prepared {
                     if read >= hour {
                         continue;
                     }
-                    self.corrections.event(
+                    self.corrections.push((
                         holder * 12 + index as u64,
                         hour,
-                        &Correction {
+                        Correction {
                             read_hour: read,
                             month: bucket,
                             delta,
                         },
-                    )?;
+                    ));
                     self.corrected.insert(holder * 12 + index as u64);
                     if bucket.is_none() || bucket == month(hour) {
                         state
@@ -352,18 +356,8 @@ impl Prepared {
                     hour,
                     params.period,
                 );
-            let changed_read = state
-                .values
-                .state(field_key(0, 4))
-                .and_then(|state| state.last)
-                .map(|run| run.value)
-                != Some(i128::from(known_ship))
-                || state
-                    .values
-                    .state(field_key(0, 5))
-                    .and_then(|state| state.last)
-                    .map(|run| run.value)
-                    != Some(i128::from(known_convoy));
+            let changed_read = state.values.value(field_key(0, 4)) != Some(i128::from(known_ship))
+                || state.values.value(field_key(0, 5)) != Some(i128::from(known_convoy));
             let all = !contiguous || membership_changed || month_changed || changed_read;
             if all {
                 if let Some(previous) = previous {
@@ -410,13 +404,7 @@ impl Prepared {
                     (value.ship_unknown, value.convoy_unknown),
                     (known_ship, known_convoy),
                 )?;
-                let read = |field: u64| {
-                    state
-                        .values
-                        .state(field_key(holder, field))
-                        .and_then(|state| state.last)
-                        .map(|run| run.value)
-                };
+                let read = |field: u64| state.values.value(field_key(holder, field));
                 let ships =
                     (known_ship && read(2).unwrap_or(0) == 0).then(|| read(0).unwrap_or(0) as i64);
                 let convoys = (known_convoy && read(3).unwrap_or(0) == 0)
@@ -453,13 +441,11 @@ impl Prepared {
             );
         }
         if scan.last_ship_read == Some(hour) {
-            self.reads.event(0, hour, &hour)?;
+            self.reads.push((0, hour));
         }
         if scan.last_convoy_read == Some(hour) {
-            self.reads.event(1, hour, &hour)?;
+            self.reads.push((1, hour));
         }
-        self.reads.through(hour);
-        self.corrections.through(hour);
         self.last = Some(hour);
         Ok(())
     }

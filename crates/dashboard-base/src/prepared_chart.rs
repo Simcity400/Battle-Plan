@@ -57,7 +57,8 @@ pub fn merge(first: Option<ChartBucket>, second: Option<ChartBucket>) -> Option<
             last_hour: b.last_hour,
             first_value: a.first_value,
             last_value: b.last_value,
-            last_value_hour: if !b.has_break
+            // A break after `b`'s one stretch is a coverage gap: the value still began in `a`.
+            last_value_hour: if b.last_value_hour == b.first_hour
                 && !b.first_break
                 && i64::from(a.last_hour) + 1 == i64::from(b.first_hour)
                 && b.min_value == b.max_value
@@ -425,8 +426,40 @@ mod absolute_decimal {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChartBucket, ChartSummary};
+    use super::{ChartBucket, ChartSummary, merge};
     use serde_json::json;
+
+    fn held(first: i32, last: i32, value: f64) -> ChartBucket {
+        ChartBucket {
+            last_hour: last,
+            ..ChartBucket::hour(first, value, false)
+        }
+    }
+
+    #[test]
+    fn the_last_value_begins_where_it_began_whatever_gap_follows_it() {
+        let before = merge(Some(held(0, 3, 1.0)), Some(held(4, 15, 2.0))).unwrap();
+        assert_eq!(before.last_value_hour, 4);
+        let ended = ChartBucket {
+            has_break: true,
+            ..held(16, 20, 2.0)
+        };
+        let joined = merge(Some(before), Some(ended)).unwrap();
+        assert_eq!((joined.last_value_hour, joined.has_break), (4, true));
+        let trailing = merge(Some(held(16, 20, 2.0)), None);
+        assert_eq!(merge(Some(before), trailing).unwrap().last_value_hour, 4);
+        let resumed = merge(Some(held(16, 17, 2.0)), Some(held(19, 20, 2.0))).unwrap();
+        assert_eq!(merge(Some(before), Some(resumed)).unwrap().last_value_hour, 19);
+        let broken = ChartBucket {
+            first_break: true,
+            ..held(16, 20, 2.0)
+        };
+        assert_eq!(merge(Some(before), Some(broken)).unwrap().last_value_hour, 16);
+        let late = merge(Some(before), Some(held(17, 20, 2.0))).unwrap();
+        assert_eq!(late.last_value_hour, 17);
+        let changed = merge(Some(before), Some(held(16, 20, 3.0))).unwrap();
+        assert_eq!(changed.last_value_hour, 16);
+    }
 
     #[test]
     fn a_summary_sends_its_buckets_as_columns_and_reads_them_back_whole() {

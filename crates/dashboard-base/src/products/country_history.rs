@@ -29,7 +29,6 @@ use ts_rs::TS;
 mod native;
 #[cfg(any(test, feature = "test-support"))]
 pub use native::Names as NativeNames;
-pub mod prepared;
 
 /// A native identity, kept independently of a measure's availability or rank.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -1182,6 +1181,7 @@ impl HistoryScan {
     /// What an unchanged hour's observation depends on besides the hour's
     /// read evidence: two scans with equal inputs advance alike over the same
     /// quiet hours ([`Self::advance_quiet`]).
+    #[cfg(test)]
     pub(crate) fn quiet_inputs(&self) -> QuietInputs {
         QuietInputs {
             hour: self.hour,
@@ -1192,6 +1192,7 @@ impl HistoryScan {
 
     /// Whether the next hour reading every witness table needs its rows,
     /// because the held native names are not the last hour's.
+    #[cfg(test)]
     pub(crate) fn stale_witnesses(&self) -> bool {
         self.witnesses.stale()
     }
@@ -1238,6 +1239,7 @@ impl HistoryScan {
 
 /// What a [`HistoryScan`]'s unchanged hours depend on besides their read
 /// evidence ([`HistoryScan::quiet_inputs`]).
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QuietInputs {
     hour: Option<i32>,
@@ -1285,16 +1287,12 @@ pub fn prepared_branch_histories(
             coverage.complete && end.is_none_or(|end| coverage.last_hour >= end)
         })
     };
-    // A store the hourly walk published alone covers the identities with
-    // the branch.
     let complete = reaches(crate::prepared::coverage::product_coverage(
         source,
         content,
         branch,
         IDENTITIES_PRODUCT,
         cancelled,
-    )?) || reaches(crate::prepared::coverage::coverage(
-        source, content, branch, cancelled,
     )?);
     if !complete {
         return Ok(None);

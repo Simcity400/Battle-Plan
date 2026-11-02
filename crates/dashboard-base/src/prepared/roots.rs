@@ -475,8 +475,9 @@ pub fn directory(
 /// The series writer a family's step appends its output to.
 pub type Series = series::Writer<'static>;
 
-/// The series writer a step of `family` on `branch` appends the family's output to: `previous`'s
-/// publication resumed, or a new one from `first_hour`. [`publish`] cuts it with the step.
+/// The series writer the steps of `family` on `branch` append the family's output to:
+/// `previous`'s publication resumed, or a new one from `first_hour`. Each step's segment is cut
+/// with its checkpoint ([`cut`]) and published into the writer's hierarchy ([`write`]).
 pub fn writer(
     writer: &mut store::Writer,
     family: &str,
@@ -498,42 +499,83 @@ pub fn writer(
     }
 }
 
+/// The series writer of a family's first publication on a branch, its hours from `first_hour`.
+pub fn fresh(identity: series::Identity, first_hour: i32) -> io::Result<Series> {
+    series::Writer::new(&WRITERS, identity, first_hour)
+}
+
 /// What one batch of a family did on a branch.
 pub struct Step<'a> {
     /// Where it leaves the family; its ledger pages, prepared hours, first hole and state
-    /// contents are filled in from what it publishes.
+    /// contents are filled in from the family's last publication there ([`cut`]).
     pub frontier: Frontier,
     /// The hours it processed, in order, after the previous frontier's.
     pub intervals: &'a [Interval],
-    pub state: Option<&'a [u8]>,
-    pub carry: Option<&'a [u8]>,
-    /// The family's output on the series engine ([`writer`]), appended through the frontier's
-    /// last hour; None when the step writes none.
-    pub series: Option<Series>,
+    pub state: Option<Vec<u8>>,
+    pub carry: Option<Vec<u8>>,
 }
 
-/// Publishes `step` of `family` on `branch` into `writer` after `previous`, the family's last
-/// publication there: its ledger pages, emit state and carry, then its root, last; and the series
-/// writer, which goes on from that root as resuming it would. The root's
+/// What a family's last publication on a branch leaves the next step there: its publication and
+/// frontier, and its ledger's last page while that page is not full.
+#[derive(Clone, Debug)]
+pub struct Last {
+    pub publication: series::Publication,
+    pub frontier: Frontier,
+    tail: Vec<Interval>,
+}
+
+impl Last {
+    /// What `published`, `family`'s publication on `branch` as `view` holds it, leaves.
+    pub fn of(
+        view: &mut impl View,
+        family: &str,
+        branch: u64,
+        published: &Published,
+    ) -> io::Result<Self> {
+        let tail = match published.frontier.ledger_pages.checked_sub(1) {
+            Some(index) => {
+                let page = ledger_page(view, &ledger_section(family, branch), index, published)?;
+                if page.len() < PAGE_INTERVALS {
+                    page
+                } else {
+                    Vec::new()
+                }
+            }
+            None => Vec::new(),
+        };
+        Ok(Self {
+            publication: published.publication,
+            frontier: published.frontier.clone(),
+            tail,
+        })
+    }
+}
+
+/// A family's step on a branch as its lane cut it, for [`write`] to publish.
+pub struct Cut {
+    pub publication: series::Publication,
+    pub frontier: Frontier,
+    /// The ledger pages it writes, by index.
+    ledger: Vec<(u64, Vec<Interval>)>,
+    state: Option<Vec<u8>>,
+    carry: Option<Vec<u8>>,
+}
+
+/// Cuts `step` of a family on a branch after `last`, its last publication there, which then
+/// names the step: the frontier's ledger pages, prepared hours, first hole and state contents
+/// are filled in, and the checkpoint the step's series segment holds is returned. The
 /// publication sequence counts the family's publications on the branch; its hours and its
 /// cursor must advance, an open tail's within its segment. A step that repeats or reverses
-/// hours, or does not follow `previous`, is refused (`InvalidInput`).
-pub fn publish(
-    writer: &mut store::Writer,
-    family: &str,
-    branch: u64,
-    identity: series::Identity,
-    previous: Option<&Published>,
-    mut step: Step<'_>,
-) -> io::Result<(Published, Series)> {
-    let frontier = &mut step.frontier;
-    if let Some(previous) = previous {
-        if previous.identity != identity {
-            return Err(refused(
-                "A family's publication goes on under another identity",
-            ));
-        }
-        let before = &previous.frontier;
+/// hours, or does not follow `last`, is refused (`InvalidInput`) and `last` is left as it was.
+pub fn cut(last: &mut Option<Last>, step: Step<'_>) -> io::Result<(Cut, Vec<u8>)> {
+    let Step {
+        mut frontier,
+        intervals,
+        state,
+        carry,
+    } = step;
+    let before = last.as_ref();
+    if let Some(before) = before.map(|last| &last.frontier) {
         if before.end.is_some() {
             return Err(refused("A family's branch goes on after it ended"));
         }
@@ -545,28 +587,26 @@ pub fn publish(
             return Err(refused("A family's step would publish hours twice"));
         }
     }
-    let before = previous.map(|previous| &previous.frontier);
-    if step
-        .intervals
+    if intervals
         .first()
         .is_some_and(|first| first.first_hour < frontier.first_hour)
-        || step
-            .intervals
+        || intervals
             .last()
             .is_some_and(|last| last.last_hour > frontier.last_hour)
     {
         return Err(refused("A family's step holds hours outside its frontier"));
     }
-    frontier.ledger_pages = append_ledger(
-        writer,
-        &ledger_section(family, branch),
-        before.map_or(0, |before| before.ledger_pages),
-        before.map(|before| before.last_hour),
-        step.intervals,
+    let mut tail = before.map_or_else(Vec::new, |before| before.tail.clone());
+    let (pages, ledger) = extend_ledger(
+        before.map_or(0, |before| before.frontier.ledger_pages),
+        &mut tail,
+        before.map(|before| before.frontier.last_hour),
+        intervals,
     )?;
-    frontier.prepared = before.map_or(0, |before| before.prepared);
-    frontier.first_hole = before.and_then(|before| before.first_hole.clone());
-    for interval in step.intervals {
+    frontier.ledger_pages = pages;
+    frontier.prepared = before.map_or(0, |before| before.frontier.prepared);
+    frontier.first_hole = before.and_then(|before| before.frontier.first_hole.clone());
+    for interval in intervals {
         if interval.held == Held::Prepared {
             frontier.prepared += span(interval.first_hour, interval.last_hour);
             continue;
@@ -583,18 +623,12 @@ pub fn publish(
             Some(_) => {}
         }
     }
-    frontier.state = step
-        .state
-        .map(|bytes| replace(writer, &state_section(family, branch), bytes))
-        .transpose()?;
-    frontier.carry = step
-        .carry
-        .map(|bytes| replace(writer, &carry_section(family, branch), bytes))
-        .transpose()?;
-    let (generation, sequence) = match previous {
-        Some(previous) => (
-            previous.publication.generation.checked_add(1),
-            previous.publication.segment.checked_add(1),
+    frontier.state = state.as_deref().map(Content::of);
+    frontier.carry = carry.as_deref().map(Content::of);
+    let (generation, sequence) = match before {
+        Some(before) => (
+            before.publication.generation.checked_add(1),
+            before.publication.segment.checked_add(1),
         ),
         None => (Some(1), Some(1)),
     };
@@ -610,55 +644,75 @@ pub fn publish(
         reached: frontier.last_hour,
         refusal,
     };
-    let bytes = serde_json::to_vec(&*frontier)?;
+    let checkpoint = serde_json::to_vec(&frontier)?;
+    *last = Some(Last {
+        publication,
+        frontier: frontier.clone(),
+        tail,
+    });
+    Ok((
+        Cut {
+            publication,
+            frontier,
+            ledger,
+            state,
+            carry,
+        },
+        checkpoint,
+    ))
+}
+
+/// Publishes `cut` of `family` on `branch` into `writer`: its ledger pages, emit state and
+/// carry, then `pending`, the family's series segment cut with it, sealed and published into
+/// `tree`, whose root is written last.
+pub fn write(
+    writer: &mut store::Writer,
+    family: &str,
+    branch: u64,
+    identity: series::Identity,
+    cut: Cut,
+    pending: &series::Pending<'_>,
+    tree: &mut series::Tree,
+) -> io::Result<Published> {
+    let ledger = ledger_section(family, branch);
+    for (index, page) in &cut.ledger {
+        writer.write_at(&ledger, *index, serde_json::to_vec(page)?.as_slice())?;
+    }
+    if let Some(bytes) = &cut.state {
+        writer.write_at(&state_section(family, branch), 0, bytes.as_slice())?;
+    }
+    if let Some(bytes) = &cut.carry {
+        writer.write_at(&carry_section(family, branch), 0, bytes.as_slice())?;
+    }
     let section = root_section(family, branch);
     let mut io = StoreWrite {
         writer,
         section: &section,
     };
-    let mut series = match step.series.take() {
-        Some(series) => series,
-        None => match previous {
-            Some(previous) => {
-                series::Writer::resume(&mut io, cache(), &WRITERS, previous.root, identity)?
-            }
-            None => series::Writer::new(&WRITERS, identity, frontier.first_hour)?,
-        },
-    };
-    let checkpoint = series.blob(&mut bytes.as_slice(), bytes.len() as u64)?;
-    let pending = series.cut(publication, checkpoint)?;
     let sealed = pending.seal(&mut io)?;
-    let root = series.publish(&mut io, cache(), sealed)?;
-    Ok((
-        Published {
-            root,
-            identity,
-            publication,
-            frontier: step.frontier,
-        },
-        series,
-    ))
+    let root = tree.publish(&mut io, cache(), sealed)?;
+    Ok(Published {
+        root,
+        identity,
+        publication: cut.publication,
+        frontier: cut.frontier,
+    })
 }
 
 fn span(first: i32, last: i32) -> u64 {
     (i64::from(last) - i64::from(first) + 1) as u64
 }
 
-fn replace(writer: &mut store::Writer, section: &str, bytes: &[u8]) -> io::Result<Content> {
-    writer.write_at(section, 0, bytes)?;
-    Ok(Content::of(bytes))
-}
-
-/// Appends `intervals`, which follow hour `after`, to the ledger of `pages` pages; returns its
-/// page count. Its last page is rewritten until it is full, and an interval continuing the last
-/// held alike extends it.
-fn append_ledger(
-    writer: &mut store::Writer,
-    section: &str,
+/// Appends `intervals`, which follow hour `after`, to a ledger of `pages` pages whose last page,
+/// while it is not full, `tail` holds: the pages to write, by index, and the page count. The
+/// last page is rewritten until it is full, and an interval continuing the last held alike
+/// extends it.
+fn extend_ledger(
     pages: u64,
+    tail: &mut Vec<Interval>,
     after: Option<i32>,
     intervals: &[Interval],
-) -> io::Result<u64> {
+) -> io::Result<(u64, Vec<(u64, Vec<Interval>)>)> {
     let mut last = after;
     for interval in intervals {
         if interval.first_hour > interval.last_hour
@@ -669,20 +723,13 @@ fn append_ledger(
         last = Some(interval.last_hour);
     }
     if intervals.is_empty() {
-        return Ok(pages);
+        return Ok((pages, Vec::new()));
     }
-    let mut at = pages;
-    let mut tail: Vec<Interval> = Vec::new();
-    if let Some(index) = pages.checked_sub(1) {
-        let range = writer
-            .read_at(section, index)?
-            .ok_or_else(|| invalid("A ledger page its frontier counts is missing"))?;
-        let page: Vec<Interval> = serde_json::from_reader(io::BufReader::new(range))?;
-        if page.len() < PAGE_INTERVALS {
-            at = index;
-            tail = page;
-        }
-    }
+    let mut at = match pages.checked_sub(1) {
+        Some(index) if !tail.is_empty() => index,
+        _ => pages,
+    };
+    let mut writes = Vec::new();
     for interval in intervals {
         if let Some(held) = tail.last_mut()
             && held.held == interval.held
@@ -693,12 +740,15 @@ fn append_ledger(
             continue;
         }
         if tail.len() == PAGE_INTERVALS {
-            writer.write_at(section, at, serde_json::to_vec(&tail)?.as_slice())?;
+            writes.push((at, std::mem::take(tail)));
             at += 1;
-            tail.clear();
         }
         tail.push(interval.clone());
     }
-    writer.write_at(section, at, serde_json::to_vec(&tail)?.as_slice())?;
-    Ok(at + 1)
+    writes.push((at, tail.clone()));
+    // A full page takes no more: the next interval starts the page after it.
+    if tail.len() == PAGE_INTERVALS {
+        tail.clear();
+    }
+    Ok((at + 1, writes))
 }

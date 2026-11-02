@@ -66,6 +66,7 @@ fn same_instances(instances: &[(u32, u32)], gains: &[CountryExperienceGainRow]) 
 impl History {
     /// What an unchanged hour's step depends on: the last hour observed,
     /// whether its tables were complete and whether the held names are its.
+    #[cfg(test)]
     pub(super) fn quiet_inputs(&self) -> (Option<i32>, bool, bool) {
         (self.hour, self.complete, self.current)
     }

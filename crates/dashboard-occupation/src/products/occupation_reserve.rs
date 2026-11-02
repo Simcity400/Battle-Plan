@@ -12,10 +12,7 @@
 //! `TAG@slot`). An ordinal is list order, not a transfer or a lifetime. Positive
 //! amounts alone determine race order; negatives stay signed.
 
-use dashboard_base::{
-    prepared::prepass::Family,
-    products::{Product, check_reply_budget, validate_tag},
-};
+use dashboard_base::products::{Product, check_reply_budget, validate_tag};
 use dashboard_keyed::{
     Observer as KeyedObserver, Values,
     countries::{self, Countries},
@@ -176,13 +173,6 @@ pub struct OccupationReserveObserver {
     refusals: BTreeMap<String, u64>,
 }
 
-pub static FAMILY: Family = dashboard_keyed::block::family::<OccupationReserveObserver>(
-    "occupation-reserve",
-    "occupation-reserve.extract",
-    "occupation-reserve.sequential",
-    "occupation-reserve.fallback",
-);
-
 impl KeyedObserver for OccupationReserveObserver {
     const NAME: &'static str = "occupation-reserve";
     const TABLES: &'static [TableId] = &[
@@ -192,9 +182,6 @@ impl KeyedObserver for OccupationReserveObserver {
         TableId::Countries,
     ];
     const READ: TableId = TableId::CountryOccupationReserveManpower;
-    fn family() -> &'static Family {
-        &FAMILY
-    }
     fn fields() -> io::Result<Vec<TableFields>> {
         Ok(vec![
             TableFields::all(Self::READ).when_read(),
@@ -273,6 +260,7 @@ impl KeyedObserver for OccupationReserveObserver {
 impl Product for OccupationReserve {
     const KEY: &'static str = "occupation-reserve-manpower";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = OccupationReserveParams;
     type Reply = OccupationReserveReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -320,16 +308,24 @@ fn selected(part: &str, selectors: &[String]) -> bool {
     })
 }
 
-/// Read only the selected holders' prepared runs. `tag` may be `TAG@slot` to
-/// identify one holder; a bare tag retains distinct tag-reuse series.
+/// Read only the selected holders' prepared runs, from the family's native publication. `tag`
+/// may be `TAG@slot` to identify one holder; a bare tag retains distinct tag-reuse series.
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
+    answer(query, || query.open_native::<OccupationReserveObserver>())
+}
+
+/// The reply to `query` from the family's publication `open` opens.
+fn answer<'q>(
+    query: &'q Query<'_>,
+    open: impl FnOnce() -> io::Result<Option<Opened<'q, OccupationReserveObserver>>>,
+) -> io::Result<serde_json::Value> {
     let params: OccupationReserveParams = serde_json::from_value(query.params.clone())
         .map_err(|error: serde_json::Error| dashboard_core::invalid(error.to_string()))?;
     OccupationReserve::validate(&params).map_err(dashboard_core::invalid)?;
     let (first, last) = query.window()?;
     let reply = reply(
-        query.open::<OccupationReserveObserver>()?,
+        open()?,
         &params,
         first,
         last,
@@ -525,5 +521,6 @@ fn retain_dated(window: &mut KeyedWindow) {
     window.series.retain(|series| !series.runs.is_empty());
 }
 
+mod served;
 #[cfg(test)]
 mod tests;

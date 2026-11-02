@@ -4,10 +4,8 @@
 pub(crate) use dashboard_base::prepared::observer_tests;
 pub mod change_runs;
 pub mod driver;
-pub(crate) mod pace;
 pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, prefix, series};
 pub mod pipeline;
-pub(crate) mod prepass;
 pub mod query;
 pub mod runner;
 pub mod served_check;
@@ -16,7 +14,6 @@ pub use crate::transport::Action;
 pub use dashboard_base::prepared::{
     SettingsStamp, files, rebind_settings, recording_store, settings_stamp,
 };
-pub use pipeline::unprepared_blocks;
 
 use crate::Source;
 use serde::{Deserialize, Serialize};
@@ -96,11 +93,10 @@ pub struct Reply {
     pub background_enabled: bool,
     pub state: State,
     pub sections: Vec<Section>,
-    /// The hourly walk's coverage, by branch.
+    /// The hours of each branch every family published alike, by branch.
     pub coverage: std::collections::BTreeMap<String, pipeline::Coverage>,
-    /// Each family prepared on its own's coverage, by family and branch. A
-    /// prepared reply's `gate` names the entries it waits for: these
-    /// families, or `walk` for `coverage`.
+    /// Each family's and job's coverage, by name and branch. A prepared reply's
+    /// `gate` names the entries it waits for: these, or `walk` for `coverage`.
     pub families: Families,
     pub bytes: String,
     pub error: Option<String>,
@@ -108,7 +104,7 @@ pub struct Reply {
     pub pause_reason: Option<PauseReason>,
 }
 
-/// Coverage by family prepared on its own, then by branch.
+/// Coverage by family or job, then by branch.
 pub type Families =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, pipeline::Coverage>>;
 

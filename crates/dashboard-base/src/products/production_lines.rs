@@ -87,6 +87,7 @@ use std::{
 use ts_rs::TS;
 
 mod breakdown;
+pub mod columnar;
 mod index;
 mod input;
 pub mod prepared;
@@ -95,6 +96,7 @@ mod read;
 mod reference;
 #[cfg(test)]
 mod saved;
+mod served;
 pub use breakdown::{
     ProductionBreakdownParams, ProductionLineBreakdown, ProductionLineBreakdownReply,
     ProductionModifierGroup, ProductionModifierPart, ProductionModifierRun, factory_output,
@@ -1862,6 +1864,7 @@ fn variant_fold(
 impl Product for ProductionLines {
     const KEY: &'static str = "production-lines";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = ProductionLinesParams;
     type Reply = ProductionLinesReply;
 
@@ -2075,6 +2078,7 @@ impl Product for ProductionLines {
 impl Product for ProductionLineDetail {
     const KEY: &'static str = "production-line-detail";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = ProductionDetailParams;
     type Reply = ProductionLineDetailReply;
 

@@ -180,6 +180,23 @@ fn variant_refusals<'de, D: serde::Deserializer<'de>>(
 }
 
 impl RawVariant {
+    /// The bytes its strings and refusals hold beyond it.
+    pub fn heap(&self) -> usize {
+        [&self.token, &self.display_name, &self.suffix]
+            .into_iter()
+            .chain(&self.name_tag)
+            .chain(&self.type_tag)
+            .chain(&self.design)
+            .map(String::capacity)
+            .sum::<usize>()
+            + self.refusals.capacity() * std::mem::size_of::<(String, String)>()
+            + self
+                .refusals
+                .iter()
+                .map(|(label, reason)| label.capacity() + reason.capacity())
+                .sum::<usize>()
+    }
+
     pub fn check(&self, field: &str) -> Result<(), String> {
         match self.refusals.iter().find(|(name, _)| *name == field) {
             Some((_, why)) => Err(why.clone()),

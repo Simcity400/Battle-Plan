@@ -7,16 +7,18 @@
 use crate::shared::{self, Choice, TheatreChoice};
 use dashboard_base::{
     catalogue::{self, Catalogue, Refusals},
-    prepared::{prepass::Family, query::progressive},
+    prepared::query::progressive,
     products::{
         Product, ReplyWarnings,
         artwork::sprites::{self, SpriteFrame},
     },
 };
+#[cfg(test)]
+use dashboard_base::prepared::prepass::Family;
 use dashboard_keyed::{
     Observer, Values,
     countries::Countries,
-    query::{KeyedWindow, Query},
+    query::{KeyedWindow, Opened, Query},
 };
 use replay::container::TableFields;
 use replay_data::{
@@ -35,6 +37,8 @@ use std::{
     io,
 };
 use ts_rs::TS;
+
+mod served;
 
 pub struct AirMissions;
 
@@ -136,6 +140,7 @@ impl ReplyWarnings for Reply {
 impl Product for AirMissions {
     const KEY: &'static str = "air-missions";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = Params;
     type Reply = Reply;
     fn validate(params: &Params) -> Result<(), &'static str> {
@@ -175,6 +180,7 @@ pub struct AirMissionsObserver {
     pub refusals: BTreeMap<String, u64>,
 }
 
+#[cfg(test)]
 pub static FAMILY: Family = dashboard_keyed::block::family::<AirMissionsObserver>(
     "air-missions",
     "air-missions.extract",
@@ -191,6 +197,7 @@ impl Observer for AirMissionsObserver {
         TableId::Countries,
     ];
     const READ: TableId = TableId::AirRegionalMissions;
+    #[cfg(test)]
     fn family() -> &'static Family {
         &FAMILY
     }
@@ -316,10 +323,22 @@ fn strip_in(catalogue: &Catalogue) -> Result<String, String> {
     sprites::icon_key(catalogue, &button.sprite)
 }
 
+/// The selected country's missions from the family's native publication.
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+    answer(query, &|| query.open_native::<AirMissionsObserver>())
+}
+
+/// The publication `open` opens.
+pub(crate) type Open<'q, O> = dyn Fn() -> io::Result<Option<Opened<'q, O>>> + 'q;
+
+/// The reply to `query` from the family's publication `open` opens.
+pub(crate) fn answer<'q>(
+    query: &'q Query<'_>,
+    open: &Open<'q, AirMissionsObserver>,
+) -> io::Result<serde_json::Value> {
     let params = shared::params::<AirMissions>(query)?;
     if matches!(params.view, View::Wings) {
-        return wings(query, &params);
+        return wings(query, &params, open);
     }
     let (first, last) = query.window()?;
     let mut notes = Refusals::default();
@@ -327,7 +346,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     let mut warnings = labels
         .as_ref()
         .map_or_else(|_| Vec::new(), |labels| labels.warnings.clone());
-    let window = match query.open::<AirMissionsObserver>()? {
+    let window = match open()? {
         Some(mut opened) => {
             warnings.extend(shared::warnings(&opened.scan.observer.refusals));
             opened.window(first, last, query.through(), |name| {
@@ -409,7 +428,11 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     )
 }
 
-fn wings(query: &Query<'_>, params: &Params) -> io::Result<serde_json::Value> {
+fn wings<'q>(
+    query: &'q Query<'_>,
+    params: &Params,
+    open: &Open<'q, AirMissionsObserver>,
+) -> io::Result<serde_json::Value> {
     let hour = params.hour.expect("validated wings hour");
     let region = params.region.expect("validated wings region");
     let (first, last) = query.bounds()?;
@@ -506,7 +529,7 @@ fn wings(query: &Query<'_>, params: &Params) -> io::Result<serde_json::Value> {
         hour,
     ) {
         Some(hour)
-    } else if let Some(mut opened) = query.open::<AirMissionsObserver>()? {
+    } else if let Some(mut opened) = open()? {
         let window = opened.window(hour, hour, query.through(), |_| false)?;
         window.reads.first().map(|(_, _, read)| *read)
     } else {

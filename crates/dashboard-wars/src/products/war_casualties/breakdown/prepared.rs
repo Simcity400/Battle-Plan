@@ -2,15 +2,65 @@
 use super::*;
 use dashboard_base::prepared::series::{self, Reader};
 
+/// The wars a breakdown joins its casualties with: the native holder's among `selected`, read as
+/// the params' viewpoint's, with the content catalogue; None while they are not prepared.
+pub type WarsOf<'a> = &'a dyn Fn(
+    &WarsParams,
+    &HashSet<(u32, u32)>,
+    Option<&Arc<dashboard_base::catalogue::Catalogue>>,
+) -> io::Result<Option<WarsReply>>;
+
 pub fn query(
     source: &Source,
     params: &CasualtyBreakdownParams,
     context: &LoadContext,
     store: &store::Store,
     key: &store::SourceKey,
+    wars: WarsOf<'_>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<CasualtyBreakdownReply>> {
-    query_through(source, params, context, store, key, None, cancelled)
+    query_through(source, params, context, store, key, None, wars, cancelled)
+}
+
+/// [`WarsOf`] from the wars' publication on `branch` through `through`, never past it.
+pub fn published_wars(
+    source: &Source,
+    context: &LoadContext,
+    key: &store::SourceKey,
+    branch: u64,
+    through: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<
+    impl Fn(
+        &WarsParams,
+        &HashSet<(u32, u32)>,
+        Option<&Arc<dashboard_base::catalogue::Catalogue>>,
+    ) -> io::Result<Option<WarsReply>>,
+> {
+    let opened = dashboard_base::prepared::published::open_through(
+        source,
+        context.content.as_ref(),
+        "wars",
+        crate::products::wars::emit::SCHEMA,
+        branch,
+        through,
+    )?;
+    let key = key.clone();
+    Ok(
+        move |params: &WarsParams,
+              selected: &HashSet<(u32, u32)>,
+              cat: Option<&Arc<dashboard_base::catalogue::Catalogue>>| {
+            crate::products::wars::query::selected_structure(
+                source,
+                params,
+                selected,
+                opened.as_ref(),
+                &key,
+                cat,
+                cancelled,
+            )
+        },
+    )
 }
 
 /// No casualty observation has been accepted for this request yet.
@@ -51,6 +101,7 @@ pub fn query_through(
     store: &store::Store,
     key: &store::SourceKey,
     through: Option<i32>,
+    wars: WarsOf<'_>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<CasualtyBreakdownReply>> {
     CasualtyBreakdown::validate(params).map_err(dashboard_core::invalid)?;
@@ -118,18 +169,13 @@ pub fn query_through(
         .transpose()?;
     drop(cpu);
     let cpu = replay_frame::cpu::scope_phase("casualties:query_breakdown_wars");
-    let Some(wars) = crate::products::wars::prepared::projection(
-        store,
-        key,
-        source,
+    let Some(wars) = wars(
         &WarsParams {
             branch_id: params.branch_id.clone(),
             viewpoint_tag: Some(params.tag.clone()),
         },
-        Some(&selected),
-        &BTreeSet::new(),
+        &selected,
         cat.as_ref(),
-        cancelled,
     )?
     else {
         return Ok(None);

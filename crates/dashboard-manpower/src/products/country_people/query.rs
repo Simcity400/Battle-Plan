@@ -184,17 +184,17 @@ pub fn operands_at<P: PageRead>(
     Ok(Some((operands, holder)))
 }
 
-/// Why a view has no elections or exiles: `politics_state` has not published the branch, as
-/// on a native recording until it is prepared from one.
+/// Why a view has no elections or exiles: `politics_state` has not published the branch
+/// through the hour yet.
 pub const UNPREPARED: &str =
-    "Elections and governments in exile are not prepared for this recording yet";
+    "Elections and governments in exile are not prepared for this hour yet";
 
 fn small(value: Option<i128>) -> Option<i32> {
     value.and_then(|value| i32::try_from(value).ok())
 }
 
 /// The reply to `params` from the country's `operands` and its holder's `politics` (its
-/// elections and the exiles it is or hosts, none before `politics_state` publishes): the
+/// elections and the exiles it is or hosts, none before `politics_state` publishes the hour): the
 /// manpower view by the game's rules, the election schedule and the exile cards, each card's
 /// deployed air crews from `air` by its place.
 pub fn assemble(

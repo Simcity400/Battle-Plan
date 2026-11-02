@@ -308,7 +308,61 @@ pub(crate) struct Holder {
     pub rocket_joined: bool,
 }
 
-fn write_source(prev: Option<&Source>, now: &Source, out: &mut Out) -> io::Result<()> {
+impl Holder {
+    /// Its equipment source (0) or Rocket source (1).
+    pub fn source(&self, slot: usize) -> Option<&Source> {
+        match slot {
+            0 => self.equipment.as_ref(),
+            _ => self.rocket.as_ref(),
+        }
+    }
+
+    pub fn source_mut(&mut self, slot: usize) -> &mut Option<Source> {
+        match slot {
+            0 => &mut self.equipment,
+            _ => &mut self.rocket,
+        }
+    }
+}
+
+/// [`write_source`] from `prev` to `prev` with `head` and `edits`, each a leaf key and the
+/// leaf it now holds, ascending by key; every leaf they do not name is unchanged.
+pub(crate) fn write_leaves(
+    prev: &Source,
+    head: &Head,
+    edits: &[((u32, usize), Option<Leaf>)],
+    out: &mut Out,
+) -> io::Result<()> {
+    head.write(out);
+    let held = |key: (u32, usize)| {
+        prev.leaves
+            .binary_search_by_key(&key, Leaf::key)
+            .ok()
+            .map(|at| &prev.leaves[at])
+    };
+    let upserts = || {
+        edits
+            .iter()
+            .filter_map(move |(key, leaf)| leaf.as_ref().filter(|leaf| held(*key) != Some(*leaf)))
+    };
+    out.count(upserts().count())?;
+    for leaf in upserts() {
+        leaf.write(out);
+    }
+    let removals = || {
+        edits
+            .iter()
+            .filter(move |(key, leaf)| leaf.is_none() && held(*key).is_some())
+    };
+    out.count(removals().count())?;
+    for ((variant, purpose), _) in removals() {
+        out.u32(*variant);
+        out.u8(*purpose as u8);
+    }
+    Ok(())
+}
+
+pub(crate) fn write_source(prev: Option<&Source>, now: &Source, out: &mut Out) -> io::Result<()> {
     now.head.write(out);
     let before = prev.map_or(&[][..], |source| &source.leaves[..]);
     let mut upserts = Vec::new();

@@ -38,15 +38,21 @@ pub use replay_columnar::{manifest::Manifest, walk::State};
 use std::{
     any::Any,
     cell::Cell,
+    cmp::Reverse,
     collections::BTreeMap,
     fmt, io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
+#[cfg(test)]
+use std::sync::Condvar;
+
+mod crew;
 mod lane;
 mod schedule;
 mod store;
@@ -55,6 +61,7 @@ mod tests;
 
 pub use store::{Folder, Scratch, Spilled};
 
+use crew::Board;
 use lane::{Context, Emitted, Erased, Kept, Reserved, Shared, Taken, Walking};
 use schedule::{Closing, Gone, Plan, Schedule, Status, Task};
 use store::{Parked, Store};
@@ -63,8 +70,8 @@ use store::{Parked, Store};
 /// before them, to the state the walker holds. It is a function of that state alone: an
 /// operator going on from the segment before meets a world built anew, never one parked. It is
 /// the run's own: its failure stops the run, but for damage it names, which loses the segment
-/// to every family walking it.
-pub trait World {
+/// to every family walking it. A walk's operators may read it on several workers at once.
+pub trait World: Sync {
     fn hour(&mut self, state: &State, manifest: &Manifest<'_>) -> io::Result<()>;
 }
 
@@ -746,10 +753,11 @@ fn marked<T>(
     }
 }
 
-/// A run's schedule, and how its workers and its cancellation wake one another.
+/// A run's schedule, and how its workers and its cancellation wake one another: a worker with
+/// nothing to pick waits on the board, helping the walks under way.
 struct Signal {
     schedule: Mutex<Schedule>,
-    changed: Condvar,
+    board: Board,
     stopped: AtomicBool,
     cancelled: AtomicBool,
 }
@@ -759,16 +767,9 @@ impl Signal {
         lock(&self.schedule)
     }
 
-    fn wait<'g>(&self, schedule: MutexGuard<'g, Schedule>) -> MutexGuard<'g, Schedule> {
-        self.changed
-            .wait(schedule)
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Wakes the workers waiting, once whatever they read under the lock has changed.
+    /// Wakes the workers waiting, once what the schedule may hand out has changed.
     fn changed(&self) {
-        drop(self.lock());
-        self.changed.notify_all();
+        self.board.changed();
     }
 
     /// Keeps the run's first failure and stops every worker; what fails once the run is
@@ -797,7 +798,7 @@ impl Signal {
     fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.lock().halted = true;
-        self.changed.notify_all();
+        self.changed();
     }
 }
 
@@ -838,6 +839,10 @@ struct Attached<'r, W> {
     begun: bool,
     /// Hours of the segment it saw before another family's panic began the walk again.
     seen: u32,
+    /// Hours of this walk of the segment it went through.
+    through: u32,
+    /// Nanoseconds its last hour took.
+    cost: u64,
     /// It goes on into the segment after, which it cannot start.
     hands: bool,
     /// The ordinal it joins the walk at, past the segment's first hour where its family goes on
@@ -859,6 +864,8 @@ impl<'r, W> Attached<'r, W> {
             cold,
             begun: false,
             seen: 0,
+            through: 0,
+            cost: 0,
             hands: false,
             joins: 0,
             pending: None,
@@ -897,6 +904,59 @@ impl<'r, W> Attached<'r, W> {
     /// for the walk to check the pages it came from.
     fn walks(&self) -> bool {
         matches!(self.fate, None | Some(Fate::Refused { .. }))
+    }
+}
+
+/// A family's hour in a walk's hour, with what its call came to.
+struct Turn<'t, 'r, W> {
+    /// Its place in the walk.
+    index: usize,
+    attached: &'t mut Attached<'r, W>,
+    called: Option<Called>,
+}
+
+/// What a call of a family's code on some worker came to: what it returned, or its panic, the
+/// family's own or that of the run's code it called back into.
+enum Called {
+    Returned(Result<(), Fault>),
+    Panicked {
+        family: bool,
+        payload: Box<dyn Any + Send>,
+    },
+}
+
+/// The workers an hour of families whose last hours took `costs` keeps busy: their sum over the
+/// largest, rounded up; every family's before any has a cost.
+fn width(costs: impl Iterator<Item = u64>) -> usize {
+    let (sum, most, count) = costs.fold((0_u64, 0_u64, 0_usize), |(sum, most, count), cost| {
+        (sum.saturating_add(cost), most.max(cost), count + 1)
+    });
+    if most == 0 {
+        return count;
+    }
+    usize::try_from(sum.div_ceil(most)).map_or(count, |width| width.min(count))
+}
+
+/// `operator`'s `hour`, on this worker.
+fn hour_on<W>(
+    operator: &mut (dyn Walking<W> + '_),
+    hour: &Hour<'_, W>,
+    shared: &Shared<'_>,
+    reserved: &Reserved<'_>,
+) -> Called {
+    // Cleared while the run's own code it calls back into runs.
+    let culprit = Cell::new(Some(0));
+    let context = Context {
+        shared,
+        reserved,
+        culprit: &culprit,
+    };
+    match catch_unwind(AssertUnwindSafe(|| operator.hour(hour, &context))) {
+        Ok(result) => Called::Returned(result.map_err(|error| Fault::of(Operation::Hour, error))),
+        Err(payload) => Called::Panicked {
+            family: culprit.get().is_some(),
+            payload,
+        },
     }
 }
 
@@ -996,16 +1056,22 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             let task = {
                 let mut schedule = self.signal.lock();
                 loop {
+                    // Read before asking: a change since sends this worker back to ask again.
+                    let seen = self.signal.board.changes();
                     if schedule.failure.is_some()
                         || self.signal.stopped.load(Ordering::SeqCst)
                         || schedule.finished()
                     {
                         return;
                     }
+                    // The earliest walk under way, while it has room, before any walk past it:
+                    // the emits wait for the segments in order.
+                    let front = self.signal.board.front();
                     let picked = schedule.pick(
                         &self.plan,
                         &self.shared.settings,
                         &self.shared.credit,
+                        front.is_none(),
                         &mut |reads| walker.hold(reads),
                     );
                     match picked {
@@ -1013,7 +1079,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             if matches!(task, Task::Emit { .. }) && walker.holds() {
                                 // An emit may take long: its share goes to another's walk.
                                 walker.park();
-                                self.signal.changed.notify_all();
+                                self.signal.changed();
                             }
                             break task;
                         }
@@ -1023,21 +1089,29 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             return self.signal.fail(error);
                         }
                     }
+                    if let Some(front) = front {
+                        if walker.holds() {
+                            walker.park();
+                            self.signal.changed();
+                        }
+                        drop(schedule);
+                        front.help(&self.signal.board, seen);
+                        schedule = self.signal.lock();
+                        continue;
+                    }
                     if walker.holds() {
                         // Its share goes back before it waits, for another's walk.
                         walker.park();
-                        self.signal.changed.notify_all();
+                        self.signal.changed();
                         continue;
                     }
                     if let Some((lane, at, need)) = schedule.stuck() {
                         drop(schedule);
                         return self.signal.fail(self.unrestorable(lane, at, need));
                     }
-                    #[cfg(test)]
-                    self.cancellation.idle(true);
-                    schedule = self.signal.wait(schedule);
-                    #[cfg(test)]
-                    self.cancellation.idle(false);
+                    drop(schedule);
+                    self.help(seen);
+                    schedule = self.signal.lock();
                 }
             };
             let done = match task {
@@ -1051,10 +1125,26 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 } => self.walk(&mut walker, &mut state, at, from, lanes, reserved),
             };
             self.signal.lock().done();
-            self.signal.changed.notify_all();
+            self.signal.changed();
             if let Err(error) = done {
                 return self.signal.fail(error);
             }
+        }
+    }
+
+    /// Helps the walks under way, an hour at a time, until what the schedule may hand out
+    /// changed past `seen`.
+    fn help(&self, seen: u64) {
+        loop {
+            #[cfg(test)]
+            self.cancellation.idle(true);
+            let crew = self.signal.board.next(seen);
+            #[cfg(test)]
+            self.cancellation.idle(false);
+            let Some(crew) = crew else {
+                return;
+            };
+            crew.help(&self.signal.board, seen);
         }
     }
 
@@ -1078,7 +1168,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             read.push((page, walker.measure_pages(&self.segments[page])?));
         }
         self.signal.lock().measured(at, from, restart, &read);
-        self.signal.changed.notify_all();
+        self.signal.changed();
         Ok(())
     }
 
@@ -1124,7 +1214,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 }
             }
         }
-        self.signal.changed.notify_all();
+        self.signal.changed();
         self.drop_gone(gone);
         Ok(())
     }
@@ -1207,7 +1297,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 }
                 schedule.written(&cells);
             }
-            self.signal.changed.notify_all();
+            self.signal.changed();
             self.drop_gone(gone);
             drop(victims);
             // Those that cannot spill stay resident: others are written out in their place.
@@ -1405,7 +1495,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             }
             schedule.derive(&self.plan, at, from, &held, &mut gone)?;
         }
-        self.signal.changed.notify_all();
+        self.signal.changed();
         self.drop_gone(gone);
         Ok(())
     }
@@ -1451,7 +1541,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             }
             schedule.derive(&self.plan, at, from, &held, &mut gone)?;
         }
-        self.signal.changed.notify_all();
+        self.signal.changed();
         self.drop_gone(gone);
         Ok(())
     }
@@ -1673,7 +1763,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             self.lost(&mut schedule, at, lane, loss.clone(), &mut gone)?;
                         }
                     }
-                    self.signal.changed.notify_all();
+                    self.signal.changed();
                     for (lane, handed) in lanes {
                         drop(handed);
                         self.forget(at, lane);
@@ -1766,7 +1856,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             deferred.ready
         };
         if !refusing.is_empty() || !closed.is_empty() {
-            self.signal.changed.notify_all();
+            self.signal.changed();
         }
         for mut attached in closed {
             attached.operator.discard(&self.shared.credit);
@@ -1808,7 +1898,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 }
                 schedule.waits(&self.plan, at, &landing, &mut gone)?;
             }
-            self.signal.changed.notify_all();
+            self.signal.changed();
             self.drop_gone(gone);
         }
         walking.sort_unstable_by_key(|attached| attached.lane);
@@ -1840,6 +1930,11 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             shared: &self.shared,
             reserved: &reserved,
             culprit: &culprit,
+        };
+        // Its hours go to the workers that help it while it has families to share.
+        let crew = match walking.len() {
+            0 | 1 => None,
+            _ => Some(self.signal.board.join(at)?),
         };
         let stopped = &self.signal.stopped;
         // The walk reached the segment's end with some family, leaving its last tables, and
@@ -1879,41 +1974,66 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         }
                         noted = lost.len();
                     }
-                    let mut going = false;
+                    // Families joining past the segment's first hour start, or take up their
+                    // carry, once the walk holds the hour before.
                     for (index, attached) in walking.iter_mut().enumerate() {
-                        if attached.fate.is_some() || hours < attached.seen {
-                            going |= attached.walks();
+                        if attached.fate.is_some()
+                            || hours < attached.seen
+                            || ordinal >= attached.joins
+                        {
                             continue;
                         }
-                        if ordinal < attached.joins {
-                            if ordinal + 1 == attached.joins
-                                && let Some(carry) = attached.pending.take()
-                                && let Err(fault) = self.decide(attached, carry, state)
-                            {
-                                let when = (manifest.hour + 1, ordinal + 1);
+                        attached.through = hours + 1;
+                        if ordinal + 1 == attached.joins
+                            && let Some(carry) = attached.pending.take()
+                            && let Err(fault) = self.decide(attached, carry, state)
+                        {
+                            let when = (manifest.hour + 1, ordinal + 1);
+                            attached.fate = Some(self.fate(fault, attached, when)?);
+                            continue;
+                        }
+                        // One starting anew where it joins starts once the hour before is.
+                        if attached.cold && ordinal + 1 == attached.joins {
+                            let next = manifest.hour + 1;
+                            culprit.set(Some(index));
+                            doing = Operation::Start;
+                            let restart = Start::Restart(state);
+                            let result = attached.operator.start(restart, planned.branch, next);
+                            culprit.set(None);
+                            doing = Operation::Hour;
+                            let called =
+                                result.map_err(|error| Fault::of(Operation::Start, error));
+                            if let Some(fault) = attached.met(called) {
+                                let when = (next, ordinal + 1);
                                 attached.fate = Some(self.fate(fault, attached, when)?);
-                                going |= attached.walks();
-                                continue;
                             }
-                            // One starting anew where it joins starts once the hour before is.
-                            if attached.cold && ordinal + 1 == attached.joins {
-                                let next = manifest.hour + 1;
-                                culprit.set(Some(index));
-                                doing = Operation::Start;
-                                let restart = Start::Restart(state);
-                                let result = attached.operator.start(restart, planned.branch, next);
-                                culprit.set(None);
-                                doing = Operation::Hour;
-                                let called =
-                                    result.map_err(|error| Fault::of(Operation::Start, error));
-                                if let Some(fault) = attached.met(called) {
-                                    let when = (next, ordinal + 1);
-                                    attached.fate = Some(self.fate(fault, attached, when)?);
-                                }
-                            }
-                            going |= attached.walks();
-                            continue;
                         }
+                    }
+                    let mut turns = engine_allocation::vec(walking.len())?;
+                    for (index, attached) in walking.iter_mut().enumerate() {
+                        if attached.fate.is_none()
+                            && hours >= attached.seen
+                            && ordinal >= attached.joins
+                        {
+                            turns.push(Turn {
+                                index,
+                                attached,
+                                called: None,
+                            });
+                        }
+                    }
+                    // Helpers take the hour's families with this worker, the costliest last
+                    // hour first, as many of them as its costs keep busy.
+                    turns.sort_unstable_by_key(|turn| Reverse(turn.attached.cost));
+                    let width = width(turns.iter().map(|turn| turn.attached.cost));
+                    let mut slots =
+                        engine_allocation::collect_vec(turns.into_iter().map(Mutex::new))?;
+                    let (world, shared, reserved) = (&world, &self.shared, &reserved);
+                    let take = |slot: usize| {
+                        let mut turn = lock(&slots[slot]);
+                        let Turn {
+                            attached, called, ..
+                        } = &mut *turn;
                         let joining = ordinal == attached.joins && ordinal > segment.first;
                         let hour = Hour {
                             branch: planned.branch,
@@ -1925,18 +2045,69 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             opens: ordinal == segment.first || joining,
                             state,
                             manifest,
-                            world: &world,
+                            world,
                         };
-                        culprit.set(Some(index));
-                        let result = attached.operator.hour(&hour, &context);
-                        culprit.set(None);
-                        let called = result.map_err(|error| Fault::of(Operation::Hour, error));
-                        if let Some(fault) = attached.met(called) {
-                            let when = (manifest.hour, ordinal);
-                            attached.fate = Some(self.fate(fault, attached, when)?);
-                        }
-                        going |= attached.walks();
+                        let began = Instant::now();
+                        *called = Some(hour_on(&mut *attached.operator, &hour, shared, reserved));
+                        attached.cost =
+                            u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    };
+                    match &crew {
+                        Some(crew) if slots.len() > 1 => crew.hour(slots.len(), width, &take),
+                        _ => (0..slots.len()).for_each(take),
                     }
+                    let turns = slots
+                        .iter_mut()
+                        .map(|slot| slot.get_mut().unwrap_or_else(PoisonError::into_inner));
+                    let mut turns: Vec<&mut Turn<'_, 'r, W>> = engine_allocation::collect_vec(turns)?;
+                    // The run's own panic goes on as the run's.
+                    for turn in turns.iter_mut() {
+                        if let Some(Called::Panicked { family: false, .. }) = turn.called {
+                            let Some(Called::Panicked { payload, .. }) = turn.called.take() else {
+                                unreachable!("the turn panicked");
+                            };
+                            resume_unwind(payload);
+                        }
+                    }
+                    // The first family to panic, in lane order, begins the walk again as it would
+                    // have had the families walked the hour one after another.
+                    let first_panic = turns
+                        .iter()
+                        .filter(|turn| matches!(turn.called, Some(Called::Panicked { .. })))
+                        .map(|turn| turn.index)
+                        .min();
+                    let mut panicked = None;
+                    for turn in turns.iter_mut() {
+                        let when = (manifest.hour, ordinal);
+                        let attached = &mut *turn.attached;
+                        match turn.called.take() {
+                            Some(Called::Returned(called)) => {
+                                attached.through = hours + 1;
+                                if let Some(fault) = attached.met(called) {
+                                    attached.fate = Some(self.fate(fault, attached, when)?);
+                                }
+                            }
+                            Some(Called::Panicked { payload, .. })
+                                if Some(turn.index) == first_panic =>
+                            {
+                                panicked = Some((turn.index, payload));
+                            }
+                            // Another family panicking at the same hour fails there too.
+                            Some(Called::Panicked { payload, .. }) => {
+                                attached.through = hours + 1;
+                                let fault = Fault::Panic(Operation::Hour, said(&*payload));
+                                attached.fate = Some(self.fate(fault, attached, when)?);
+                            }
+                            None => unreachable!("every turn ran"),
+                        }
+                    }
+                    drop(turns);
+                    drop(slots);
+                    if let Some((index, payload)) = panicked {
+                        culprit.set(Some(index));
+                        resume_unwind(payload);
+                    }
+                    let going = walking.iter().any(Attached::walks);
                     ordinal += 1;
                     hours += 1;
                     Ok(going && !stopped.load(Ordering::Relaxed))
@@ -1957,8 +2128,8 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     let attached = &mut walking[index];
                     attached.fate = Some(self.fate(fault, attached, (now, ordinal))?);
                     // The others walk the segment again from where each was.
-                    for (other, attached) in walking.iter_mut().enumerate() {
-                        attached.seen = attached.seen.max(hours + u32::from(other < index));
+                    for attached in walking.iter_mut() {
+                        attached.seen = attached.seen.max(attached.through);
                     }
                     // The tables lost so far stay lost to their readers once the walker forgets.
                     let tables = walker.take_lost();
@@ -2179,7 +2350,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 }
                 schedule.sealed(at, &lanes);
                 drop(schedule);
-                self.signal.changed.notify_all();
+                self.signal.changed();
                 self.drop_gone(gone);
                 for mut attached in dropped.into_iter().chain(kept) {
                     attached.operator.discard(&self.shared.credit);
@@ -2228,7 +2399,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             // Where the walk it goes on into begins, as its share was measured.
             (chained, schedule.begins(next), reserved, next)
         };
-        self.signal.changed.notify_all();
+        self.signal.changed();
         self.drop_gone(gone);
         for mut attached in dropped {
             attached.operator.discard(&self.shared.credit);
@@ -2310,7 +2481,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     schedule.sealed(at, &[lane]);
                 }
             }
-            self.signal.changed.notify_all();
+            self.signal.changed();
             self.drop_gone(gone);
         }
         for &lane in &chained {
@@ -2433,7 +2604,7 @@ pub fn run_in<W: World>(
     let spills = engine_allocation::collect_vec(lanes.iter().map(|lane| lane.erased.spills()))?;
     let signal = Arc::new(Signal {
         schedule: Mutex::new(Schedule::new(segments.len(), spills)?),
-        changed: Condvar::new(),
+        board: Board::default(),
         stopped: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
     });

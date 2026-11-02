@@ -22,12 +22,12 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
+dashboard-series.workspace = true
 dashboard-text.workspace = true
+dashboard-world.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
-store = { path = "../store" }
 ts-rs = "11.1"
-zstd = "0.13"
 
 [dev-dependencies]
 mimalloc.workspace = true

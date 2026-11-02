@@ -21,6 +21,9 @@
 //! otherwise `<tag>_<ideology group>_party`, then with the party tag's
 //! positive original reference, then the
 //! ideology group's own name. [`dashboard_text::party_names::party_key`] follows it.
+//!
+//! Prepared as the `parties` series family ([`facts`], [`emit`]) and answered from its
+//! publication ([`query`]); the row scan below is kept as its oracle.
 
 use dashboard_base::{
     Source,
@@ -32,15 +35,16 @@ use dashboard_base::{
     products::country_measure::FixedRun, products::idea_history::IdeaCharacter,
     products::politics_content::politics_content,
 };
+use dashboard_text::party_names::party_key_for_tag_checked;
 #[cfg(any(test, feature = "test-support"))]
-use dashboard_text::metadata::validate_campaign;
 use dashboard_text::{
     identity,
+    metadata::validate_campaign,
     metadata::{CountryKeys, link_slot, tagged_countries},
-    party_names::party_key_for_tag_checked,
 };
 #[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
+#[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::TableId, rows::tables};
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::{frame::FrameDecoder, frame::ViewIdentity};
@@ -57,7 +61,13 @@ use std::{
 use ts_rs::TS;
 
 pub struct PartyHistory;
-pub mod prepared;
+pub mod emit;
+pub mod facts;
+pub mod query;
+pub mod served;
+
+/// The family's name: its preparation, coverage and publication.
+pub const NAME: &str = "parties";
 
 /// Decimal places of recorded popularity (a percentage).
 pub const POPULARITY_DECIMALS: u8 = 5;
@@ -66,6 +76,7 @@ pub const CACHED_BRANCHES: usize = 2;
 #[cfg(test)]
 const CACHED_COUNTRIES: usize = 8;
 
+#[cfg(any(test, feature = "test-support"))]
 fn party_popularity(row: &replay_data::rows::PoliticalPartyRow) -> Option<(&str, i128)> {
     let token = std::str::from_utf8(&row.token)
         .ok()
@@ -246,6 +257,7 @@ pub fn recorded_party_key(
         })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 type PartyNamingRows = BTreeMap<
     u32,
     (
@@ -279,6 +291,7 @@ pub fn party_naming_rows(
         .collect()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn recorded_party_tags(
     decoded: &replay_frame::frame::DecodedFrame,
     raw: u32,
@@ -425,6 +438,7 @@ impl ScannedPartyBranch {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default, Serialize, Deserialize)]
 struct CountryScan {
     result: ScannedParties,
@@ -442,6 +456,7 @@ struct CountryScan {
     open_parties: BTreeSet<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct CountryRead<'a> {
     pub country: &'a replay_data::rows::CountryRow,
     slot: u32,
@@ -450,6 +465,7 @@ struct CountryRead<'a> {
     politics: Option<&'a replay_data::rows::PoliticsRow>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl CountryScan {
     #[cfg(any(test, feature = "test-support"))]
     pub fn extend(&mut self, hour: i32) {
@@ -737,7 +753,8 @@ impl CountryScan {
     }
 }
 
-/// The existing topic observation, shared by its oracle walk and preparation.
+/// The row oracle's topic observation.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default, Serialize, Deserialize)]
 struct TopicScan {
     countries: BTreeMap<String, CountryScan>,
@@ -752,6 +769,7 @@ struct TopicScan {
     removed: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct TopicInputs {
     keys: Option<CountryKeys>,
@@ -775,6 +793,7 @@ struct TopicInputs {
     script_users: BTreeMap<u32, BTreeSet<String>>,
     duplicates: BTreeSet<String>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl TopicInputs {
     fn refresh(
         &mut self,
@@ -1093,6 +1112,7 @@ impl TopicInputs {
         dirty
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl TopicScan {
     fn observe(
         &mut self,
@@ -1523,6 +1543,7 @@ impl Product for PartyHistory {
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = PartyHistoryReply;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
 
     fn types() -> Vec<String> {
         vec![
@@ -1710,5 +1731,7 @@ fn reply(
     })
 }
 
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(test)]
 mod tests;

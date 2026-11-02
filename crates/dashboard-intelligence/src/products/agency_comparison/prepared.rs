@@ -16,6 +16,9 @@ pub struct Prepared {
     scan: ScannedAgencies,
     values: Accumulator,
     keys: BTreeMap<String, u64>,
+    /// Each tag's agency and roster keys of `keys`, as first asked.
+    #[serde(skip)]
+    tag_keys: HashMap<String, [u64; 2]>,
     first: Option<i32>,
     last: Option<i32>,
     active: BTreeMap<String, Identity>,
@@ -118,11 +121,20 @@ impl Prepared {
             }
             let unresolved = self.scan.unresolved_rows;
             let untext = self.scan.untext_tags;
-            let (active, per_read, unsupported) = self.scan.observe_frame_countries(
+            // The countries resolve the tags they resolved at the last observation, which every
+            // hour that changed them observes.
+            let fresh = countries.changed || self.first.is_none();
+            let mut active = if fresh {
+                BTreeMap::new()
+            } else {
+                std::mem::take(&mut self.active)
+            };
+            let (per_read, unsupported) = self.scan.observe_frame_countries(
                 frame,
                 source.replay_ref(),
                 countries,
                 Some(changes),
+                (&mut active, fresh),
             )?;
             self.unresolved_per_hour = self.scan.unresolved_rows - unresolved - per_read;
             self.untext_per_hour = self.scan.untext_tags - untext;
@@ -130,7 +142,7 @@ impl Prepared {
                 self.unresolved_per_read = per_read;
                 self.unsupported_per_read = unsupported;
             }
-            Some(active)
+            Some((active, fresh))
         } else {
             self.scan.unresolved_rows += self.unresolved_per_hour;
             self.scan.untext_tags += self.untext_per_hour;
@@ -177,8 +189,12 @@ impl Prepared {
         if read == Some(frame.hour) {
             self.values.event(OPERATIVE_READ, frame.hour, &frame.hour)?;
         }
-        if let Some(active) = active {
-            for tag in self.active.keys().filter(|tag| !active.contains_key(*tag)) {
+        if let Some((active, fresh)) = active {
+            for tag in self
+                .active
+                .keys()
+                .filter(|tag| fresh && !active.contains_key(*tag))
+            {
                 for field in ["agency", "roster"] {
                     if let Some(&key) = self.keys.get(&series::field_key(tag, field)) {
                         self.values.observe(key, frame.hour, None, false);
@@ -191,12 +207,24 @@ impl Prepared {
                     .tracks
                     .get_mut(tag)
                     .expect("observed agency track");
-                let name = series::field_key(tag, "agency");
-                let next = u64::try_from(self.keys.len())
-                    .ok()
-                    .and_then(|len| len.checked_add(2))
-                    .ok_or_else(|| io::Error::other("Too many agency series"))?;
-                let key = *self.keys.entry(name).or_insert(next);
+                let [key, roster_key] = match self.tag_keys.get(tag.as_str()) {
+                    Some(&keys) => keys,
+                    None => {
+                        let mut keys = [0; 2];
+                        for (key, field) in keys.iter_mut().zip(["agency", "roster"]) {
+                            let next = u64::try_from(self.keys.len())
+                                .ok()
+                                .and_then(|len| len.checked_add(2))
+                                .ok_or_else(|| io::Error::other("Too many agency series"))?;
+                            *key = *self
+                                .keys
+                                .entry(series::field_key(tag, field))
+                                .or_insert(next);
+                        }
+                        self.tag_keys.insert(tag.clone(), keys);
+                        keys
+                    }
+                };
                 let entry = track
                     .entries
                     .last()
@@ -223,12 +251,7 @@ impl Prepared {
                     super::super::intelligence_prepared::work(|work| work.emitted += 1);
                     self.values.event(key, frame.hour, entry)?;
                 }
-                let name = series::field_key(tag, "roster");
-                let next = u64::try_from(self.keys.len())
-                    .ok()
-                    .and_then(|len| len.checked_add(2))
-                    .ok_or_else(|| io::Error::other("Too many agency series"))?;
-                let key = *self.keys.entry(name).or_insert(next);
+                let key = roster_key;
                 let roster = track
                     .rosters
                     .last()
@@ -335,7 +358,7 @@ pub fn query(
     let history = if params.selection.tags.is_empty() {
         None
     } else {
-        Some(super::super::intelligence_prepared::first_views::histories(
+        Some(super::super::intelligence_prepared::histories(
             source, context, store, key, branch, cancelled,
         )?)
     };
@@ -410,63 +433,3 @@ pub fn query(
 
 #[cfg(test)]
 mod tests;
-
-pub(crate) fn first_view(
-    source: &Source,
-    params: &Params,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-) -> io::Result<serde_json::Value> {
-    AgencyComparison::validate(&params.selection).map_err(dashboard_core::invalid)?;
-    let branch = params
-        .selection
-        .branch_id
-        .parse()
-        .map_err(|_| dashboard_core::invalid("Invalid agency branch"))?;
-    let first = params
-        .first_hour
-        .ok_or_else(|| dashboard_core::invalid("Missing agency day"))?;
-    let last = params.last_hour.unwrap_or(first);
-    let mut scan = ScannedAgencies::default();
-    let mut countries = super::super::operative_rows::CountryInputs::default();
-    super::super::intelligence_prepared::first_views::day(
-        source,
-        branch,
-        first,
-        last,
-        &[
-            TableId::Campaign,
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::IntelligenceAgencies,
-            TableId::AgencyUpgradeLevels,
-            TableId::LexicalTokens,
-            TableId::OperativeMemberships,
-        ],
-        cancelled,
-        |frame| {
-            countries.update(frame, None);
-            scan.observe_frame_countries(frame, source.replay_ref(), &countries, None)?;
-            if frame.hour < first {
-                for track in scan.tracks.values_mut() {
-                    if track.entries.len() > 1 {
-                        track.entries.drain(..track.entries.len() - 1);
-                    }
-                    if track.rosters.len() > 1 {
-                        track.rosters.drain(..track.rosters.len() - 1);
-                    }
-                }
-            }
-            Ok(())
-        },
-    )?;
-    serde_json::to_value(super::reply(
-        source,
-        &params.selection,
-        context,
-        cancelled,
-        &scan,
-        None,
-    )?)
-    .map_err(Into::into)
-}

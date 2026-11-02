@@ -86,6 +86,21 @@ impl<'a> Cache<'a> {
         );
         Ok(page)
     }
+    /// Reserves `bytes` of a reader's working memory, evicting the oldest unpinned pages until
+    /// they fit. Under the lock no page is added, so each round either fits or evicts one at
+    /// least, and it ends refused once no unpinned page is left.
+    pub(crate) fn reserve_evicting(&self, bytes: usize) -> io::Result<()> {
+        let mut inner = self.lock();
+        while self.budget.reserve(bytes).is_err() {
+            if !self.evict(&mut inner, bytes) {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "series byte admission exhausted",
+                ));
+            }
+        }
+        Ok(())
+    }
     /// Frees at least `bytes` (or an eighth of the cache) from the oldest unpinned pages.
     fn evict(&self, inner: &mut Inner, bytes: usize) -> bool {
         let mut unpinned: Vec<([u64; 3], u64)> = inner

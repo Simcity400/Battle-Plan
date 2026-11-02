@@ -1,10 +1,8 @@
 //! Every prepared family and recording-wide job, once: its identity, version,
-//! status rows, query suppliers, same-hour dependents, private reads,
-//! sections, tables, content and the backends able to prepare it.
+//! status rows, query suppliers, same-hour dependents and sections.
 
-use crate::products::{self, parts_race_prepared::Family as _};
+use crate::products;
 use dashboard_keyed::Observer as _;
-use replay_data::rows::TableId;
 use std::io;
 
 /// A prepared family's stable identity. Its spelling names the family's
@@ -34,22 +32,12 @@ impl FamilyId {
                 )
             })
     }
-}
 
-/// Whether preparing a family reads the recorded mod stack's content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Content {
-    Free,
-    Bound,
-}
-
-/// A family's same-hour state that a reader observes in the walk. While the
-/// family is prepared on its own and a reader is still in the walk, the walk
-/// keeps its own read under the reader's names (published, kept).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PrivateRead {
-    pub readers: &'static [FamilyId],
-    pub kept: &'static [(&'static str, &'static str)],
+    /// The family `spelling` names, or else the recording-wide job of that name, which a
+    /// native preparation runs among the families ([`super::native`]).
+    pub fn publisher(spelling: &str) -> io::Result<Self> {
+        Self::parse(spelling).or_else(|error| job(spelling).map(|job| Self(job.name)).ok_or(error))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,29 +54,18 @@ pub(crate) struct Descriptor {
     /// Products and series kinds whose replies read its pages and answer
     /// with its refusals.
     pub queries: &'static [&'static str],
-    /// Products that wait only for its own coverage while another backend
-    /// than the walk prepares it.
+    /// Products that wait only for its own coverage.
     pub gates: &'static [&'static str],
     /// Families observing its state in the same hour: its refusal refuses them.
     pub observers: &'static [FamilyId],
-    pub private: Option<PrivateRead>,
     /// The namespaces of every section it writes, by the names its writers
     /// build them from: its data, catalogues, continuation and its own reads
     /// of others' state ([`super::plan::Plan::owner`]).
     pub sections: &'static [&'static str],
-    /// Whether the hourly walk can prepare it.
-    pub walk: bool,
-    /// Whether the segment driver prepares it: its operators read the shared walk world and
-    /// its emit writes its series publication ([`dashboard_base::prepared::roots`]), which
-    /// its queries read. The hourly walk never observes it.
-    pub segments: bool,
     /// Whether a native preparation prepares it ahead of every other family, in a run of its own
     /// over the whole recording that decodes its tables alone: a cheap family the interface
     /// reads at any hour, whose last hours do not wait for the union run to reach them.
     pub ahead: bool,
-    /// The tables the hourly walk's stream decodes every hour for it.
-    pub walk_tables: &'static [&'static [TableId]],
-    pub content: Content,
 }
 
 /// A family with nothing but its name.
@@ -101,42 +78,24 @@ pub(crate) const fn family(name: &'static str) -> Descriptor {
         queries: &[],
         gates: &[],
         observers: &[],
-        private: None,
         sections: &[],
-        walk: false,
-        segments: false,
         ahead: false,
-        walk_tables: &[],
-        content: Content::Free,
     }
 }
 
-/// Where a recording-wide job runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Runner {
-    /// The hourly walk runs it with every accepted hour.
-    Walk,
-    /// It runs on a thread of its own beside the families and publishes
-    /// through their group commits, with coverage pages of its own.
-    Beside,
-}
-
-/// Recording-wide work outside the family registry: its failure stops
-/// preparation rather than refusing a branch. A job with a status row
-/// reports to the row of its name.
+/// Recording-wide work outside the family registry. A native recording's run prepares it
+/// among the families when it has a native backend ([`super::native`]), with coverage pages
+/// of its own; it is refused by name otherwise. A job with a status row reports to the row of
+/// its name.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Job {
     pub name: &'static str,
     /// As a family's [`Descriptor::version`].
     pub version: u32,
-    pub runner: Runner,
     /// Products that wait only for its coverage.
     pub gates: &'static [&'static str],
     /// The namespaces of its sections and of its private fact columns.
     pub sections: &'static [&'static str],
-    /// The tables the hourly walk's stream decodes every hour for it.
-    pub tables: &'static [&'static [TableId]],
-    pub content: Content,
 }
 
 /// A product whose replies read the pages of several families up to the
@@ -161,57 +120,64 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["air-missions"],
         queries: &["air-missions"],
         gates: &["air-missions"],
-        sections: &[products::air_missions::AirMissionsObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("air-missions")
     },
     Descriptor {
         status: &["air-statistics"],
         queries: &["air-statistics"],
         gates: &["air-statistics"],
-        sections: &[products::air_statistics::AirStatisticsObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("air-statistics")
     },
     Descriptor {
         status: &["regional-weather"],
         queries: &["regional-weather"],
         gates: &["regional-weather"],
-        sections: &[products::regional_weather::block::Observer::NAME],
-        content: Content::Bound,
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("regional-weather")
     },
     Descriptor {
         status: &["minefields"],
         queries: &["minefields"],
         gates: &["minefields"],
-        sections: &[products::minefields::MinefieldsObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("minefields")
     },
     Descriptor {
         status: &["naval-supremacy"],
         queries: &["naval-supremacy"],
         gates: &["naval-supremacy"],
-        sections: &[products::naval_supremacy::NavalSupremacyObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("naval-supremacy")
     },
     Descriptor {
         status: &["doctrine-mastery"],
         queries: &["doctrine-mastery"],
         gates: &["doctrine-mastery"],
-        sections: &[products::doctrine_mastery::DoctrineMasteryObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("doctrine-mastery")
     },
     Descriptor {
         status: &["occupation-reserve"],
         queries: &["occupation-reserve-manpower"],
         gates: &["occupation-reserve-manpower"],
-        sections: &[products::occupation_reserve::OccupationReserveObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("occupation-reserve")
     },
     Descriptor {
         status: &["intel-network-coverage"],
         queries: &["intel-network-coverage"],
         gates: &["intel-network-coverage"],
-        sections: &[products::intel_coverage::IntelCoverageObserver::NAME],
+        // 2: the scan's runs on the segment driver, published as a series root.
+        version: 2,
         ..family("intel-network-coverage")
     },
     Descriptor {
@@ -220,7 +186,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["naval-repairs"],
         // 2: day events on the segment driver, published as a series root.
         version: 2,
-        segments: true,
         ..family("naval-repairs")
     },
     Descriptor {
@@ -229,7 +194,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["naval-refits"],
         // 2: day events on the segment driver, published as a series root.
         version: 2,
-        segments: true,
         ..family("naval-refits")
     },
     // Interactive products read it hour by hour through its coverage; `country-facts` whole.
@@ -242,8 +206,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // 2: facts on the segment driver, published as a series root, each run's flag chosen in
         // the recorded mod stack.
         version: 2,
-        segments: true,
-        content: Content::Bound,
         ..family(products::style_runs::NAME)
     },
     Descriptor {
@@ -252,17 +214,14 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &[crate::products::division_equipment::history::QUERY],
         // 2: per-division parts on the segment driver, published as a series root.
         version: 2,
-        segments: true,
-        content: Content::Bound,
         ..family("division-equipment")
     },
     Descriptor {
         status: &["faction-state"],
         queries: &["faction-state"],
         gates: &["faction-state"],
-        // Each faction's goals are a catalogue of their own.
-        sections: &[products::faction_state::prepared::FAMILY, "faction-goals"],
-        content: Content::Bound,
+        // 2: lanes on the segment driver, published as a series root.
+        version: 2,
         ..family("faction_state")
     },
     Descriptor {
@@ -271,7 +230,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["diplomacy-state"],
         // 2: facts on the segment driver, published as a series root.
         version: 2,
-        segments: true,
         ..family("diplomacy_state")
     },
     Descriptor {
@@ -289,8 +247,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "focus-order-page",
             "focus-completions",
         ],
-        sections: &["focus"],
-        walk: true,
+        // 2: orders, progress and completions on the segment driver, published as a series root.
+        version: 2,
         ..family("focus")
     },
     Descriptor {
@@ -312,20 +270,18 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
         ],
-        walk: true,
         version: 2,
         ..family("production")
     },
     Descriptor {
         status: &["country-measure"],
         queries: &["country-measure", "scoreboard"],
-        sections: &["measure"],
-        walk: true,
-        walk_tables: &[crate::prepared_measure::TABLES],
-        ..family("measure")
+        gates: &["country-measure"],
+        // 2: balances on the segment driver, published as a series root.
+        version: 2,
+        ..family(products::country_balances::NAME)
     },
-    // Territory's owned-state observation is the only driver of the identity
-    // history; the feed observes it, and these queries read it through
+    // The feed observes the identity history, and these queries read it through
     // `country_history::prepared_branch_histories`.
     Descriptor {
         status: &["country-identities"],
@@ -345,14 +301,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "operatives-roster",
         ],
         gates: &[crate::products::country_history::IDENTITIES_PRODUCT],
-        observers: &[TERRITORY, EVENT_FEED],
-        // The feed makes its own read of the history prepared on its own.
-        private: Some(PrivateRead {
-            readers: &[TERRITORY],
-            kept: &[("country-identities", "territory-identities")],
-        }),
+        observers: &[EVENT_FEED],
         sections: &["country-identities"],
-        walk: true,
         ..family("identities")
     },
     Descriptor {
@@ -361,26 +311,22 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["volunteers-expeditionaries"],
         // 2: facts on the segment driver, published as a series root.
         version: 2,
-        segments: true,
         ..family("army")
     },
     Descriptor {
         status: &["air-force-size"],
         queries: &["air-force-size", "scoreboard"],
         gates: &["air-force-size"],
-        // The parts race names every section of the air force by it.
-        sections: &[products::air_force::prepared::Air::NAME],
-        walk: true,
-        content: Content::Bound,
+        // 2: wings on the segment driver, published as a series root.
+        version: 2,
         ..family("air")
     },
     Descriptor {
         status: &["navy-size"],
         queries: &["navy-size", "scoreboard"],
         gates: &["navy-size"],
-        sections: &[products::navy::prepared::Navy::NAME],
-        walk: true,
-        content: Content::Bound,
+        // 2: ships on the segment driver, published as a series root.
+        version: 2,
         ..family("navy")
     },
     Descriptor {
@@ -388,14 +334,13 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["country-nukes", "scoreboard", "event-feed"],
         // 2: stockpiles on the segment driver, published as a series root.
         version: 2,
-        segments: true,
         ..family("nukes")
     },
     Descriptor {
         status: &["country-factories"],
         queries: &["country-factories", "scoreboard", "faction-totals"],
-        sections: &["factories"],
-        walk: true,
+        // 2: values on the segment driver, published as a series root.
+        version: 2,
         ..family("factories")
     },
     Descriptor {
@@ -403,7 +348,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["dockyard-spending"],
         gates: &["dockyard-spending"],
         sections: &["dockyard-repairs"],
-        walk: true,
+        // 2: the repair census on the segment driver, its pages published as the walk's were.
+        version: 2,
         ..family("repairs")
     },
     Descriptor {
@@ -411,8 +357,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["supply-health"],
         // 2: facts on the segment driver, published as a series root.
         version: 2,
-        segments: true,
-        content: Content::Bound,
         ..family("supply")
     },
     Descriptor {
@@ -429,43 +373,29 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         // 2: snapshot events on the segment driver, published as a series root.
         version: 2,
-        segments: true,
-        content: Content::Bound,
         ..family("stockpile")
     },
-    // Air superiority reads the groups in the same hour; prepared on its own,
-    // it makes that read itself.
+    // Air superiority reads the groups in the same hour.
     Descriptor {
         status: &["country-groups"],
         queries: &["country-groups", "faction-totals", "event-feed"],
         gates: &["country-groups"],
         observers: &[AIR_SUPERIORITY],
-        private: Some(PrivateRead {
-            readers: &[AIR_SUPERIORITY],
-            kept: &[
-                ("country-groups", "air-superiority-groups"),
-                ("country-group-changes", "air-superiority-group-changes"),
-            ],
-        }),
         sections: &[
             "country-groups",
             "country-group-changes",
             "country-group-state",
         ],
-        walk: true,
-        content: Content::Bound,
+        // 2: an unchanged hour no longer repeats the last hour's boundary refusals.
+        version: 2,
         ..family("groups")
     },
     Descriptor {
         status: &["military-air-ledger"],
         queries: &["military-air-ledger"],
         gates: &["military-air-ledger"],
-        sections: &[
-            "military-air-ledger",
-            "military-air-losses",
-            "military-bombing",
-        ],
-        walk: true,
+        // 2: events on the segment driver, published as a series root.
+        version: 2,
         ..family("air_ledger")
     },
     Descriptor {
@@ -473,17 +403,16 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["air-aces", "air-ace-portraits"],
         gates: &["air-aces", "air-ace-portraits"],
         sections: &["air-aces"],
-        walk: true,
-        content: Content::Bound,
+        // 2: on the segment driver, its pages published as the walk published them.
+        version: 2,
         ..family("aces")
     },
     Descriptor {
         status: &["raids"],
         queries: &["raids"],
         gates: &["raids"],
-        sections: &["raids"],
-        walk: true,
-        content: Content::Bound,
+        // 2: on the segment driver, published as a series root.
+        version: 2,
         ..family("raids")
     },
     Descriptor {
@@ -491,21 +420,15 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["air-superiority"],
         gates: &["air-superiority"],
         sections: &["air-superiority"],
-        walk: true,
-        content: Content::Bound,
         version: 2,
         ..family("air_superiority")
     },
     Descriptor {
         status: &["game-score"],
         queries: &["game-score"],
-        sections: &["game-score"],
-        walk: true,
-        walk_tables: &[
-            crate::products::game_score::SCORE_TABLES,
-            &installed_content_country_names::country_names::TABLES,
-        ],
-        content: Content::Bound,
+        gates: &["game-score"],
+        // 2: scores on the segment driver, published as a series root.
+        version: 2,
         ..family("game_score")
     },
     Descriptor {
@@ -520,35 +443,29 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "construction-log-manifest",
             "construction-spending",
         ],
-        sections: &["construction"],
-        walk: true,
-        content: Content::Bound,
+        // 2: projects and spending on the segment driver, published as a series root.
+        version: 2,
         ..family("construction")
     },
     Descriptor {
         status: &["resource-balance"],
         queries: &["resource-balance"],
-        sections: &[
-            "resource-balance",
-            "resource-deals",
-            "resource-known",
-            "resource-pools",
-            "resource-values",
-        ],
-        walk: true,
-        content: Content::Bound,
+        // Its replies wait on its own coverage, not the walk's.
+        gates: &["resource-balance"],
+        // 2: pools and deals on the segment driver, published as a series root.
+        version: 2,
         ..family("resources")
     },
     Descriptor {
         status: &["trade-flows"],
         queries: &["trade-flows"],
-        gates: &["trade-flows"],
-        sections: &["trade"],
-        walk: true,
-        content: Content::Bound,
+        // 2: flows on the segment driver, published as a series root.
+        version: 2,
         ..family("trade")
     },
     Descriptor {
+        // 2: battles on the segment driver, their pages published block by block.
+        version: 2,
         status: &["land-battles"],
         queries: &[
             "land-battles",
@@ -556,10 +473,13 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "land-battles-ranking",
             "land-battle-course",
         ],
+        gates: &[
+            "land-battles",
+            "land-battles-manifest",
+            "land-battles-ranking",
+            "land-battle-course",
+        ],
         sections: &["land-battle", "land-battles"],
-        walk: true,
-        walk_tables: &[&crate::products::land_battles::CENSUS_TABLES],
-        content: Content::Bound,
         ..family("land")
     },
     Descriptor {
@@ -584,16 +504,10 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "ships-sunk-battle-titles",
             "naval-losses",
         ],
-        sections: &[
-            "naval-battle",
-            "naval-battles",
-            "naval-loss",
-            "naval-losses",
-            "ships-sunk",
-            "sinking",
-        ],
-        walk: true,
-        content: Content::Bound,
+        // Battles' and ships sunk's window pages; naval losses publish on its series.
+        sections: &["naval-battle", "naval-battles", "ships-sunk", "sinking"],
+        // 2: on the segment driver, naval losses published as a series root.
+        version: 2,
         ..family("naval")
     },
     Descriptor {
@@ -610,53 +524,49 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "division-log-totals",
         ],
         sections: &["division-log"],
-        walk: true,
-        content: Content::Bound,
+        // 2: on the segment driver, its pages published as the walk published them.
+        version: 2,
         ..family("divisions")
     },
     Descriptor {
         status: &["subjects"],
         queries: &["subjects", "event-feed"],
         gates: &["subjects"],
-        sections: &["subjects", "subject-changes", "subject-state"],
-        walk: true,
+        // 2: relations on the segment driver, published as a series root.
+        version: 2,
         ..family("subjects")
     },
     Descriptor {
         status: &["autonomy"],
         queries: &["autonomy"],
-        sections: &["autonomy"],
-        walk: true,
-        walk_tables: &[crate::products::autonomy::TABLES],
+        // 2: scores and bands on the segment driver, published as a series root.
+        version: 2,
         ..family("autonomy")
     },
     Descriptor {
         status: &["world-tension"],
         queries: &["world-tension"],
-        gates: &["world-tension"],
-        sections: &["world-tension", "tension-series"],
-        walk: true,
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
         ..family("tension")
     },
     Descriptor {
         status: &["wars"],
         queries: &["wars"],
         gates: &["wars"],
-        sections: &["wars"],
-        walk: true,
-        content: Content::Bound,
-        // 2: memberships carry their orientation, and no resume points are published.
-        version: 2,
+        // 3: change inputs, counters and participation parts on the segment driver, published
+        // as a series root. 4: inputs and parts packed as only their own tables.
+        version: 4,
         ..family("wars")
     },
     Descriptor {
         status: &["idea-history"],
         queries: &["idea-history", "event-feed"],
         gates: &["idea-history"],
-        sections: &["idea-history", "idea-changes", "idea-state"],
-        walk: true,
-        content: Content::Bound,
-        ..family("ideas")
+        // 2: holdings on the segment driver, published as a series root; additions are
+        // classified as laws when read.
+        version: 2,
+        ..family(products::ideas::NAME)
     },
     Descriptor {
         status: &["event-feed"],
@@ -664,22 +574,22 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // The event-choice and decision lists read the feed's own facts alone.
         gates: &["event-choices", "decisions"],
         sections: &["event-feed"],
-        walk: true,
         ..family("event_feed")
     },
     Descriptor {
         status: &["party-history"],
         queries: &["party-history"],
         gates: &["party-history"],
-        sections: &["party-history", "party-ruling", "party-series"],
-        walk: true,
-        ..family("parties")
+        // 2: parties on the segment driver, published as a series root.
+        version: 2,
+        ..family(products::party_history::NAME)
     },
     Descriptor {
         status: &["fuel-branches"],
         queries: &["fuel-branches"],
         gates: &[crate::products::fuel_branches::QUERY],
-        sections: &[products::fuel_branches::FAMILY],
+        // 2: consumers on the segment driver, published as a series root.
+        version: 2,
         ..family("fuel_branches")
     },
     Descriptor {
@@ -689,26 +599,26 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::products::market::HISTORY,
             crate::products::market::LEDGER,
         ],
-        sections: &[products::market::FAMILY],
         // 2: a row whose buyer or receiver has no identity stands, those hours dated.
-        version: 2,
+        // 3: on the segment driver, published as a series root; refusals count the hours held.
+        version: 3,
         ..family("market")
     },
     Descriptor {
         status: &["lend-lease-balance"],
         queries: &["lend-lease-balance"],
         gates: &[crate::products::lend_lease_balance::QUERY],
-        sections: &[products::lend_lease_balance::FAMILY],
+        // 2: histories on the segment driver, published as a series root.
+        version: 2,
         ..family("lend_lease_balance")
     },
     Descriptor {
         status: &["production-catalogue"],
         queries: &["production-catalogue"],
         gates: &[crate::products::production_catalogue::QUERY],
-        sections: &[products::production_catalogue::FAMILY],
-        // 2: a licence whose licensor has no identity stands; one with no licensee's leaves
-        // the roster unknown.
-        version: 2,
+        // 3: its domains on the segment driver, published as a series root; each refusal
+        // counted per hour it held, its reason without the hour.
+        version: 3,
         ..family("production_catalogue")
     },
     Descriptor {
@@ -716,16 +626,17 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["convoy-health"],
         gates: &[crate::products::convoy_health::QUERY],
         sections: &[products::convoy_health::FAMILY],
+        // 2: the keyed census on the segment driver, its pages published as the walk's were.
+        version: 2,
         ..family("convoys")
     },
     Descriptor {
         status: &["politics-state"],
-        queries: &["politics-state-history", "civil-wars"],
+        queries: &["politics-state-history", "civil-wars", "country-people"],
         gates: &[crate::products::politics_state::history::QUERY],
-        // Its values, and its catalogue by the family's name.
-        sections: &["politics-state", products::politics_state::history::FAMILY],
-        // 2: refused election eligibility dated per holder.
-        version: 2,
+        // 3: its parts on the segment driver, published as a series root; each refusal counted
+        // per hour it held.
+        version: 3,
         ..family("politics_state")
     },
     Descriptor {
@@ -733,8 +644,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["unit-leaders"],
         gates: &["unit-leaders"],
         sections: &["unit-leaders"],
-        walk: true,
-        content: Content::Bound,
         ..family("leaders")
     },
     Descriptor {
@@ -744,18 +653,16 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // 2: its measures as facts on the segment driver, published as a series root; its parts
         // a family of their own.
         version: 2,
-        segments: true,
         ..family("stability")
     },
-    // Stability's parts name a read's characters as that read's hour named them, which a
-    // segment's operator cannot see before its first hour: they stay a walked family.
     Descriptor {
         status: &["stability-parts"],
         queries: &["stability-parts"],
         gates: &["stability-parts"],
-        sections: &["parts"],
-        version: 1,
-        walk: true,
+        // 2: parts on the segment driver, published as a series root; a read's characters
+        // named from the names its own hour handed on.
+        // 3: each part's names published as an event of its own, where they change.
+        version: 3,
         ..family("parts")
     },
     // Its series queries route by the family kind `country-experience`.
@@ -763,8 +670,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["country-experience"],
         queries: &["country-experience"],
         gates: &["country-experience"],
-        sections: &["experience"],
-        walk: true,
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
         ..family("experience")
     },
     Descriptor {
@@ -773,8 +680,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["politics-ledger"],
         // 2: facts on the segment driver, published as a series root.
         version: 2,
-        segments: true,
-        content: Content::Bound,
         ..family("politics_ledger")
     },
     Descriptor {
@@ -784,19 +689,18 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // 2: facts on the segment driver, published as a series root.
         // 3: the detail products' recipients and demand packs published with it.
         version: 3,
-        segments: true,
         ..family("fuel")
     },
+    // Totals, ranks and regions on the segment driver, the native owned-state counter with them.
     Descriptor {
         status: &["territory"],
         queries: &["territory", "scoreboard", "faction-totals"],
-        sections: &["territory"],
-        walk: true,
-        content: Content::Bound,
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
         ..family("territory")
     },
-    // The window pages and manifest, and the trend's series by the family
-    // kind `occupation-trend` (whose query also waits for the identities).
+    // The windows and manifest, and the trend's series by the family kind
+    // `occupation-trend` (whose query also waits for the identities).
     Descriptor {
         status: &["occupation"],
         queries: &[
@@ -809,9 +713,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "occupied-states-manifest",
             "occupation-trend",
         ],
-        sections: &["occupation", "occupied-states"],
-        walk: true,
-        content: Content::Bound,
+        // 2: on the segment driver, published as a series root.
+        version: 2,
         ..family("occupation")
     },
     Descriptor {
@@ -843,8 +746,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "operative-placements",
             "operatives-roster",
         ],
-        walk: true,
-        content: Content::Bound,
+        // 2: its observers on the segment driver, their pages published as the walk did.
+        version: 2,
         ..family("intelligence")
     },
     // Its series and events route by the family kind `research`.
@@ -852,18 +755,17 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["research"],
         queries: &["research"],
         gates: &["research"],
-        sections: &["research"],
         // 2: a read of no slots is a known empty slot set.
-        version: 2,
-        walk: true,
+        // 3: on the segment driver, published as a series root with its grants.
+        version: 3,
         ..family("research")
     },
     Descriptor {
         status: &["peace-deals"],
         queries: &["peace-deals"],
         gates: &["peace-deals"],
-        sections: &["peace-deals", "peace-state"],
-        walk: true,
+        // 2: conferences and outcomes on the segment driver, published as a series root.
+        version: 2,
         ..family("peace")
     },
     // The event feed reads the projects' published completions when asked,
@@ -872,12 +774,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["special-projects"],
         queries: &["special-projects", "event-feed"],
         gates: &["special-projects"],
-        sections: &[
-            "special-projects",
-            products::special_projects::prepared::completion_stream::FAMILY,
-        ],
-        walk: true,
-        content: Content::Bound,
+        // 2: observations and completions on the segment driver, published as a series root.
+        version: 2,
         ..family("projects")
     },
     // Its series queries route by the family kind `war-casualties`.
@@ -891,29 +789,21 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         gates: &["war-casualties", "casualty-pairs", "casualty-breakdown"],
         sections: &["casualty", "war-casualties"],
-        walk: true,
-        content: Content::Bound,
+        // 2: on the segment driver, its pages published as the walk published them.
+        version: 2,
         ..family("casualties")
     },
     Descriptor {
         status: &["equipment-losses"],
         queries: &["equipment-losses"],
         sections: &["equipment-loss"],
-        walk: true,
         ..family("equipment_losses")
-    },
-    // Native map pages, published with coverage but no status row or
-    // refusing query of their own.
-    Descriptor {
-        sections: &["map-pages"],
-        ..family("map-pages")
     },
     // Provinces' and states' names at hours: their name inputs as events on the segment driver.
     Descriptor {
         status: &["place-names"],
         queries: &["place-names"],
         gates: &["place-names"],
-        segments: true,
         ..family(products::place_names::NAME)
     },
     // A country's manpower view: its operands as runs on the segment driver.
@@ -921,7 +811,6 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["country-people"],
         queries: &["country-people"],
         gates: &["country-people"],
-        segments: true,
         ..family(products::country_people::NAME)
     },
 ];
@@ -931,42 +820,24 @@ pub(crate) static JOBS: &[Job] = &[
     Job {
         name: "map",
         version: 1,
-        runner: Runner::Walk,
         gates: &[],
-        sections: &["map.checkpoints", "map.gaps", "map.resume"],
-        tables: &[],
-        content: Content::Free,
-    },
-    Job {
-        name: "map-export",
-        version: 1,
-        runner: Runner::Walk,
-        gates: &[],
-        sections: &["map-export"],
-        tables: &[map_snow::TABLES],
-        content: Content::Bound,
+        sections: &[],
     },
     Job {
         name: "land-owners",
         version: 1,
-        runner: Runner::Walk,
         gates: &[],
         sections: &["land-owners"],
-        tables: &[crate::products::land_owners::TABLES],
-        content: Content::Bound,
     },
     Job {
         name: "production-lines",
         version: 1,
-        runner: Runner::Beside,
         gates: &[
             "production-lines",
             "production-line-detail",
             "production-line-breakdown",
         ],
         sections: products::production_lines::SECTIONS,
-        tables: &[],
-        content: Content::Bound,
     },
 ];
 
@@ -999,12 +870,41 @@ pub(crate) static QUERIES: &[Query] = &[
         suppliers: &[FamilyId::new("nukes"), IDENTITIES],
     },
     Query {
+        product: "autonomy",
+        suppliers: &[FamilyId::new("autonomy"), IDENTITIES],
+    },
+    Query {
         product: "supply-health",
         suppliers: &[FamilyId::new("supply"), IDENTITIES],
     },
     Query {
         product: "army-size",
         suppliers: &[FamilyId::new("army"), IDENTITIES],
+    },
+    Query {
+        product: "air-force-size",
+        suppliers: &[FamilyId::new("air"), IDENTITIES],
+    },
+    Query {
+        product: "navy-size",
+        suppliers: &[FamilyId::new("navy"), IDENTITIES],
+    },
+    // Every family with a scoreboard column, and the identities naming its rows.
+    Query {
+        product: "scoreboard",
+        suppliers: &[
+            FamilyId::new("air"),
+            FamilyId::new("army"),
+            FamilyId::new("casualties"),
+            FamilyId::new("factories"),
+            IDENTITIES,
+            FamilyId::new("measure"),
+            FamilyId::new("navy"),
+            FamilyId::new("nukes"),
+            FamilyId::new("production"),
+            FamilyId::new("stability"),
+            TERRITORY,
+        ],
     },
     Query {
         product: "equipment-losses",
@@ -1032,6 +932,14 @@ pub(crate) static QUERIES: &[Query] = &[
         product: <crate::products::faction_totals::FactionTotals as crate::products::Product>::KEY,
         suppliers: &[GROUPS, IDENTITIES, TERRITORY],
     },
+    // A country's manpower view with its holder's elections and exiles.
+    Query {
+        product: "country-people",
+        suppliers: &[
+            FamilyId::new(products::country_people::NAME),
+            FamilyId::new("politics_state"),
+        ],
+    },
     // Civil-war lists with the feed's annexations as outcome evidence.
     Query {
         product: "civil-wars",
@@ -1049,6 +957,16 @@ pub(crate) static QUERIES: &[Query] = &[
             FamilyId::new("nukes"),
             FamilyId::new("projects"),
         ],
+    },
+    // Contributors named through the identity history up to their coverage.
+    Query {
+        product: "world-tension",
+        suppliers: &[FamilyId::new("tension"), IDENTITIES],
+    },
+    // Named through the identity history up to their coverage.
+    Query {
+        product: "trade-flows",
+        suppliers: &[FamilyId::new("trade"), IDENTITIES],
     },
 ];
 
@@ -1158,7 +1076,7 @@ pub(crate) fn coverage_owner(section: &str) -> Option<&str> {
     dashboard_base::prepared::coverage::family_of(section).map(|(name, _)| name)
 }
 
-/// A family's continuation, which the walk keeps in its branch state.
+/// A family's continuation, which it takes up again from.
 pub(crate) fn continuation_section(family: &str, branch: u64) -> String {
     format!("{family}{CONTINUATION}{branch}")
 }
@@ -1171,18 +1089,9 @@ pub(crate) fn continuation_owner(section: &str) -> Option<&str> {
     digits(branch).then_some(name)
 }
 
-/// The hourly walk's own sections of a branch: its coverage and its state.
-pub(crate) const WALK: &[&str] = &["preparation-coverage-", "preparation-branch-"];
-
-/// Sections only the commit coordinator writes: the checkpoint and the
-/// versions published with it, a native preparation's plan mark, the map
-/// binding, the side-work roster and the recording's metadata.
+/// Sections only the commit coordinator writes: the plan mark and the recording's metadata.
 pub(crate) const COORDINATOR: &[&str] = &[
-    "preparation-checkpoint-v1",
-    dashboard_base::prepared::coverage::VERSIONS,
     dashboard_base::prepared::coverage::PLAN,
-    "preparation-map-progress-v1",
-    "preparation-side-work-v1",
     "source-metadata-v1",
     "source-metadata-refusals-v1",
 ];
@@ -1191,8 +1100,3 @@ fn digits(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// Whether `section` is one of the hourly walk's own sections of a branch.
-pub(crate) fn walk_owned(section: &str) -> bool {
-    WALK.iter()
-        .any(|prefix| section.strip_prefix(prefix).is_some_and(digits))
-}

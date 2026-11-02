@@ -1,6 +1,9 @@
 //! Independent retained Rocket totals within the shared branch walk.
 
-use super::{CostTotal, Entry, Identity, ProductionSpendingUnknown, Purpose, TagHistory, Total};
+use super::{
+    CostTotal, CountryHolders, Entry, Identity, ProductionSpendingUnknown, Purpose, Rows,
+    TagHistory, Total,
+};
 use crate::metadata::slot_read;
 use replay_data::{rows::RocketProductionOutputRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -9,6 +12,16 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
 };
+
+/// One hour of the Rocket output as the totals read it.
+pub(crate) struct RocketRead<'a> {
+    pub hour: i32,
+    /// Whether the output's read is dated at the hour.
+    pub read: bool,
+    /// Whether Countries, CountryLinks and the output hold every row.
+    pub complete: bool,
+    pub rows: Rows<'a, RocketProductionOutputRow>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Row {
@@ -57,6 +70,9 @@ pub(crate) struct RocketProduced {
     rows: HashMap<(u32, u64), Row>,
     owner_unknown: bool,
     delivery_owner_unknown: bool,
+    /// The last version a track's inventories took, where preparation versions them.
+    #[serde(default)]
+    version: u64,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
@@ -71,15 +87,18 @@ impl RocketProduced {
     }
 
     pub(crate) fn advance(&mut self, hour: i32) {
-        for tag in &self.active {
-            let track = self.tags.get_mut(tag).expect("active Rocket holder");
-            if let Some((_, at)) = &mut track.last {
-                *at = hour;
-            }
-            if let Some(at) = track.last_hours.last_mut() {
-                *at = hour;
-            }
-        }
+        super::each_track(
+            &mut self.tags,
+            self.active.iter().map(String::as_str),
+            |track| {
+                if let Some((_, at)) = &mut track.last {
+                    *at = hour;
+                }
+                if let Some(at) = track.last_hours.last_mut() {
+                    *at = hour;
+                }
+            },
+        );
     }
 
     pub fn observe(
@@ -87,31 +106,43 @@ impl RocketProduced {
         format: replay_data::format::FormatVersion,
         frame: &DecodedFrame,
     ) -> io::Result<()> {
-        let reads = frame
-            .complete::<tables::Countries>()
-            .ok()
-            .map(|rows| crate::products::territory::CountryReads::new(frame, rows));
-        self.observe_resolved(format, frame, reads.as_ref())
+        // The Rocket totals never count unnamed tags.
+        let reads = frame.complete::<tables::Countries>().ok().map(|rows| {
+            CountryHolders::read(
+                &crate::products::territory::CountryReads::new(frame, rows),
+                0,
+            )
+        });
+        let output = frame.complete::<tables::RocketProductionOutput>();
+        let read = RocketRead {
+            hour: frame.hour,
+            read: slot_read(
+                format,
+                &frame.metrics,
+                TableId::RocketProductionOutput,
+                frame.hour,
+            ),
+            complete: frame.complete::<tables::Countries>().is_ok()
+                && frame.complete::<tables::CountryLinks>().is_ok()
+                && output.is_ok(),
+            rows: Rows::Slice(output.unwrap_or(&[])),
+        };
+        self.observe_resolved(&read, reads.as_ref(), false)
     }
 
+    /// One hour's read of the output, its countries resolved as `reads`, present while
+    /// Countries is complete. `versioned`: each track's inventories take a new version, and
+    /// log their changed entries, wherever they change.
     pub(crate) fn observe_resolved(
         &mut self,
-        format: replay_data::format::FormatVersion,
-        frame: &DecodedFrame,
-        reads: Option<&crate::products::territory::CountryReads>,
+        input: &RocketRead<'_>,
+        reads: Option<&CountryHolders>,
+        versioned: bool,
     ) -> io::Result<()> {
-        let hour = frame.hour;
-        let read = slot_read(
-            format,
-            &frame.metrics,
-            TableId::RocketProductionOutput,
-            hour,
-        );
-        let (Ok(_), Ok(_), Ok(output)) = (
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
-            frame.complete::<tables::RocketProductionOutput>(),
-        ) else {
+        let hour = input.hour;
+        let read = input.read;
+        let output = input.rows;
+        if !input.complete {
             if read {
                 self.unread += 1;
             }
@@ -120,10 +151,10 @@ impl RocketProduced {
             });
             self.end_reads();
             return Ok(());
-        };
+        }
         let reads = reads.expect("resolved Rocket countries");
         let tagged: Vec<(String, Identity)> = reads
-            .holders()
+            .holders
             .iter()
             .filter_map(|(tag, holder)| {
                 holder.map(|(slot, id)| (tag.clone(), (slot, id, self.observation)))
@@ -207,7 +238,7 @@ impl RocketProduced {
             .map(|(_, identity)| (identity.0, *identity))
             .collect();
         let mut seen = BTreeSet::new();
-        for row in output {
+        for row in output.iter() {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.row_visits += 1;
@@ -222,7 +253,7 @@ impl RocketProduced {
             let producer = (row.country != 0)
                 .then(|| {
                     reads
-                        .slots()
+                        .slots
                         .get(&row.country)
                         .and_then(|slot| by_slot.get(slot))
                         .copied()
@@ -372,12 +403,26 @@ impl RocketProduced {
                     Some(false)
                 });
             track.last = Some((identity, hour));
+            let mut units_changed = track.taken.is_none_or(|(taken, _)| taken != identity);
+            let mut costs_changed = track
+                .cost_taken
+                .is_none_or(|(taken, _)| taken != identity);
+            if versioned && (units_changed || costs_changed) {
+                track.edits.replaced();
+            }
             let keys: std::collections::BTreeSet<_> =
                 track.current.keys().chain(units.keys()).copied().collect();
             for key in keys {
-                let value = units.get(&key).copied().unwrap_or_default();
-                if track.current.get(&key).copied().unwrap_or_default() != value {
+                let (before, now) = (track.current.get(&key), units.get(&key));
+                let value = now.copied().unwrap_or_default();
+                if before.copied().unwrap_or_default() != value {
                     track.changes.entry(key).or_default().push((sample, value));
+                }
+                if before != now {
+                    units_changed = true;
+                    if versioned {
+                        track.edits.note(key);
+                    }
                 }
             }
             let keys: std::collections::BTreeSet<_> = track
@@ -387,17 +432,35 @@ impl RocketProduced {
                 .copied()
                 .collect();
             for key in keys {
-                let value = costs.get(&key).copied().unwrap_or_default();
-                if track.cost_current.get(&key).copied().unwrap_or_default() != value {
+                let (before, now) = (track.cost_current.get(&key), costs.get(&key));
+                let value = now.copied().unwrap_or_default();
+                if before.copied().unwrap_or_default() != value {
                     track
                         .cost_changes
                         .entry(key)
                         .or_default()
                         .push((sample, value));
                 }
+                if before != now {
+                    costs_changed = true;
+                    if versioned {
+                        track.edits.note(key);
+                    }
+                }
             }
             track.current = units;
             track.cost_current = costs;
+            if versioned {
+                for (changed, taken) in [
+                    (units_changed, &mut track.taken),
+                    (costs_changed, &mut track.cost_taken),
+                ] {
+                    if changed {
+                        self.version += 1;
+                        *taken = Some((identity, self.version));
+                    }
+                }
+            }
         }
         Ok(())
     }

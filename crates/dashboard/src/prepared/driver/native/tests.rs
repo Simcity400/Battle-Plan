@@ -1,8 +1,8 @@
 use super::{
-    Commits, Ran, Walk, ahead_first,
+    Commits, Walk, Walks, ahead_first,
     backend::{Bound, Member, Native, Projected, Taken},
     content::{Once, load_all},
-    run_walk,
+    decoded, refuse,
     shape::Shape,
     status, taken, walk_all,
 };
@@ -10,14 +10,14 @@ use crate::prepared::{
     State as Phase,
     driver::{
         plan::{self, Backend, Plan},
-        publication::{Family, Publisher, Resume, Stage, Stopped},
+        publication::{Family, Own, Publisher, Resume, Stage, Stopped},
         registry::{self, Descriptor, FamilyId},
     },
     pipeline,
 };
 use dashboard_base::prepared::{
     gates,
-    roots::{Binding, Published},
+    roots::{Binding, Held, Published},
 };
 use dashboard_world::{Needs, World};
 use replay::{
@@ -121,8 +121,7 @@ fn opened(runs: &[(u64, i32, u32)]) -> (Recording, Vec<u8>) {
 /// [`opened`], a restart ending every `restart_units`th unit.
 fn opened_every(runs: &[(u64, i32, u32)], restart_units: u32) -> (Recording, Vec<u8>) {
     let (bytes, _) = fixtures::churned(runs, restart_units);
-    let mut recording = Recording::open(bytes.clone(), Limits::default()).unwrap();
-    recording.select(TABLES);
+    let recording = Recording::open(bytes.clone(), Limits::default()).unwrap();
     (recording, bytes)
 }
 
@@ -195,10 +194,11 @@ impl Projected for Fact {
     }
 }
 
-/// Every hour of `bytes` as one walk of the whole recording sees it, run after run.
+/// Every hour of `bytes` as one walk of the whole recording, decoding what a run of families
+/// reading [`TABLES`] decodes, sees it, run after run.
 fn reference(bytes: Vec<u8>) -> Vec<Fact> {
     let mut recording = Recording::open(bytes, Limits::default()).unwrap();
-    recording.select(TABLES);
+    recording.select(&decoded(TABLES.iter().copied()));
     let mut state = schema().and_then(State::new).unwrap();
     let mut seen = Vec::new();
     recording
@@ -217,8 +217,12 @@ enum Trip {
     Refuse(i32),
     /// Its emit refuses the hour's data.
     Reject(i32),
+    /// Its operator fails at the hour.
+    Break(i32),
     /// Its emit fails at the hour.
     Fail(i32),
+    /// Its flush fails publishing the hour.
+    Flush(i32),
     /// Its operator cancels the job at the hour.
     Cancel(i32),
 }
@@ -255,6 +259,9 @@ impl Operator<World> for Looking {
         match self.trip {
             Some(Trip::Refuse(at)) if at == hour.hour => {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "probe refused"));
+            }
+            Some(Trip::Break(at)) if at == hour.hour => {
+                return Err(io::Error::other("probe broke"));
             }
             Some(Trip::Cancel(at)) if at == hour.hour => {
                 self.cancelled.store(true, Ordering::SeqCst);
@@ -317,6 +324,14 @@ impl Native for Probe {
         _: Option<i32>,
         _: &AtomicBool,
     ) -> io::Result<()> {
+        if let Some(Trip::Flush(at)) = self.trip
+            && state.contains(&at)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "probe could not flush",
+            ));
+        }
         let hours: Vec<u8> = state.drain(..).flat_map(i32::to_le_bytes).collect();
         stage
             .pages()?
@@ -357,16 +372,17 @@ fn bind<'p>(
         .collect()
 }
 
-/// A run of `members` over `recording`, on `threads` workers with a window of `window`.
+/// A run of `members` over `recording` as preparation runs them ([`walk_all`]), on `threads`
+/// workers with a window of `window`: every member's last batch is committed as it ends.
 fn run(
     fixture: &Fixture,
-    recording: &Recording,
+    recording: &mut Recording,
     shape: &Shape,
     members: &mut [Box<dyn Member + '_>],
     (threads, window): (usize, usize),
     cancelled: &AtomicBool,
     commits: &Commits,
-) -> Ran {
+) -> Walks {
     let scratch = segments::Folder::new(fixture.root.join("spill")).unwrap();
     let walk = Walk {
         shape,
@@ -383,7 +399,25 @@ fn run(
         commits,
         progress: &mut || {},
     };
-    run_walk(recording, walk).unwrap()
+    walk_all(recording, 0, walk).unwrap()
+}
+
+/// Every page of `section` the fixture's store holds, in order.
+fn pages(fixture: &Fixture, section: &str) -> Vec<Vec<u8>> {
+    let count = fixture
+        .store
+        .range_count(&fixture.key, section)
+        .unwrap()
+        .unwrap_or(0);
+    (0..count)
+        .map(|range| {
+            let mut page = Vec::new();
+            if let Some(mut file) = fixture.store.read(&fixture.key, section, range).unwrap() {
+                io::Read::read_to_end(&mut file, &mut page).unwrap();
+            }
+            page
+        })
+        .collect()
 }
 
 /// The segments of `branch`.
@@ -393,20 +427,13 @@ fn segments_of(shape: &Shape, branch: u64) -> u64 {
         .count() as u64
 }
 
-/// Every member's last batch committed, as a run's end leaves them.
-fn settle(members: &mut [Box<dyn Member + '_>]) {
-    for member in members {
-        member.settle().unwrap();
-    }
-}
-
 /// One walk of each segment carries every family: each keeps every hour once, in the recording's
 /// order, with the statuses, sample hours and read and changed slots one walk of the whole
 /// recording shows, at segment boundaries as within them; and each publishes every branch whole.
 #[test]
 fn one_walk_of_each_segment_serves_every_family_each_hour_once() {
     let plan = test_plan();
-    let (recording, bytes) = opened(&RUNS);
+    let (mut recording, bytes) = opened(&RUNS);
     let shape = Shape::new(&recording).unwrap();
     let expected = reference(bytes);
     assert!(shape.len() > RUNS.len());
@@ -420,16 +447,17 @@ fn one_walk_of_each_segment_serves_every_family_each_hour_once() {
         let (alpha_kept, beta_kept) = (Arc::clone(&alpha.kept), Arc::clone(&beta.kept));
         let (publisher, resume) = fixture.open(plan, &["alpha", "beta"], &recording, &shape);
         let mut members = bind(&publisher, &resume, &shape, vec![alpha, beta]);
-        let ran = run(
+        let walks = run(
             &fixture,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             settings,
             &cancelled,
             &Commits::default(),
         );
-        assert!(!ran.cancelled);
+        let ran = &walks.ran;
+        assert!(!ran.cancelled && walks.failed.is_empty());
         assert_eq!(ran.stats.walks, shape.len(), "one walk a segment");
         assert_eq!((ran.stats.rewalked, ran.stats.derived), (0, 0));
         for outcome in ran.outcomes.iter().flatten() {
@@ -437,7 +465,6 @@ fn one_walk_of_each_segment_serves_every_family_each_hour_once() {
         }
         assert_eq!(*alpha_kept.lock().unwrap(), expected);
         assert_eq!(*beta_kept.lock().unwrap(), expected);
-        settle(&mut members);
         for name in ["alpha", "beta"] {
             for (&branch, extent) in shape.branches() {
                 let frontier = publisher
@@ -541,7 +568,7 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
     let plan = test_plan();
     let fixture = Fixture::new();
     let cancelled = Arc::new(AtomicBool::new(false));
-    let (recording, _) = opened(&RUNS);
+    let (mut recording, _) = opened(&RUNS);
     let shape = Shape::new(&recording).unwrap();
     {
         let (publisher, resume) = fixture.open(plan, &["alpha"], &recording, &shape);
@@ -554,14 +581,13 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
         let commits = Commits::default();
         run(
             &fixture,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             (4, 4),
             &cancelled,
             &commits,
         );
-        settle(&mut members);
     }
     {
         let (publisher, resume) = fixture.open(plan, &["alpha"], &recording, &shape);
@@ -576,17 +602,18 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
         let commits = Commits::default();
         let ran = run(
             &fixture,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             (4, 4),
             &cancelled,
             &commits,
-        );
+        )
+        .ran;
         assert_eq!(ran.stats.walks, 0);
         assert!(ran.outcomes[0].is_none());
     }
-    let (grown, bytes) = opened(&GROWN);
+    let (mut grown, bytes) = opened(&GROWN);
     let shape = Shape::new(&grown).unwrap();
     let (publisher, resume) = fixture.open(plan, &["alpha"], &grown, &shape);
     assert!(resume.again.is_empty());
@@ -595,14 +622,14 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
     let mut members = bind(&publisher, &resume, &shape, vec![probe]);
     let ran = run(
         &fixture,
-        &grown,
+        &mut grown,
         &shape,
         &mut members,
         (4, 4),
         &cancelled,
         &Commits::default(),
-    );
-    settle(&mut members);
+    )
+    .ran;
     let third: Vec<Fact> = reference(bytes)
         .into_iter()
         .filter(|fact| fact.branch == 3)
@@ -624,7 +651,7 @@ fn a_family_goes_on_only_where_its_publication_left_work() {
 #[test]
 fn a_refusal_ends_its_family_s_branch_there_by_name() {
     let plan = test_plan();
-    let (recording, bytes) = opened(&RUNS);
+    let (mut recording, bytes) = opened(&RUNS);
     let shape = Shape::new(&recording).unwrap();
     let expected = reference(bytes);
     // An hour inside the first branch's second segment.
@@ -640,17 +667,17 @@ fn a_refusal_ends_its_family_s_branch_there_by_name() {
         let (alpha_kept, beta_kept) = (Arc::clone(&alpha.kept), Arc::clone(&beta.kept));
         let (publisher, resume) = fixture.open(plan, &["alpha", "beta"], &recording, &shape);
         let mut members = bind(&publisher, &resume, &shape, vec![alpha, beta]);
-        let ran = run(
+        let walks = run(
             &fixture,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             (4, 4),
             &cancelled,
             &Commits::default(),
         );
-        settle(&mut members);
-        assert!(ran.outcomes[0].as_ref().unwrap().failure.is_none());
+        assert!(walks.failed.is_empty());
+        assert!(walks.ran.outcomes[0].as_ref().unwrap().failure.is_none());
         let first: Vec<Fact> = expected
             .iter()
             .filter(|fact| fact.branch != 1 || fact.hour < refused)
@@ -675,38 +702,175 @@ fn a_refusal_ends_its_family_s_branch_there_by_name() {
     }
 }
 
-/// A family whose emit fails fails alone: what it queued before stands, what it held since goes
-/// uncommitted, and the other family publishes every branch whole.
+/// A family that fails, in its operator, its emit, flushing its state, sealing its batch or
+/// committing it, fails alone: the other family keeps every hour and publishes every branch
+/// whole, and the run goes on. What the failing family committed before stands; on each branch
+/// it had not finished, it refuses from the first hour it left unpublished, by its name and with
+/// its own error, so no query of it waits on the run it left.
 #[test]
 fn a_failing_family_fails_alone() {
     let plan = test_plan();
-    let fixture = Fixture::new();
-    let (recording, _) = opened(&RUNS);
+    let (mut recording, bytes) = opened(&RUNS);
     let shape = Shape::new(&recording).unwrap();
-    let failing = shape.get(shape.len() - 1).first_hour;
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let alpha = Probe::new("alpha", Some(Trip::Fail(failing)), &cancelled);
-    let beta = Probe::new("beta", None, &cancelled);
-    let (publisher, resume) = fixture.open(plan, &["alpha", "beta"], &recording, &shape);
-    let mut members = bind(&publisher, &resume, &shape, vec![alpha, beta]);
-    let ran = run(
-        &fixture,
-        &recording,
-        &shape,
-        &mut members,
-        (4, 4),
-        &cancelled,
-        &Commits::default(),
-    );
-    settle(&mut members);
-    let failure = ran.outcomes[0].as_ref().unwrap().failure.as_ref().unwrap();
-    assert_eq!(failure.at, shape.len() - 1);
-    assert!(ran.outcomes[1].as_ref().unwrap().failure.is_none());
-    let alpha = publisher.committed(FamilyId::new("alpha"), 1);
-    assert!(alpha.is_none_or(|published| !published.frontier.terminal()));
-    for &branch in shape.branches().keys() {
-        let beta = publisher.committed(FamilyId::new("beta"), branch).unwrap();
-        assert!(beta.frontier.complete);
+    let expected = reference(bytes);
+    let last = shape.len() - 1;
+    let failing = shape.get(last).first_hour;
+    let (alpha_id, beta_id) = (FamilyId::new("alpha"), FamilyId::new("beta"));
+    let mark = status::mark(plan, &shape);
+    // The seal and the commit fail at alpha's third batch, partway through the first branch.
+    for (stage, trip, own, at, error) in [
+        (
+            "operator",
+            Some(Trip::Break(failing)),
+            None,
+            Some(last),
+            "probe broke",
+        ),
+        (
+            "emit",
+            Some(Trip::Fail(failing)),
+            None,
+            Some(last),
+            "probe failed",
+        ),
+        (
+            "flush",
+            Some(Trip::Flush(failing)),
+            None,
+            Some(last),
+            "probe could not flush",
+        ),
+        (
+            "seal",
+            None,
+            Some(Own::Seal),
+            None,
+            "Simulated seal failure",
+        ),
+        (
+            "commit",
+            None,
+            Some(Own::Adopt),
+            None,
+            "Simulated adoption failure",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let alpha = Probe::new("alpha", trip, &cancelled);
+        let beta = Probe::new("beta", None, &cancelled);
+        let beta_kept = Arc::clone(&beta.kept);
+        let (publisher, resume) = fixture.open(plan, &["alpha", "beta"], &recording, &shape);
+        publisher
+            .coordinate(|writer| status::coordinate(writer, plan, &shape, &mark))
+            .unwrap();
+        if let Some(own) = own {
+            publisher.fail_family(alpha_id, own, 2);
+        }
+        let mut members = bind(&publisher, &resume, &shape, vec![alpha, beta]);
+        let mut walks = run(
+            &fixture,
+            &mut recording,
+            &shape,
+            &mut members,
+            (4, 4),
+            &cancelled,
+            &Commits::default(),
+        );
+        drop(members);
+        assert!(!walks.ran.cancelled, "{stage}");
+        let failure = walks.ran.outcomes[0].as_ref().unwrap().failure.as_ref();
+        if let Some(at) = at {
+            assert_eq!(failure.map(|failure| failure.at), Some(at), "{stage}");
+        }
+        assert!(
+            walks.ran.outcomes[1].as_ref().unwrap().failure.is_none(),
+            "{stage}"
+        );
+        assert_eq!(
+            walks.failed.keys().copied().collect::<Vec<_>>(),
+            [alpha_id],
+            "{stage}"
+        );
+        let why = walks.failed[&alpha_id].clone();
+        assert!(why.contains(error), "{stage}: {why}");
+        let before: BTreeMap<u64, Option<Published>> = shape
+            .branches()
+            .keys()
+            .map(|&branch| (branch, publisher.committed(alpha_id, branch)))
+            .collect();
+        let kept = |fixture: &Fixture| -> Vec<Vec<Vec<u8>>> {
+            shape
+                .branches()
+                .keys()
+                .map(|branch| pages(fixture, &format!("alpha-{branch}")))
+                .collect()
+        };
+        let committed = kept(&fixture);
+        let unshown = refuse(&publisher, &shape, &recording, &mut walks.failed).unwrap();
+        assert!(unshown.is_empty() && walks.failed.is_empty(), "{stage}");
+        assert_eq!(
+            kept(&fixture),
+            committed,
+            "{stage}: what alpha committed stands"
+        );
+        assert_eq!(*beta_kept.lock().unwrap(), expected, "{stage}");
+        let mut refused = 0;
+        for (&branch, extent) in shape.branches() {
+            let beta = publisher.committed(beta_id, branch).unwrap().frontier;
+            assert!(
+                beta.complete && beta.end.is_none(),
+                "{stage}: beta's branch {branch}"
+            );
+            assert_eq!(
+                (beta.first_hour, beta.last_hour),
+                (extent.first_hour, extent.last_hour)
+            );
+            let alpha = publisher.committed(alpha_id, branch).unwrap().frontier;
+            assert!(
+                alpha.terminal(),
+                "{stage}: alpha's branch {branch} is left pending"
+            );
+            let Some(end) = alpha.end else {
+                // It finished the branch before it failed.
+                assert!(
+                    before[&branch]
+                        .as_ref()
+                        .is_some_and(|published| published.frontier.complete)
+                );
+                continue;
+            };
+            refused += 1;
+            // From the first hour of the branch it had not published.
+            let published = before[&branch]
+                .as_ref()
+                .map(|published| published.frontier.last_hour);
+            let next = expected
+                .iter()
+                .filter(|fact| fact.branch == branch)
+                .map(|fact| fact.hour)
+                .find(|&hour| published.is_none_or(|last| hour > last));
+            assert_eq!(Some(end.hour), next, "{stage}: alpha's branch {branch}");
+            assert_eq!(
+                (end.held, end.reason.as_str()),
+                (Held::Refused, why.as_str())
+            );
+            // Its queries refuse from there by its own error; the other family's refuse none.
+            let published = gates::decode(&fixture.store, None).unwrap().unwrap();
+            plan::with_test_native(plan, || {
+                assert_eq!(
+                    pipeline::refusal_from(&published, branch, "alpha-product").unwrap(),
+                    Some((end.hour, why.clone())),
+                    "{stage}"
+                );
+                assert_eq!(
+                    pipeline::refusal_from(&published, branch, "beta-product").unwrap(),
+                    None,
+                    "{stage}"
+                );
+            });
+        }
+        assert!(refused > 0, "{stage}");
     }
 }
 
@@ -716,7 +880,7 @@ fn a_failing_family_fails_alone() {
 #[test]
 fn cancellation_stops_a_run_at_every_wait() {
     let plan = test_plan();
-    let (recording, _) = opened(&RUNS);
+    let (mut recording, _) = opened(&RUNS);
     let shape = Shape::new(&recording).unwrap();
     let middle = shape.get(shape.len() / 2).first_hour;
     for when in ["before", "operator", "commit"] {
@@ -737,13 +901,14 @@ fn cancellation_stops_a_run_at_every_wait() {
         let mut members = bind(&publisher, &resume, &shape, probes);
         let ran = run(
             &fixture,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             (4, 4),
             &cancelled,
             &Commits::default(),
-        );
+        )
+        .ran;
         assert!(ran.cancelled, "{when}");
         drop(members);
         publisher.stop(Stopped::Cancelled);
@@ -822,7 +987,6 @@ fn a_native_plan_refuses_a_family_without_a_backend_by_name() {
     let plan = test_plan();
     assert_eq!(plan.backend("alpha"), Some(Backend::Segments));
     assert_eq!(plan.backend("gamma"), Some(Backend::Unavailable));
-    assert!(plan.apart("gamma") && plan.apart("alpha"));
     for family in plan.families() {
         assert!(
             plan.backend(family.id.name()).is_some(),
@@ -837,16 +1001,18 @@ fn a_native_plan_refuses_a_family_without_a_backend_by_name() {
     let shape = Shape::new(&recording).unwrap();
     let mark = status::mark(plan, &shape);
     let (publisher, _) = fixture.open(plan, &["alpha"], &recording, &shape);
+    // A refusal of alpha from before it had a backend, committed by an earlier preparation.
     publisher
         .coordinate(|writer| {
-            // A refusal of alpha from before it had a backend.
             writer.write_at(
                 &crate::prepared::coverage::family_section("alpha", 1),
                 0,
                 &b"{}"[..],
-            )?;
-            status::coordinate(writer, plan, &shape, &mark)
+            )
         })
+        .unwrap();
+    publisher
+        .coordinate(|writer| status::coordinate(writer, plan, &shape, &mark))
         .unwrap();
     let published = gates::decode(&fixture.store, None).unwrap().unwrap();
     assert_eq!(published.plan(), Some(&mark[..]));
@@ -909,11 +1075,11 @@ fn dependencies_are_served_privately() {
     let fixture = Fixture::new();
     let (recording, _) = opened(&RUNS);
     let shape = Shape::new(&recording).unwrap();
-    let (publisher, _) = fixture.open(plan, &["territory"], &recording, &shape);
-    let mut stage = publisher.stage(FamilyId::new("territory")).unwrap();
+    let (publisher, _) = fixture.open(plan, &["event_feed"], &recording, &shape);
+    let mut stage = publisher.stage(FamilyId::new("event_feed")).unwrap();
     let pages = stage.pages().unwrap();
     pages
-        .write("territory-identities-1", &b"own read"[..])
+        .write("event-feed-identities-1", &b"own read"[..])
         .unwrap();
     for other in ["country-identities-1", "army-values-1-0", "map.checkpoints"] {
         let error = pages.write(other, &b"another's"[..]).unwrap_err();
@@ -921,12 +1087,92 @@ fn dependencies_are_served_privately() {
     }
     let names = super::names();
     for (at, name) in names.iter().enumerate() {
-        assert_eq!(plan.backend(name), Some(Backend::Segments), "{name}");
+        let job = plan.jobs().contains(name);
+        assert!(
+            job || plan.backend(name) == Some(Backend::Segments),
+            "{name}"
+        );
         assert!(
             !names[..at].contains(name),
             "{name} has two native backends"
         );
     }
+}
+
+/// A recording-wide job with a native backend is a member of the native run as a family is: the
+/// plan stamps it by its version, the publisher stages it, writing only its own sections, and the
+/// coordinator refuses it nowhere and clears the refusal it published before it had a backend.
+#[test]
+fn a_job_with_a_native_backend_is_prepared_among_the_families() {
+    let plan = plan::native();
+    let job = "production-lines";
+    assert!(plan.jobs().contains(&job));
+    assert!(super::names().contains(&job));
+    assert_eq!(FamilyId::publisher(job).unwrap().name(), job);
+    assert!(FamilyId::parse(job).is_err());
+    assert!(!super::names().contains(&"map"), "the map is indexed before the run");
+    assert!(plan.stamp(job).is_some());
+    assert_eq!(plan.gating("production-line-detail"), Some(job));
+    assert!(status::refused(plan).iter().all(|(name, _)| *name != job));
+    let bare = plan::test_native(&[], &[]).unwrap();
+    assert!(bare.jobs().is_empty());
+    assert!(status::refused(bare).iter().any(|(name, _)| *name == job));
+    let fixture = Fixture::new();
+    let (recording, _) = opened(&RUNS);
+    let shape = Shape::new(&recording).unwrap();
+    let (publisher, _) = fixture.open(plan, &[job], &recording, &shape);
+    let mark = status::mark(plan, &shape);
+    publisher
+        .coordinate(|writer| {
+            // Its refusal from before it had a backend.
+            writer.write_at(
+                &crate::prepared::coverage::family_section(job, 1),
+                0,
+                &b"{}"[..],
+            )?;
+            status::coordinate(writer, plan, &shape, &mark)
+        })
+        .unwrap();
+    let published = gates::decode(&fixture.store, None).unwrap().unwrap();
+    assert!(published.gate(1, job).is_none_or(|gate| gate.id().is_none()));
+    let mut stage = publisher.stage(FamilyId::publisher(job).unwrap()).unwrap();
+    let pages = stage.pages().unwrap();
+    let own = dashboard_base::products::production_lines::prepared::directory_section(1);
+    pages.write(&own, &b"own"[..]).unwrap();
+    for other in ["country-identities-1", "map.checkpoints"] {
+        let error = pages.write(other, &b"another's"[..]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{other}");
+    }
+    drop(stage);
+    // Its coverage is listed by branch as its frontiers give it, and no status row is its.
+    let id = FamilyId::publisher(job).unwrap();
+    let branch = *shape.branches().keys().next().unwrap();
+    let reached = dashboard_base::prepared::roots::Frontier {
+        version: 1,
+        next: dashboard_base::prepared::roots::Cursor { run: 0, ordinal: 1 },
+        segments: 1,
+        first_hour: 0,
+        last_hour: 0,
+        prepared: 1,
+        proof: [0; 32],
+        ledger_pages: 0,
+        first_hole: None,
+        state: None,
+        carry: None,
+        end: None,
+        complete: false,
+    };
+    let frontier =
+        |family: FamilyId, at: u64| (family == id && at == branch).then(|| reached.clone());
+    let accepted = status::accepted(plan, &shape, &[id], &frontier, &Default::default(), 0);
+    let listed = &accepted.families[job];
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[&branch.to_string()].last_hour, 0);
+    assert!(!listed[&branch.to_string()].complete);
+    assert!(accepted.sections.iter().all(|section| section.id != job));
+    assert!(accepted.coverage.is_empty(), "a job holds back no hour of the timeline");
+    let pending = status::accepted(plan, &shape, &[id], &|_, _| None, &Default::default(), 0);
+    assert!(pending.families[job].is_empty());
 }
 
 /// What a tally's operator hands its emit of an hour: a digest of what the walk shows of it,
@@ -1168,7 +1414,7 @@ fn a_growing_branch_prepares_only_its_new_hours() {
     let grown = Fixture::new();
     let mut last: Option<i32> = None;
     for (append, runs) in appends.iter().enumerate() {
-        let (recording, _) = opened_every(runs, 2);
+        let (mut recording, _) = opened_every(runs, 2);
         let shape = Shape::new(&recording).unwrap();
         let (publisher, resume) = grown.open(plan, &names, &recording, &shape);
         assert!(resume.again.is_empty());
@@ -1180,14 +1426,14 @@ fn a_growing_branch_prepares_only_its_new_hours() {
         ];
         let ran = run(
             &grown,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             (2, 2),
             &cancelled,
             &Commits::default(),
-        );
-        settle(&mut members);
+        )
+        .ran;
         drop(members);
         for outcome in ran.outcomes.iter().flatten() {
             assert!(outcome.ended.is_empty() && outcome.failure.is_none());
@@ -1223,14 +1469,13 @@ fn a_growing_branch_prepares_only_its_new_hours() {
         ];
         run(
             &whole,
-            &recording,
+            &mut recording,
             &shape,
             &mut members,
             (4, 4),
             &cancelled,
             &Commits::default(),
         );
-        settle(&mut members);
         drop(members);
         for name in names {
             assert_eq!(
@@ -1333,7 +1578,7 @@ fn a_family_prepared_ahead_serves_the_last_hour_before_the_union_run() {
         hold.released.wait();
         (running.join().unwrap().unwrap(), kept, seen)
     });
-    settle(&mut members);
+    assert!(walks.failed.is_empty());
     assert_eq!(kept, recording_hours(&shape));
     for (extent, delta, page, alpha) in seen {
         let delta = delta.unwrap();

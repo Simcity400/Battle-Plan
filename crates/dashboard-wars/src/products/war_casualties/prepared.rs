@@ -1,10 +1,8 @@
 //! The shared casualty ingestion feeding exact country values and rank positions.
 use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, SharedView};
 use serde_json::{Value, json};
-
-pub mod block;
 
 /// The section holding a branch's pair windows, one range per block.
 fn pairs_section(branch: u64) -> String {
@@ -18,7 +16,7 @@ pub struct Presentation {
     /// every family that shows it.
     unknown_refusals: dashboard_text::catalogue::OwnRefusals,
 }
-pub(crate) type PreparedContent = Result<Option<Arc<Presentation>>, String>;
+pub type PreparedContent = Result<Option<Arc<Presentation>>, String>;
 
 /// Static presentation resolves once per Source/content binding, including refusals.
 pub fn prepared_content(source: &Source, context: &LoadContext) -> io::Result<PreparedContent> {
@@ -300,6 +298,79 @@ impl Prepared {
         self.name_tags(cancelled)
     }
 
+    /// [`Self::observe_changes`] of an hour read whole: every table the scan reads is taken as
+    /// changed, and no view as one compared before, as a walk's world changes its views in place.
+    pub fn observe_whole(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.builder.name_views.clear();
+        let mut changed = [false; replay_data::rows::TABLE_COUNT];
+        for table in SCAN_TABLES {
+            changed[table.index()] = true;
+        }
+        let changes = dashboard_base::prepared::frame_changes::FrameChanges {
+            rows_changed: changed,
+            table_read: changed,
+            slot_read: changed,
+            updates: None,
+        };
+        self.observe_changes(frame, replay, cancelled, &changes)
+    }
+
+    /// [`Self::observe_changes`] of an hour continuing the hour observed last as an hourly
+    /// supplying read with the same census and relations ([`ScanFrames::moved`]): only the
+    /// relations at `moved`, their countries and their tags are read. `names` holds the naming
+    /// tables' views where a naming input was written.
+    pub fn observe_moved(
+        &mut self,
+        hour: i32,
+        moved: &[(u32, [i64; 4])],
+        names: Option<(Vec<(TableId, SharedView)>, replay_frame::frame::Metrics)>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.own(|state| {
+            check_cancel(cancelled)?;
+            if !state.covered || !state.pairs.quiet_continues(hour) {
+                return Err(io::Error::other(
+                    "A casualty hour read by its changes does not continue the hour before",
+                ));
+            }
+            for values in &mut state.values {
+                values.advance(hour)?;
+            }
+            state.observations.advance(hour)?;
+            state.coverage.advance(hour)?;
+            state.builder.moved(hour, moved, names)?;
+            state.pairs.observe_changes(&state.builder);
+            state.first.get_or_insert(hour);
+            state.last = hour;
+            let tags = std::mem::take(&mut state.builder.changed_tags);
+            let sampled = state.observe_tags(&tags, hour, true, true);
+            state.builder.changed_tags = tags;
+            sampled?;
+            state.name_tags(cancelled)
+        })
+    }
+
+    /// [`Self::observe_changes`] of an hour changing nothing the scan reads after the hour
+    /// observed last, an hourly supplying read: in constant time ([`Self::advance_quiet`]).
+    pub fn observe_quiet(&mut self, hour: i32) -> io::Result<()> {
+        if !self.covered
+            || self.named != self.builder.scan.names.len()
+            || !self.builder.quiet_continues(hour)
+            || !self.pairs.quiet_continues(hour)
+        {
+            return Err(io::Error::other(
+                "A quiet casualty hour does not continue the hour before",
+            ));
+        }
+        self.first.get_or_insert(hour);
+        self.advance_quiet(hour, hour)
+    }
+
     /// Each changed tag's values and observation at `hour`, in tag order,
     /// from its track's open sample: what observing an hour publishes for
     /// the tags its frame changed. `continuous` when the hour follows the
@@ -503,24 +574,11 @@ impl Prepared {
         Ok((ordinal, window))
     }
 
-    /// Whether hours `first..=last`, read by their changes, can advance in
-    /// constant time ([`Self::advance_quiet`]): every one read WarRelations
-    /// (`read`) and no field the scan reads changed or was decoded again
-    /// there, and the carried scan continues the hour it observed last as a
-    /// covered supplying read, with nothing left to name or join.
-    pub(crate) fn quiet_continues(&self, first: i32, read: bool) -> bool {
-        read && self.first.is_some()
-            && self.covered
-            && self.named == self.builder.scan.names.len()
-            && self.builder.quiet_continues(first)
-            && self.pairs.quiet_continues(first)
-    }
-
-    /// Hours `first..=last` that [`Self::quiet_continues`] allows: what
+    /// Hours `first..=last` that [`Self::observe_quiet`] allows: what
     /// observing each does, in constant time. Each authenticates the hour in
     /// every series and confirms the scan's read; no country, pair or value
     /// is visited.
-    pub(crate) fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<()> {
+    fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<()> {
         for values in &mut self.values {
             values.advance_span(first, last)?;
         }
@@ -538,13 +596,26 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.own(|state| state.flush_own(writer, branch, cancelled))
+        self.flush_keeping(writer, branch, None, cancelled)
+    }
+
+    /// [`Self::flush`] partway through a pair window from `keep`, its first hour: the reads
+    /// observed since stay for the window's publication.
+    pub fn flush_keeping(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        keep: Option<i32>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.own(|state| state.flush_own(writer, branch, keep, cancelled))
     }
 
     fn flush_own(
         &mut self,
         writer: &mut store::Writer,
         branch: u64,
+        keep: Option<i32>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let Some(first) = self.first.take() else {
@@ -629,9 +700,11 @@ impl Prepared {
             track.packed_runs = 0;
             track.previous = Sample::default();
         }
-        if scan.observed.len() > 1 {
-            scan.observed.drain(..scan.observed.len() - 1);
-        }
+        let kept = keep.map_or(scan.observed.len(), |keep| {
+            scan.observed.partition_point(|span| span.last_hour < keep)
+        });
+        let drained = kept.min(scan.observed.len().saturating_sub(1));
+        scan.observed.drain(..drained);
         scan.bounds.clear();
         scan.names.clear();
         self.builder.name_entries.clear();
@@ -995,6 +1068,27 @@ impl Prepared {
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
             .observe(frame, replay.format);
         self.observe_changes(frame, replay, cancelled, &changes)
+    }
+}
+
+#[cfg(test)]
+impl Prepared {
+    /// What the observer's publications read, its open runs sealed ([`Scan::parity`],
+    /// [`pairs::PairHistory::parity`]), with each tag's actor and latest observation.
+    pub(super) fn parity(&self) -> Value {
+        json!({
+            "scan": self.builder.scan.parity(),
+            "pairs": self.pairs.parity(),
+            "tags": self.tags,
+            "actors": self.actors,
+            "latest": self.latest,
+            "first": self.first,
+            "last": self.last,
+            "covered": self.covered,
+            "named": self.named,
+            "labels": self.catalogue.labels,
+            "nextPairWindow": self.next_pair_window,
+        })
     }
 }
 

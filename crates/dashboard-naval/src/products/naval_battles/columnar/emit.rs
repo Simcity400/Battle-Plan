@@ -1,10 +1,15 @@
 //! The naval scan kept in order from projected hours ([`super::Hour`]).
 
 use super::{Combats, Countries, Hour, Results, Sources};
-use crate::products::naval_battles::{Kind, ResultInput, Scan, incomplete, span};
-use dashboard_base::source::Source;
-use dashboard_core::config::LoadContext;
+use crate::products::{
+    naval_battles::{Kind, ResultInput, Scan, incomplete, span, windows},
+    naval_losses, ships_sunk,
+};
+use dashboard_base::{prepared::pages::Pages, products::battles::BattleWindow, source::Source};
+use dashboard_series::Writer;
+use replay::container::Replay;
 use replay_data::rows::NavalResultSourceRow;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     io,
@@ -12,7 +17,7 @@ use std::{
 };
 
 /// What the scan keeps of projected hours beyond the row path's own state.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(in crate::products::naval_battles) struct Carried {
     /// Each result the last result read held.
     present: BTreeSet<u64>,
@@ -27,6 +32,10 @@ pub(in crate::products::naval_battles) struct Carried {
     /// The rows the last result read refused: member sides, country lists, classifications.
     refused: [usize; 3],
     /// The result sources last read.
+    #[serde(
+        serialize_with = "crate::products::naval_battles::serialize_rows",
+        deserialize_with = "crate::products::naval_battles::deserialize_rows"
+    )]
     sources: Vec<NavalResultSourceRow>,
 }
 
@@ -36,7 +45,6 @@ impl Scan {
         &mut self,
         mut hour: Hour,
         source: &Source,
-        context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         {
@@ -44,7 +52,7 @@ impl Scan {
             self.observe_census(&hour)?;
         }
         let _cpu = ::replay_frame::cpu::scope("naval emit details", None);
-        self.observe_projected_details(source, context, &mut hour, cancelled)
+        self.observe_projected_details(source, &mut hour, cancelled)
     }
 
     fn observe_census(&mut self, hour: &Hour) -> io::Result<()> {
@@ -205,7 +213,7 @@ impl Scan {
     }
 
     /// Writes held result `id`'s deferred extension, as the row path's held reads extended it.
-    fn settle(&mut self, id: u64) {
+    fn settle_result(&mut self, id: u64) {
         if let Some(through) = self.result_through
             && self.projected.present.contains(&id)
             && let Some(&index) = self.results.get(&id)
@@ -292,7 +300,7 @@ impl Scan {
         }
         let mut regrouped = false;
         for id in gone {
-            self.settle(id);
+            self.settle_result(id);
             regrouped |= self.projected.present.remove(&id);
             self.result_inputs.remove(&id);
             self.projected.incomplete_results.remove(&id);
@@ -315,7 +323,7 @@ impl Scan {
             touched.entry(id).or_insert(None);
         }
         for (id, shipped) in touched {
-            self.settle(id);
+            self.settle_result(id);
             let input = match shipped {
                 Some(input) => input.clone(),
                 None => self
@@ -379,6 +387,168 @@ impl Scan {
         }
         // Every held result reads through this hour until a read changes it.
         self.result_through = Some(at);
+        Ok(())
+    }
+}
+
+/// A branch's scan on the segment driver: each row window's pages are published once its last
+/// hour is observed, as the windowed lane publishes each block it reads, and its naval losses
+/// go into the family's series hour by hour.
+pub struct Branch {
+    scan: Box<Scan>,
+    branch: u64,
+    windows: Vec<BattleWindow>,
+    /// The ordinal of the first window not yet published.
+    next: usize,
+    losses: naval_losses::prepared::emit::Emit,
+    /// The branch's first hour, from which its series starts.
+    first: i32,
+    /// The last hour observed since the series was last cut.
+    last: Option<i32>,
+}
+
+impl Branch {
+    pub fn new(
+        source: &Source,
+        branch: u64,
+        first: i32,
+        content: &ships_sunk::PreparedContent,
+    ) -> io::Result<Self> {
+        let mut scan = Box::<Scan>::default();
+        scan.configure(source, branch, content)?;
+        Ok(Self {
+            scan,
+            branch,
+            windows: windows(source.replay_ref(), branch),
+            next: 0,
+            losses: naval_losses::prepared::emit::Emit::default(),
+            first,
+            last: None,
+        })
+    }
+
+    /// The hour the branch's series starts at.
+    pub fn first(&self) -> i32 {
+        self.first
+    }
+
+    /// Whether it observed an hour since its series was last cut.
+    pub fn observed(&self) -> bool {
+        self.last.is_some()
+    }
+
+    /// Observes `hour`, publishing every window that ends before it first.
+    pub fn observe<W: Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        hour: Hour,
+        source: &Source,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let at = hour.hour;
+        self.publish(source.replay_ref(), writer, |last| last < at, cancelled)?;
+        self.scan.observe_projected(hour, source, cancelled)?;
+        self.last = Some(at);
+        self.publish(source.replay_ref(), writer, |last| last <= at, cancelled)
+    }
+
+    /// Appends the naval losses the last hour observed changed to the branch's series.
+    pub fn append(&mut self, series: &mut Writer<'_>) -> io::Result<()> {
+        let Some(at) = self.last else {
+            return Ok(());
+        };
+        let (losses, _) = self.scan.losses();
+        self.losses.hour(series, losses, at)
+    }
+
+    /// Cuts the branch's series through the last hour observed, its catalogue brought there.
+    pub fn cut(&mut self, series: &mut Writer<'_>, cancelled: &AtomicBool) -> io::Result<()> {
+        let Some(last) = self.last.take() else {
+            return Ok(());
+        };
+        self.scan.settle(last);
+        let (losses, scan) = self.scan.losses();
+        self.losses.cut(series, losses, scan, last, cancelled)
+    }
+
+    /// What the branch goes on with after its last cut: its scan and the next window to
+    /// publish, then its naval losses' open runs.
+    pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        if self.last.is_some() {
+            return Err(io::Error::other("A naval branch is saved only after a cut"));
+        }
+        let json = serde_json::to_vec(&(&*self.scan, self.next))?;
+        let packed = zstd::stream::encode_all(json.as_slice(), 3)?;
+        out.extend_from_slice(&(packed.len() as u64).to_le_bytes());
+        out.extend_from_slice(&packed);
+        self.losses.save(out)
+    }
+
+    /// The branch [`Self::save`] saved, going on from the publication `directory` reads, whose
+    /// series starts at `first`.
+    pub fn resume(
+        source: &Source,
+        branch: u64,
+        first: i32,
+        content: &ships_sunk::PreparedContent,
+        directory: &dashboard_series::family::Directory,
+        saved: &[u8],
+    ) -> io::Result<Self> {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Saved naval branch is not valid",
+            )
+        };
+        let length = saved
+            .get(..8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_le_bytes)
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or_else(invalid)?;
+        let packed = saved.get(8..8 + length).ok_or_else(invalid)?;
+        let (mut scan, next): (Box<Scan>, usize) =
+            serde_json::from_slice(&zstd::stream::decode_all(packed)?)?;
+        scan.configure(source, branch, content)?;
+        let windows = windows(source.replay_ref(), branch);
+        if next > windows.len() {
+            return Err(invalid());
+        }
+        Ok(Self {
+            scan,
+            branch,
+            windows,
+            next,
+            losses: naval_losses::prepared::emit::Emit::resume(directory, &saved[8 + length..])?,
+            first,
+            last: None,
+        })
+    }
+
+    /// Publishes every window left once the branch's last hour is observed.
+    pub fn finish<W: Pages + ?Sized>(
+        &mut self,
+        replay: &Replay,
+        writer: &mut W,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.publish(replay, writer, |_| true, cancelled)
+    }
+
+    fn publish<W: Pages + ?Sized>(
+        &mut self,
+        replay: &Replay,
+        writer: &mut W,
+        due: impl Fn(i32) -> bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        while let Some(window) = self.windows.get(self.next)
+            && due(window.last_hour)
+        {
+            self.scan
+                .publish_configured(replay, writer, self.branch, self.next, cancelled)?;
+            self.next += 1;
+        }
         Ok(())
     }
 }

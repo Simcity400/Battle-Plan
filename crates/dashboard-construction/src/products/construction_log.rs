@@ -139,27 +139,26 @@
 
 use dashboard_base::products::{BranchParams, Product, battles::BattleWindow};
 use dashboard_core::config::LoadContext;
-#[cfg(test)]
-use dashboard_text::metadata::slot_read;
-mod newest;
+pub mod emit;
+pub mod facts;
+pub mod observed;
 mod output;
-pub mod prepared;
+pub mod query;
+#[cfg(any(test, feature = "test-support"))]
+pub mod row;
+pub mod served;
+#[cfg(test)]
+pub(crate) use row::{scan, scan_with_reads};
 use dashboard_base::{catalogue, source::Source};
-use dashboard_text::{
-    catalogue::Catalogue,
-    metadata::{link_slot, mapped_slot},
-};
+use dashboard_text::catalogue::Catalogue;
 use engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
 use installed_content_core::{ResolvedLayers, gui::native};
 use installed_content_gfx::gfx::SpriteSet;
+use observed::{BuildingLine, Buildings, Queue, RailwayLine};
 pub use output::{ConstructionOutputRead, SpendingGap};
 use output::{OutputScan, OutputUnknown};
 use replay::container::Replay;
-use replay_data::{
-    rows::BuildingConstructionRow, rows::BuildingRow, rows::RailwayConstructionRow, rows::TableId,
-    rows::tables,
-};
-use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
+use replay_data::rows::{BuildingConstructionRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -171,11 +170,6 @@ use std::{
 };
 use ts_rs::TS;
 
-#[cfg(test)]
-use dashboard_text::metadata::{branch_bounds, validate_campaign};
-#[cfg(test)]
-use replay_frame::frame::FrameDecoder;
-
 pub struct ConstructionLog;
 pub struct ConstructionLogManifest;
 
@@ -184,7 +178,7 @@ const ICON_EDGE: u32 = 48;
 /// The fixed5 scale of `cost`.
 pub(crate) const COST_SCALE: u32 = 100_000;
 
-/// The tables the construction scan reads.
+/// The tables the row oracle reads.
 pub const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -198,12 +192,6 @@ pub const TABLES: &[TableId] = &[
     TableId::LexicalTokens,
 ];
 
-/// The queue and output tables whose daily reads the scan dates.
-pub const READ_TABLES: [TableId; 3] = [
-    TableId::BuildingConstruction,
-    TableId::RailwayConstruction,
-    TableId::ConstructionLineOutput,
-];
 /// The construction queue's line entry gives each building's `icon_frame`
 /// (`picture`) and repair marker (`repair`). It uses production_building_line_entry;
 /// the authored entry supplies the icon and marker declarations through the stack.
@@ -486,6 +474,46 @@ type Key = (bool, u32, u32);
 type Levels = (i16, i16);
 /// An hourly change between two recorded building values.
 type Change = (i32, Levels, Levels);
+/// A complete building table's levels by location and type ([`placed`]); a building it does
+/// not hold, or holds at nothing, has none.
+type Mirror = BTreeMap<u64, Levels>;
+
+/// A building's place in a [`Mirror`], ordered as its table's rows are.
+fn placed(location: u32, kind: u32) -> u64 {
+    u64::from(location) << 32 | u64::from(kind)
+}
+
+/// A complete table's buildings as a [`Mirror`].
+fn mirrored(rows: &[observed::Building]) -> Mirror {
+    rows.iter()
+        .filter(|row| (row.level, row.healthy) != (0, 0))
+        .map(|row| (placed(row.location, row.kind), (row.level, row.healthy)))
+        .collect()
+}
+
+/// A [`Mirror`] saved as its buildings in order.
+mod mirror {
+    use super::Mirror;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(held: &Option<Mirror>, out: S) -> Result<S::Ok, S::Error> {
+        held.as_ref()
+            .map(|held| {
+                held.iter()
+                    .map(|(&at, &(level, healthy))| (at, level, healthy))
+                    .collect::<Vec<_>>()
+            })
+            .serialize(out)
+    }
+
+    pub fn deserialize<'d, D: Deserializer<'d>>(input: D) -> Result<Option<Mirror>, D::Error> {
+        Ok(Option::<Vec<(u64, i16, i16)>>::deserialize(input)?.map(|rows| {
+            rows.into_iter()
+                .map(|(at, level, healthy)| (at, (level, healthy)))
+                .collect()
+        }))
+    }
+}
 
 /// A watched building since the last reset: its value at the last recorded hour
 /// (none when unknown), each change since, and whether an hour was lost.
@@ -512,8 +540,7 @@ impl Watch {
     fn observe(
         &mut self,
         hour: i32,
-        states: Option<&[BuildingRow]>,
-        provinces: Option<&[BuildingRow]>,
+        held: [Option<&Mirror>; 2],
         changed: &[Option<BTreeSet<Key>>; 2],
     ) {
         for province in [false, true] {
@@ -538,7 +565,7 @@ impl Watch {
                 {
                     self.visits += 1;
                 }
-                match levels(if key.0 { provinces } else { states }, key) {
+                match levels(held[usize::from(key.0)], key) {
                     Some(now) => {
                         if let Some(was) = track.value
                             && was != now
@@ -565,14 +592,9 @@ impl Watch {
     }
 
     /// Starts watching `key` from this hour's tables, unless already watched.
-    fn watch(
-        &mut self,
-        key: Key,
-        states: Option<&[BuildingRow]>,
-        provinces: Option<&[BuildingRow]>,
-    ) {
+    fn watch(&mut self, key: Key, held: [Option<&Mirror>; 2]) {
         self.tracks.entry(key).or_insert_with(|| {
-            let value = levels(if key.0 { provinces } else { states }, key);
+            let value = levels(held[usize::from(key.0)], key);
             Track {
                 value,
                 changes: Vec::new(),
@@ -597,10 +619,10 @@ impl Watch {
 #[derive(Default, Serialize, Deserialize)]
 struct Changes {
     /// The last hour's complete state and province building tables.
-    #[serde(skip)]
-    states: Option<Vec<BuildingRow>>,
-    #[serde(skip)]
-    provinces: Option<Vec<BuildingRow>>,
+    #[serde(with = "mirror")]
+    states: Option<Mirror>,
+    #[serde(with = "mirror")]
+    provinces: Option<Mirror>,
     #[serde(with = "dashboard_core::map_pairs")]
     changed: BTreeMap<Key, Vec<Change>>,
     /// Only province railway buildings can belong to a route's opening stretch.
@@ -610,56 +632,104 @@ struct Changes {
     railway_lost: bool,
 }
 
+/// Records that the building at `key` went from `was` to `now` at `hour`.
+fn record_change(
+    changed: &mut BTreeMap<Key, Vec<Change>>,
+    railway_changed: &mut BTreeMap<Key, Vec<Change>>,
+    key: Key,
+    change: Change,
+) {
+    changed.entry(key).or_default().push(change);
+    if key == railway_key(key.1) {
+        railway_changed.entry(key).or_default().push(change);
+    }
+}
+
 impl Changes {
-    fn observe(
-        &mut self,
-        hour: i32,
-        states: Option<&[BuildingRow]>,
-        provinces: Option<&[BuildingRow]>,
-        changed: [bool; 2],
-    ) -> [Option<BTreeSet<Key>>; 2] {
+    /// The hour's building tables: what each changed of the buildings; every watched one
+    /// (none) where a table became complete or stopped being.
+    fn observe(&mut self, hour: i32, tables: &[Buildings; 2]) -> [Option<BTreeSet<Key>>; 2] {
         let mut touched = [Some(BTreeSet::new()), Some(BTreeSet::new())];
-        if states.is_none() || provinces.is_none() {
-            self.lost = true;
-            self.railway_lost = true;
+        let Self {
+            states,
+            provinces,
+            changed,
+            railway_changed,
+            lost,
+            railway_lost,
+        } = self;
+        if tables
+            .iter()
+            .any(|table| matches!(table, Buildings::Incomplete))
+        {
+            *lost = true;
+            *railway_lost = true;
         }
-        for (province, now) in [(false, states), (true, provinces)] {
-            if !changed[usize::from(province)] {
-                continue;
-            }
-            let before = if province {
-                &mut self.provinces
+        for (province, table) in [false, true].into_iter().zip(tables) {
+            let at = usize::from(province);
+            let held = if province {
+                &mut *provinces
             } else {
-                &mut self.states
+                &mut *states
             };
-            match (now, before.as_deref()) {
-                (None, None) => {}
-                (Some(now), Some(was)) => {
-                    touched[usize::from(province)] = Some(level_changes(
-                        was,
-                        now,
-                        province,
-                        hour,
-                        &mut self.changed,
-                        &mut self.railway_changed,
-                    ));
+            // A table becoming complete or no longer complete loses the hour for every building.
+            let mut lose = false;
+            match table {
+                Buildings::Unchanged => {}
+                Buildings::Incomplete => lose = held.take().is_some(),
+                Buildings::Whole(rows) => {
+                    let now = mirrored(rows);
+                    match held.as_ref() {
+                        Some(was) => {
+                            touched[at] = Some(level_changes(
+                                was,
+                                &now,
+                                province,
+                                hour,
+                                changed,
+                                railway_changed,
+                            ));
+                        }
+                        None => lose = true,
+                    }
+                    *held = Some(now);
                 }
-                _ => {
-                    self.lost = true;
-                    self.railway_lost = true;
-                    touched[usize::from(province)] = None;
-                }
+                Buildings::Changed(rows) => match held.as_mut() {
+                    Some(was) => {
+                        let mut keys = BTreeSet::new();
+                        for row in rows {
+                            let place = placed(row.location, row.kind);
+                            let now = (row.level, row.healthy);
+                            let before = if now == (0, 0) {
+                                was.remove(&place)
+                            } else {
+                                was.insert(place, now)
+                            }
+                            .unwrap_or((0, 0));
+                            if before != now {
+                                let key = (province, row.location, row.kind);
+                                keys.insert(key);
+                                record_change(changed, railway_changed, key, (hour, before, now));
+                            }
+                        }
+                        touched[at] = Some(keys);
+                    }
+                    // Changes without the table they change: what it holds is not known.
+                    None => lose = true,
+                },
             }
-            match now {
-                Some(now) => {
-                    let kept = before.get_or_insert_with(Vec::new);
-                    kept.clear();
-                    kept.extend_from_slice(now);
-                }
-                None => *before = None,
+            if lose {
+                *lost = true;
+                *railway_lost = true;
+                touched[at] = None;
             }
         }
         touched
+    }
+
+    /// The tables as the last hour left them, where complete.
+    fn held(&self) -> [Option<&Mirror>; 2] {
+        [self.states.as_ref(), self.provinces.as_ref()]
     }
 
     /// An hour the recording lacks.
@@ -730,11 +800,10 @@ impl Changes {
     }
 }
 
-/// Changes between complete tables sorted by (location, type). A building absent
-/// from a complete table has no levels; only changed buildings are kept.
+/// Changes between two complete tables; only changed buildings are kept.
 fn level_changes(
-    was: &[BuildingRow],
-    now: &[BuildingRow],
+    was: &Mirror,
+    now: &Mirror,
     province: bool,
     hour: i32,
     changed: &mut BTreeMap<Key, Vec<Change>>,
@@ -743,49 +812,36 @@ fn level_changes(
     let mut touched = BTreeSet::new();
     let (mut a, mut b) = (was.iter().peekable(), now.iter().peekable());
     loop {
-        let key = |row: &BuildingRow| (row.location, row.building_type);
-        let levels = |row: &BuildingRow| (row.level, row.healthy_level);
         let (level_was, level_now, at) = match (a.peek(), b.peek()) {
             (None, None) => break,
-            (Some(x), None) => (levels(x), (0, 0), key(x)),
-            (None, Some(y)) => ((0, 0), levels(y), key(y)),
-            (Some(x), Some(y)) if key(x) < key(y) => (levels(x), (0, 0), key(x)),
-            (Some(x), Some(y)) if key(x) > key(y) => ((0, 0), levels(y), key(y)),
-            (Some(x), Some(y)) => (levels(x), levels(y), key(x)),
+            (Some(&(&x, &levels)), None) => (levels, (0, 0), x),
+            (None, Some(&(&y, &levels))) => ((0, 0), levels, y),
+            (Some(&(&x, &levels)), Some(&(&y, _))) if x < y => (levels, (0, 0), x),
+            (Some(&(&x, _)), Some(&(&y, &levels))) if x > y => ((0, 0), levels, y),
+            (Some(&(&x, &was)), Some(&(_, &now))) => (was, now, x),
         };
-        if a.peek().is_some_and(|x| key(x) == at) {
+        if a.peek().is_some_and(|&(&x, _)| x == at) {
             a.next();
         }
-        if b.peek().is_some_and(|y| key(y) == at) {
+        if b.peek().is_some_and(|&(&y, _)| y == at) {
             b.next();
         }
         if level_was != level_now {
-            let key = (province, at.0, at.1);
+            let key = (province, (at >> 32) as u32, at as u32);
             touched.insert(key);
-            for changed in [
-                Some(&mut *changed),
-                (key == railway_key(key.1)).then_some(&mut *railway_changed),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                changed
-                    .entry(key)
-                    .or_default()
-                    .push((hour, level_was, level_now));
-            }
+            record_change(changed, railway_changed, key, (hour, level_was, level_now));
         }
     }
     touched
 }
 
-/// A building's levels in a complete table; a building the table does not list
-/// has none. None when the table is not complete.
-fn levels(rows: Option<&[BuildingRow]>, key: Key) -> Option<Levels> {
-    let rows = rows?;
+/// A building's levels in a complete table; a building the table does not hold has none.
+/// None when the table is not complete.
+fn levels(held: Option<&Mirror>, key: Key) -> Option<Levels> {
     Some(
-        rows.binary_search_by_key(&(key.1, key.2), |row| (row.location, row.building_type))
-            .map(|index| (rows[index].level, rows[index].healthy_level))
+        held?
+            .get(&placed(key.1, key.2))
+            .copied()
             .unwrap_or((0, 0)),
     )
 }
@@ -859,10 +915,8 @@ pub(crate) struct Scan {
     railways: Family,
     changes: Changes,
     type_index: BTreeMap<u32, u32>,
-    /// The latest complete lexical dictionary (shared, not copied), which names
-    /// the building types: looked up only for the types projects name.
-    #[serde(skip)]
-    dictionary: Option<SharedView>,
+    /// Each building type's spelling, as the hours gave it, for the types projects name.
+    spelled: BTreeMap<u32, Option<String>>,
     /// Lines whose country the links do not resolve, each counted once.
     unresolved: BTreeSet<u64>,
     output: OutputScan,
@@ -878,69 +932,26 @@ impl Scan {
     fn type_of(&mut self, id: u32) -> u32 {
         let next = self.type_index.len() as u32;
         *self.type_index.entry(id).or_insert_with(|| {
-            let literal = self.dictionary.as_ref().and_then(|view| literal(view, id));
+            let literal = self.spelled.get(&id).cloned().flatten();
             self.log.types.push((id, literal));
             next
         })
     }
 
-    /// Takes this hour's dictionary when it is complete and not the one already
-    /// held (an unchanged table is the same shared view hour after hour, so this
-    /// costs a pointer comparison), and names any type an earlier dictionary could
-    /// not.
-    fn observe_dictionary(&mut self, view: &SharedView) {
-        if !matches!(&**view, TableView::Complete(_))
-            || self
-                .dictionary
-                .as_ref()
-                .is_some_and(|held| SharedView::ptr_eq(held, view))
-        {
-            return;
-        }
-        self.dictionary = Some(view.clone());
-        self.log.dictionaries += 1;
-        for (id, token) in &mut self.log.types {
-            if token.is_none() {
-                *token = literal(view, *id);
+    /// The spellings the hour gives: a type named before without one takes it.
+    fn observe_types(&mut self, types: &[(u32, Option<String>)]) {
+        for (id, token) in types {
+            if let Some(&index) = self.type_index.get(id)
+                && let Some((_, held)) = self.log.types.get_mut(index as usize)
+                && held.is_none()
+            {
+                held.clone_from(token);
+            }
+            if token.is_some() || !self.spelled.contains_key(id) {
+                self.spelled.insert(*id, token.clone());
             }
         }
     }
-}
-
-/// A lexer id's literal in a complete dictionary; none when it is absent or not
-/// text.
-fn literal(view: &SharedView, id: u32) -> Option<String> {
-    let TableView::Complete(rows) = &**view else {
-        return None;
-    };
-    let rows = rows.rows::<tables::LexicalTokens>()?;
-    let index = rows.binary_search_by_key(&id, |row| row.token).ok()?;
-    std::str::from_utf8(&rows[index].literal)
-        .ok()
-        .filter(|text| !text.contains('\0'))
-        .map(str::to_owned)
-}
-
-/// The queue owner's tag at this hour, when the links resolve it.
-fn owner_tag(frame: &DecodedFrame, raw: u32) -> Option<String> {
-    let countries = frame.complete::<tables::Countries>().ok()?;
-    let links = frame.complete::<tables::CountryLinks>().ok()?;
-    let slot = link_slot(links, raw)?;
-    countries
-        .iter()
-        .find(|country| {
-            country.canonical_slot == slot && mapped_slot(country, links).ok() == Some(slot)
-        })
-        .map(|country| String::from_utf8_lossy(&country.tag).into_owned())
-}
-
-/// A province's state from this hour's complete Provinces table.
-fn province_state(frame: &DecodedFrame, province: u32) -> Option<u32> {
-    let rows = frame.complete::<tables::Provinces>().ok()?;
-    rows.binary_search_by_key(&province, |row| row.id)
-        .ok()
-        .map(|index| rows[index].state)
-        .filter(|state| *state != 0)
 }
 
 /// Extends the last run of an open line, or starts a new one at a read.
@@ -1261,17 +1272,10 @@ fn settle(
     None
 }
 
-/// One read of the building queue at `hour`.
-fn read_buildings(
-    scan: &mut Scan,
-    frame: &DecodedFrame,
-    rows: &[BuildingConstructionRow],
-    states: Option<&[BuildingRow]>,
-    provinces: Option<&[BuildingRow]>,
-) {
-    let hour = frame.hour;
+/// One read of the building queue at `hour`: its lines, by id.
+fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
     let present: BTreeMap<u64, &BuildingConstructionRow> =
-        rows.iter().map(|row| (row.id, row)).collect();
+        lines.iter().map(|line| (line.row.id, &line.row)).collect();
     // Lines per building, open since the last read: a rise two of them could have
     // made is nobody's. Whatever a line was doing, damage can give it repair work,
     // so lines share a building whatever their kinds.
@@ -1283,8 +1287,9 @@ fn read_buildings(
     // there from the hour it was created (its recorded `created_hour`), never
     // before, whatever it shows at its first read.
     let mut newcomers: BTreeMap<Key, i32> = BTreeMap::new();
-    for row in rows
+    for row in lines
         .iter()
+        .map(|line| &line.row)
         .filter(|row| !scan.buildings.open.contains_key(&row.id))
     {
         newcomers
@@ -1330,11 +1335,11 @@ fn read_buildings(
             }
         }
     }
-    for row in rows {
+    for BuildingLine { owner, row } in lines {
         if scan.buildings.open.contains_key(&row.id) {
             continue;
         }
-        let Some(tag) = owner_tag(frame, row.country) else {
+        let Some(tag) = owner else {
             scan.unresolved.insert(row.id);
             continue;
         };
@@ -1353,7 +1358,7 @@ fn read_buildings(
         let mut project = ConstructionProject {
             id: row.id.to_string(),
             kind: ProjectKind::Building,
-            tag,
+            tag: tag.to_string(),
             building,
             repair: row.repair_levels > 0,
             state: (row.target_state != 0).then_some(row.target_state),
@@ -1395,7 +1400,7 @@ fn read_buildings(
         scan.dirty.insert(scan.log.projects.len());
         scan.log.projects.push(project);
         scan.log.outputs.push(Vec::new());
-        scan.buildings.watch.watch(key, states, provinces);
+        scan.buildings.watch.watch(key, scan.changes.held());
         scan.buildings.open.insert(row.id, line);
     }
     let needed = scan.buildings.needed();
@@ -1404,17 +1409,9 @@ fn read_buildings(
     scan.changes.reset(false);
 }
 
-/// One read of the railway queue at `hour`.
-fn read_railways(
-    scan: &mut Scan,
-    frame: &DecodedFrame,
-    rows: &[RailwayConstructionRow],
-    states: Option<&[BuildingRow]>,
-    provinces: Option<&[BuildingRow]>,
-) {
-    let hour = frame.hour;
-    let present: BTreeMap<u64, &RailwayConstructionRow> =
-        rows.iter().map(|row| (row.id, row)).collect();
+/// One read of the railway queue at `hour`: its lines, by id.
+fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
+    let present: BTreeMap<u64, &RailwayLine> = lines.iter().map(|line| (line.row.id, line)).collect();
     let ids: Vec<u64> = scan.railways.open.keys().copied().collect();
     for id in ids {
         let Some(line) = scan.railways.open.get_mut(&id) else {
@@ -1424,7 +1421,7 @@ fn read_railways(
         scan.dirty.insert(index);
         let project = &mut scan.log.projects[index];
         match present.get(&id) {
-            Some(row) => {
+            Some(RailwayLine { row, .. }) => {
                 let fell = line.remaining.saturating_sub(row.amount);
                 if fell > 0 {
                     project.built.push(by_read(fell as u32, hour, false));
@@ -1444,11 +1441,17 @@ fn read_railways(
             }
         }
     }
-    for row in rows {
+    for RailwayLine {
+        owner,
+        from,
+        to,
+        row,
+    } in lines
+    {
         if scan.railways.open.contains_key(&row.id) {
             continue;
         }
-        let Some(tag) = owner_tag(frame, row.country) else {
+        let Some(tag) = owner else {
             scan.unresolved.insert(row.id);
             continue;
         };
@@ -1466,17 +1469,11 @@ fn read_railways(
         let mut project = ConstructionProject {
             id: row.id.to_string(),
             kind: ProjectKind::Railway,
-            tag,
+            tag: tag.to_string(),
             building: scan.type_of(RAILWAY_TEMPLATE_TOKEN),
             repair: false,
-            state: row
-                .route
-                .first()
-                .and_then(|&province| province_state(frame, province)),
-            to_state: row
-                .route
-                .last()
-                .and_then(|&province| province_state(frame, province)),
+            state: *from,
+            to_state: *to,
             province: None,
             route_provinces: Some(row.route.len() as u32),
             base_level: Some(row.base_level),
@@ -1520,7 +1517,7 @@ fn read_railways(
         scan.log.projects.push(project);
         scan.log.outputs.push(Vec::new());
         for key in keys {
-            scan.railways.watch.watch(key, states, provinces);
+            scan.railways.watch.watch(key, scan.changes.held());
         }
         scan.railways.open.insert(row.id, line);
     }
@@ -1530,96 +1527,16 @@ fn read_railways(
     scan.changes.reset(true);
 }
 
-/// Scans one branch for every construction project.
-#[cfg(test)]
-pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedLog> {
-    scan_with_reads(replay, branch, cancelled, |frame, table| {
-        slot_read(replay.format, &frame.metrics, table, frame.hour)
-    })
-}
-
-#[cfg(test)]
-fn scan_with_reads(
-    replay: &Replay,
-    branch: u64,
-    cancelled: &AtomicBool,
-    read_queue: impl Fn(&DecodedFrame, TableId) -> bool,
-) -> io::Result<ScannedLog> {
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Provinces,
-        TableId::StateBuildings,
-        TableId::ProvinceBuildings,
-        TableId::BuildingConstruction,
-        TableId::RailwayConstruction,
-        TableId::ConstructionLineOutput,
-        TableId::LexicalTokens,
-    ];
-    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Construction request cancelled");
-    let mut scan = Scan::default();
-    dashboard_core::blocks::scan_blocks(
-        replay,
-        replay.index.iter().filter(|block| block.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancel());
-                }
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                let Ok(frames) = frames else {
-                    continue;
-                };
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(cancel());
-                    }
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        break;
-                    };
-                    if validate_campaign(decoded, replay).is_err() {
-                        break;
-                    }
-                    scan.observe_reads(
-                        decoded,
-                        read_queue(decoded, TableId::BuildingConstruction),
-                        read_queue(decoded, TableId::RailwayConstruction),
-                        read_queue(decoded, TableId::ConstructionLineOutput),
-                        [true; 2],
-                        true,
-                    );
-                }
-            }
-            Ok(())
-        },
-    )?;
-    scan.finish(replay, branch);
-    Ok(scan.log)
-}
-
 impl Scan {
-    pub(crate) fn observe_changed(
-        &mut self,
-        decoded: &DecodedFrame,
-        _format: replay_data::format::FormatVersion,
-        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
-    ) {
-        let contiguous = self.last.and_then(|last| last.checked_add(1)) == Some(decoded.hour);
-        let reads = [
-            TableId::BuildingConstruction,
-            TableId::RailwayConstruction,
-            TableId::ConstructionLineOutput,
-        ]
-        .map(|table| changes.slot_read[table.index()]);
-        if !contiguous || reads.into_iter().any(|read| read) {
+    /// One hour as the segment emit observes it: open runs carry only to the hour before a
+    /// read or a break ([`Self::seal`]).
+    pub(crate) fn observe_changed(&mut self, hour: &observed::Hour) {
+        let contiguous = self.last.and_then(|last| last.checked_add(1)) == Some(hour.hour);
+        let read = hour.queue.read() || hour.railways.read() || hour.output.read();
+        if !contiguous || read {
             self.seal();
         }
-        let changed = [TableId::StateBuildings, TableId::ProvinceBuildings]
-            .map(|table| changes.rows_changed[table.index()] || !contiguous);
-        self.observe_reads(decoded, reads[0], reads[1], reads[2], changed, false);
+        self.observe_reads(hour, false);
         if !contiguous {
             self.dirty.extend(
                 self.buildings
@@ -1629,7 +1546,7 @@ impl Scan {
                     .map(|line| line.project),
             );
         }
-        if reads.into_iter().any(|read| read) {
+        if read {
             self.seal();
         }
     }
@@ -1649,16 +1566,22 @@ impl Scan {
         }
     }
 
-    fn compact_projects(&mut self) -> BTreeMap<usize, usize> {
-        let kept: BTreeSet<_> = self
-            .buildings
+    /// The projects a later hour can still change: open lines, and lines whose output is still
+    /// observed. Every other project is final.
+    fn kept(&self) -> BTreeSet<usize> {
+        self.buildings
             .open
             .values()
             .chain(self.railways.open.values())
             .map(|line| line.project)
             .chain(self.output.retained())
-            .collect();
-        let remap: BTreeMap<_, _> = kept
+            .collect()
+    }
+
+    /// Forgets every final project, returning each kept one's new index by its old.
+    fn compact_projects(&mut self) -> BTreeMap<usize, usize> {
+        let remap: BTreeMap<_, _> = self
+            .kept()
             .into_iter()
             .enumerate()
             .map(|(next, old)| (old, next))
@@ -1686,20 +1609,12 @@ impl Scan {
         remap
     }
 
-    fn observe_reads(
-        &mut self,
-        decoded: &DecodedFrame,
-        building_read: bool,
-        railway_read: bool,
-        output_read: bool,
-        changed: [bool; 2],
-        carry_runs: bool,
-    ) {
+    fn observe_reads(&mut self, hour: &observed::Hour, carry_runs: bool) {
         self.dirty.clear();
-        let hour = decoded.hour;
-        self.observe_dictionary(&decoded.tables[TableId::LexicalTokens.index()]);
+        let at = hour.hour;
+        self.observe_types(&hour.types);
         // An hour the recording lacks breaks every run and loses every watched building.
-        if self.last.and_then(|last| last.checked_add(1)) != Some(hour) {
+        if self.last.and_then(|last| last.checked_add(1)) != Some(at) {
             if let Some(missing) = self.last.and_then(|last| last.checked_add(1)) {
                 self.output.gap(&mut self.log, missing);
             }
@@ -1711,68 +1626,71 @@ impl Scan {
                 }
             }
         }
-        self.last = Some(hour);
-        let states = decoded.complete::<tables::StateBuildings>().ok();
-        let provinces = decoded.complete::<tables::ProvinceBuildings>().ok();
-        let touched = self.changes.observe(hour, states, provinces, changed);
-        self.buildings
-            .watch
-            .observe(hour, states, provinces, &touched);
-        self.railways
-            .watch
-            .observe(hour, states, provinces, &touched);
+        self.last = Some(at);
+        let touched = self.changes.observe(at, &hour.buildings);
+        let held = self.changes.held();
+        self.buildings.watch.observe(at, held, &touched);
+        self.railways.watch.observe(at, held, &touched);
         #[cfg(test)]
         {
-            self.work.row_visits += usize::from(changed[0]) * states.map_or(0, <[_]>::len)
-                + usize::from(changed[1]) * provinces.map_or(0, <[_]>::len);
+            self.work.row_visits += hour
+                .buildings
+                .iter()
+                .map(|table| match table {
+                    Buildings::Whole(rows) | Buildings::Changed(rows) => rows.len(),
+                    Buildings::Incomplete | Buildings::Unchanged => 0,
+                })
+                .sum::<usize>();
         }
         let previous_read = self.buildings.reads.last().copied();
-        let read = building_read;
-        match (read, decoded.complete::<tables::BuildingConstruction>()) {
-            (true, Ok(rows)) => read_buildings(self, decoded, rows, states, provinces),
+        match &hour.queue {
+            Queue::Read(lines) => read_buildings(self, at, lines),
             // A read that failed: its values are unknown, so nothing is carried,
             // until another successful queue read.
-            (true, Err(_)) => {
+            Queue::Failed => {
                 for line in self.buildings.open.values_mut() {
                     line.carried = false;
                     self.dirty.insert(line.project);
                 }
             }
-            (false, _) if carry_runs => carry(&mut self.log.projects, &self.buildings.open, hour),
-            _ => {}
+            Queue::NotRead if carry_runs => {
+                carry(&mut self.log.projects, &self.buildings.open, at)
+            }
+            Queue::NotRead => {}
         }
-        if building_read
+        if hour.queue.read()
             && let Some(previous) = previous_read
             && self.dirty.iter().any(|&index| {
                 let project = &self.log.projects[index];
                 project
                     .built
                     .iter()
-                    .any(|built| built.repair && built.known_at == hour)
+                    .any(|built| built.repair && built.known_at == at)
             })
         {
-            self.log.repair_predecessors.insert(hour, previous);
+            self.log.repair_predecessors.insert(at, previous);
         }
-        let read = railway_read;
-        match (read, decoded.complete::<tables::RailwayConstruction>()) {
-            (true, Ok(rows)) => read_railways(self, decoded, rows, states, provinces),
-            (true, Err(_)) => {
+        match &hour.railways {
+            Queue::Read(lines) => read_railways(self, at, lines),
+            Queue::Failed => {
                 for line in self.railways.open.values_mut() {
                     line.carried = false;
                     self.dirty.insert(line.project);
                 }
             }
-            (false, _) if carry_runs => carry(&mut self.log.projects, &self.railways.open, hour),
-            _ => {}
+            Queue::NotRead if carry_runs => {
+                carry(&mut self.log.projects, &self.railways.open, at)
+            }
+            Queue::NotRead => {}
         }
-        if output_read {
+        if hour.output.read() {
             self.dirty.extend(self.output.retained());
             self.dirty
                 .extend(self.output.indexed()..self.log.projects.len());
-            self.output.observe(&mut self.log, decoded);
+            self.output.observe(&mut self.log, at, &hour.output);
         }
         self.log.unresolved = self.unresolved.len();
-        self.log.last_hour = Some(decoded.hour);
+        self.log.last_hour = Some(at);
     }
 
     fn sync_reads(&mut self) {
@@ -1780,68 +1698,12 @@ impl Scan {
         self.log.railway_reads.clone_from(&self.railways.reads);
     }
 
-    /// Hours through `last`, each following the one before the last observed
-    /// (`frame`), at which no building level, queue, output, province state,
-    /// country key, link or dictionary changed and no queue or output read is
-    /// dated: what observing each of them does. Nothing carries or seals
-    /// between reads; an incomplete building table loses each such hour for
-    /// the changes since the queues' last reads, as it lost the last one.
-    pub(crate) fn advance_quiet(&mut self, last: i32, frame: &DecodedFrame) {
-        if frame.complete::<tables::StateBuildings>().is_err()
-            || frame.complete::<tables::ProvinceBuildings>().is_err()
-        {
-            self.changes.lost = true;
-            self.changes.railway_lost = true;
-        }
-        self.last = Some(last);
-        self.log.unresolved = self.unresolved.len();
-        self.log.last_hour = Some(last);
-    }
-
-    /// Whether the last observed hour left nothing to project: an hour that
-    /// follows it observes nothing new unless something it reads changed.
-    pub(crate) fn settled(&self) -> bool {
-        self.dirty.is_empty() && self.log.output_reads.is_empty()
-    }
-
-    /// The last hour observed.
-    pub(crate) fn last_hour(&self) -> Option<i32> {
-        self.last
-    }
-
-    /// The last observed hour read again from its block's keyframe
-    /// (`frame`): its complete dictionary is the one held, at that read's
-    /// allocation, so the dictionary is taken again only where continuing
-    /// that read would take it.
-    pub(crate) fn rebase_dictionary(&mut self, frame: &DecodedFrame) {
-        let view = &frame.tables[TableId::LexicalTokens.index()];
-        if self.dictionary.is_some() && matches!(&**view, TableView::Complete(_)) {
-            self.dictionary = Some(view.clone());
-        }
-    }
-
-    /// Restore shared decoder operands without persisting another copy of replay tables.
-    pub(crate) fn restore_frame(&mut self, frame: &DecodedFrame) {
-        self.dictionary = Some(frame.tables[TableId::LexicalTokens.index()].clone());
-        self.changes.states = frame
-            .complete::<tables::StateBuildings>()
-            .ok()
-            .map(<[_]>::to_vec);
-        self.changes.provinces = frame
-            .complete::<tables::ProvinceBuildings>()
-            .ok()
-            .map(<[_]>::to_vec);
-    }
-
-    #[cfg(test)]
-    fn finish(&mut self, replay: &Replay, branch: u64) {
+    /// The branch ends at `last_hour` (its gaps after the last hour observed included), as the
+    /// row oracle closes a scan.
+    #[cfg(any(test, feature = "test-support"))]
+    fn finish(&mut self, last_hour: Option<i32>) {
         self.sync_reads();
-        self.log.last_hour = replay
-            .branches
-            .iter()
-            .find(|start| start.id == branch)
-            .map(|start| branch_bounds(replay, start).1)
-            .or(self.last);
+        self.log.last_hour = last_hour.or(self.last);
         if let Some(missing) = self.last.and_then(|last| last.checked_add(1))
             && self.log.last_hour.is_some_and(|end| missing <= end)
         {
@@ -2474,7 +2336,7 @@ pub(crate) fn scanned(
         return Ok(Arc::clone(log));
     }
     scans.run += 1;
-    let log = Arc::new(scan(&source.replay(), branch, cancelled)?);
+    let log = Arc::new(row::scan(&source.replay(), branch, cancelled)?);
     scans.branches.push((branch, Arc::clone(&log)));
     if scans.branches.len() > CACHED_BRANCHES {
         scans.branches.remove(0);
@@ -2684,60 +2546,92 @@ pub(crate) fn names_in(
     Ok(ContentNames::of(log, Some(Arc::new(named))))
 }
 
+/// What a branch's scan counts for its warnings: the lines left out, the output reasons, each
+/// with the lines that had it, and whether either queue was read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Counts {
+    pub unresolved: usize,
+    pub empty_routes: usize,
+    pub late_created: usize,
+    pub unowned_lines: usize,
+    pub reasons: Vec<(SpendingGap, usize)>,
+    pub recorded: bool,
+}
+
+impl Counts {
+    /// What `log` counts.
+    pub(crate) fn of(log: &ScannedLog) -> Self {
+        let mut unknown: BTreeSet<_> = log
+            .projects
+            .iter()
+            .zip(&log.outputs)
+            .flat_map(|(project, output)| {
+                output
+                    .iter()
+                    .filter_map(|read| read.reason.map(|reason| (reason, &project.id)))
+            })
+            .collect();
+        unknown.extend(
+            log.output_reasons
+                .iter()
+                .map(|(reason, project)| (*reason, project)),
+        );
+        let mut reasons = BTreeMap::new();
+        for (reason, _) in unknown {
+            *reasons.entry(reason).or_insert(0_usize) += 1;
+        }
+        Self {
+            unresolved: log.unresolved,
+            empty_routes: log.empty_routes,
+            late_created: log.late_created,
+            unowned_lines: log.unowned_lines,
+            reasons: reasons.into_iter().collect(),
+            recorded: !(log.reads.is_empty() && log.railway_reads.is_empty()),
+        }
+    }
+}
+
 /// What every construction product warns about a branch's scan.
+#[cfg(test)]
 pub(crate) fn scan_warnings(log: &ScannedLog, warnings: &mut Vec<String>) {
-    if log.unresolved > 0 {
+    count_warnings(&Counts::of(log), warnings);
+}
+
+/// What every construction product warns about a branch's scan, by what it counted.
+pub(crate) fn count_warnings(counts: &Counts, warnings: &mut Vec<String>) {
+    if counts.unresolved > 0 {
         warnings.push(format!(
             "{} construction lines name a country the recorded links do not resolve; they are left out.",
-            log.unresolved
+            counts.unresolved
         ));
     }
-    if log.empty_routes > 0 {
+    if counts.empty_routes > 0 {
         warnings.push(format!(
             "{} railway lines were recorded without a route; whether they finished is not known.",
-            log.empty_routes
+            counts.empty_routes
         ));
     }
-    if log.late_created > 0 {
+    if counts.late_created > 0 {
         warnings.push(format!(
             "{} construction lines were created after the read that first lists them.",
-            log.late_created
+            counts.late_created
         ));
     }
     warnings.push(
         "A line created and removed between daily queue reads has no recorded owner or target; its output cannot be attributed.".to_owned(),
     );
-    if log.unowned_lines > 0 {
+    if counts.unowned_lines > 0 {
         warnings.push(format!(
             "{} construction output lines have no recorded census owner or target; their projects cannot be attributed.",
-            log.unowned_lines
+            counts.unowned_lines
         ));
     }
-    let mut unknown: BTreeSet<_> = log
-        .projects
-        .iter()
-        .zip(&log.outputs)
-        .flat_map(|(project, output)| {
-            output
-                .iter()
-                .filter_map(|read| read.reason.map(|reason| (reason, &project.id)))
-        })
-        .collect();
-    unknown.extend(
-        log.output_reasons
-            .iter()
-            .map(|(reason, project)| (*reason, project)),
-    );
-    let mut reasons = BTreeMap::new();
-    for (reason, _) in unknown {
-        *reasons.entry(reason).or_insert(0_usize) += 1;
-    }
-    for (reason, count) in reasons {
+    for (reason, count) in &counts.reasons {
         warnings.push(format!(
             "{count} construction lines have unavailable factory output ({reason:?})."
         ));
     }
-    if log.reads.is_empty() && log.railway_reads.is_empty() {
+    if !counts.recorded {
         warnings.push("No recorded construction queue in this branch.".to_owned());
     }
 }
@@ -2941,6 +2835,7 @@ fn cut(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<C
 impl Product for ConstructionLogManifest {
     const KEY: &'static str = "construction-log-manifest";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = BranchParams;
     type Reply = ConstructionLogManifestReply;
 
@@ -2982,6 +2877,7 @@ impl Product for ConstructionLogManifest {
 impl Product for ConstructionLog {
     const KEY: &'static str = "construction-log";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = ConstructionLogParams;
     type Reply = ConstructionLogReply;
 

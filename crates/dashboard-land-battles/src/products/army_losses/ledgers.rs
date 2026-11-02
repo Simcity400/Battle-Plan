@@ -16,14 +16,19 @@
 //! read. The walk keeps nothing of a block once it is processed, and stops when
 //! every month is settled or an unread hour leaves the rest unknown. A month
 //! written after its country's latest read, and one no read covered, are
-//! unknown too, never zero.
+//! unknown too, never zero. A block whose row frames leave these tables to the
+//! native capture stops the walk too: what it still asks is not prepared from
+//! native recordings yet, never unread.
 //!
 //! An entry is told apart by its first write, not only its calendar month: a
 //! retention below one deletes the current month's entry each day, and a later
 //! loss that month writes a new one whose rows its predecessor's never stand for.
 use super::month_key;
 use dashboard_base::{
-    prepared::{self, query::observations},
+    prepared::{
+        self,
+        query::{native, observations},
+    },
     source::Source,
 };
 use dashboard_text::metadata::check_cancel;
@@ -56,6 +61,7 @@ const NO_READ_YET: &str = "Combat Log equipment months of a country not read yet
 const AFTER_READ: &str = "Combat Log equipment months written after their country's latest read are unknown";
 const EARLIER_UNREAD: &str = "Combat Log equipment months whose later reads were not all recorded are unknown";
 const UNWITNESSED: &str = "Combat Log equipment months no read covered are unknown";
+const UNPREPARED: &str = "Older Combat Log equipment months are not prepared from native recordings yet";
 const OTHER_ENTRY: &str = "Combat Log equipment rows of another entry of the same month do not witness this one";
 
 /// The tables a read's coverage is known from.
@@ -76,6 +82,8 @@ pub enum Lookup {
     /// No read can be accepted; `complete` when every hour back to the
     /// month's first write was read, so no read covered it.
     Unwitnessed { complete: bool },
+    /// The walk reached a block whose reads only the native capture holds.
+    Unprepared,
 }
 
 /// Where earlier reads of the own ledgers are found.
@@ -194,6 +202,7 @@ pub fn witnesses(
             Lookup::Found(witness) => witness,
             Lookup::Unwitnessed { complete: true } => Witness::Unknown(UNWITNESSED),
             Lookup::Unwitnessed { complete: false } => Witness::Unknown(EARLIER_UNREAD),
+            Lookup::Unprepared => Witness::Unknown(UNPREPARED),
         };
     }
     Ok(out)
@@ -208,6 +217,8 @@ pub struct Provenance {
     #[allow(clippy::type_complexity)]
     covered: BTreeMap<(u32, Entry), (i32, Option<Vec<CombatLogEquipmentRow>>)>,
     unread: Vec<(i32, i32)>,
+    /// The block's row frames leave those tables to the native capture.
+    native: bool,
 }
 
 /// A block's hours observed in order, folded into its [`Provenance`].
@@ -246,6 +257,10 @@ impl Builder {
     /// Index a changed hour; false once past the last hour indexed.
     fn changed(&mut self, frame: &DecodedFrame) -> bool {
         if frame.hour > self.until {
+            return false;
+        }
+        if READ.into_iter().any(|table| native::left_to_native(frame, table)) {
+            self.out.native = true;
             return false;
         }
         let full = self.hour(frame.hour);
@@ -401,8 +416,9 @@ impl Provenance {
 /// latest read that covered it when every hour from that read to `until` was
 /// read, within its block, in each newer block and between them. The walk ends
 /// at the first unread hour, which leaves every month still unsettled unknown,
-/// and once every month is settled; each block's index is released once
-/// processed.
+/// at the first block left to the native capture, which leaves them
+/// [`Lookup::Unprepared`], and once every month is settled; each block's index
+/// is released once processed.
 pub fn fold(
     blocks: impl IntoIterator<Item = io::Result<((i32, i32), Arc<Provenance>)>>,
     wanted: &[Wanted],
@@ -429,6 +445,12 @@ pub fn fold(
                 *slot = Some(Lookup::Unwitnessed { complete: true });
                 left -= 1;
             }
+        }
+        if provenance.native {
+            for slot in out.iter_mut().filter(|slot| slot.is_none()) {
+                *slot = Some(Lookup::Unprepared);
+            }
+            break;
         }
         let unread = provenance.unread.iter().map(|&(_, to)| to).max();
         for (slot, &(owner, entry)) in out.iter_mut().zip(wanted) {

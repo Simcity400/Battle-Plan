@@ -11,7 +11,7 @@ use replay_data::rows::CountryRow;
 use replay_data::{rows::RowCodec, rows::TableRows, rows::TableSchema};
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::{frame::FrameDecoder, frame::Metrics, frame::SharedView, frame::TableView};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 #[cfg(any(test, feature = "test-support"))]
 const SELECTED: [TableId; 9] = [
@@ -25,6 +25,7 @@ const SELECTED: [TableId; 9] = [
     TableId::CharacterPortraits,
     TableId::LexicalTokens,
 ];
+#[cfg(any(test, feature = "test-support"))]
 const TABLES: [TableId; 6] = [
     TableId::Projects,
     TableId::ProjectPrograms,
@@ -42,6 +43,7 @@ pub(super) struct Actors {
     pub(super) links: BTreeMap<u32, Vec<CountryLinkRow>>,
 }
 impl Actors {
+    #[cfg(any(test, feature = "test-support"))]
     fn digest(&self) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
         hash.update(&[u8::from(self.known)]);
@@ -63,6 +65,7 @@ impl Actors {
         }
         *hash.finalize().as_bytes()
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn read(frame: &DecodedFrame) -> Self {
         let countries = frame
             .complete::<tables::Countries>()
@@ -71,6 +74,7 @@ impl Actors {
         let links = Self::link_operands(frame);
         Self::bind(countries.as_ref(), links.as_deref())
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn link_operands(frame: &DecodedFrame) -> Option<Vec<(u32, u32)>> {
         Some(
             frame
@@ -120,39 +124,22 @@ impl Actors {
     }
 }
 
-/// The recording oracle and preparation count structural diagnostics once per
-/// input span. Resume retains only an actor digest and rebinds decoder views.
-#[derive(Clone, Default, Serialize, Deserialize)]
+/// The recording oracle counts structural diagnostics once per input span.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Default)]
 pub(super) struct SpanBoundary {
     hour: Option<i32>,
     actors: Option<[u8; 32]>,
-    #[serde(skip)]
     views: Option<[ViewIdentity; TABLES.len()]>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl SpanBoundary {
-    pub(super) fn restore_views(&mut self, frame: &DecodedFrame) {
+    fn restore_views(&mut self, frame: &DecodedFrame) {
         self.views = Some(TABLES.map(|table| frame.tables[table.index()].identity()));
     }
-    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn observe(&mut self, frame: &DecodedFrame, actors: &Actors) -> bool {
         let actors = actors.digest();
         self.observe_digest(frame, actors)
-    }
-    pub(super) fn observe_changed(
-        &mut self,
-        frame: &DecodedFrame,
-        actors: &Actors,
-        identities_changed: bool,
-    ) -> bool {
-        let digest = if identities_changed {
-            actors.digest()
-        } else {
-            self.actors.unwrap_or_else(|| actors.digest())
-        };
-        self.observe_digest(frame, digest)
-    }
-    pub(super) fn advance(&mut self, hour: i32) {
-        self.hour = Some(hour);
     }
     fn observe_digest(&mut self, frame: &DecodedFrame, actors: [u8; 32]) -> bool {
         let same = self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
@@ -486,11 +473,15 @@ pub(super) fn cached(
     Ok(scan)
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct Name {
-    text: Option<String>,
-    warnings: Vec<String>,
+/// A scoped project name as one hour evaluated it: its text, and what it refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Name {
+    pub(super) text: Option<String>,
+    pub(super) warnings: Vec<String>,
 }
+
+/// A scoped name's owner tag, canonical slot and definition.
+pub(super) type NameKey = (String, u32, u32);
 struct NameRun {
     first: i32,
     last: i32,
@@ -501,6 +492,9 @@ pub(super) struct Names {
     #[serde(skip)]
     runs: BTreeMap<(String, u32, u32), Vec<NameRun>>,
     counts: BTreeMap<String, BTreeMap<String, usize>>,
+    /// The last hour each name's refusals were counted.
+    #[serde(skip)]
+    counted: BTreeMap<NameKey, i32>,
     #[cfg(any(test, feature = "test-support"))]
     pub decoded_blocks: usize,
 }
@@ -514,6 +508,7 @@ impl Names {
             .then(|| runs[index].value.text.clone())
             .flatten()
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn refusals_at(
         &self,
         tag: &str,
@@ -529,6 +524,7 @@ impl Names {
             })
             .map_or(&[], |run| run.value.warnings.as_slice())
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn warnings(&self, tag: &str) -> Vec<String> {
         self.counts
             .get(tag)
@@ -537,20 +533,66 @@ impl Names {
             .map(|(reason, count)| format!("{reason} ({count} project-name observations)."))
             .collect()
     }
-    fn observe(&mut self, key: (String, u32, u32), hour: i32, value: Name) {
-        let owner = key.0.clone();
+    /// The name observations with refusals counted since last taken, by owner and reason.
+    pub(super) fn take_counts(&mut self) -> BTreeMap<String, BTreeMap<String, usize>> {
+        std::mem::take(&mut self.counts)
+    }
+
+    /// What these names, an hour's, changed of `sent`, the names last sent: each key's new name,
+    /// none where it names nothing now, or only a project of `except`'s (provisional names,
+    /// sent apart). `sent` then holds them.
+    pub(super) fn changes(
+        &self,
+        sent: &mut HashMap<NameKey, Name>,
+        except: &BTreeSet<NameKey>,
+    ) -> Vec<(NameKey, Option<Name>)> {
+        let mut changes = Vec::new();
+        let mut held = 0;
+        for (key, runs) in &self.runs {
+            let Some(run) = runs.last().filter(|_| !except.contains(key)) else {
+                continue;
+            };
+            held += 1;
+            if sent.get(key) != Some(&run.value) {
+                sent.insert(key.clone(), run.value.clone());
+                changes.push((key.clone(), Some(run.value.clone())));
+            }
+        }
+        if sent.len() > held {
+            let gone: Vec<NameKey> = sent
+                .keys()
+                .filter(|key| !self.runs.contains_key(*key) || except.contains(*key))
+                .cloned()
+                .collect();
+            for key in gone {
+                sent.remove(&key);
+                changes.push((key, None));
+            }
+        }
+        changes
+    }
+    /// Whether `key`'s refusals were counted at `hour`.
+    fn counted_at(&self, key: &NameKey, hour: i32) -> bool {
+        self.counted.get(key) == Some(&hour)
+    }
+
+    /// `key`'s name at `hour`, its refusals counted once an hour where `counted`.
+    fn observe(&mut self, key: (String, u32, u32), hour: i32, value: Name, counted: bool) {
+        if counted && !self.counted_at(&key, hour) {
+            self.counted.insert(key.clone(), hour);
+            for reason in &value.warnings {
+                *self
+                    .counts
+                    .entry(key.0.clone())
+                    .or_default()
+                    .entry(reason.clone())
+                    .or_default() += 1;
+            }
+        }
         let runs = self.runs.entry(key).or_default();
         // Several projects may use the same definition and owner at this hour.
         if runs.last().is_some_and(|last| last.last == hour) {
             return;
-        }
-        for reason in &value.warnings {
-            *self
-                .counts
-                .entry(owner.clone())
-                .or_default()
-                .entry(reason.clone())
-                .or_default() += 1;
         }
         if let Some(last) = runs.last_mut()
             && last.last.checked_add(1) == Some(hour)
@@ -573,6 +615,13 @@ struct Actor {
     identity: Option<(u32, u32)>,
     admitted: bool,
     open: BTreeSet<(u32, u32)>,
+    /// Its projects not visible of themselves that may be open episodes the scan did not see
+    /// begin: named, their refusals counted apart ([`NameScan::uncertain`]).
+    #[serde(default)]
+    provisional: BTreeSet<(u32, u32)>,
+    /// Whether its first projects read are to be taken as possibly open.
+    #[serde(default)]
+    seeding: bool,
 }
 
 /// A scoped name's last evaluation: the key it localised, the name it gave
@@ -607,6 +656,13 @@ pub(super) struct NameScan {
     /// observed, which tells a name that changed at the next.
     #[serde(skip)]
     previous: BTreeMap<(String, u32, u32), (i32, Name)>,
+    /// The scan starts after hours it did not see: a project an episode may hold open
+    /// is named, whether it is open known only to whoever saw those hours.
+    #[serde(skip)]
+    pub(super) uncertain: bool,
+    /// Each possibly open project named since last taken, with its name.
+    #[serde(skip)]
+    provisional: Vec<(NameKey, (u32, u32), Name)>,
 }
 /// Whether the name of `at` observed at `hour` is not the one `previous`
 /// holds from the hour before (or it holds none), remembering it for the
@@ -628,47 +684,22 @@ fn changed(
 #[derive(Clone, Copy)]
 pub(super) enum Reuse<'a> {
     /// Evaluate every name.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        expect(dead_code, reason = "the recording oracle evaluates every name")
+    )]
     Every,
     /// Reuse a name every input of whose last evaluation reads the same at
     /// the frame's hour, given these changes since the hour before (an
     /// input whose declared reads did not change reads the same without
     /// reading it); evaluate any other.
     Confirm(&'a dyn TableChanges),
-    /// Reuse every name, none of whose inputs' declared reads these changes
-    /// changed, without reading the frame, which holds the hour's rows only
-    /// of the tables the family watches whole ([`NameScan::advances`]).
-    Advance(&'a dyn TableChanges),
 }
 
 impl NameScan {
-    /// Whether every active name reads the same at the frame's hour without
-    /// reading the frame: its last evaluation is of the key it localises
-    /// now, at the hour before, and none of its inputs' declared reads
-    /// `changes` changed ([`Reuse::Advance`]).
-    pub(super) fn advances(
-        &self,
-        frame: &DecodedFrame,
-        actors: &Actors,
-        changes: &dyn TableChanges,
-    ) -> bool {
-        let Some(since) = Since::hour_before(frame, changes) else {
-            return false;
-        };
-        self.active.iter().all(|(definition, tag)| {
-            let Some(&(_, slot)) = actors.tags.get(tag.as_bytes()) else {
-                return true;
-            };
-            let Some(Some(key)) = self.keys.get(&(*definition, tag.clone())) else {
-                return true;
-            };
-            self.evaluations
-                .get(&(tag.clone(), slot, *definition))
-                .is_some_and(|last| last.key == *key && last.inputs.unchanged(&since))
-        })
-    }
-
     /// Observe the frame's projects' scoped names, reusing them as `reuse`
-    /// says.
+    /// says. The countries any of whose names changed since the hour before:
+    /// one not named then, another name or refusal, or a name it no longer has.
     pub(super) fn observe(
         &mut self,
         frame: &DecodedFrame,
@@ -677,11 +708,13 @@ impl NameScan {
         content: &Content,
         reuse: Reuse<'_>,
         cancelled: &AtomicBool,
-    ) -> io::Result<()> {
+    ) -> io::Result<BTreeSet<String>> {
         check_cancel(cancelled)?;
-        self.active.clear();
-        let Ok(countries) = frame.complete::<tables::Countries>() else {
-            return Ok(());
+        let before = std::mem::take(&mut self.active);
+        let mut countries = BTreeSet::new();
+        let Ok(rows) = frame.complete::<tables::Countries>() else {
+            countries.extend(before.into_iter().map(|(_, tag)| tag));
+            return Ok(countries);
         };
         let projects = frame.complete::<tables::Projects>().ok();
         let lexical = &frame.tables[TableId::LexicalTokens.index()];
@@ -694,12 +727,16 @@ impl NameScan {
             self.lexical_view = Some(lexical.identity());
         }
         for (tag, &(id, slot)) in &input.tags {
-            let Ok(index) = countries.binary_search_by_key(&id, |country| country.id) else {
+            let Ok(index) = rows.binary_search_by_key(&id, |country| country.id) else {
                 continue;
             };
-            let country = &countries[index];
+            let country = &rows[index];
             let identity = (slot, country.id);
-            let actor = self.actors.entry(tag.clone()).or_default();
+            let uncertain = self.uncertain;
+            let actor = self.actors.entry(tag.clone()).or_insert_with(|| Actor {
+                seeding: uncertain,
+                ..Actor::default()
+            });
             if actor.last.is_none_or(|(old, hour)| {
                 old != identity || hour.checked_add(1) != Some(frame.hour)
             }) {
@@ -707,6 +744,8 @@ impl NameScan {
             }
             if actor.identity.is_some_and(|old| old != identity) {
                 actor.open.clear();
+                actor.provisional.clear();
+                actor.seeding = false;
             }
             actor.identity = Some(identity);
             actor.last = Some((identity, frame.hour));
@@ -723,13 +762,22 @@ impl NameScan {
             let Some(links) = input.links.get(&slot) else {
                 continue;
             };
+            let seeding = std::mem::take(&mut actor.seeding);
             let mut next = BTreeSet::new();
+            let mut possible = BTreeSet::new();
             for project in owned_rows(projects, links, slot, |row| row.owner) {
                 let key = (project.local_id, project.definition_id);
-                if !visible(project, actor.open.contains(&key)) {
+                let open = actor.open.contains(&key);
+                let provisional = !open
+                    && !visible(project, false)
+                    && (seeding || actor.provisional.contains(&key));
+                if provisional {
+                    possible.insert(key);
+                } else if visible(project, open) {
+                    next.insert(key);
+                } else {
                     continue;
                 }
-                next.insert(key);
                 let Ok(tag) = std::str::from_utf8(tag) else {
                     continue;
                 };
@@ -758,79 +806,41 @@ impl NameScan {
                     .previous
                     .get(&at)
                     .is_none_or(|(hour, _)| *hour != frame.hour)
+                    && changed(&mut self.previous, &at, frame.hour, &value)
                 {
-                    self.previous
-                        .insert(at.clone(), (frame.hour, value.clone()));
+                    countries.insert(tag.to_owned());
                 }
-                self.names.observe(at, frame.hour, value);
+                if provisional {
+                    self.provisional
+                        .push((at.clone(), (project.local_id, project.definition_id), value.clone()));
+                }
+                self.names.observe(at, frame.hour, value, !provisional);
             }
             actor.open = next;
+            actor.provisional = possible;
         }
-        Ok(())
+        // A name a project known open has is no provisional one.
+        let names = &self.names;
+        self.provisional
+            .retain(|(at, _, _)| !names.counted_at(at, frame.hour));
+        countries.extend(
+            before
+                .difference(&self.active)
+                .map(|(_, tag)| tag.clone()),
+        );
+        Ok(countries)
     }
+    /// Each possibly open project named since last taken, whose name no project known open
+    /// has: its name's key, the project, and its name.
+    pub(super) fn take_provisional(&mut self) -> Vec<(NameKey, (u32, u32), Name)> {
+        std::mem::take(&mut self.provisional)
+    }
+
     pub(super) fn take_current(&mut self) -> Names {
         Names {
             runs: std::mem::take(&mut self.names.runs),
             ..Default::default()
         }
-    }
-    pub(super) fn rebind(
-        &mut self,
-        frame: &DecodedFrame,
-        tag: &str,
-        definition: u32,
-        content: &Content,
-    ) {
-        let key = (definition, tag.to_owned());
-        let value = scope_key(frame, content, definition, tag);
-        if value.is_some() {
-            self.active.insert(key.clone());
-        } else {
-            self.active.remove(&key);
-        }
-        self.keys.insert(key, value);
-    }
-    pub(super) fn active_countries(&self) -> impl Iterator<Item = String> + '_ {
-        self.active.iter().map(|(_, tag)| tag.clone())
-    }
-    /// Evaluate the active scoped names at the frame's hour, reusing them as
-    /// `reuse` says ([`Self::observe`]). The countries any of whose names
-    /// changed since the hour before: one not observed then, or another
-    /// name or refusal. Every other country's presentation reads at this
-    /// hour the names it read at the hour before.
-    pub(super) fn evaluate_current(
-        &mut self,
-        frame: &DecodedFrame,
-        actors: &Actors,
-        content: &Content,
-        reuse: Reuse<'_>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<BTreeSet<String>> {
-        let mut countries = BTreeSet::new();
-        for (definition, tag) in &self.active {
-            check_cancel(cancelled)?;
-            let Some((_, slot)) = actors.tags.get(tag.as_bytes()) else {
-                continue;
-            };
-            let Some(Some(key)) = self.keys.get(&(*definition, tag.clone())) else {
-                continue;
-            };
-            let value = reused_name(
-                &mut self.evaluations,
-                &mut self.reuse,
-                (tag, *slot, *definition),
-                key,
-                frame,
-                content,
-                reuse,
-            );
-            let at = (tag.clone(), *slot, *definition);
-            if changed(&mut self.previous, &at, frame.hour, &value) {
-                countries.insert(tag.clone());
-            }
-            self.names.observe(at, frame.hour, value);
-        }
-        Ok(countries)
     }
 }
 fn scope_key(
@@ -915,25 +925,10 @@ fn reused_name(
 ) -> Name {
     let changes = match reuse {
         Reuse::Every => return name_at(frame, slot, key, content),
-        Reuse::Confirm(changes) | Reuse::Advance(changes) => changes,
+        Reuse::Confirm(changes) => changes,
     };
     let at = (owner.to_owned(), slot, definition);
     let since = Since::hour_before(frame, changes);
-    if let Reuse::Advance(_) = reuse {
-        // The hour's frame holds its rows only of the tables the family
-        // watches whole: every name was found to read the same without it
-        // ([`NameScan::advances`]).
-        let last = evaluations
-            .get_mut(&at)
-            .filter(|last| last.key == key)
-            .expect("a kept hour's names were checked to advance");
-        let advanced = since
-            .as_ref()
-            .is_some_and(|since| last.inputs.advance(since));
-        assert!(advanced, "a kept hour's names were checked to advance");
-        counts.reused += 1;
-        return last.name.clone();
-    }
     let confirmed = match (
         evaluations.get_mut(&at),
         content.catalogue.scripted_content(),

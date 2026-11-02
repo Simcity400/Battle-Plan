@@ -1,31 +1,41 @@
 //! Exact territory weights grouped by current holder and content strategic region.
 //! Region membership is content data, never a vanilla list or a guessed centroid.
 //! Each state's exact contribution is split by its native content province roster.
-use super::country_groups::{HourSpan, record_hour};
-#[cfg(any(test, feature = "test-support"))]
-use super::territory::{Territory, TerritoryParams};
 use super::{
     LoadContext, Product,
-    territory::{self, CountryReads, LandReads, TerritoryRun, TerritorySeries},
+    country_groups::HourSpan,
+    territory::{TerritoryRun, TerritorySeries},
+};
+#[cfg(any(test, feature = "test-support"))]
+use super::{
+    country_groups::record_hour,
+    territory::{self, CountryReads, LandReads, Territory, TerritoryParams},
 };
 use crate::{
     Source,
     catalogue::{self, Catalogue},
 };
+#[cfg(any(test, feature = "test-support"))]
 use installed_content_province_area::province_area::ProvinceAreas;
+#[cfg(any(test, feature = "test-support"))]
 use replay_data::rows::tables;
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    io,
+    collections::BTreeSet,
     sync::{Arc, atomic::AtomicBool},
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io,
 };
 use ts_rs::TS;
 
 pub struct TerritoryBreakdown;
 /// Regional attribution supports the controlled and owned prefix only.
-const REGIONAL_COLUMN_COUNT: usize = territory::columns::OWNED_AREA + 1;
+const REGIONAL_COLUMN_COUNT: usize = super::territory::columns::OWNED_AREA + 1;
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerritoryBreakdownParams {
@@ -124,6 +134,48 @@ fn state_parts(
         .collect())
 }
 impl Regions {
+    /// The recorded stack's regions, or why they cannot be read.
+    pub fn load(source: &Source, context: &LoadContext) -> Result<Self, String> {
+        context
+            .content()
+            .and_then(|content| catalogue::catalogue(source, content))
+            .and_then(|cat| Self::read(&cat))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Province `id`'s strategic region; none where none or several claim it.
+    pub fn province_region(&self, id: u32) -> Option<u32> {
+        self.provinces.get(&id).copied().flatten()
+    }
+
+    /// State `id`'s parts by region, as (region, numerator, denominator); none without a roster.
+    pub fn state_parts(
+        &self,
+        id: u32,
+    ) -> Option<impl Iterator<Item = (Option<u32>, u64, u32)> + '_> {
+        self.states.get(&id).map(|parts| {
+            parts
+                .iter()
+                .map(|part| (part.region, part.numerator, part.denominator))
+        })
+    }
+
+    /// Why state rosters are unavailable, when they are.
+    pub fn state_reason(&self) -> Option<&str> {
+        self.state_reason.as_deref()
+    }
+
+    pub fn names(&self) -> &[TerritoryRegion] {
+        &self.names
+    }
+
+    /// The content's warnings, with why state rosters are unavailable.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = self.warnings.clone();
+        warnings.extend(self.state_reason.clone());
+        warnings
+    }
+
     fn read(cat: &Catalogue) -> io::Result<Self> {
         let content = crate::content::strategic_regions(&cat.content.layers)?;
         let mut result = Self {
@@ -222,7 +274,70 @@ impl Regions {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl Regions {
+    /// Regions of `provinces`' memberships and `states`' parts as (region, numerator,
+    /// denominator).
+    pub fn synthetic(
+        provinces: HashMap<u32, Option<u32>>,
+        states: Vec<(u32, Vec<(Option<u32>, u64, u32)>)>,
+    ) -> Self {
+        Self {
+            provinces,
+            states: states
+                .into_iter()
+                .map(|(id, parts)| {
+                    let parts = parts
+                        .into_iter()
+                        .map(|(region, numerator, denominator)| StatePart {
+                            region,
+                            numerator,
+                            denominator,
+                        })
+                        .collect();
+                    (id, parts)
+                })
+                .collect(),
+            ..Self::default()
+        }
+    }
+}
+
+/// The row scan of `frames`, in order: every regional series in key order, each regional
+/// column's complete reads, and the states and provinces no region attributes.
+#[cfg(any(test, feature = "test-support"))]
+pub fn oracle(
+    frames: &[DecodedFrame],
+    regions: &Regions,
+    areas: Option<&ProvinceAreas>,
+    format: replay_data::format::FormatVersion,
+) -> io::Result<(
+    Vec<TerritoryRegionSeries>,
+    [Vec<HourSpan>; REGIONAL_COLUMN_COUNT],
+    [usize; 2],
+)> {
+    let mut scan = Scan {
+        format,
+        ..Scan::default()
+    };
+    let mut builder = Builder::default();
+    for frame in frames {
+        observe(&mut scan, frame, regions, areas, &mut builder, None)?;
+    }
+    builder.seal(&mut scan);
+    scan.series.sort_unstable_by(|a, b| {
+        (&a.tag, a.region, &a.missing).cmp(&(&b.tag, b.region, &b.missing))
+    });
+    Ok((
+        scan.series,
+        scan.observed,
+        [scan.missing_states.len(), scan.missing_provinces.len()],
+    ))
+}
+
+#[cfg(any(test, feature = "test-support"))]
 type Key = (Option<String>, Option<u32>, Option<String>);
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default, Serialize, Deserialize)]
 pub struct Scan {
     /// The recording's format, which dates its daily tables
@@ -237,6 +352,7 @@ pub struct Scan {
     missing_provinces: BTreeSet<u32>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 /// One scan's working state. Holders, series keys and region sums are resolved
 /// once and reused while the recorded fields they read are unchanged.
 #[derive(Default, Serialize, Deserialize)]
@@ -275,6 +391,7 @@ struct Builder {
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
 }
+#[cfg(any(test, feature = "test-support"))]
 struct Lineage {
     reads: CountryReads,
     /// Each raw link's tag, where exactly one tag names its canonical slot.
@@ -284,6 +401,7 @@ struct Lineage {
     identities: BTreeMap<usize, (u32, u32)>,
     present: BTreeSet<usize>,
 }
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Serialize, Deserialize)]
 struct Slot {
     tag: Option<usize>,
@@ -292,11 +410,13 @@ struct Slot {
     last: Option<RegionValues>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct RegionValues {
     values: [Option<i64>; 6],
     states: [Option<BTreeMap<u32, u64>>; 2],
 }
+#[cfg(any(test, feature = "test-support"))]
 impl RegionValues {
     fn zero(available: [bool; REGIONAL_COLUMN_COUNT]) -> Self {
         Self {
@@ -346,6 +466,7 @@ impl RegionValues {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Builder {
     /// Each raw link's holder tag and each tag's native identity this hour.
     fn read_lineage(&mut self, reads: CountryReads) -> Lineage {
@@ -455,6 +576,7 @@ impl Builder {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Builder {
     fn seal(&self, scan: &mut Scan) {
         let Some(hour) = self.hour else { return };
@@ -473,6 +595,7 @@ impl Builder {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn observe(
     scan: &mut Scan,
     frame: &DecodedFrame,
@@ -851,6 +974,7 @@ impl Product for TerritoryBreakdown {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn build_reply(
     scanned: &Scan,
     regions: &Regions,
@@ -881,345 +1005,5 @@ fn build_reply(
     Ok(reply)
 }
 
-/// One reached hour beyond accepted preparation. The observer's own step runs
-/// over that hour's frame alone, read directly from the recording, so each
-/// region series carries exactly the values preparation dates at the hour.
-/// Run extents and segment starts are the hour's own evidence. Series the
-/// frame does not reach are absent rather than zero, and the observed spans
-/// say which columns the frame proves; nothing is written to the store.
-pub(crate) fn sampled_reply(
-    source: &Source,
-    context: &LoadContext,
-    branch: u64,
-    hour: i32,
-    areas: Option<&ProvinceAreas>,
-    totals: super::territory::TerritoryReply,
-    cancelled: &AtomicBool,
-) -> io::Result<TerritoryBreakdownReply> {
-    // Missing content refuses exactly as the prepared catalogue's recorded reason does.
-    let regions = context
-        .content()
-        .and_then(|content| catalogue::catalogue(source, content))
-        .and_then(|cat| Regions::read(&cat))
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let frame = read_frame(source, branch, hour, cancelled)?;
-    sample_reply(
-        frame.as_deref(),
-        source.replay_ref().format,
-        &regions,
-        areas,
-        totals,
-    )
-}
-
-/// The territory tables at one hour, decoded directly; none inside a gap.
-fn read_frame(
-    source: &Source,
-    branch: u64,
-    hour: i32,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<Box<DecodedFrame>>> {
-    crate::prepared::query::progressive::frame_at(
-        source,
-        branch,
-        hour,
-        territory::TABLES,
-        cancelled,
-    )
-}
-
-/// The stateless regional step over one frame, or none at a gap.
-fn sample_reply(
-    frame: Option<&DecodedFrame>,
-    format: replay_data::format::FormatVersion,
-    regions: &Regions,
-    areas: Option<&ProvinceAreas>,
-    totals: super::territory::TerritoryReply,
-) -> io::Result<TerritoryBreakdownReply> {
-    let mut scan = Scan {
-        format,
-        ..Scan::default()
-    };
-    if let Some(frame) = frame {
-        observe(
-            &mut scan,
-            frame,
-            regions,
-            areas,
-            &mut Builder::default(),
-            None,
-        )?;
-    }
-    let mut reply = build_reply(&scan, regions, totals)?;
-    reply.series.sort_unstable_by(|a, b| {
-        (&a.tag, a.region, &a.missing).cmp(&(&b.tag, b.region, &b.missing))
-    });
-    Ok(reply)
-}
-
-#[derive(Default, Serialize, Deserialize)]
-pub struct Prepared {
-    scan: Scan,
-    builder: Builder,
-    keys: BTreeMap<String, u64>,
-    facts: crate::prepared::series::Accumulator,
-    observed: crate::prepared::series::Accumulator,
-    reason: Option<String>,
-    #[serde(skip)]
-    regions: Option<Regions>,
-}
-
-impl Prepared {
-    pub fn configure(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
-        if self.regions.is_none() && self.reason.is_none() {
-            match context
-                .content()
-                .and_then(|content| catalogue::catalogue(source, content))
-                .and_then(|cat| Regions::read(&cat))
-            {
-                Ok(regions) => self.regions = Some(regions),
-                Err(error) => self.reason = Some(error.to_string()),
-            }
-        }
-        Ok(())
-    }
-
-    pub fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        areas: Option<&ProvinceAreas>,
-        changes: &crate::prepared::frame_changes::FrameChanges,
-    ) -> io::Result<()> {
-        self.scan.format = format;
-        self.observe_with(frame, areas, Some(changes))
-    }
-
-    fn observe_with(
-        &mut self,
-        frame: &DecodedFrame,
-        areas: Option<&ProvinceAreas>,
-        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
-    ) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope_phase("territory:breakdown");
-        self.facts.advance(frame.hour)?;
-        self.observed.advance(frame.hour)?;
-        // A restored builder keeps no freshness; publication sealed the span of
-        // each column observed at its last complete hour there.
-        let was_observed: [bool; REGIONAL_COLUMN_COUNT] = match self.builder.available {
-            Some(available) => available.map(|known| known && self.builder.hour.is_some()),
-            None => std::array::from_fn(|column| {
-                self.builder.hour.is_some_and(|hour| {
-                    self.scan.observed[column]
-                        .last()
-                        .is_some_and(|span| span.last_hour == hour)
-                })
-            }),
-        };
-        let contiguous = self.builder.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-        let Some(regions) = &self.regions else {
-            return Ok(());
-        };
-        if self.builder.keys.is_empty() {
-            self.builder.keys = self
-                .scan
-                .series
-                .iter()
-                .enumerate()
-                .map(|(index, series)| {
-                    (
-                        (series.tag.clone(), series.region, series.missing.clone()),
-                        index,
-                    )
-                })
-                .collect();
-        }
-        observe(
-            &mut self.scan,
-            frame,
-            regions,
-            areas,
-            &mut self.builder,
-            changes,
-        )?;
-        for &index in &self.builder.changed {
-            let series = &self.scan.series[index];
-            let key = serde_json::to_string(&(&series.tag, series.region, &series.missing))?;
-            self.keys.entry(key).or_insert(index as u64);
-            let current = series.runs.last().filter(|run| run.last_hour == frame.hour);
-            if let Some(run) = current {
-                if run.first_hour == frame.hour {
-                    self.facts.event(index as u64, frame.hour, run)?;
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        self.builder.work.emitted += 1;
-                    }
-                }
-                self.facts.observe_if_changed(
-                    index as u64,
-                    frame.hour,
-                    Some(i128::from(run.first_hour)),
-                    run.first_hour == frame.hour && run.starts_segment,
-                    false,
-                );
-            } else {
-                self.facts
-                    .observe_if_changed(index as u64, frame.hour, None, false, false);
-            }
-        }
-        for (column, known) in self
-            .builder
-            .available
-            .unwrap_or([false; REGIONAL_COLUMN_COUNT])
-            .into_iter()
-            .enumerate()
-        {
-            let known = known && self.builder.hour == Some(frame.hour);
-            if !contiguous || known != was_observed[column] {
-                self.observed
-                    .observe(column as u64, frame.hour, known.then_some(1), false);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn bytes(&self) -> usize {
-        self.facts.bytes() + self.observed.bytes()
-    }
-
-    pub fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        use crate::prepared::series;
-        self.builder.seal(&mut self.scan);
-        self.facts.flush(
-            writer,
-            &format!("territory-breakdown-facts-{branch}"),
-            0,
-            cancelled,
-        )?;
-        self.observed.flush(
-            writer,
-            &format!("territory-breakdown-observed-{branch}"),
-            0,
-            cancelled,
-        )?;
-        let metadata = self
-            .regions
-            .as_ref()
-            .map(|regions| {
-                build_reply(
-                    &self.scan,
-                    regions,
-                    super::territory::TerritoryReply {
-                        branch_id: branch.to_string(),
-                        world_totals: Vec::new(),
-                        series: Vec::new(),
-                        area_unit: None,
-                        area_reason: None,
-                        warnings: Vec::new(),
-                    },
-                )
-                .map(|mut reply| {
-                    for series in &mut reply.series {
-                        series.runs.clear();
-                    }
-                    reply.observed = Default::default();
-                    reply
-                })
-            })
-            .transpose()?;
-        series::write_catalogue(
-            writer,
-            "territory-breakdown",
-            branch,
-            &self.keys,
-            &(metadata, &self.reason),
-        )?;
-        for series in &mut self.scan.series {
-            if series.runs.len() > 1 {
-                series.runs.drain(..series.runs.len() - 1);
-            }
-        }
-        for spans in &mut self.scan.observed {
-            if spans.len() > 1 {
-                spans.drain(..spans.len() - 1);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn reply(
-        store: &store::Store,
-        key: &store::SourceKey,
-        branch: u64,
-        from: i32,
-        to: i32,
-        totals: super::territory::TerritoryReply,
-        cancelled: &AtomicBool,
-    ) -> io::Result<TerritoryBreakdownReply> {
-        use crate::prepared::series::{self, Reader};
-        let (_, (metadata, reason)) = series::read_catalogue::<(
-            Option<TerritoryBreakdownReply>,
-            Option<String>,
-        )>(store, key, "territory-breakdown", branch)?
-        .ok_or_else(|| crate::invalid("Prepared regional catalogue is missing"))?;
-        let mut reply = metadata.ok_or_else(|| {
-            io::Error::other(reason.unwrap_or_else(|| "Territory regions are unavailable".into()))
-        })?;
-        let mut facts = Reader::new(
-            store,
-            key,
-            format!("territory-breakdown-facts-{branch}"),
-            cancelled,
-        )?;
-        for (index, series) in reply.series.iter_mut().enumerate() {
-            let markers = if from == to {
-                facts.value_at(index as u64, from)?.into_iter().collect()
-            } else {
-                facts.runs(index as u64, from, to)?
-            };
-            for marker in markers {
-                let (_, row) = facts
-                    .latest_event(index as u64, marker.first_hour)?
-                    .ok_or_else(|| crate::invalid("Regional territory facts are missing"))?;
-                let mut run: TerritoryRegionRun = serde_json::from_value(row)?;
-                run.first_hour = marker.first_hour;
-                run.last_hour = marker.last_hour;
-                run.starts_segment &= marker.first_hour == marker.value as i32;
-                series.runs.push(run);
-            }
-        }
-        let mut observed = Reader::new(
-            store,
-            key,
-            format!("territory-breakdown-observed-{branch}"),
-            cancelled,
-        )?;
-        for (column, spans) in reply.observed.iter_mut().enumerate() {
-            *spans = observed
-                .runs(column as u64, from, to)?
-                .into_iter()
-                .map(|run| HourSpan {
-                    first_hour: run.first_hour,
-                    last_hour: run.last_hour,
-                })
-                .collect();
-        }
-        reply.countries = totals.series;
-        reply.world_totals = totals.world_totals;
-        reply.area_unit = totals.area_unit;
-        reply.area_reason = totals.area_reason;
-        reply.warnings.extend(totals.warnings);
-        reply.series.sort_unstable_by(|a, b| {
-            (&a.tag, a.region, &a.missing).cmp(&(&b.tag, b.region, &b.missing))
-        });
-        super::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
 #[cfg(test)]
 mod tests;

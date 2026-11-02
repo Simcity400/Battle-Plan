@@ -174,7 +174,7 @@ fn reference_merge(a: Option<Summary>, b: Option<Summary>) -> Option<Summary> {
             last_hour: b.last_hour,
             first_value: a.first_value,
             last_value: b.last_value,
-            last_value_hour: if !b.has_break
+            last_value_hour: if b.last_value_hour == b.first_hour
                 && !b.first_break
                 && i64::from(a.last_hour) + 1 == i64::from(b.first_hour)
                 && b.min_value == b.max_value
@@ -1729,6 +1729,29 @@ fn rank_builder_batches_ties_unknowns_extremes_and_displaced_actors_match_sort_o
 }
 
 #[test]
+fn readers_take_room_for_their_working_memory_from_unpinned_cached_pages() {
+    let (memory, root, _, keys) = fixture(&[-3, 4, 12]);
+    let budget = Budget::new(BIG);
+    let cache = Cache::new(&budget);
+    {
+        let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+        snapshot.value_at(keys[0], 5).unwrap();
+    }
+    // The query's decoded pages stay cached, unpinned, once its snapshot is gone.
+    let cached = budget.used();
+    assert!(cached > 0);
+    let rest = BIG - cached;
+    assert!(budget.admit(rest + 1).is_err());
+    let lease = crate::budget::Admission::from(&cache)
+        .admit(rest + 1)
+        .unwrap();
+    assert!(budget.used() <= BIG);
+    drop(lease);
+    drop(cache);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
 fn damaged_pages_bad_lengths_wrong_roots_and_admission_are_errors() {
     let (memory, root, _, keys) = fixture(&[-3, 4, 12]);
     let budget = Budget::new(BIG);
@@ -2527,6 +2550,52 @@ fn repeating_overlap_blocks_preserve_last_origin_without_expanding_hours() {
         )
         .unwrap();
     assert!(snapshot.into_io().reads < 100);
+}
+
+#[test]
+fn repeating_equal_overlap_blocks_keep_the_hour_their_value_began() {
+    let budget = Budget::new(BIG);
+    let cache = Cache::new(&budget);
+    let mut memory = Memory::default();
+    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let key = writer
+        .intern(spec(1, 1), Blob::EMPTY, RunMode::OrderedContributions, 0)
+        .unwrap();
+    for _ in 0..2 {
+        writer.run(key, span(0, 31), 7, false, false).unwrap();
+    }
+    writer.evidence(key, known(0, 31, None, None), None).unwrap();
+    let root = publish(
+        &mut writer,
+        &mut memory,
+        &cache,
+        publication(1, 0, 0, 31, 31),
+        Blob::EMPTY,
+    );
+    let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
+    let mut seen = 0;
+    snapshot
+        .summary_tiles(
+            &[selection(key)],
+            span(0, 31),
+            Viewport {
+                from: 0.0,
+                to: 31.0,
+                width: 1,
+            },
+            Tail::EMPTY,
+            None,
+            4096,
+            |_, bucket| {
+                let b = bucket.exact.unwrap();
+                assert_eq!((b.covered, b.absolute_total), (64, U256([448, 0, 0, 0])));
+                assert_eq!((b.last_value_hour, b.has_break), (0, true));
+                seen += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(seen, 1);
 }
 
 #[test]
@@ -5428,4 +5497,34 @@ fn a_writer_holds_what_its_open_segment_appended() {
     }
     assert!(writer.held_bytes() > before);
     assert!(writer.held_bytes() <= budget.used());
+}
+
+#[test]
+fn a_merged_summary_keeps_the_hour_its_last_value_began_through_a_trailing_gap() {
+    let held = |first: i32, last: i32, value: i128, break_before: bool| {
+        Summary::run(
+            Run {
+                span: span(first, last),
+                value,
+                break_before,
+                supplying_boundary: false,
+                canonical: 0,
+                sequence: 0,
+            },
+            span(first, last),
+            0,
+        )
+    };
+    let before = held(0, 3, 1, false).merge(held(4, 15, 2, false)).unwrap();
+    assert_eq!(before.last_value_hour, 4);
+    let mut ended = held(16, 20, 2, false);
+    ended.has_break = true;
+    let joined = before.merge(ended).unwrap();
+    assert_eq!((joined.last_value_hour, joined.has_break), (4, true));
+    let resumed = held(16, 17, 2, false).merge(held(19, 20, 2, false)).unwrap();
+    assert_eq!(before.merge(resumed).unwrap().last_value_hour, 19);
+    let broken = held(16, 20, 2, true);
+    assert_eq!(before.merge(broken).unwrap().last_value_hour, 16);
+    assert_eq!(before.merge(held(17, 20, 2, false)).unwrap().last_value_hour, 17);
+    assert_eq!(before.merge(held(16, 20, 3, false)).unwrap().last_value_hour, 16);
 }

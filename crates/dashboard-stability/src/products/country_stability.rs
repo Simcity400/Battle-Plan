@@ -466,7 +466,7 @@ pub(crate) fn breakdown(terms: formula::Terms) -> FormulaBreakdown {
     }
 }
 
-fn kind(kind: u8) -> &'static str {
+pub(crate) fn kind(kind: u8) -> &'static str {
     match kind {
         CountryStabilityLineRow::IDEA => "idea",
         CountryStabilityLineRow::COUNTRY_LEADER => "countryLeader",
@@ -515,60 +515,99 @@ pub fn modifiers_with_totals(
         .iter()
         .zip(&row.keys)
         .zip(totals)
-        .map(|((name, &index), total)| {
-            #[cfg(test)]
-            BREAKDOWN_LINE_VISITS
-                .with(|visits| visits.set(visits.get() + lines.map_or(0, <[_]>::len)));
-            let index = (index != u32::MAX).then_some(index);
-            let rows: Vec<&CountryStabilityLineRow> = match (lines, index) {
-                (Some(lines), Some(index)) => lines
-                    .iter()
-                    .filter(|line| line.country == row.country && line.key == index)
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let sum = rows
-                .iter()
-                .fold(0_i64, |sum, line| sum.wrapping_add(line.value));
-            ModifierBreakdown {
-                key: String::from_utf8_lossy(name).into_owned(),
-                index,
-                good: index.and_then(&good),
-                total_raw: total.map(|total| total.to_string()),
-                remainder_raw: total
-                    .filter(|_| lines.is_some())
-                    .map(|total| total.wrapping_sub(sum))
-                    .filter(|remainder| *remainder != 0)
-                    .map(|remainder| remainder.to_string()),
-                lines: rows
-                    .into_iter()
-                    .map(|line| {
-                        let identity = String::from_utf8_lossy(&line.identity).into_owned();
-                        let text = (line.kind == CountryStabilityLineRow::UNPAIRED)
-                            .then(|| display_text(&line.text))
-                            .and_then(|text| {
-                                text.inspect_err(|reason| {
-                                    refused.note(reason.clone(), format!("{tag} {identity}"))
-                                })
-                                .ok()
-                            });
-                        BreakdownLine {
-                            line: line.line,
-                            kind: kind(line.kind).into(),
-                            identity,
-                            identity_id: line.identity_id,
-                            secondary_raw: line.secondary.to_string(),
-                            value_raw: line.value.to_string(),
-                            text,
-                            label: None,
-                            group: None,
-                            group_kind: None,
-                        }
-                    })
-                    .collect(),
-            }
+        .map(|((&name, &index), total)| {
+            modifier(row, (name, index), total, lines, &good, tag, refused)
         })
         .collect()
+}
+
+/// One key's lines of a read, as [`modifiers_with_totals`] lists them: `key` is its script name
+/// and recorded index (`u32::MAX` where the game registers none), `total` its total.
+pub(crate) fn modifier(
+    row: &CountryStabilityInputRow,
+    (name, index): (&[u8], u32),
+    total: Option<i64>,
+    lines: Option<&[CountryStabilityLineRow]>,
+    good: &impl Fn(u32) -> Option<bool>,
+    tag: &str,
+    refused: &mut dashboard_text::catalogue::Refusals,
+) -> ModifierBreakdown {
+    #[cfg(test)]
+    BREAKDOWN_LINE_VISITS.with(|visits| visits.set(visits.get() + lines.map_or(0, <[_]>::len)));
+    let index = (index != u32::MAX).then_some(index);
+    let rows: Vec<&CountryStabilityLineRow> = match (lines, index) {
+        (Some(lines), Some(index)) => lines
+            .iter()
+            .filter(|line| line.country == row.country && line.key == index)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let sum = rows
+        .iter()
+        .fold(0_i64, |sum, line| sum.wrapping_add(line.value));
+    ModifierBreakdown {
+        key: String::from_utf8_lossy(name).into_owned(),
+        index,
+        good: index.and_then(good),
+        total_raw: total.map(|total| total.to_string()),
+        remainder_raw: total
+            .filter(|_| lines.is_some())
+            .map(|total| total.wrapping_sub(sum))
+            .filter(|remainder| *remainder != 0)
+            .map(|remainder| remainder.to_string()),
+        lines: rows
+            .into_iter()
+            .map(|line| {
+                let identity = String::from_utf8_lossy(&line.identity).into_owned();
+                let text = unpaired_text(line, &identity, tag, refused);
+                BreakdownLine {
+                    line: line.line,
+                    kind: kind(line.kind).into(),
+                    identity,
+                    identity_id: line.identity_id,
+                    secondary_raw: line.secondary.to_string(),
+                    value_raw: line.value.to_string(),
+                    text,
+                    label: None,
+                    group: None,
+                    group_kind: None,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// An unpaired line's display text; a label [`display_text`] refuses is noted in `refused`.
+fn unpaired_text(
+    line: &CountryStabilityLineRow,
+    identity: &str,
+    tag: &str,
+    refused: &mut dashboard_text::catalogue::Refusals,
+) -> Option<String> {
+    (line.kind == CountryStabilityLineRow::UNPAIRED)
+        .then(|| display_text(&line.text))
+        .and_then(|text| {
+            text.inspect_err(|reason| refused.note(reason.clone(), format!("{tag} {identity}")))
+                .ok()
+        })
+}
+
+/// What [`modifiers_with_totals`] notes in `refused` of a read's `lines` (one country's):
+/// every unpaired line of a recorded key whose label [`display_text`] refuses.
+pub(crate) fn note_refused(
+    row: &CountryStabilityInputRow,
+    lines: &[CountryStabilityLineRow],
+    tag: &str,
+    refused: &mut dashboard_text::catalogue::Refusals,
+) {
+    for line in lines.iter().filter(|line| {
+        line.kind == CountryStabilityLineRow::UNPAIRED
+            && line.country == row.country
+            && line.key != u32::MAX
+            && row.keys.contains(&line.key)
+    }) {
+        unpaired_text(line, &String::from_utf8_lossy(&line.identity), tag, refused);
+    }
 }
 
 #[cfg(test)]

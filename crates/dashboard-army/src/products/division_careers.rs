@@ -10,7 +10,7 @@
 //! list order and repeats. Intelligence copies of divisions are left out.
 use super::army_content::{self, Refusals};
 use dashboard_base::{
-    prepared::query::progressive,
+    prepared::query::native,
     products::{Product, place_names},
     source::Source,
 };
@@ -27,7 +27,8 @@ use ts_rs::TS;
 pub struct DivisionCareers;
 pub struct DivisionRecord;
 
-const TABLES: [TableId; 9] = [
+/// The tables every career reply reads; a division's record also reads its places' names.
+pub const TABLES: [TableId; 9] = [
     TableId::Countries,
     TableId::CountryLinks,
     TableId::Divisions,
@@ -198,7 +199,7 @@ impl Product for DivisionCareers {
             &p.tags,
             cancelled,
             || {
-                let frame = progressive::frame_at(source, branch, p.hour, &TABLES, cancelled)?
+                let frame = native::frame_at(source, branch, p.hour, &TABLES, cancelled)?
                     .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;
@@ -262,7 +263,7 @@ impl Product for DivisionRecord {
                 tables.extend(place_names::NAME_TABLES);
                 tables.sort_unstable();
                 tables.dedup();
-                let frame = progressive::frame_at(source, branch, p.hour, &tables, cancelled)?
+                let frame = native::frame_at(source, branch, p.hour, &tables, cancelled)?
                     .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;

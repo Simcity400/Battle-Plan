@@ -266,10 +266,14 @@ impl Data {
     }
 }
 
-/// Heap bytes in whole pages, so an offset names its page by division.
-pub(crate) fn write_heap(io: &mut impl PageWrite, heap: &[u8]) -> io::Result<List> {
+/// Heap bytes in whole pages, so an offset names its page by division: `heap` comes a page a
+/// piece, its last piece shorter.
+pub(crate) fn write_heap<'a>(
+    io: &mut impl PageWrite,
+    heap: impl Iterator<Item = &'a [u8]>,
+) -> io::Result<List> {
     let mut list = Pages::new();
-    for chunk in heap.chunks(PAGE_BYTES) {
+    for chunk in heap {
         let page = pages::seal(io, Kind::Heap, chunk)?;
         list.push(io, page)?;
     }

@@ -22,10 +22,9 @@ use dashboard_base::{
 use dashboard_text::metadata::link_slot;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::tagged_country;
-use dashboard_text::{
-    identity::character_script_token,
-    metadata::{slot_read, tagged_countries, validate_campaign},
-};
+use dashboard_text::identity::character_script_token;
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::metadata::{slot_read, tagged_countries, validate_campaign};
 use installed_content_core::special_projects::Catalog;
 use installed_content_localisation::localisation::Argument;
 use replay_data::{
@@ -44,9 +43,14 @@ use ts_rs::TS;
 
 pub struct SpecialProjects;
 mod details;
+pub mod emit;
+pub mod facts;
 mod history;
 pub use details::*;
-pub mod prepared;
+pub mod query;
+#[cfg(any(test, feature = "test-support"))]
+pub mod row;
+mod served;
 
 mod completions;
 #[cfg(any(test, feature = "test-support"))]
@@ -593,27 +597,36 @@ impl Content {
             .clone()
     }
 
+    /// `definition`'s name for `tag`; a key that needs scope reads `scoped`.
     fn name(
         &self,
         definition: &installed_content_core::special_projects::Project,
         token: &str,
         tag: &str,
-        slot: u32,
-        frame: &DecodedFrame,
-        definition_id: u32,
+        scoped: &dyn Fn(&Content) -> Option<String>,
     ) -> Option<String> {
         // Use the authored narrative name when nonempty, otherwise the definition's
         // default name; then TAG_key if defined, then scope expansion in the owner's
         // country. The default key is the template token's string.
         let selected = country_key(&self.catalogue, tag, project_name_key(definition, token));
         if needs_scope(&self.catalogue.localisation, &selected) {
-            return self
-                .scoped
-                .iter()
-                .find(|(branch, _)| *branch == frame.branch)
-                .and_then(|(_, names)| names.at(tag, slot, definition_id, frame.hour));
+            return scoped(self);
         }
-        self.name_for(&selected, Some((slot, frame)))
+        self.name_for(&selected, None)
+    }
+
+    /// The scoped name of `tag`'s `definition` at `frame`'s hour, as the name scan read it.
+    fn scoped_at(
+        &self,
+        frame: &DecodedFrame,
+        tag: &str,
+        slot: u32,
+        definition: u32,
+    ) -> Option<String> {
+        self.scoped
+            .iter()
+            .find(|(branch, _)| *branch == frame.branch)
+            .and_then(|(_, names)| names.at(tag, slot, definition, frame.hour))
     }
 
     fn name_for(&self, selected: &str, recorded: Option<(u32, &DecodedFrame)>) -> Option<String> {
@@ -826,6 +839,9 @@ struct Look {
     refusals: catalogue::Refusals,
     iteration_text: Option<String>,
     iteration_refusals: catalogue::Refusals,
+    /// What resolving the person refused.
+    #[serde(skip)]
+    person_refusals: catalogue::Refusals,
 }
 fn resolve_person(
     frame: &DecodedFrame,
@@ -913,16 +929,8 @@ fn resolve_definition(
     project: &ProjectRow,
     tag: &str,
     slot: u32,
-    mut content: Option<&mut Content>,
+    content: Option<&mut Content>,
 ) -> DefinitionLook {
-    take_refusals(content.as_deref());
-    let mut warnings = BTreeMap::new();
-    let mut warn = |reason: String| {
-        *warnings.entry(reason).or_default() += 1;
-    };
-    let mut scoped = None;
-    let scientist = 0;
-    let scientist_as_of = None;
     // Project construction copies the template token.
     let token = frame
         .complete::<tables::LexicalTokens>()
@@ -933,12 +941,36 @@ fn resolve_definition(
                 .and_then(|i| std::str::from_utf8(&rows[i].literal).ok())
         })
         .map(str::to_owned);
+    let definition_id = project.definition_id;
+    resolve_token(
+        token,
+        definition_id,
+        tag,
+        &|content: &Content| content.scoped_at(frame, tag, slot, definition_id),
+        content,
+    )
+}
+
+/// [`resolve_definition`] of the definition the recording spells `token`, its scoped name read
+/// by `scoped`.
+fn resolve_token(
+    token: Option<String>,
+    definition_id: u32,
+    tag: &str,
+    scoped_name: &dyn Fn(&Content) -> Option<String>,
+    mut content: Option<&mut Content>,
+) -> DefinitionLook {
+    take_refusals(content.as_deref());
+    let mut warnings = BTreeMap::new();
+    let mut warn = |reason: String| {
+        *warnings.entry(reason).or_default() += 1;
+    };
+    let mut scoped = None;
+    let scientist = 0;
+    let scientist_as_of = None;
     let token = token.unwrap_or_else(|| {
-        warn(format!(
-            "Definition token {} is not recorded",
-            project.definition_id
-        ));
-        format!("Project definition {}", project.definition_id)
+        warn(format!("Definition token {definition_id} is not recorded"));
+        format!("Project definition {definition_id}")
     });
     let mut info = ProjectPresentation {
         name: "Project name unavailable".into(),
@@ -974,7 +1006,7 @@ fn resolve_definition(
                 scoped = Some((definition.clone(), token.clone()));
             }
             info.name = content
-                .name(&definition, &token, tag, slot, frame, project.definition_id)
+                .name(&definition, &token, tag, scoped_name)
                 .unwrap_or_else(|| {
                     warn(format!("Project name {token} could not be resolved"));
                     "Project name unavailable".into()
@@ -1083,11 +1115,10 @@ impl Naming {
         let definition = self.definitions.get_mut(&key).expect("resolved definition");
         let mut warnings = definition.warnings.clone();
         if let Some((authored, token)) = &definition.scoped {
+            let scoped = |content: &Content| content.scoped_at(frame, tag, slot, row.definition_id);
             let name = content
                 .as_ref()
-                .and_then(|content| {
-                    content.name(authored, token, tag, slot, frame, row.definition_id)
-                })
+                .and_then(|content| content.name(authored, token, tag, &scoped))
                 .unwrap_or_else(|| {
                     *warnings
                         .entry(format!("Project name {token} could not be resolved"))
@@ -1125,8 +1156,38 @@ impl Naming {
             refusals,
             iteration_text,
             iteration_refusals,
+            person_refusals: person_refusals.clone(),
         }
     }
+}
+
+/// A completed project's presentation for `tag`: its definition, which the recording spells
+/// `token`, resolved as [`Naming::look`] resolves it, its scoped name read by `scoped`. Its
+/// presentation, the warnings resolving it counted and what it refused.
+fn completion_look(
+    token: Option<String>,
+    definition_id: u32,
+    tag: &str,
+    scoped: &dyn Fn(&Content) -> Option<String>,
+    mut content: Option<&mut Content>,
+) -> (Arc<ProjectPresentation>, BTreeMap<String, usize>, catalogue::Refusals) {
+    let mut definition = resolve_token(token, definition_id, tag, scoped, content.as_deref_mut());
+    let mut warnings = definition.warnings.clone();
+    if let Some((authored, token)) = &definition.scoped {
+        let name = content
+            .as_ref()
+            .and_then(|content| content.name(authored, token, tag, scoped))
+            .unwrap_or_else(|| {
+                *warnings
+                    .entry(format!("Project name {token} could not be resolved"))
+                    .or_default() += 1;
+                "Project name unavailable".into()
+            });
+        if definition.info.name != name {
+            Arc::make_mut(&mut definition.info).name = name;
+        }
+    }
+    (definition.info, warnings, definition.refusals)
 }
 
 #[derive(Default)]
@@ -1174,6 +1235,10 @@ struct Builder {
 }
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(dead_code, reason = "observed only by the recording oracle in tests")
+)]
 struct CompletionObservation {
     project: ProjectRow,
     identity: (u32, u32),
@@ -1251,6 +1316,7 @@ impl Builder {
         id
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn presentation(
         &mut self,
         frame: &DecodedFrame,
@@ -1850,6 +1916,7 @@ fn prepare_cache(cache: &mut Cache, politics: &io::Result<Arc<PoliticsContent>>)
 impl Product for SpecialProjects {
     const KEY: &'static str = "special-projects";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = SpecialProjectsParams;
     type Reply = SpecialProjectsReply;
     fn types() -> Vec<String> {
@@ -1981,6 +2048,8 @@ impl Product for SpecialProjects {
 
 #[cfg(test)]
 mod bench;
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(test)]
 mod history_tests;
 

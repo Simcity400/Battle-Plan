@@ -195,6 +195,8 @@ pub struct DecryptionReply {
 impl Product for Decryption {
     const KEY: &'static str = "decryption";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::intelligence_prepared::served::PLAN);
     type Params = DecryptionParams;
     type Reply = DecryptionReply;
 

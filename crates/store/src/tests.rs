@@ -3077,6 +3077,35 @@ fn caller_scratch_writes_release_pack_capacity_and_preserve_failure_and_adoption
 }
 
 #[test]
+fn an_appended_section_keeps_one_run_per_set_bit_of_its_commit_count() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut scratch = [0; 8192];
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for commit in 1..=128u64 {
+        for step in 0..4u64 {
+            let value = ((commit - 1) * 4 + step).to_le_bytes();
+            writer
+                .write_with_scratch("pages", value.as_slice(), &mut scratch)
+                .unwrap();
+        }
+        writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();
+        // Each commit's run absorbs every run before it no longer than itself.
+        assert_eq!(
+            writer.resident_metadata().1,
+            commit.count_ones() as usize,
+            "commit {commit}"
+        );
+    }
+    for range in 0..512u64 {
+        assert_eq!(
+            bytes(writer.read_at("pages", range).unwrap().unwrap()),
+            range.to_le_bytes()
+        );
+    }
+}
+
+#[test]
 fn streamed_compaction_with_minimal_scratch_keeps_ranges_and_flat_snapshots() {
     let fixture = Fixture::new();
     let key = fixture.key();

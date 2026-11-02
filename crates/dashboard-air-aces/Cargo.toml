@@ -20,7 +20,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
-dashboard-raids.workspace = true
+dashboard-keyed.workspace = true
 dashboard-text.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
@@ -33,6 +33,7 @@ mimalloc.workspace = true
 engine-executable.workspace = true
 installed-content-core.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-world.workspace = true
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }
 
@@ -41,7 +42,7 @@ store = { path = "../store", features = ["test-support"] }
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 dashboard-air-aces = { workspace = true, features = ["test-support"] }
-dashboard-raids = { workspace = true, features = ["test-support"] }
+dashboard-keyed = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }

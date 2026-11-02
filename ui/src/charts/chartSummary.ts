@@ -494,7 +494,8 @@ export function mergeSummaries(parts: readonly ChartSummary[]): ChartSummary {
     for (const next of recorded) {
       if (!merged) { merged = { ...next }; continue; }
       if (merged.lastHour >= next.firstHour) throw new Error('Chart summary aliases overlap.');
-      const same: boolean = !next.hasBreak && !next.firstBreak && merged.lastHour + 1 === next.firstHour && next.minValue === next.maxValue && merged.lastValue === next.firstValue;
+      // A break after next's one stretch is a coverage gap: the value still began in merged.
+      const same: boolean = next.lastValueHour === next.firstHour && !next.firstBreak && merged.lastHour + 1 === next.firstHour && next.minValue === next.maxValue && merged.lastValue === next.firstValue;
       const minimum: ChartBucket = merged.minValue <= next.minValue ? merged : next;
       const maximum: ChartBucket = merged.maxValue >= next.maxValue ? merged : next;
       merged = { ...merged, lastHour: next.lastHour, lastValue: next.lastValue,

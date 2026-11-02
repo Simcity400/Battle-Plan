@@ -90,32 +90,61 @@ impl Input {
                 }
             }
         };
-        let pass = rows
-            .first()
-            .map(|row| &row.temperature_pass)
-            .unwrap_or(&Recorded::NotRecorded);
-        let pass = match previous {
-            Some(previous) if previous.pass.as_ref() == pass => Arc::clone(&previous.pass),
-            _ => Arc::new(match pass {
-                Recorded::Value(Some(pass)) => {
-                    let mut hours = Vec::new();
-                    hours
-                        .try_reserve_exact(pass.hours.len())
-                        .map_err(io::Error::other)?;
-                    hours.extend_from_slice(&pass.hours);
-                    Recorded::Value(Some(TemperaturePass {
-                        anchor: pass.anchor,
-                        cursor: pass.cursor,
-                        anchor_seed: pass.anchor_seed,
-                        hours,
-                        checksum: pass.checksum,
-                    }))
-                }
-                Recorded::Value(None) => Recorded::Value(None),
-                Recorded::NotRecorded => Recorded::NotRecorded,
-            }),
+        Ok(Self {
+            words,
+            pass: pass(rows, previous)?,
+        })
+    }
+
+    /// [`Self::capture`] of rows that differ from those `previous` captured only at the slots
+    /// `changed` names, read in their order: the same operands, found by reading those slots
+    /// alone wherever they hold the words `previous` holds.
+    pub fn capture_changed(
+        rows: &[WeatherProvinceRow],
+        previous: &Self,
+        changed: impl IntoIterator<Item = u128>,
+    ) -> io::Result<Self> {
+        let (held, anchored) = match &*previous.words {
+            Words::Anchored(words) => (words, true),
+            Words::Hourly(words) => (words, false),
+            Words::Refused(_) => return Self::capture(rows, Some(previous)),
         };
-        Ok(Self { words, pass })
+        if held.len() != rows.len() {
+            return Self::capture(rows, Some(previous));
+        }
+        let mut first = false;
+        for key in changed {
+            let Some(slot) = usize::try_from(key).ok().filter(|&slot| slot < rows.len()) else {
+                return Self::capture(rows, Some(previous));
+            };
+            first |= slot == 0;
+            let row = &rows[slot];
+            let same = row.id as usize == slot
+                && match row.temperature.record() {
+                    Ok(TemperatureRecord::Anchored(state)) => anchored && held[slot] == state,
+                    Ok(TemperatureRecord::AtHour(temperature)) => {
+                        !anchored
+                            && held[slot]
+                                == State {
+                                    temperature,
+                                    ..State::default()
+                                }
+                    }
+                    _ => false,
+                };
+            if !same {
+                return Self::capture(rows, Some(previous));
+            }
+        }
+        Ok(Self {
+            words: Arc::clone(&previous.words),
+            // Only slot zero holds the pass.
+            pass: if first {
+                pass(rows, Some(previous))?
+            } else {
+                Arc::clone(&previous.pass)
+            },
+        })
     }
 
     /// Shared allocations, including Arc counters, for the caller's unique-owner byte accounting.
@@ -137,6 +166,38 @@ impl Input {
             2 * size_of::<usize>() + size_of::<Recorded<Option<TemperaturePass>>>() + hours,
         );
     }
+}
+
+/// The pass slot zero of `rows` holds, shared with `previous`'s where equal.
+fn pass(
+    rows: &[WeatherProvinceRow],
+    previous: Option<&Input>,
+) -> io::Result<Arc<Recorded<Option<TemperaturePass>>>> {
+    let pass = rows
+        .first()
+        .map(|row| &row.temperature_pass)
+        .unwrap_or(&Recorded::NotRecorded);
+    Ok(match previous {
+        Some(previous) if previous.pass.as_ref() == pass => Arc::clone(&previous.pass),
+        _ => Arc::new(match pass {
+            Recorded::Value(Some(pass)) => {
+                let mut hours = Vec::new();
+                hours
+                    .try_reserve_exact(pass.hours.len())
+                    .map_err(io::Error::other)?;
+                hours.extend_from_slice(&pass.hours);
+                Recorded::Value(Some(TemperaturePass {
+                    anchor: pass.anchor,
+                    cursor: pass.cursor,
+                    anchor_seed: pass.anchor_seed,
+                    hours,
+                    checksum: pass.checksum,
+                }))
+            }
+            Recorded::Value(None) => Recorded::Value(None),
+            Recorded::NotRecorded => Recorded::NotRecorded,
+        }),
+    })
 }
 
 impl Memo {
@@ -233,6 +294,53 @@ mod tests {
             &*sparse.words,
             Words::Refused("WeatherProvinces slots are not dense")
         ));
+    }
+
+    /// Reading only the changed slots gives what reading every row gives, sharing what it can.
+    #[test]
+    fn changed_slots_capture_what_every_row_captures() {
+        let same = |left: &Input, right: &Input| {
+            assert_eq!(*left.words, *right.words);
+            assert_eq!(*left.pass, *right.pass);
+        };
+        let mut rows = rows();
+        let before = Input::capture(&rows, None).unwrap();
+        rows[0].temperature_pass = Recorded::Value(Some(TemperaturePass {
+            anchor: 17,
+            cursor: 3,
+            anchor_seed: Some(91),
+            hours: vec![Some(7), None],
+            checksum: 123_456,
+        }));
+        let passed = Input::capture_changed(&rows, &before, [0]).unwrap();
+        same(&passed, &Input::capture(&rows, Some(&before)).unwrap());
+        assert!(Arc::ptr_eq(&before.words, &passed.words));
+        assert!(!Arc::ptr_eq(&before.pass, &passed.pass));
+        // A slot written to the words it held, and no slot at all, keep everything.
+        let kept = Input::capture_changed(&rows, &passed, [5]).unwrap();
+        assert!(Arc::ptr_eq(&passed.words, &kept.words));
+        assert!(Arc::ptr_eq(&passed.pass, &kept.pass));
+        let quiet = Input::capture_changed(&rows, &kept, []).unwrap();
+        assert!(Arc::ptr_eq(&kept.words, &quiet.words));
+        rows[9].temperature = ProvinceTemperature::anchored(State {
+            temperature: 4,
+            drift: 1,
+            ..State::default()
+        });
+        let anchored = Input::capture_changed(&rows, &quiet, [9]).unwrap();
+        same(&anchored, &Input::capture(&rows, Some(&quiet)).unwrap());
+        assert!(!Arc::ptr_eq(&quiet.words, &anchored.words));
+        assert!(Arc::ptr_eq(&quiet.pass, &anchored.pass));
+        rows[1499].temperature = ProvinceTemperature::historical(0);
+        let mixed = Input::capture_changed(&rows, &anchored, [1499]).unwrap();
+        assert!(matches!(
+            &*mixed.words,
+            Words::Refused("WeatherProvinces mixes anchored and hourly temperatures")
+        ));
+        let grown = Input::capture_changed(&rows[..1400], &anchored, []).unwrap();
+        same(&grown, &Input::capture(&rows[..1400], Some(&anchored)).unwrap());
+        let refused = Input::capture_changed(&rows, &mixed, []).unwrap();
+        same(&refused, &Input::capture(&rows, Some(&mixed)).unwrap());
     }
 
     #[test]

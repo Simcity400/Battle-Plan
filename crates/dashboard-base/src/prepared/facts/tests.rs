@@ -876,101 +876,6 @@ fn historical_projects_are_discovered_in_order_across_key_pages_without_a_roster
 }
 
 #[test]
-fn production_latest_summaries_ordinals_and_journals_use_shared_paged_primitives() {
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let budget = MemoryBudget::new(16 << 20);
-    let small = Limits {
-        page_bytes: 128,
-        ..limits()
-    };
-    let mut summaries = PagedMap::<(u32, u64), (u64, String)>::new(
-        Namespace::new("production", 1, "ended").unwrap(),
-        budget.clone(),
-        small,
-    )
-    .unwrap();
-    let mut ordinals = PagedMap::<String, u64>::new(
-        Namespace::new("production", 1, "appearances").unwrap(),
-        budget.clone(),
-        small,
-    )
-    .unwrap();
-    let mut journal = Records::<(i32, String)>::new(
-        Namespace::new("yards", 1, "records").unwrap(),
-        budget.clone(),
-        small,
-    )
-    .unwrap();
-    for handle in (0..256).rev() {
-        summaries
-            .put(&mut writer, (3, handle), (1, format!("ended-{handle}")))
-            .unwrap();
-    }
-    let a = summaries.checkpoint(1).unwrap();
-    writer = writer.commit_continue().unwrap();
-    {
-        let phase = ReadPhase::new(&mut writer, budget.clone(), 64 << 10).unwrap();
-        assert_eq!(summaries.get(&phase, &(3, 51)).unwrap().unwrap().0, 1);
-        assert!(ordinals.get(&phase, &"line".to_string()).unwrap().is_none());
-    }
-    ordinals.put(&mut writer, "line".into(), 0).unwrap();
-    summaries
-        .put(&mut writer, (3, 51), (2, "latest".into()))
-        .unwrap();
-    for step in 0..300 {
-        assert_eq!(
-            journal
-                .append(&mut writer, (10, format!("same-hour-{step}")))
-                .unwrap(),
-            step
-        );
-    }
-    let b = summaries.checkpoint(2).unwrap();
-    let records = journal.checkpoint(2).unwrap();
-    writer = writer.commit_continue().unwrap();
-    let old = PagedMap::<(u32, u64), (u64, String)>::restore(&a, budget.clone(), small).unwrap();
-    let latest = PagedMap::<(u32, u64), (u64, String)>::restore(&b, budget.clone(), small).unwrap();
-    let journal = Records::<(i32, String)>::restore(&records, budget.clone(), small).unwrap();
-    let phase = ReadPhase::new(&mut writer, budget.clone(), 64 << 10).unwrap();
-    assert_eq!(
-        &*old.get(&phase, &(3, 51)).unwrap().unwrap(),
-        &(1, "ended-51".into())
-    );
-    assert_eq!(
-        &*latest.get(&phase, &(3, 51)).unwrap().unwrap(),
-        &(2, "latest".into())
-    );
-    let mut seen = 0;
-    latest
-        .visit(
-            &phase,
-            Some(&(3, 0)),
-            Some(&(3, u64::MAX)),
-            |&(owner, handle), summary| {
-                assert_eq!(owner, 3);
-                assert_eq!(handle, seen);
-                assert_eq!(summary.0, if handle == 51 { 2 } else { 1 });
-                seen += 1;
-                Ok(())
-            },
-        )
-        .unwrap();
-    assert_eq!(seen, 256);
-    let mut cursor = journal.cursor(&phase, 0, u64::MAX).unwrap();
-    for step in 0..300 {
-        let row = journal.next(&phase, &mut cursor).unwrap().unwrap();
-        assert_eq!(*row.key(), step);
-        assert_eq!(row.value(), &(10, format!("same-hour-{step}")));
-    }
-    assert!(journal.next(&phase, &mut cursor).unwrap().is_none());
-    assert_eq!(
-        *ordinals.get(&phase, &"line".to_string()).unwrap().unwrap(),
-        0
-    );
-}
-
-#[test]
 fn multiple_typed_cursors_share_one_read_phase_and_keep_evicted_facts_admitted() {
     use std::cell::Cell;
     struct Counted<'a> {
@@ -1143,7 +1048,7 @@ fn spill_scratch_cannot_bypass_exhausted_caller_credit() {
 }
 
 #[test]
-fn exhausted_read_admission_keeps_the_same_fact_and_map_cursor_position() {
+fn exhausted_read_admission_keeps_the_same_fact_cursor_position() {
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
     let mut facts = facts::<String>();
@@ -1152,32 +1057,15 @@ fn exhausted_read_admission_keeps_the_same_fact_and_map_cursor_position() {
         .unwrap();
     facts.retire(&mut writer, &1).unwrap();
     let budget = facts.budget.clone();
-    let mut map = PagedMap::<u64, String>::new(
-        Namespace::new("retry", 1, "map").unwrap(),
-        budget.clone(),
-        limits(),
-    )
-    .unwrap();
-    map.put(&mut writer, 0, "y".repeat(4096)).unwrap();
     let phase = ReadPhase::new(&mut writer, budget.clone(), 0).unwrap();
     let mut reader = phase.reader(&facts).unwrap();
     let mut facts_cursor = reader.cursor(&1, 0, 0).unwrap();
-    let mut map_cursor = map.cursor(&phase, None, None).unwrap();
     let reserved = budget.admit(budget.limit() - budget.used()).unwrap();
     assert_eq!(
         reader.next(&mut facts_cursor).err().unwrap().kind(),
         io::ErrorKind::WouldBlock
     );
-    assert_eq!(
-        map.next(&phase, &mut map_cursor).err().unwrap().kind(),
-        io::ErrorKind::WouldBlock
-    );
     drop(reserved);
     assert_eq!(reader.next(&mut facts_cursor).unwrap().unwrap().first, 0);
-    assert_eq!(
-        *map.next(&phase, &mut map_cursor).unwrap().unwrap().key(),
-        0
-    );
     assert!(reader.next(&mut facts_cursor).unwrap().is_none());
-    assert!(map.next(&phase, &mut map_cursor).unwrap().is_none());
 }

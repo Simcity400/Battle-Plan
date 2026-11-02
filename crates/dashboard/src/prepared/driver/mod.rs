@@ -4,18 +4,18 @@
 //! restoration go through. A recording's change-run index is prepared first
 //! ([`super::change_runs`]). A recording with a native columnar recording beside
 //! it is then prepared from that, every family by its native backend or refused
-//! by name ([`native`]); any other is prepared from its rows, in the hourly walk
-//! or by a family's row implementation of its own.
+//! by name ([`native`]); any other refuses every family and job by name ([`rows`]).
 
 pub mod native;
 pub(crate) mod plan;
 pub(crate) mod publication;
 pub mod registry;
+mod rows;
 
 use super::{
     Section, State,
     change_runs::{self, Outcome},
-    pipeline::{self, Accepted},
+    pipeline::Accepted,
 };
 use crate::{Source, products::ContentOptions};
 use std::{io, sync::atomic::AtomicBool};
@@ -47,8 +47,9 @@ pub fn prepare(
     let mut done = match native::recording(source)? {
         Some(recording) => native::prepare(source, content, recording, cancelled, &mut forward)?,
         None => {
-            native::release(source, content)?;
-            pipeline::prepare_rows(source, content, cancelled, forward)?
+            let done = rows::prepare(source, content, cancelled)?;
+            forward(&done);
+            done
         }
     };
     if let Some(reason) = refused {
@@ -74,8 +75,7 @@ pub fn restore(
     };
     let mut restored = match native::recording(source)? {
         Some(recording) => native::restore(source, content, &recording, cancelled)?,
-        None if native::published(source, content)? => None,
-        None => pipeline::restore_rows(source, content, cancelled)?,
+        None => rows::restore(source, content, cancelled)?,
     };
     if let (Some(accepted), Some(reason)) = (&mut restored, refused) {
         map_refused(&mut accepted.sections, &reason);

@@ -7,9 +7,11 @@
 use crate::shared::{self, Choice, TheatreChoice};
 use dashboard_base::{
     catalogue::{self, Refusals},
-    prepared::{frame_changes::FrameChanges, prepass::Family},
+    prepared::frame_changes::FrameChanges,
     products::Product,
 };
+#[cfg(test)]
+use dashboard_base::prepared::prepass::Family;
 use dashboard_keyed::{
     Observer, Values,
     countries::Countries,
@@ -29,6 +31,8 @@ use std::{
     io,
 };
 use ts_rs::TS;
+
+mod served;
 
 pub struct AirStatistics;
 
@@ -71,6 +75,7 @@ pub struct Reply {
 impl Product for AirStatistics {
     const KEY: &'static str = "air-statistics";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = Params;
     type Reply = Reply;
     fn validate(params: &Params) -> Result<(), &'static str> {
@@ -109,6 +114,7 @@ pub struct AirStatisticsObserver {
     pub refusals: BTreeMap<String, u64>,
 }
 
+#[cfg(test)]
 pub static FAMILY: Family = dashboard_keyed::block::family::<AirStatisticsObserver>(
     "air-statistics",
     "air-statistics.extract",
@@ -124,6 +130,7 @@ impl Observer for AirStatisticsObserver {
         TableId::Countries,
     ];
     const READ: TableId = TableId::AirStatistics;
+    #[cfg(test)]
     fn family() -> &'static Family {
         &FAMILY
     }
@@ -233,7 +240,16 @@ pub fn divisor(channel: usize) -> i32 {
     }
 }
 
+/// The selected country's statistics from the family's native publication.
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+    answer(query, &|| query.open_native::<AirStatisticsObserver>())
+}
+
+/// The reply to `query` from the family's publication `open` opens.
+pub(crate) fn answer<'q>(
+    query: &'q Query<'_>,
+    open: &crate::products::air_missions::Open<'q, AirStatisticsObserver>,
+) -> io::Result<serde_json::Value> {
     let params = shared::params::<AirStatistics>(query)?;
     let (first, last) = query.window()?;
     let labels = shared::labels(query);
@@ -245,7 +261,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
         format!("c{}", params.channel),
         format!("c{}", params.channel + 12),
     ];
-    let window = match query.open::<AirStatisticsObserver>()? {
+    let window = match open()? {
         Some(mut opened) => {
             warnings.extend(shared::warnings(&opened.scan.observer.refusals));
             opened.window(first, last, query.through(), |name| {

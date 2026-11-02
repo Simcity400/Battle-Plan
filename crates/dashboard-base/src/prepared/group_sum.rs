@@ -1,5 +1,8 @@
 //! Window-bounded group sums over prepared member values and recorded coverage.
-use super::series::{self, Reader, Run};
+use super::{
+    series::{self, Run},
+    series_read::SeriesRead,
+};
 use crate::{
     metadata::check_cancel, products::country_groups::HourSpan, protocol::MAX_EXACT_JS_INTEGER,
 };
@@ -13,18 +16,16 @@ pub struct Member<'a> {
     pub within: Option<&'a [HourSpan]>,
     pub excluded: &'a [HourSpan],
     pub zeros: &'a [HourSpan],
-    /// Transient value, presence and rank runs for a single catalogue key.
-    pub tail: Option<(&'a [Run], &'a [Run], &'a [Run])>,
 }
 
 /// Exact windows sum dated values; dense windows add aligned member envelopes.
 #[allow(clippy::too_many_arguments)]
 pub fn summary(
-    values: &mut Reader<'_>,
-    present: &mut Reader<'_>,
-    rosters: &mut Reader<'_>,
+    values: &mut dyn SeriesRead,
+    present: &mut dyn SeriesRead,
+    rosters: &mut dyn SeriesRead,
     coverage: Option<&crate::prepared_chart::ChartSummary>,
-    mut ranks: Option<(&mut Reader<'_>, u64)>,
+    mut ranks: Option<(&mut dyn SeriesRead, u64)>,
     members: &[Member<'_>],
     unobserved: &[HourSpan],
     view: (f64, f64, u32),
@@ -47,19 +48,13 @@ pub fn summary(
         let mut tracks = Vec::new();
         for member in members {
             check_cancel(cancelled)?;
-            let (value_tail, presence_tail, rank_tail) = member.tail.unwrap_or((&[], &[], &[]));
-            let rows = member_runs(values, member.keys, bounds, value_tail)?;
-            let presence = member_runs(present, member.present_keys, bounds, presence_tail)?;
+            let rows = member_runs(values, member.keys, bounds)?;
+            let presence = member_runs(present, member.present_keys, bounds)?;
             let ranked = if let Some((reader, _)) = &mut ranks {
                 member
                     .rank_key
                     .map(|actor| {
-                        member_runs(
-                            reader,
-                            &[(actor, i32::MIN, i32::MAX, None)],
-                            bounds,
-                            rank_tail,
-                        )
+                        member_runs(&mut **reader, &[(actor, i32::MIN, i32::MAX, None)], bounds)
                     })
                     .transpose()?
                     .unwrap_or_default()
@@ -236,35 +231,16 @@ pub fn summary(
             spans.sort_by_key(|span| span.1);
             Ok(spans)
         };
-        let mut line = if let Some((tail, _, _)) = member.tail {
-            values.summary_with_tail(member.keys[0].0, bounds, view, 0, tail, Some(&allowed))?
-        } else {
-            values.summary_spans(&bind(member.keys)?, bounds, view, 0)?
-        };
+        let mut line = values.summary_spans(&bind(member.keys)?, bounds, view, 0)?;
         if line.buckets.is_empty() {
             line.buckets = vec![None; roster.buckets.len()];
         }
         let membership = if let (Some((reader, _)), Some(actor)) = (&mut ranks, member.rank_key) {
-            Some(if let Some((_, _, tail)) = member.tail {
-                reader.summary_with_tail(actor, bounds, view, 0, tail, None)?
-            } else {
-                reader.summary(actor, bounds, view, 0)?
-            })
+            Some(reader.summary(actor, bounds, view, 0)?)
         } else {
             None
         };
-        let mut presence = if let Some((_, tail, _)) = member.tail {
-            present.summary_with_tail(
-                member.present_keys[0].0,
-                bounds,
-                view,
-                0,
-                tail,
-                Some(&allowed),
-            )?
-        } else {
-            present.summary_spans(&bind(member.present_keys)?, bounds, view, 0)?
-        };
+        let mut presence = present.summary_spans(&bind(member.present_keys)?, bounds, view, 0)?;
         if presence.buckets.is_empty() {
             presence.buckets = vec![None; roster.buckets.len()];
         }
@@ -328,8 +304,7 @@ pub fn summary(
                     if throughout {
                         (Some(((true, true, span.0), outside)), None)
                     } else {
-                        let tail = member.tail.map_or(&[][..], |(_, _, tail)| tail);
-                        let runs = rank_runs(&mut **reader, actor, tail, span)?;
+                        let runs = reader.runs(actor, span.0, span.1)?;
                         let within: Vec<(i32, i32)> = runs
                             .iter()
                             .filter(|run| run.value <= i128::from(top))
@@ -379,28 +354,19 @@ pub fn summary(
                     false
                 }
                 _ => {
-                    let (value_tail, presence_tail, _) =
-                        member.tail.unwrap_or((&[], &[], &[]));
                     let hours = |runs: Vec<Run>| {
                         runs.into_iter()
                             .map(|run| (run.first_hour, run.last_hour))
                             .collect::<Vec<_>>()
                     };
-                    let mut known = hours(member_runs(values, member.keys, span, value_tail)?);
+                    let mut known = hours(member_runs(values, member.keys, span)?);
                     known.extend(zeros.iter().map(|zero| (zero.first_hour, zero.last_hour)));
                     known.sort_unstable();
-                    let held = hours(member_runs(
-                        present,
-                        member.present_keys,
-                        span,
-                        presence_tail,
-                    )?);
+                    let held = hours(member_runs(present, member.present_keys, span)?);
                     let unread = without(&held, &known);
                     match &ranked_hours {
                         Some(within) => unread.iter().any(|&(first, last)| {
-                            within
-                                .iter()
-                                .any(|&(from, to)| from <= last && first <= to)
+                            within.iter().any(|&(from, to)| from <= last && first <= to)
                         }),
                         None => !unread.is_empty(),
                     }
@@ -410,13 +376,7 @@ pub fn summary(
                 *bucket = None;
                 continue;
             }
-            *bucket = column_part(
-                *bucket,
-                presence.buckets[index],
-                recorded,
-                ranked,
-                &zeros,
-            );
+            *bucket = column_part(*bucket, presence.buckets[index], recorded, ranked, &zeros);
         }
         match &mut result {
             None => result = Some(line),
@@ -468,18 +428,14 @@ pub fn summary(
 }
 
 fn member_runs(
-    reader: &mut Reader<'_>,
+    reader: &mut dyn SeriesRead,
     keys: &[(u64, i32, i32, Option<bool>)],
     bounds: (i32, i32),
-    tail: &[Run],
 ) -> io::Result<Vec<Run>> {
     let mut rows = Vec::new();
     for &(key, first, last, boundary) in keys {
         let from = first.max(bounds.0);
-        let to = last.min(bounds.1).min(
-            tail.first()
-                .map_or(i32::MAX, |run| run.first_hour.saturating_sub(1)),
-        );
+        let to = last.min(bounds.1);
         if from > to {
             continue;
         }
@@ -492,15 +448,6 @@ fn member_runs(
             rows.push(row);
         }
     }
-    rows.extend(tail.iter().filter_map(|run| {
-        let first_hour = run.first_hour.max(bounds.0);
-        let last_hour = run.last_hour.min(bounds.1);
-        (first_hour <= last_hour).then_some(Run {
-            first_hour,
-            last_hour,
-            ..*run
-        })
-    }));
     rows.sort_by_key(|run| run.first_hour);
     Ok(rows)
 }
@@ -556,8 +503,8 @@ fn column_part(
         if let Some(valued) = valued {
             return Some(Some(valued));
         }
-        let present = present
-            .is_some_and(|present| present.first_hour <= hour && hour <= present.last_hour);
+        let present =
+            present.is_some_and(|present| present.first_hour <= hour && hour <= present.last_hour);
         (zero_at(hour) || !present).then_some(None)
     };
     let starts = value.filter(|value| value.first_hour <= first);
@@ -637,34 +584,6 @@ fn column_part(
     })
 }
 
-fn rank_runs(
-    reader: &mut Reader<'_>,
-    actor: u64,
-    tail: &[Run],
-    (first, last): (i32, i32),
-) -> io::Result<Vec<Run>> {
-    let to = last.min(
-        tail.first()
-            .map_or(i32::MAX, |run| run.first_hour.saturating_sub(1)),
-    );
-    let mut runs = if first <= to {
-        reader.runs(actor, first, to)?
-    } else {
-        Vec::new()
-    };
-    runs.extend(tail.iter().filter_map(|run| {
-        let first_hour = run.first_hour.max(first);
-        let last_hour = run.last_hour.min(last);
-        (first_hour <= last_hour).then_some(Run {
-            first_hour,
-            last_hour,
-            ..*run
-        })
-    }));
-    runs.sort_by_key(|run| run.first_hour);
-    Ok(runs)
-}
-
 /// An hour without a rank is outside the Top N, matching the exact sum.
 fn ranked_ends(runs: &[Run], (first, last): (i32, i32), top: i128) -> (bool, bool, i32) {
     let mut stretches: Vec<(i32, bool)> = Vec::new();
@@ -694,7 +613,7 @@ fn ranked_ends(runs: &[Run], (first, last): (i32, i32), top: i128) -> (bool, boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prepared::series::{Accumulator, tests::Fixture};
+    use crate::prepared::series::{Accumulator, Reader, tests::Fixture};
 
     #[test]
     fn group_sum_reads_distinct_member_and_presence_keys_with_signed_cancellation() {
@@ -755,7 +674,6 @@ mod tests {
                 within: None,
                 excluded: &[],
                 zeros: &[],
-                tail: None,
             },
             Member {
                 keys: &[(102, i32::MIN, i32::MAX, None)],
@@ -764,7 +682,6 @@ mod tests {
                 within: None,
                 excluded: &[],
                 zeros: &[],
-                tail: None,
             },
         ];
         let exact = summary(
@@ -828,15 +745,16 @@ mod tests {
         width: u32,
     ) -> crate::prepared_chart::ChartSummary {
         let rank = |own: Option<i128>, other: Option<i128>| {
-            own.map(|own| if other.is_none_or(|other| own > other) { 1 } else { 2 })
+            own.map(|own| {
+                if other.is_none_or(|other| own > other) {
+                    1
+                } else {
+                    2
+                }
+            })
         };
         sums(
-            series.map(|(a, b)| {
-                [
-                    (a, a.is_some(), rank(a, b)),
-                    (b, b.is_some(), rank(b, a)),
-                ]
-            }),
+            series.map(|(a, b)| [(a, a.is_some(), rank(a, b)), (b, b.is_some(), rank(b, a))]),
             top,
             width,
         )
@@ -890,7 +808,6 @@ mod tests {
                 within: None,
                 excluded: &[],
                 zeros: &[],
-                tail: None,
             },
             Member {
                 keys: &[(102, i32::MIN, i32::MAX, None)],
@@ -899,7 +816,6 @@ mod tests {
                 within: None,
                 excluded: &[],
                 zeros: &[],
-                tail: None,
             },
         ];
         summary(
@@ -907,7 +823,7 @@ mod tests {
             &mut present,
             &mut rosters,
             None,
-            top.map(|top| (&mut ranks, top)),
+            top.map(|top| (&mut ranks as &mut dyn SeriesRead, top)),
             &members,
             &[],
             (0.0, 3.0, width),
@@ -1058,7 +974,6 @@ mod tests {
                 within: None,
                 excluded: &[],
                 zeros: &[],
-                tail: None,
             },
             Member {
                 keys: &[(102, i32::MIN, i32::MAX, None)],
@@ -1067,7 +982,6 @@ mod tests {
                 within: None,
                 excluded: &[],
                 zeros: &[],
-                tail: None,
             },
         ];
         let dense = summary(

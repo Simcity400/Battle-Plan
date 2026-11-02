@@ -132,9 +132,7 @@ fn text(writer: &mut Writer<'_>, bytes: &[u8]) -> io::Result<Cell> {
     if bytes.is_empty() {
         return Ok(Cell::Text(dashboard_series::Blob::EMPTY));
     }
-    Ok(Cell::Text(
-        writer.blob(&mut &bytes[..], bytes.len() as u64)?,
-    ))
+    Ok(Cell::Text(writer.bytes(bytes)?))
 }
 
 fn optional_text(writer: &mut Writer<'_>, bytes: Option<&[u8]>) -> io::Result<Cell> {
@@ -489,11 +487,82 @@ struct Paid {
     charge: Option<i128>,
 }
 
+/// Tags by number, as one bit each: the accounting takes them in ascending order.
+#[derive(Default)]
+struct Tags(Vec<u64>);
+
+impl Tags {
+    fn insert(&mut self, tag: u32) {
+        let word = (tag / 64) as usize;
+        if word >= self.0.len() {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << (tag % 64);
+    }
+
+    fn iter(&self) -> Ascending {
+        Ascending {
+            words: self.0.clone(),
+            at: 0,
+        }
+    }
+}
+
+impl FromIterator<u32> for Tags {
+    fn from_iter<I: IntoIterator<Item = u32>>(tags: I) -> Self {
+        let mut set = Self::default();
+        set.extend(tags);
+        set
+    }
+}
+
+impl Extend<u32> for Tags {
+    fn extend<I: IntoIterator<Item = u32>>(&mut self, tags: I) {
+        for tag in tags {
+            self.insert(tag);
+        }
+    }
+}
+
+impl IntoIterator for Tags {
+    type Item = u32;
+    type IntoIter = Ascending;
+
+    fn into_iter(self) -> Ascending {
+        Ascending {
+            words: self.0,
+            at: 0,
+        }
+    }
+}
+
+/// The tags of [`Tags`], ascending.
+struct Ascending {
+    words: Vec<u64>,
+    at: usize,
+}
+
+impl Iterator for Ascending {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        while let Some(word) = self.words.get_mut(self.at) {
+            if *word != 0 {
+                let bit = word.trailing_zeros();
+                *word &= *word - 1;
+                return Some(self.at as u32 * 64 + bit);
+            }
+            self.at += 1;
+        }
+        None
+    }
+}
+
 /// What the hour joins, as the accounting reads it.
 #[derive(Default)]
 struct Joined {
     /// Tags whose inputs the hour changed.
-    dirty: BTreeSet<u32>,
+    dirty: Tags,
     /// Command power rows recorded this hour by identity: covered, and their holder's operands.
     command: FastMap<(u32, u64), Vec<(CountryPowerChangeRow, bool, Option<Holder>)>>,
     /// Costs recorded this hour by tag: their amount and whether their application matched.
@@ -531,7 +600,7 @@ pub struct Emit {
     /// made of: an hour handing both again leaves it as it was.
     advanced_from: Option<(Arc<[u32]>, Vec<u32>)>,
     /// Tags whose last account read inputs of its hour alone: accounted again at the next.
-    volatile: BTreeSet<u32>,
+    volatile: Tags,
     /// Each held day by tag, day hour, raw country and epoch.
     tag_days: BTreeSet<(u32, i32, u32, u64)>,
     identities: FastMap<(u32, u64), Vec<(i32, u32)>>,
@@ -599,7 +668,7 @@ impl Emit {
             extended_through: 0,
             advanced: Vec::new(),
             advanced_from: None,
-            volatile: BTreeSet::new(),
+            volatile: Tags::default(),
             tag_days: BTreeSet::new(),
             identities: FastMap::default(),
             complete: 0,
@@ -1395,6 +1464,7 @@ impl Emit {
             self.settled = Some(newest);
         }
         // Rows of identities tagged this hour that waited, then the hour's own rows.
+        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.rows.record", None);
         let mut queue: Vec<Waiting> = Vec::new();
         if !tagged.is_empty() {
             let tagged: FastSet<(u32, u64)> = tagged.into_iter().collect();
@@ -1438,10 +1508,14 @@ impl Emit {
                 Waiting::Cost(cost) => self.record_cost(writer, cost, at, &mut None, joined)?,
             }
         }
+        drop(_cpu);
+        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.rows.daily", None);
         for row in daily {
             self.record_daily(writer, row, at, joined)?;
         }
+        drop(_cpu);
         // The hour's rows are all in place: a country's costs of one day read alike.
+        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.rows.costs", None);
         let mut run = None;
         for cost in costs {
             self.record_cost(writer, cost, at, &mut run, joined)?;
@@ -2663,7 +2737,7 @@ impl Emit {
             tags: self.tags.iter().map(|tag| tag.to_string()).collect(),
             countries: &self.countries,
             refused: self.refused.clone(),
-            volatile: self.volatile.iter().copied().collect(),
+            volatile: self.volatile.iter().collect(),
             complete: self.complete,
             command: self
                 .command

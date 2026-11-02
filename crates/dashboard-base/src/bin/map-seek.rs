@@ -12,7 +12,7 @@
 //! names the opaque cells' format and the capture mode; a native recording's are this build's
 //! and full.
 
-use dashboard_base::prepared_map::selected_tables;
+use dashboard_base::map_tables::selected_tables;
 use engine_allocation::credit::MemoryBudget;
 use replay::{
     columnar_frames::{Limits, Recording},

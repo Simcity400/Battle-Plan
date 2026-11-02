@@ -2359,11 +2359,7 @@ impl Viewer {
                     }
                     .map_err(|error| error.to_string())?;
                     if let Some(source) = &source {
-                        document.bind_source(
-                            Arc::clone(source),
-                            resolve.clone(),
-                            options.allow_unverified,
-                        );
+                        document.bind_source(source);
                     }
                     let decoder = resources
                         .as_ref()
@@ -2374,8 +2370,8 @@ impl Viewer {
                                 .map_err(|error| error.to_string())?;
                             let mut presented = crate::playback::Playback::unloaded(replay)
                                 .map_err(|error| error.to_string())?;
-                            if let Some(source) = document.playback.checkpoint_source() {
-                                presented.bind_checkpoint_source(source);
+                            if let Some(binding) = document.playback.map_binding() {
+                                presented.bind_map(binding);
                             }
                             presented.present(
                                 document.playback.branch(),

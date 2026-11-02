@@ -383,15 +383,16 @@ impl Schedule {
     }
 
     /// The next task: an emit that can go on, the family furthest behind first, taking what
-    /// reading back its spilled chunk needs; else a walk of the first segment with a family
-    /// to take, once what it reads is measured and it may start and `hold` takes its share
-    /// of the walkers' budget, taking every family it can; else a measure of a segment in the
-    /// window some family has yet to walk.
+    /// reading back its spilled chunk needs; else, when `ahead`, a walk of the first segment
+    /// with a family to take, once what it reads is measured and it may start and `hold` takes
+    /// its share of the walkers' budget, taking every family it can; else a measure of a
+    /// segment in the window some family has yet to walk.
     pub(super) fn pick<'c>(
         &mut self,
         plan: &Plan,
         settings: &Settings,
         credit: &'c Credit,
+        ahead: bool,
         hold: &mut dyn FnMut(Reads) -> bool,
     ) -> io::Result<Option<Task<'c>>> {
         let (committed, base) = (credit.committed(), self.base());
@@ -416,6 +417,9 @@ impl Schedule {
                 at: self.next[lane],
                 restore,
             }));
+        }
+        if !ahead {
+            return Ok(None);
         }
         let window = base..self.segments.min(base.saturating_add(settings.window));
         for at in window.clone() {

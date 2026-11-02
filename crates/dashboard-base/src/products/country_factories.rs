@@ -1,5 +1,7 @@
 //! Every country's factories over one branch, for the Factories widget: each of
-//! the three recorded factory groups as the game last recalculated them, hour by hour.
+//! the three recorded factory groups as the game last recalculated them, hour by hour,
+//! prepared as the `factories` series family ([`facts`], [`emit`]) and answered from its
+//! publication ([`query`]), which the scoreboard and the faction totals read too.
 //!
 //! The values are the recorded `CountryFactories` rows (table 257, hourly): the
 //! stored totals the top bar, factory tooltips and factory triggers read
@@ -39,38 +41,40 @@
 //! runs cover any hour. The reply's size is counted before it is built and
 //! refused past [`MAX_REPLY_BYTES`], inside the transport's bound.
 
-use super::{
-    LoadContext, Product,
-    country_groups::HourSpan,
-    country_history::{Identity, observe_identity, unique_by_slot},
-    validate_tag,
-};
+use super::{LoadContext, Product, country_groups::HourSpan, validate_tag};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{IdentityTrack, slot_read, tagged_countries, validate_campaign},
 };
 use installed_content_core::buildings::Buildings;
-use replay::container::Replay;
-use replay_data::{rows::CountryFactoriesRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_data::rows::CountryFactoriesRow;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+
+pub mod emit;
+pub mod facts;
+pub mod query;
+#[cfg(any(test, feature = "test-support"))]
+mod row;
+pub mod served;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use row::faction_tracks;
+#[cfg(any(test, feature = "test-support"))]
+pub use row::{Scans, scan, scanned_branch};
+#[cfg(test)]
+use row::*;
 
 pub struct CountryFactories;
 
 /// The fixed5 scale of the recorded totals (`engine_native::factory_group`: i64 x100000).
 const FIXED5: i64 = 100_000;
 
-const CACHED_BRANCHES: usize = 2;
 /// The most a reply's series may take serialised: well inside the transport's
 /// 32 MiB with the groups, the fields and the envelope.
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
@@ -180,6 +184,62 @@ pub fn fields() -> Vec<FactoryField> {
             part,
         }))
         .collect()
+}
+
+/// How many values a run holds ([`fields`]).
+pub const FIELD_COUNT: usize = GROUP_PARTS.len() * FactoryGroupKey::ALL.len() + CIVILIAN_PARTS.len();
+
+/// The counts a ranking or a total reads: each mode over each nonempty set of groups
+/// ([`channel`]).
+pub const CHANNELS: usize = 21;
+const MODES: [FactoryCount; 3] = [FactoryCount::Free, FactoryCount::Built, FactoryCount::TopBar];
+
+/// The selection channel `index` counts.
+pub fn rank_selection(index: usize) -> FactoryTop {
+    FactoryTop {
+        count: 1,
+        mode: MODES[index / 7],
+        groups: FactoryGroupKey::ALL
+            .into_iter()
+            .enumerate()
+            .filter_map(|(bit, group)| ((index % 7 + 1) & (1 << bit) != 0).then_some(group))
+            .collect(),
+    }
+}
+
+/// The channel counting `top`'s mode over its groups (none: all three).
+pub fn channel(top: &FactoryTop) -> usize {
+    let mask = if top.groups.is_empty() {
+        7
+    } else {
+        FactoryGroupKey::ALL
+            .iter()
+            .enumerate()
+            .filter_map(|(bit, group)| top.groups.contains(group).then_some(1 << bit))
+            .sum::<usize>()
+    };
+    MODES
+        .iter()
+        .position(|mode| *mode == top.mode)
+        .expect("every mode has channels")
+        * 7
+        + mask
+        - 1
+}
+
+/// Every channel's count of `values`, as [`count_for`] counts [`rank_selection`]'s.
+pub fn channel_counts(values: &[i32]) -> [i64; CHANNELS] {
+    let mut counts = [0; CHANNELS];
+    for (index, mode) in MODES.into_iter().enumerate() {
+        let groups = FactoryGroupKey::ALL.map(|group| group_count(values, group, mode));
+        for mask in 1..=7_usize {
+            counts[index * 7 + mask - 1] = (0..3)
+                .filter(|bit| mask & (1 << bit) != 0)
+                .map(|bit| groups[bit])
+                .sum();
+        }
+    }
+    counts
 }
 
 /// A building type whose content flag counts it in a group.
@@ -368,8 +428,22 @@ fn truncated(raw: i64) -> Option<i32> {
 /// The row's values in [`fields`] order, and which groups' recorded `unavailable`
 /// is not the sum of their withheld parts; none when a total does not fit.
 fn values(row: &CountryFactoriesRow) -> Option<(Vec<i32>, Vec<FactoryGroupKey>)> {
-    let mut values = Vec::with_capacity(GROUP_PARTS.len() * 3 + CIVILIAN_PARTS.len());
-    let mut unexplained = Vec::new();
+    let mut values = [0; FIELD_COUNT];
+    let unexplained = fill(row, &mut values)?;
+    Some((
+        values.to_vec(),
+        FactoryGroupKey::ALL
+            .into_iter()
+            .zip(unexplained)
+            .filter_map(|(key, unexplained)| unexplained.then_some(key))
+            .collect(),
+    ))
+}
+
+/// [`values`] into `values`, with whether each group's `unavailable` (in
+/// [`FactoryGroupKey::ALL`] order) is not the sum of its withheld parts.
+fn fill(row: &CountryFactoriesRow, values: &mut [i32; FIELD_COUNT]) -> Option<[bool; 3]> {
+    let mut unexplained = [false; 3];
     let consumers = [
         row.consumer_goods,
         row.contract_payments,
@@ -377,9 +451,9 @@ fn values(row: &CountryFactoriesRow) -> Option<(Vec<i32>, Vec<FactoryGroupKey>)>
         row.license_imports,
         row.trade_imports,
     ];
-    for key in FactoryGroupKey::ALL {
+    for (index, key) in FactoryGroupKey::ALL.into_iter().enumerate() {
         let group = group(row, key);
-        values.extend([
+        values[index * GROUP_PARTS.len()..(index + 1) * GROUP_PARTS.len()].copy_from_slice(&[
             truncated(group.total_raw)?,
             truncated(group.controlled_raw)?,
             truncated(group.owned_raw)?,
@@ -395,414 +469,17 @@ fn values(row: &CountryFactoriesRow) -> Option<(Vec<i32>, Vec<FactoryGroupKey>)>
                 FactoryGroupKey::Civilian => consumers.iter().copied().map(i64::from).sum(),
                 FactoryGroupKey::Military | FactoryGroupKey::Naval => 0,
             };
-        if withheld != i64::from(group.unavailable) {
-            unexplained.push(key);
-        }
+        unexplained[index] = withheld != i64::from(group.unavailable);
     }
-    values.extend([row.civilian_trade_exports, row.civilian_license_exports]);
-    values.extend(consumers);
-    Some((values, unexplained))
+    let civilian = FactoryGroupKey::ALL.len() * GROUP_PARTS.len();
+    values[civilian] = row.civilian_trade_exports;
+    values[civilian + 1] = row.civilian_license_exports;
+    values[civilian + 2..].copy_from_slice(&consumers);
+    Some(unexplained)
 }
 
-/// One tag's runs, and the identity and hour its last run was extended to.
-#[derive(Default, Serialize, Deserialize)]
-struct Track {
-    runs: Vec<FactoryRun>,
-    last: Option<(Identity, i32)>,
-    segments: Vec<HourSpan>,
-    last_identity: IdentityTrack,
-    reads: Vec<FactoryReadRun>,
-}
 
-fn append_read(
-    reads: &mut Vec<FactoryReadRun>,
-    hour: i32,
-    read_hour: i32,
-    hourly: bool,
-    continues: bool,
-) {
-    if let Some(last) = reads.last_mut()
-        && continues
-        && last.last_hour.checked_add(1) == Some(hour)
-        && last.hourly == hourly
-        && (hourly || last.read_hour == read_hour)
-    {
-        last.last_hour = hour;
-    } else {
-        reads.push(FactoryReadRun {
-            first_hour: hour,
-            last_hour: hour,
-            read_hour,
-            hourly,
-        });
-    }
-}
 
-pub mod prepared;
-#[derive(Clone, PartialEq, Eq)]
-struct Current {
-    identity: Identity,
-    values: Option<Vec<i32>>,
-    read: bool,
-}
-#[derive(Default)]
-struct Rates {
-    unexplained: BTreeMap<FactoryGroupKey, usize>,
-    unreadable: usize,
-    unnamed: usize,
-}
-impl Track {
-    fn advance(&mut self, hour: i32) {
-        let Some(segment) = self.segments.last_mut() else {
-            return;
-        };
-        let before = segment.last_hour;
-        segment.last_hour = hour;
-        self.last_identity.advance(hour);
-        if let Some((_, at)) = &mut self.last
-            && *at == before
-        {
-            *at = hour;
-            if let Some(run) = self.runs.last_mut() {
-                run.last_hour = hour;
-            }
-            if let Some(read) = self.reads.last_mut() {
-                read.last_hour = hour;
-            }
-        }
-    }
-}
-#[derive(Default, Serialize, Deserialize)]
-pub(crate) struct Scan {
-    result: ScannedFactories,
-    tracks: BTreeMap<String, Track>,
-    frontier: Option<i32>,
-    live: BTreeSet<String>,
-    #[serde(skip)]
-    countries: super::force_census::Countries,
-    #[serde(skip)]
-    current: BTreeMap<String, Current>,
-    #[serde(skip)]
-    supplied_slots: BTreeSet<u32>,
-    #[serde(skip)]
-    rates: Rates,
-    #[serde(skip)]
-    read: Option<bool>,
-    /// Whether the last hour observed joined its countries and links.
-    #[serde(skip)]
-    joined: bool,
-    #[serde(skip)]
-    observed: Vec<String>,
-    #[cfg(any(test, feature = "test-support"))]
-    #[serde(skip)]
-    pub work: crate::prepared::observer_tests::Work,
-}
-impl Scan {
-    /// What observing `hour` does when it follows the last hour observed with
-    /// the same country keys, links, availability and factory rows, the
-    /// factory table read (`read`) or not as then: the unchanged hour's
-    /// counts, in constant time. False, with nothing changed, when observing
-    /// it would take another path: the hour does not follow, its read flag
-    /// differs, or the countries and links did not join.
-    fn advance_quiet(&mut self, hour: i32, read: bool) -> bool {
-        let continuous = self
-            .frontier
-            .is_some_and(|at| at.checked_add(1) == Some(hour));
-        if !continuous || self.read != Some(read) || !self.joined {
-            return false;
-        }
-        self.observed.clear();
-        self.unchanged(hour);
-        true
-    }
-    /// An hour whose factory inputs are the hour before's: the rates of the
-    /// last read count again.
-    fn unchanged(&mut self, hour: i32) {
-        self.result.unreadable += self.rates.unreadable;
-        self.result.unnamed += self.rates.unnamed;
-        for (&key, &count) in &self.rates.unexplained {
-            *self.result.unexplained.entry(key).or_default() += count;
-        }
-        self.frontier = Some(hour);
-    }
-    pub(crate) fn observe(
-        &mut self,
-        decoded: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-    ) {
-        self.observe_changes(decoded, format, None);
-        self.seal();
-    }
-    fn seal(&mut self) {
-        if let Some(hour) = self.frontier {
-            for tag in &self.live {
-                self.tracks
-                    .get_mut(tag)
-                    .expect("live factory holder")
-                    .advance(hour);
-            }
-        }
-    }
-    fn observe_changes(
-        &mut self,
-        decoded: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
-    ) {
-        self.observed.clear();
-        let hour = decoded.hour;
-        let continuous = self
-            .frontier
-            .is_some_and(|at| at.checked_add(1) == Some(hour));
-        let read = slot_read(format, &decoded.metrics, TableId::CountryFactories, hour);
-        let joined = self.countries.update_changed(decoded, changes);
-        self.joined = joined.is_ok();
-        let changed = !continuous
-            || self.read != Some(read)
-            || !matches!(joined, Ok(false))
-            || changes
-                .is_none_or(|changes| changes.rows_changed[TableId::CountryFactories.index()]);
-        if !changed {
-            self.unchanged(hour);
-            return;
-        }
-        if !continuous {
-            self.seal();
-        }
-        let partial = continuous && matches!(joined, Ok(false)) && !self.current.is_empty();
-        self.read = Some(read);
-        let rows = decoded.complete::<tables::CountryFactories>().ok();
-        let links = decoded.complete::<tables::CountryLinks>().ok();
-        let mut rates = Rates::default();
-        let by_slot = links.map(|links| {
-            unique_by_slot(rows.filter(|_| read).into_iter().flatten(), links, |row| {
-                row.country
-            })
-        });
-        if let Some(rows) = &by_slot {
-            rates.unreadable += rows.unresolved_rows + rows.duplicate_rows;
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.work.row_visits += rows.filter(|_| read).map_or(0, |rows| rows.len());
-        }
-        let mut current = BTreeMap::new();
-        if joined.is_ok() && links.is_some() {
-            let mut slots = self.supplied_slots.clone();
-            if read {
-                slots.extend(
-                    by_slot
-                        .as_ref()
-                        .into_iter()
-                        .flat_map(|rows| rows.rows.keys())
-                        .copied(),
-                );
-            }
-            let candidates = if partial {
-                self.countries.in_slots(&slots)
-            } else {
-                self.countries.tags.clone()
-            };
-            rates.unnamed += self.countries.unreadable_tags;
-            for (tag, identity) in &candidates {
-                let Some(identity) = *identity else {
-                    continue;
-                };
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    continue;
-                };
-                let values = if rows.is_none() {
-                    None
-                } else if read {
-                    by_slot
-                        .as_ref()
-                        .and_then(|rows| rows.rows.get(&identity.0))
-                        .copied()
-                        .flatten()
-                        .and_then(|row| {
-                            let Some((values, unexplained)) = values(row) else {
-                                rates.unreadable += 1;
-                                return None;
-                            };
-                            for key in unexplained {
-                                *rates.unexplained.entry(key).or_default() += 1;
-                            }
-                            Some(values)
-                        })
-                } else {
-                    self.current
-                        .get(tag)
-                        .filter(|before| continuous && before.identity == identity)
-                        .and_then(|before| before.values.clone())
-                        // After restore the committed native tail owns this held read.
-                        .or_else(|| {
-                            self.tracks
-                                .get(tag)
-                                .filter(|_| continuous && self.live.contains(tag))
-                                .and_then(|track| {
-                                    track
-                                        .last
-                                        .filter(|(seen, at)| {
-                                            *seen == identity && Some(*at) == self.frontier
-                                        })
-                                        .and_then(|_| {
-                                            track.runs.last().map(|run| run.values.clone())
-                                        })
-                                })
-                        })
-                };
-                current.insert(
-                    tag.to_owned(),
-                    Current {
-                        identity,
-                        values,
-                        read,
-                    },
-                );
-            }
-        }
-        if read || rows.is_none() {
-            self.supplied_slots = by_slot
-                .as_ref()
-                .into_iter()
-                .flat_map(|rows| rows.rows.keys())
-                .copied()
-                .collect();
-        }
-        for (tag, after) in &current {
-            if continuous && self.current.get(tag) == Some(after) {
-                continue;
-            }
-            let track = self.tracks.entry(tag.clone()).or_default();
-            if self.live.contains(tag)
-                && let Some(before) = self.frontier
-            {
-                track.advance(before);
-            }
-            observe_identity(
-                &mut track.segments,
-                &mut track.last_identity,
-                after.identity,
-                hour,
-            );
-            if let Some(values) = &after.values {
-                let continues = track.last.is_some_and(|(seen, at)| {
-                    seen == after.identity && at.checked_add(1) == Some(hour)
-                });
-                let supplying = if read {
-                    hour
-                } else {
-                    track.reads.last().map_or(hour, |last| {
-                        if last.hourly {
-                            last.last_hour
-                        } else {
-                            last.read_hour
-                        }
-                    })
-                };
-                append_read(&mut track.reads, hour, supplying, read, continues);
-                match track.runs.last_mut() {
-                    Some(run) if continues && run.values == *values => run.last_hour = hour,
-                    _ => track.runs.push(FactoryRun {
-                        first_hour: hour,
-                        last_hour: hour,
-                        starts_segment: !continues,
-                        values: values.clone(),
-                    }),
-                }
-                track.last = Some((after.identity, hour));
-            }
-            self.observed.push(tag.clone());
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.work.history_visits += 1;
-            }
-        }
-        for tag in self
-            .live
-            .iter()
-            .filter(|tag| !partial && !current.contains_key(*tag))
-        {
-            if let Some(before) = self.frontier {
-                self.tracks
-                    .get_mut(tag)
-                    .expect("departed factory holder")
-                    .advance(before);
-            }
-            self.observed.push(tag.clone());
-        }
-        if partial {
-            self.current.extend(current);
-        } else {
-            self.live = current.keys().cloned().collect();
-            self.current = current;
-        }
-        self.result.unreadable += rates.unreadable;
-        self.result.unnamed += rates.unnamed;
-        for (&key, &count) in &rates.unexplained {
-            *self.result.unexplained.entry(key).or_default() += count;
-        }
-        self.rates = rates;
-        self.frontier = Some(hour);
-    }
-    fn finish(mut self) -> ScannedFactories {
-        self.seal();
-        let Self {
-            mut result, tracks, ..
-        } = self;
-        for (tag, track) in tracks {
-            if !track.runs.is_empty() {
-                result.segments.insert(tag.clone(), track.segments);
-                result.reads.insert(tag.clone(), track.reads);
-                result.series.insert(tag, track.runs);
-            }
-        }
-        result
-    }
-}
-
-/// Scans one branch once for every country.
-pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedFactories> {
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::CountryFactories,
-    ];
-    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Factories request cancelled");
-    let mut observer = Scan::default();
-    crate::blocks::scan_blocks(
-        replay,
-        replay.index.iter().filter(|block| block.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancel());
-                }
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                let Ok(frames) = frames else {
-                    continue;
-                };
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(cancel());
-                    }
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        break;
-                    };
-                    if validate_campaign(decoded, replay).is_err() {
-                        break;
-                    }
-                    observer.observe(decoded, replay.format);
-                }
-            }
-            Ok(())
-        },
-    )?;
-    Ok(observer.finish())
-}
 
 /// A part's position in a run's values ([`fields`] order).
 fn position(group: FactoryGroupKey, part: FactoryPart) -> Option<usize> {
@@ -1152,16 +829,6 @@ fn unnamed_groups() -> Vec<FactoryGroupInfo> {
         .collect()
 }
 
-/// The branches scanned, most recent last, and how many scans have run. Its lock is
-/// held while a branch is scanned, as the service's other products hold their
-/// caches: requests for the product on one source run one scan at a time, so
-/// widgets asking at once (each with its own top N) share the first one's scan
-/// instead of each scanning the branch and holding its history.
-#[derive(Default)]
-pub struct Scans {
-    entries: VecDeque<(u64, Arc<ScannedFactories>)>,
-    pub runs: usize,
-}
 
 /// The groups named for the catalogue they were read from, and their warnings.
 #[derive(Default)]
@@ -1169,26 +836,6 @@ struct ContentCache {
     content: Option<(Arc<Catalogue>, Vec<FactoryGroupInfo>, Vec<String>)>,
 }
 
-/// The branch's scan: the cached one, or one scanned now while the lock keeps any
-/// other request for it waiting for this scan.
-pub fn scanned_branch(
-    source: &Source,
-    branch: u64,
-    cancelled: &AtomicBool,
-) -> io::Result<Arc<ScannedFactories>> {
-    let state = source.state::<Scans>();
-    let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((_, scanned)) = scans.entries.iter().find(|(cached, _)| *cached == branch) {
-        return Ok(Arc::clone(scanned));
-    }
-    scans.runs += 1;
-    let scanned = Arc::new(scan(&source.replay(), branch, cancelled)?);
-    scans.entries.push_back((branch, Arc::clone(&scanned)));
-    while scans.entries.len() > CACHED_BRANCHES {
-        scans.entries.pop_front();
-    }
-    Ok(scanned)
-}
 
 pub fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, Vec<String>) {
     let mut warnings = catalogue.verification.clone();
@@ -1298,6 +945,7 @@ fn describe_groups_with_findings(
 impl Product for CountryFactories {
     const KEY: &'static str = "country-factories";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = FactoriesParams;
     type Reply = CountryFactoriesReply;
 
@@ -1336,195 +984,37 @@ impl Product for CountryFactories {
         Ok(())
     }
 
+    /// The groups alone, for a settings list; every country's history is prepared.
     fn load(
         source: &Source,
         params: &Self::Params,
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        let scanned = if params.tags.is_empty() && params.top.is_none() {
-            Arc::new(ScannedFactories::default())
-        } else {
-            scanned_branch(source, branch, cancelled)?
-        };
-        let history = if params.top.is_none() && !params.tags.is_empty() {
-            Some(super::country_history::branch_histories(
+        if params.tags.is_empty() && params.top.is_none() {
+            return present(
                 source,
-                branch,
-                false,
-                &[],
+                params,
+                context,
                 cancelled,
-            )?)
-        } else {
-            None
-        };
-        present(
-            source,
-            params,
-            context,
-            cancelled,
-            &scanned,
-            history.as_deref(),
-            None,
-        )
+                &ScannedFactories::default(),
+                None,
+                None,
+            );
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        return row::load(source, params, context, cancelled);
+        #[cfg(not(any(test, feature = "test-support")))]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            super::prepared_only(Self::KEY),
+        ))
     }
 }
 
-/// Clips stale factory coverage around proven country-absence reads. Zero
-/// evidence wins at an overlap, so one country never contributes twice.
-#[cfg(any(test, feature = "test-support"))]
-fn faction_measure_runs(
-    recorded: &[FactoryRun],
-    absent: &[HourSpan],
-    mode: FactoryCount,
-    groups: &[FactoryGroupKey],
-    count: &mut usize,
-    cancelled: &AtomicBool,
-) -> io::Result<Vec<super::faction_totals::MeasureRun>> {
-    use super::faction_totals::{MeasureRun, push_measure};
-    let mut runs = Vec::new();
-    let mut absent_index = 0usize;
-    for run in recorded {
-        let mut first = i64::from(run.first_hour);
-        let last = i64::from(run.last_hour);
-        let value = Some(
-            groups
-                .iter()
-                .map(|group| group_count(&run.values, *group, mode))
-                .sum(),
-        );
-        while absent
-            .get(absent_index)
-            .is_some_and(|span| i64::from(span.last_hour) < first)
-        {
-            absent_index += 1;
-        }
-        let mut index = absent_index;
-        while let Some(span) = absent.get(index) {
-            if i64::from(span.first_hour) > last {
-                break;
-            }
-            if first < i64::from(span.first_hour) {
-                push_measure(
-                    &mut runs,
-                    MeasureRun {
-                        first_hour: first as i32,
-                        last_hour: (i64::from(span.first_hour) - 1) as i32,
-                        value,
-                        starts_segment: run.starts_segment || first != i64::from(run.first_hour),
-                    },
-                    count,
-                    cancelled,
-                )?;
-            }
-            first = first.max(i64::from(span.last_hour) + 1);
-            if first > last {
-                break;
-            }
-            index += 1;
-        }
-        absent_index = index;
-        if first <= last {
-            push_measure(
-                &mut runs,
-                MeasureRun {
-                    first_hour: first as i32,
-                    last_hour: last as i32,
-                    value,
-                    starts_segment: run.starts_segment || first != i64::from(run.first_hour),
-                },
-                count,
-                cancelled,
-            )?;
-        }
-    }
-    for span in absent {
-        push_measure(
-            &mut runs,
-            MeasureRun {
-                first_hour: span.first_hour,
-                last_hour: span.last_hour,
-                starts_segment: true,
-                value: Some(0),
-            },
-            count,
-            cancelled,
-        )?;
-    }
-    runs.sort_by_key(|run| run.first_hour);
-    debug_assert!(
-        runs.windows(2)
-            .all(|pair| pair[0].last_hour < pair[1].first_hour)
-    );
-    Ok(runs)
-}
 
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn faction_tracks(
-    source: &Source,
-    branch: u64,
-    tags: &[String],
-    mode: FactoryCount,
-    groups: &[FactoryGroupKey],
-    history: &super::country_groups::FactionHistory,
-    cancelled: &AtomicBool,
-) -> io::Result<super::faction_totals::CountryMeasures> {
-    use super::faction_totals::{CountryMeasures, CountryTrack, for_each_absent};
-    let scanned = scanned_branch(source, branch, cancelled)?;
-    let groups = if groups.is_empty() {
-        &FactoryGroupKey::ALL
-    } else {
-        groups
-    };
-    let mut count = 0usize;
-    let mut tracks = Vec::with_capacity(tags.len());
-    for tag in tags {
-        let mut absent = Vec::new();
-        for_each_absent(
-            &history.country_reads,
-            history
-                .country_presence
-                .get(tag)
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-            cancelled,
-            |first_hour, last_hour| {
-                absent.push(HourSpan {
-                    first_hour,
-                    last_hour,
-                });
-                Ok(())
-            },
-        )?;
-        tracks.push(CountryTrack {
-            tag: tag.clone(),
-            runs: faction_measure_runs(
-                scanned
-                    .series
-                    .get(tag)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
-                &absent,
-                mode,
-                groups,
-                &mut count,
-                cancelled,
-            )?,
-        });
-    }
-    let mut warnings = Vec::new();
-    if scanned.unreadable > 0 || scanned.unnamed > 0 {
-        warnings.push(format!("{} factory reads could not name a country or show its count; affected faction totals are gaps.", scanned.unreadable + scanned.unnamed));
-    }
-    Ok(CountryMeasures {
-        tracks,
-        unit: Some("factories".into()),
-        unavailable_reason: None,
-        warnings,
-    })
-}
-
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(test)]
 mod tests;
 

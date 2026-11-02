@@ -533,9 +533,13 @@ impl Prepared {
         flag: &AtomicBool,
         places: bool,
     ) -> io::Result<()> {
+        let cat = context
+            .content()
+            .and_then(|content| catalogue::catalogue(source, content))
+            .map_err(|error| error.to_string());
         self.observe_titled(
             source,
-            context,
+            cat,
             frame.hour,
             ships,
             indices,
@@ -581,12 +585,13 @@ impl Prepared {
         )
     }
 
-    /// [`Self::observe_read`] of an hour whose title operands were read apart ([`sighting`]).
+    /// [`Self::observe_read`] of an hour whose title operands were read apart ([`sighting`]),
+    /// naming with `cat`, the content its scan was configured with.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn observe_sighted(
         &mut self,
         source: &Source,
-        context: &LoadContext,
+        cat: Result<Arc<Catalogue>, String>,
         hour: i32,
         ships: &[sinkings::ShipEvent],
         indices: &[u32],
@@ -596,7 +601,7 @@ impl Prepared {
         let mut sighted = sighted;
         self.observe_titled(
             source,
-            context,
+            cat,
             hour,
             ships,
             indices,
@@ -618,7 +623,7 @@ impl Prepared {
     fn observe_titled(
         &mut self,
         source: &Source,
-        context: &LoadContext,
+        cat: Result<Arc<Catalogue>, String>,
         hour: i32,
         ships: &[sinkings::ShipEvent],
         indices: &[u32],
@@ -652,12 +657,10 @@ impl Prepared {
             .map(|at| (at, new[at].1))
             .collect();
         if !wanted.is_empty() {
-            let content = context
-                .content()
-                .and_then(|content| catalogue::catalogue(source, content));
+            let content = cat;
             let geo = content
                 .as_ref()
-                .map_err(ToString::to_string)
+                .map_err(Clone::clone)
                 .and_then(|cat| geography(source, cat));
             match (content, geo) {
                 (Ok(cat), Ok(geo)) => {

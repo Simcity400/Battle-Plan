@@ -1950,9 +1950,9 @@ fn occupied_map_area_selects_its_named_channels_in_territory_and_faction_paramet
     Territory::validate(&params).unwrap();
     let column = TerritoryMeasure::Area.index(TerritoryRule::Occupied);
     assert_eq!(column, columns::OCCUPIED_AREA);
-    assert_eq!(prepared::VALUE_CHANNELS[column], prepared::OCCUPIED_AREA);
-    assert_eq!(prepared::NATIVE_OWNED_STATES, 8);
-    assert!(!prepared::VALUE_CHANNELS.contains(&prepared::NATIVE_OWNED_STATES));
+    assert_eq!(emit::VALUE_CHANNELS[column], 12);
+    assert_eq!(emit::NATIVE_OWNED_STATES, 8);
+    assert!(!emit::VALUE_CHANNELS.contains(&emit::NATIVE_OWNED_STATES));
     let factions: super::super::faction_totals::FactionTotalsParams =
         serde_json::from_value(serde_json::json!({
             "branchId":"1", "source":{"kind":"territory","measure":"area","rule":"occupied"},

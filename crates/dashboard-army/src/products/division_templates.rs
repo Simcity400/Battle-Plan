@@ -7,7 +7,7 @@
 //! The base width is the recorded sum of each sub-unit's width before
 //! country and commander factors, never the designer's final width.
 use super::army_content::{self, Refusals};
-use dashboard_base::{prepared::query::progressive, products::Product, source::Source};
+use dashboard_base::{prepared::query::native, products::Product, source::Source};
 use dashboard_core::config::LoadContext;
 use dashboard_forces::products::army_size::{ArmyAttribution, attributed};
 use replay_data::rows::{TableId, TemplateSubunit, tables};
@@ -18,7 +18,8 @@ use ts_rs::TS;
 
 pub struct DivisionTemplates;
 
-const TABLES: [TableId; 6] = [
+/// The tables a roster is read from.
+pub const TABLES: [TableId; 6] = [
     TableId::Countries,
     TableId::CountryLinks,
     TableId::Divisions,
@@ -145,7 +146,7 @@ impl Product for DivisionTemplates {
             &(&p.tag, p.count_for),
             cancelled,
             || {
-                let frame = progressive::frame_at(source, branch, p.hour, &TABLES, cancelled)?
+                let frame = native::frame_at(source, branch, p.hour, &TABLES, cancelled)?
                     .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;

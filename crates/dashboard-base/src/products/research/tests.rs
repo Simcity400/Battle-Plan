@@ -1317,3 +1317,15 @@ fn restored_scan_recounts_allocation_budgets_without_persisting_capacity() {
         encoded["countries"]
     );
 }
+
+#[test]
+fn raw_text_matches_what_to_string_writes() {
+    for value in [0, 7, -7, 10, -10, 123_456, -123_456, i64::MAX, i64::MIN] {
+        assert!(super::raw_is(&value.to_string(), value), "{value}");
+        assert!(!super::raw_is(&(value / 10).to_string(), value) || value == 0, "{value}");
+        assert!(!super::raw_is(&format!("{value}0"), value), "{value}");
+    }
+    for (text, value) in [("-0", 0), ("007", 7), ("", 0), ("-", 0), ("+7", 7), ("7", -7)] {
+        assert!(!super::raw_is(text, value), "{text}");
+    }
+}

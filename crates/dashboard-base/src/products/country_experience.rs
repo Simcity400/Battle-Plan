@@ -15,6 +15,7 @@ use super::{
 use crate::{
     Source,
     metadata::{IdentityTrack, slot_read, validate_campaign},
+    prepared::query::native,
 };
 use engine_events::ccountry_experience_status::SCALE;
 use replay::container::Replay;
@@ -24,13 +25,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use ts_rs::TS;
 
 pub struct CountryExperience;
 /// A change compares reads one day apart, rather than partial-day accumulators.
-pub(crate) const DAY_HOURS: i32 = 24;
+pub const DAY_HOURS: i32 = 24;
 pub const UNITS: u32 = SCALE as u32;
 const _: () = assert!(UNITS as i64 == SCALE);
 
@@ -130,8 +134,15 @@ impl RawRead {
     }
 }
 
-impl From<&RawRead> for ExperienceRead {
-    fn from(read: &RawRead) -> Self {
+impl ExperienceRead {
+    /// A read held over `first_hour..=last_hour`, from its banked, gain and change values by
+    /// branch as [`RawRead::values`] gives them; None without every banked value.
+    pub fn from_values(
+        (first_hour, last_hour): (i32, i32),
+        read_hour: i32,
+        starts_segment: bool,
+        [banked, gain, change]: [[Option<i128>; 3]; 3],
+    ) -> Option<Self> {
         let branches = |values: [Option<i128>; 3]| {
             Some(ExperienceChange {
                 army_raw: values[0]?.to_string(),
@@ -139,21 +150,34 @@ impl From<&RawRead> for ExperienceRead {
                 air_raw: values[2]?.to_string(),
             })
         };
-        let [_, gain, change] = read.values();
+        let banked = branches(banked)?;
         let change = branches(change);
-        Self {
-            first_hour: read.first_hour,
-            last_hour: read.last_hour,
-            read_hour: read.read_hour,
-            starts_segment: read.starts_segment,
-            army_raw: read.banked[0].to_string(),
-            navy_raw: read.banked[1].to_string(),
-            air_raw: read.banked[2].to_string(),
+        let gain = branches(gain);
+        Some(Self {
+            first_hour,
+            last_hour,
+            read_hour,
+            starts_segment,
+            army_raw: banked.army_raw,
+            navy_raw: banked.navy_raw,
+            air_raw: banked.air_raw,
             change_unknown: change.is_none().then_some(ChangeUnknown::NoMatchingRead),
             change,
-            gain: branches(gain),
-            gain_unknown: read.gain.is_none().then_some(GainUnknown::NoCompleteDay),
-        }
+            gain_unknown: gain.is_none().then_some(GainUnknown::NoCompleteDay),
+            gain,
+        })
+    }
+}
+
+impl From<&RawRead> for ExperienceRead {
+    fn from(read: &RawRead) -> Self {
+        Self::from_values(
+            (read.first_hour, read.last_hour),
+            read.read_hour,
+            read.starts_segment,
+            read.values(),
+        )
+        .expect("a read holds every banked value")
     }
 }
 
@@ -233,6 +257,12 @@ fn scan_reads(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
+                    if [TableId::CountryExperience, TableId::CountryExperienceGains]
+                        .into_iter()
+                        .any(|table| native::left_to_native(decoded, table))
+                    {
+                        return Err(io::Error::other(native::unprepared("Experience")));
+                    }
                     observer.step(decoded, replay.format, None, |tag, _, read| {
                         if let Some(reads) = result.get_mut(tag) {
                             if let Some(previous) = reads
@@ -254,18 +284,263 @@ fn scan_reads(
     Ok(result)
 }
 
+/// What the scan reads of an hour, joined by canonical slot: the countries holding a tag and
+/// their rows, from row frames ([`Scan`]) or from a walk's columns.
+pub trait Joins {
+    /// Each country holding exactly one tag, by its canonical slot and id.
+    fn holders(&self) -> &BTreeMap<(u32, u32), Arc<str>>;
+    /// The holders at canonical `slot`, ascending.
+    fn at(&self, slot: u32) -> &[(u32, u32)];
+    /// Army, navy and air banked in `slot`'s one CountryExperience row.
+    fn banked(&self, slot: u32) -> Option<[i64; 3]>;
+    /// Army, navy and air gained in `slot`'s one CountryExperienceGains row, when that row
+    /// holds a complete interval.
+    fn gained(&self, slot: u32) -> Option<[i64; 3]>;
+}
+
+/// What an hour moved of the joins the scan reads.
+pub struct Moved<'a> {
+    /// The slots whose rows or holders may have changed, ascending: every one that did.
+    pub dirty: &'a [u32],
+    /// The tags and countries that stopped holding each other.
+    pub removed: &'a [(Arc<str>, (u32, u32))],
+    /// The holders were joined anew.
+    pub roster: bool,
+    /// Every holder is visited and the current outputs reconciled with the joins.
+    pub rebuilt: bool,
+    /// CountryExperience's daily read is dated at this hour.
+    pub read: bool,
+}
+
+/// The scan's state from hour to hour, whatever joins feed it.
 #[derive(Default, Serialize, Deserialize)]
-pub struct Scan {
+pub struct Reads {
     #[serde(with = "crate::prepared_production::map_pairs")]
     seen: BTreeMap<(u32, u32), Seen>,
-    published: BTreeMap<String, ((u32, u32), RawRead)>,
+    published: BTreeMap<Arc<str>, ((u32, u32), RawRead)>,
     hour: Option<i32>,
-    active: BTreeSet<(String, (u32, u32))>,
+    active: BTreeSet<(Arc<str>, (u32, u32))>,
     present: BTreeSet<(u32, u32)>,
     #[serde(skip)]
-    native: Native,
+    removed: Vec<(Arc<str>, (u32, u32))>,
     #[serde(skip)]
-    pub removed: Vec<(String, (u32, u32))>,
+    selected: Vec<(u32, u32)>,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    emitted: usize,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    gain_updates: usize,
+}
+
+impl Reads {
+    /// The outputs the last hour stepped took out: their tag and country.
+    pub fn removed(&self) -> &[(Arc<str>, (u32, u32))] {
+        &self.removed
+    }
+
+    /// Steps `hour`: each read the hour publishes goes to `sink` with its tag and country.
+    pub fn step<J: Joins>(
+        &mut self,
+        joins: &J,
+        hour: i32,
+        moved: Moved<'_>,
+        mut sink: impl FnMut(&Arc<str>, (u32, u32), RawRead) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let previous = self.hour;
+        let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(hour);
+        self.hour = Some(hour);
+        self.removed.clear();
+        let force = moved.rebuilt || !adjacent;
+        let holders = joins.holders();
+        let mut selected = std::mem::take(&mut self.selected);
+        selected.clear();
+        if force || moved.read {
+            selected.extend(holders.keys().copied());
+        } else {
+            for &slot in moved.dirty {
+                selected.extend_from_slice(joins.at(slot));
+            }
+            selected.sort_unstable();
+            selected.dedup();
+        }
+        for removed in moved.removed {
+            if self.active.remove(removed) {
+                self.removed.push(removed.clone());
+            }
+        }
+        // Runtime joins are rebuilt after resume. Only current output membership
+        // is reconciled then, never the retained historical `published` map.
+        if force {
+            let gone: Vec<_> = self
+                .active
+                .iter()
+                .filter(|(tag, id)| holders.get(id) != Some(tag))
+                .cloned()
+                .collect();
+            for row in gone {
+                self.active.remove(&row);
+                self.removed.push(row);
+            }
+        }
+        let visited = self.visit(
+            joins,
+            &selected,
+            (hour, previous, adjacent, force),
+            &moved,
+            &mut sink,
+        );
+        self.selected = selected;
+        visited?;
+        if moved.roster || force {
+            self.present = holders.keys().copied().collect();
+        }
+        Ok(())
+    }
+
+    fn visit<J: Joins>(
+        &mut self,
+        joins: &J,
+        selected: &[(u32, u32)],
+        (hour, previous, adjacent, force): (i32, Option<i32>, bool, bool),
+        moved: &Moved<'_>,
+        sink: &mut impl FnMut(&Arc<str>, (u32, u32), RawRead) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let holders = joins.holders();
+        let Self {
+            seen,
+            published,
+            active,
+            present,
+            removed,
+            ..
+        } = &mut *self;
+        #[cfg(any(test, feature = "test-support"))]
+        let (mut emitted, mut gain_updates) = (0, 0);
+        for &identity in selected {
+            let tag = &holders[&identity];
+            let output = (Arc::clone(tag), identity);
+            let previous_output = previous.filter(|_| adjacent && active.contains(&output));
+            let state = seen.entry(identity).or_default();
+            if adjacent
+                && present.contains(&identity)
+                && let Some(previous) = previous
+            {
+                state.track.advance(previous);
+            }
+            let continues = state.track.step(Some(identity), hour);
+            if !continues {
+                state.gains.clear();
+            }
+            if let Some(values) = joins.gained(identity.0) {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    gain_updates += 1;
+                }
+                if state.gains.back().is_none_or(|(_, held)| *held != values) {
+                    state.gains.push_back((hour, values));
+                }
+                let first = hour.saturating_sub(DAY_HOURS - 1);
+                while state.gains.get(1).is_some_and(|(at, _)| *at <= first) {
+                    state.gains.pop_front();
+                }
+                if let Some((at, _)) = state.gains.front_mut() {
+                    *at = (*at).max(first);
+                }
+            } else {
+                state.gains.clear();
+            }
+            state.open &= continues;
+            if !state.open {
+                state.recent.clear();
+            }
+            let Some(banked) = joins.banked(identity.0) else {
+                state.open = false;
+                if active.remove(&output) {
+                    removed.push(output);
+                }
+                continue;
+            };
+            if !moved.read {
+                if state.open
+                    && let Some(held) = &state.held
+                {
+                    if force || moved.dirty.binary_search(&identity.0).is_ok() {
+                        publish(published, tag, identity, held, hour, previous_output, sink)?;
+                        #[cfg(any(test, feature = "test-support"))]
+                        {
+                            emitted += 1;
+                        }
+                    }
+                    active.insert(output);
+                } else if active.remove(&output) {
+                    removed.push(output);
+                }
+                continue;
+            }
+            while state
+                .recent
+                .front()
+                .is_some_and(|(at, _)| i64::from(hour) - i64::from(*at) > i64::from(DAY_HOURS))
+            {
+                state.recent.pop_front();
+            }
+            let day_before = hour
+                .checked_sub(DAY_HOURS)
+                .and_then(|before| state.recent.iter().find(|(at, _)| *at == before))
+                .map(|(_, previous)| *previous);
+            let gain = state
+                .gains
+                .front()
+                .filter(|(first, _)| {
+                    i64::from(hour) - i64::from(*first) + 1 == i64::from(DAY_HOURS)
+                })
+                .map(|_| {
+                    let mut sum = [0_i128; 3];
+                    let mut end = i64::from(hour) + 1;
+                    for &(first, values) in state.gains.iter().rev() {
+                        let hours = end - i64::from(first);
+                        for index in 0..3 {
+                            sum[index] += i128::from(values[index]) * i128::from(hours);
+                        }
+                        end = i64::from(first);
+                    }
+                    sum
+                });
+            let held = RawRead {
+                first_hour: hour,
+                last_hour: hour,
+                read_hour: hour,
+                starts_segment: !state.open,
+                banked,
+                day_before,
+                gain,
+            };
+            publish(published, tag, identity, &held, hour, previous_output, sink)?;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                emitted += 1;
+            }
+            state.held = Some(held);
+            state.recent.push_back((hour, banked));
+            state.open = true;
+            active.insert(output);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.emitted += emitted;
+            self.gain_updates += gain_updates;
+        }
+        Ok(())
+    }
+}
+
+/// The scan of row frames: the joins of each frame's tables, and the reads they step.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Scan {
+    reads: Reads,
+    #[serde(skip)]
+    native: Native,
 }
 
 /// The Countries fields a country's keys read besides its id, the row key
@@ -280,9 +555,9 @@ struct Native {
     keys: Option<crate::metadata::CountryKeys>,
     country_rows: Option<Vec<replay_data::rows::CountryRow>>,
     links: std::sync::Arc<std::collections::HashMap<u32, u32>>,
-    identities: BTreeMap<(u32, u32), String>,
+    identities: BTreeMap<(u32, u32), Arc<str>>,
     slots: BTreeMap<u32, Vec<(u32, u32)>>,
-    removed: Vec<(String, (u32, u32))>,
+    removed: Vec<(Arc<str>, (u32, u32))>,
     roster_changed: bool,
     /// The last complete gains read, held as the frame's own view.
     gain_rows: Option<replay_frame::frame::SharedView>,
@@ -292,9 +567,28 @@ struct Native {
     gains: Option<BTreeMap<u32, Option<replay_data::rows::CountryExperienceGainRow>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub work: crate::prepared::observer_tests::Work,
-    #[cfg(any(test, feature = "test-support"))]
-    gain_updates: usize,
 }
+
+impl Joins for Native {
+    fn holders(&self) -> &BTreeMap<(u32, u32), Arc<str>> {
+        &self.identities
+    }
+
+    fn at(&self, slot: u32) -> &[(u32, u32)] {
+        self.slots.get(&slot).map_or(&[][..], Vec::as_slice)
+    }
+
+    fn banked(&self, slot: u32) -> Option<[i64; 3]> {
+        let row = self.banked.as_ref()?.get(&slot)?.as_ref()?;
+        Some([row.army_raw, row.navy_raw, row.air_raw])
+    }
+
+    fn gained(&self, slot: u32) -> Option<[i64; 3]> {
+        let row = self.gains.as_ref()?.get(&slot)?.as_ref()?;
+        (row.complete == 1).then_some([row.army_raw, row.navy_raw, row.air_raw])
+    }
+}
+
 /// Replace the joins of changed owners only. Every raw alias of an affected
 /// slot participates, so duplicate rows leave that slot unknown as in the
 /// whole-table join. Returns the changed slots and rows visited.
@@ -423,7 +717,7 @@ impl Native {
                     identities
                         .entry(*identity)
                         .and_modify(|tag| *tag = None)
-                        .or_insert(Some(tag.clone()));
+                        .or_insert(Some(Arc::<str>::from(tag.as_str())));
                 }
             }
             let identities: BTreeMap<_, _> = identities
@@ -577,13 +871,15 @@ impl Native {
 impl Scan {
     #[cfg(any(test, feature = "test-support"))]
     pub fn work(&self) -> crate::prepared::observer_tests::Work {
-        self.native.work
+        let mut work = self.native.work;
+        work.emitted = self.reads.emitted;
+        work
     }
 
     /// Gain runs visited at changed inputs or banked reads.
     #[cfg(any(test, feature = "test-support"))]
     pub fn gain_updates(&self) -> usize {
-        self.native.gain_updates
+        self.reads.gain_updates
     }
 
     pub fn step(
@@ -594,12 +890,8 @@ impl Scan {
         mut sink: impl FnMut(&str, (u32, u32), RawRead) -> io::Result<()>,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("experience:observe");
-        let previous = self.hour;
-        let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(decoded.hour);
-        self.hour = Some(decoded.hour);
-        self.removed.clear();
-        let dirty = self.native.refresh(decoded, changes);
-        let read_hour = changes.map_or_else(
+        let dirty: Vec<u32> = self.native.refresh(decoded, changes).into_iter().collect();
+        let read = changes.map_or_else(
             || {
                 slot_read(
                     format,
@@ -610,219 +902,34 @@ impl Scan {
             },
             |changes| changes.slot_read[TableId::CountryExperience.index()],
         );
-        let force = changes.is_none_or(|changes| {
+        let rebuilt = changes.is_none_or(|changes| {
             changes.rows_changed[TableId::Countries.index()]
                 && changes.rows_changed[TableId::CountryLinks.index()]
-        }) || !adjacent;
-        let selected: BTreeSet<_> = if force || read_hour {
-            self.native.identities.keys().copied().collect()
-        } else {
-            dirty
-                .iter()
-                .flat_map(|slot| self.native.slots.get(slot).into_iter().flatten().copied())
-                .collect()
-        };
-        for removed in &self.native.removed {
-            if self.active.remove(removed) {
-                self.removed.push(removed.clone());
-            }
-        }
-        // Runtime joins are rebuilt after resume. Only current output membership
-        // is reconciled then, never the retained historical `published` map.
-        if force {
-            let removed: Vec<_> = self
-                .active
-                .iter()
-                .filter(|(tag, id)| self.native.identities.get(id) != Some(tag))
-                .cloned()
-                .collect();
-            for row in removed {
-                self.active.remove(&row);
-                self.removed.push(row);
-            }
-        }
-        let Self {
-            seen,
-            published,
-            native,
-            active,
-            present,
-            removed,
-            ..
-        } = self;
-        let hour = decoded.hour;
-        for identity in selected {
-            let tag = &native.identities[&identity];
-            let output = (tag.clone(), identity);
-            let previous_output = previous.filter(|_| adjacent && active.contains(&output));
-            let state = seen.entry(identity).or_default();
-            if adjacent
-                && present.contains(&identity)
-                && let Some(previous) = previous
-            {
-                state.track.advance(previous);
-            }
-            let continues = state.track.step(Some(identity), hour);
-            let observed = native
-                .gains
-                .as_ref()
-                .and_then(|rows| rows.get(&identity.0))
-                .and_then(Option::as_ref);
-            if !continues {
-                state.gains.clear();
-            }
-            let gained = observed.filter(|row| row.complete == 1);
-            if let Some(gained) = gained {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    native.gain_updates += 1;
-                }
-                let values = [gained.army_raw, gained.navy_raw, gained.air_raw];
-                if state.gains.back().is_none_or(|(_, held)| *held != values) {
-                    state.gains.push_back((hour, values));
-                }
-                let first = hour.saturating_sub(DAY_HOURS - 1);
-                while state.gains.get(1).is_some_and(|(at, _)| *at <= first) {
-                    state.gains.pop_front();
-                }
-                if let Some((at, _)) = state.gains.front_mut() {
-                    *at = (*at).max(first);
-                }
-            } else {
-                state.gains.clear();
-            }
-            state.open &= continues;
-            if !state.open {
-                state.recent.clear();
-            }
-            let Some(rows) = native.banked.as_ref() else {
-                state.open = false;
-                if active.remove(&output) {
-                    removed.push(output);
-                }
-                continue;
-            };
-            let Some(row) = rows.get(&identity.0).and_then(Option::as_ref) else {
-                state.open = false;
-                if active.remove(&output) {
-                    removed.push(output);
-                }
-                continue;
-            };
-            if !read_hour {
-                if state.open
-                    && let Some(held) = &state.held
-                {
-                    if changes.is_none() || force || dirty.contains(&identity.0) {
-                        publish(
-                            published,
-                            tag,
-                            identity,
-                            held,
-                            hour,
-                            previous_output,
-                            &mut sink,
-                        )?;
-                        #[cfg(any(test, feature = "test-support"))]
-                        {
-                            native.work.emitted += 1;
-                        }
-                    }
-                    active.insert(output);
-                } else if active.remove(&output) {
-                    removed.push(output);
-                }
-                continue;
-            }
-            while state
-                .recent
-                .front()
-                .is_some_and(|(at, _)| i64::from(hour) - i64::from(*at) > i64::from(DAY_HOURS))
-            {
-                state.recent.pop_front();
-            }
-            let banked = [row.army_raw, row.navy_raw, row.air_raw];
-            let day_before = hour
-                .checked_sub(DAY_HOURS)
-                .and_then(|before| state.recent.iter().find(|(at, _)| *at == before))
-                .map(|(_, previous)| *previous);
-            let gain = state
-                .gains
-                .front()
-                .filter(|(first, _)| {
-                    i64::from(hour) - i64::from(*first) + 1 == i64::from(DAY_HOURS)
-                })
-                .map(|_| {
-                    let mut sum = [0_i128; 3];
-                    let mut end = i64::from(hour) + 1;
-                    for &(first, values) in state.gains.iter().rev() {
-                        let hours = end - i64::from(first);
-                        for index in 0..3 {
-                            sum[index] += i128::from(values[index]) * i128::from(hours);
-                        }
-                        end = i64::from(first);
-                    }
-                    sum
-                });
-            let held = RawRead {
-                first_hour: hour,
-                last_hour: hour,
-                read_hour: hour,
-                starts_segment: !state.open,
-                banked,
-                day_before,
-                gain,
-            };
-            publish(
-                published,
-                tag,
-                identity,
-                &held,
-                hour,
-                previous_output,
-                &mut sink,
-            )?;
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                native.work.emitted += 1;
-            }
-            state.held = Some(held);
-            state.recent.push_back((hour, banked));
-            state.open = true;
-            active.insert(output);
-        }
-        if native.roster_changed || force {
-            *present = native.identities.keys().copied().collect();
-        }
-        Ok(())
-    }
-}
-
-impl Scan {
-    /// Hours `first..=last` following the last stepped hour, with no changed
-    /// inputs or banked read. Open gain runs already hold through these hours;
-    /// the next changed input or read visits their countries.
-    pub fn advance_quiet(&mut self, first: i32, last: i32) -> bool {
-        let _cpu = ::replay_frame::cpu::scope_phase("experience:quiet");
-        if self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) || last < first {
-            return false;
-        }
-        self.hour = Some(last);
-        self.removed.clear();
-        self.native.removed.clear();
-        self.native.roster_changed = false;
-        true
+        });
+        let Self { reads, native } = self;
+        reads.step(
+            &*native,
+            decoded.hour,
+            Moved {
+                dirty: &dirty,
+                removed: &native.removed,
+                roster: native.roster_changed,
+                rebuilt,
+                read,
+            },
+            |tag, identity, read| sink(&**tag, identity, read),
+        )
     }
 }
 
 fn publish(
-    published: &mut BTreeMap<String, ((u32, u32), RawRead)>,
-    tag: &str,
+    published: &mut BTreeMap<Arc<str>, ((u32, u32), RawRead)>,
+    tag: &Arc<str>,
     identity: (u32, u32),
     held: &RawRead,
     hour: i32,
     previous_hour: Option<i32>,
-    sink: &mut impl FnMut(&str, (u32, u32), RawRead) -> io::Result<()>,
+    sink: &mut impl FnMut(&Arc<str>, (u32, u32), RawRead) -> io::Result<()>,
 ) -> io::Result<()> {
     let previous = published.get(tag);
     let same_identity = previous.is_some_and(|(seen, _)| *seen == identity);
@@ -842,246 +949,8 @@ fn publish(
     };
     read.last_hour = hour;
     sink(tag, identity, read)?;
-    published.insert(tag.to_owned(), (identity, read));
+    published.insert(Arc::clone(tag), (identity, read));
     Ok(())
-}
-
-/// The tables a progressive experience sample reads.
-pub const SAMPLE_TABLES: &[TableId] = &[
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryExperience,
-    TableId::CountryExperienceGains,
-];
-
-/// The measures a progressive sample answers: each branch's banked
-/// experience, a daily read held until the next. Daily gain and change per
-/// day need every hourly interval of a day, or a read exactly a day earlier,
-/// so only preparation answers them.
-pub const SAMPLED_MEASURES: [&str; 3] = ["army-banked", "navy-banked", "air-banked"];
-
-/// A progressive sampler of banked experience, stepping its own scan through
-/// the hours it is given in order as preparation does: an hour answers each
-/// requested country's bank as its last read at or before the hour holds it,
-/// dated by that read ([`READ_HOUR`]). An hour that does not follow the last
-/// one given starts afresh, so a held read never crosses hours the sampler
-/// did not see, and an hour before the first read it saw answers nothing.
-///
-/// [`READ_HOUR`]: crate::prepared_measure::query::READ_HOUR
-pub struct Sampler {
-    format: replay_data::format::FormatVersion,
-    scan: std::cell::RefCell<(Scan, Option<i32>)>,
-}
-
-struct BankedCountry {
-    key: String,
-    identity: (u32, u32),
-    hour: i32,
-    banked: [i64; 3],
-}
-struct BankedBlock(Vec<BankedCountry>);
-
-impl Sampler {
-    /// Exact cached folds hold all banks of the selected native holders, so
-    /// switching bank or showing all three does not observe their blocks again.
-    pub fn cache_keys(requested: &[(String, String)]) -> Vec<(String, String)> {
-        let countries: BTreeSet<_> = requested.iter().map(|(key, _)| key.clone()).collect();
-        let mut keys: Vec<_> = countries
-            .into_iter()
-            .flat_map(|key| {
-                SAMPLED_MEASURES
-                    .into_iter()
-                    .chain([crate::prepared_measure::query::READ_HOUR])
-                    .map(move |field| (key.clone(), field.to_owned()))
-            })
-            .collect();
-        keys.sort();
-        keys
-    }
-    /// All three banks share one compact observation of a block's first fresh
-    /// supplying read. Selection and measure only project this observation.
-    pub fn first_block(
-        source: &Source,
-        block: &replay::container::BlockIndex,
-        requested: &[(String, String)],
-        cancelled: &AtomicBool,
-    ) -> io::Result<crate::prepared::query::progressive::Samples> {
-        use crate::prepared::query::{observations, progressive};
-        use crate::prepared_measure::query::READ_HOUR;
-        let cache = observations::scope(source, "country-experience:first-read", None);
-        let selected: Vec<_> = SAMPLE_TABLES.iter().map(|table| table.index()).collect();
-        let observation = cache.get(
-            block,
-            &selected,
-            cancelled,
-            |value: &Option<BankedBlock>| {
-                std::mem::size_of::<Option<BankedBlock>>()
-                    + value.as_ref().map_or(0, |value| {
-                        value.0.capacity() * std::mem::size_of::<BankedCountry>()
-                            + value
-                                .0
-                                .iter()
-                                .map(|country| country.key.capacity())
-                                .sum::<usize>()
-                    })
-            },
-            || {
-                let replay = source.replay_ref();
-                let frames = replay.read_block_selected(block, &[])?;
-                let Some(read) = frames.iter().find(|frame| {
-                    slot_read(
-                        replay.format,
-                        &frame.metrics,
-                        TableId::CountryExperience,
-                        frame.hour,
-                    ) && !replay.gaps.iter().any(|gap| {
-                        gap.branch == block.branch
-                            && gap.first_hour <= frame.hour
-                            && frame.hour <= gap.last_hour
-                    })
-                }) else {
-                    return Ok(None);
-                };
-                let Some(frame) = progressive::frame_at(
-                    source,
-                    block.branch,
-                    read.hour,
-                    SAMPLE_TABLES,
-                    cancelled,
-                )?
-                else {
-                    return Ok(None);
-                };
-                let mut countries = Vec::new();
-                Scan::default().step(&frame, replay.format, None, |tag, identity, read| {
-                    countries.push(BankedCountry {
-                        key: {
-                            let mut key = serde_json::to_string(&(tag, identity.0, identity.1))?;
-                            key.shrink_to_fit();
-                            key
-                        },
-                        identity,
-                        hour: read.read_hour,
-                        banked: read.banked,
-                    });
-                    Ok(())
-                })?;
-                countries.shrink_to_fit();
-                Ok(Some(BankedBlock(countries)))
-            },
-        )?;
-        let mut samples = progressive::Samples::new();
-        let wanted: BTreeSet<_> = requested.iter().cloned().collect();
-        let wanted_countries: BTreeSet<_> = requested.iter().map(|(key, _)| key.as_str()).collect();
-        for country in observation
-            .as_ref()
-            .as_ref()
-            .into_iter()
-            .flat_map(|block| &block.0)
-        {
-            for (index, measure) in SAMPLED_MEASURES.iter().enumerate() {
-                let key = (country.key.clone(), (*measure).to_owned());
-                if wanted.contains(&key) {
-                    samples.insert(
-                        key,
-                        (
-                            Some(country.identity),
-                            Some(i128::from(country.banked[index])),
-                        ),
-                    );
-                }
-            }
-            let key = (country.key.clone(), READ_HOUR.to_owned());
-            if wanted.contains(&key) || wanted_countries.contains(country.key.as_str()) {
-                samples.insert(
-                    key,
-                    (Some(country.identity), Some(i128::from(country.hour))),
-                );
-            }
-        }
-        for key in requested {
-            samples.entry(key.clone()).or_insert((None, None));
-        }
-        Ok(samples)
-    }
-    pub fn new(format: replay_data::format::FormatVersion) -> Self {
-        Self {
-            format,
-            scan: std::cell::RefCell::new((Scan::default(), None)),
-        }
-    }
-
-    /// The banked measures of `requested` (series keys: the JSON of tag,
-    /// slot and country id, with a measure) at `frame`'s hour, each with its
-    /// country's supplying read hour; every country's when none are requested.
-    pub fn sample(
-        &self,
-        frame: &replay_frame::frame::DecodedFrame,
-        requested: Option<&[(String, String)]>,
-    ) -> io::Result<crate::prepared::query::progressive::Samples> {
-        use crate::prepared_measure::query::READ_HOUR;
-        // Each requested key, and its country's read hour, by recorded tag.
-        let mut keys = BTreeSet::new();
-        for (key, measure) in requested.into_iter().flatten() {
-            if measure != READ_HOUR && !SAMPLED_MEASURES.contains(&measure.as_str()) {
-                return Err(crate::invalid("Unknown experience sample measure"));
-            }
-            keys.insert((key.clone(), measure.clone()));
-            keys.insert((key.clone(), READ_HOUR.to_owned()));
-        }
-        // Keep this scan-local grouping of native identity, encoded key and measure explicit.
-        type Wanted = ((u32, u32), String, String);
-        let mut wanted: BTreeMap<String, Vec<Wanted>> = BTreeMap::new();
-        for (key, measure) in &keys {
-            let (tag, slot, id): (String, u32, u32) = serde_json::from_str(key)
-                .map_err(|_| crate::invalid("Invalid experience sample key"))?;
-            wanted
-                .entry(tag)
-                .or_default()
-                .push(((slot, id), key.clone(), measure.clone()));
-        }
-        let mut result = crate::prepared::query::progressive::Samples::new();
-        let mut state = self.scan.borrow_mut();
-        let (scan, last) = &mut *state;
-        if last.and_then(|hour| hour.checked_add(1)) != Some(frame.hour) {
-            *scan = Scan::default();
-        }
-        *last = Some(frame.hour);
-        scan.step(frame, self.format, None, |tag, identity, read| {
-            let banked = read.values()[0];
-            let mut answer = |key: String, measure: &str| {
-                let value = match measure {
-                    READ_HOUR => Some(i128::from(read.read_hour)),
-                    _ => SAMPLED_MEASURES
-                        .iter()
-                        .position(|sampled| *sampled == measure)
-                        .and_then(|index| banked[index]),
-                };
-                result.insert((key, measure.to_owned()), (Some(identity), value));
-            };
-            match requested {
-                None => {
-                    let key = serde_json::to_string(&(tag, identity.0, identity.1))?;
-                    for measure in SAMPLED_MEASURES.into_iter().chain([READ_HOUR]) {
-                        answer(key.clone(), measure);
-                    }
-                }
-                Some(_) => {
-                    for (at, key, measure) in wanted.get(tag).into_iter().flatten() {
-                        if *at == identity {
-                            answer(key.clone(), measure);
-                        }
-                    }
-                }
-            }
-            Ok(())
-        })?;
-        for key in keys {
-            result.entry(key).or_insert((None, None));
-        }
-        Ok(result)
-    }
 }
 
 #[derive(Default)]
@@ -1092,6 +961,7 @@ struct Cache {
 impl Product for CountryExperience {
     const KEY: &'static str = "country-experience";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = ExperienceParams;
     type Reply = ExperienceReply;
 
@@ -1200,6 +1070,7 @@ impl Product for CountryExperience {
     }
 }
 
+pub mod served;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 #[cfg(test)]

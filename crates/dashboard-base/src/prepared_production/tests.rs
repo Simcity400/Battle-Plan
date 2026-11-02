@@ -574,7 +574,7 @@ fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
         track.cost_current.get_mut(&(1, Purpose::New)).unwrap().reason = reason;
         // The production observer versions each change to the cost inventory.
         track.cost_taken.as_mut().unwrap().1 += 1;
-        state.observe_spent(hour).unwrap();
+        state.observe_spent(hour, true).unwrap();
     }
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
@@ -1694,15 +1694,17 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
                 state
                     .ingest_changed(format, &frame, &flag, &changes)
                     .unwrap();
-                let owners = if index == 1 || day == 0 {
-                    2
+                // A whole projection visits both inventory keys of every design; the
+                // changed owner's projection only those of its changed design.
+                let visits = if index == 1 || day == 0 {
+                    4 * VARIANTS
                 } else {
-                    u32::from(day == VARIANTS / 2)
+                    2 * u32::from(day == VARIANTS / 2)
                 };
                 assert_eq!(
                     state.spent_visits - before,
-                    (2 * VARIANTS * owners) as usize,
-                    "quiet={quiet}, day={day}: only changed holders project"
+                    visits as usize,
+                    "quiet={quiet}, day={day}: only changed designs project"
                 );
             }
             assert_eq!(
@@ -1710,7 +1712,7 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
                 serde_json::to_vec(&states[1]).unwrap()
             );
         }
-        assert_eq!(states[0].spent_visits, (6 * VARIANTS) as usize);
+        assert_eq!(states[0].spent_visits, (4 * VARIANTS + 2) as usize);
         let fixtures = [Fixture::new(), Fixture::new()];
         for (state, fixture) in states.iter_mut().zip(&fixtures) {
             let mut writer = fixture.writer();

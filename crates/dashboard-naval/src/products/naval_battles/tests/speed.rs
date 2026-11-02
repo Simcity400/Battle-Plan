@@ -275,16 +275,16 @@ fn naval_shared_driver_unchanged_reads_keep_native_work_flat_and_read_proof_exac
             &AtomicBool::new(false),
         )?;
         writer.commit()?;
-        let flag = AtomicBool::new(false);
-        let mut reads = dashboard_base::prepared::series::Reader::new(
-            &fixture.store,
-            &fixture.key,
-            "naval-loss-reads-1".into(),
-            &flag,
-        )?;
-        let proof = reads.events(&[1], first, last, 0, u32::MAX)?;
-        assert_eq!(proof.rows.last().unwrap().hour, last);
-        assert_eq!(proof.rows.len(), hours + 1);
+        let proof: Vec<i32> = scan
+            .losses()
+            .0
+            .pending_reads()
+            .iter()
+            .filter(|&&(table, hour)| table == 1 && (first..=last).contains(&hour))
+            .map(|&(_, hour)| hour)
+            .collect();
+        assert_eq!(proof.last(), Some(&last));
+        assert_eq!(proof.len(), hours + 1);
         let naval = scan.reply_window(
             0,
             &BattleWindow {

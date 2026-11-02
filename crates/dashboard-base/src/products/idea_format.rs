@@ -66,7 +66,7 @@ pub struct LocalisedText {
 /// folded for lookup), from the branch's last
 /// hour that holds both the definitions and the lexer names complete. Blocks
 /// are read from the last back, decoding only those two tables.
-fn recorded(
+pub(crate) fn recorded(
     replay: &Replay,
     branch: u64,
     cancelled: &AtomicBool,

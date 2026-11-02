@@ -12,14 +12,18 @@
 //! fixed5 (100,000 raw units per unit); rewards is an unscaled signed count.
 
 mod content;
+mod kept;
+mod mirror;
 mod observer;
+mod served;
 #[cfg(test)]
 mod tests;
 
-pub use observer::{DoctrineMasteryObserver, FAMILY};
+pub use content::description_tables;
+pub use observer::DoctrineMasteryObserver;
 
 use dashboard_base::products::{Product, check_reply_budget, validate_tag};
-use dashboard_keyed::query::{KeyedSeries, KeyedWindow, Query};
+use dashboard_keyed::query::{KeyedSeries, KeyedWindow, Opened, Query};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
 use ts_rs::TS;
@@ -98,6 +102,7 @@ pub struct DoctrineMasteryReply {
 impl Product for DoctrineMastery {
     const KEY: &'static str = "doctrine-mastery";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = DoctrineMasteryParams;
     type Reply = DoctrineMasteryReply;
 
@@ -133,10 +138,18 @@ impl Product for DoctrineMastery {
     }
 }
 
-/// The selected country's prepared window. Only an explicit `hour` asks the
-/// shared frame cache for reached description operands.
+/// The selected country's prepared window, from the family's native publication. Only an
+/// explicit `hour` asks the shared frame cache for reached description operands.
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
+    answer(query, || query.open_native::<DoctrineMasteryObserver>())
+}
+
+/// The reply to `query` from the family's publication `open` opens.
+fn answer<'q>(
+    query: &'q Query<'_>,
+    open: impl FnOnce() -> io::Result<Option<Opened<'q, DoctrineMasteryObserver>>>,
+) -> io::Result<serde_json::Value> {
     let params: DoctrineMasteryParams = serde_json::from_value(query.params.clone())
         .map_err(|error| dashboard_core::invalid(error.to_string()))?;
     DoctrineMastery::validate(&params).map_err(dashboard_core::invalid)?;
@@ -154,7 +167,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
         tokens: BTreeMap::new(),
         warnings: Vec::new(),
     };
-    if let Some(mut opened) = query.open::<DoctrineMasteryObserver>()? {
+    if let Some(mut opened) = open()? {
         reply.window = opened.window(first, last, query.through(), |name| {
             selected(name, &params.tag)
         })?;

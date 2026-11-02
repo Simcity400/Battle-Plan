@@ -31,7 +31,7 @@ mod engaged_index;
 mod hours;
 mod map;
 mod map_assets;
-mod map_checkpoints;
+mod map_binding;
 mod map_icons;
 mod map_source;
 mod map_views;
@@ -368,7 +368,7 @@ struct Options {
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
     /// `--dump --change-runs <index.h4runs>`: a change-run index of the replay's native
-    /// columnar recording, which serves the map's hours in place of the prepared map.
+    /// columnar recording, which serves the map's hours in place of the one in its store.
     change_runs: Option<PathBuf>,
     compare: Option<[PathBuf; 2]>,
     mask: Option<PathBuf>,

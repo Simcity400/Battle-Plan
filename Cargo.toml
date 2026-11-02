@@ -17,7 +17,6 @@ unify-base64 = { package = "base64", version = "0.22.1", default-features = fals
 unify-bitflags = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
 unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
-unify-foldhash = { package = "foldhash", version = "0.2.0", default-features = false, features = ["default", "std"] }
 unify-hashbrown = { package = "hashbrown", version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 unify-indexmap = { package = "indexmap", version = "2.14.2", default-features = false, features = ["default", "std"] }
 unify-log = { package = "log", version = "0.4.34", default-features = false, features = ["alloc", "std"] }
@@ -172,6 +171,7 @@ dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" 
 dashboard-stability = { path = "crates/dashboard-stability" }
 dashboard-place-names = { path = "crates/dashboard-place-names" }
 dashboard-manpower = { path = "crates/dashboard-manpower" }
+dashboard-measure = { path = "crates/dashboard-measure" }
 dashboard-world = { path = "crates/dashboard-world" }
 dashboard-world-tension = { path = "crates/dashboard-world-tension" }
 dashboard-keyed = { path = "crates/dashboard-keyed" }
@@ -182,6 +182,7 @@ dashboard-naval-yards = { path = "crates/dashboard-naval-yards" }
 dashboard-weather = { path = "crates/dashboard-weather" }
 dashboard-politics = { path = "crates/dashboard-politics" }
 dashboard-country-nukes = { path = "crates/dashboard-country-nukes" }
+dashboard-ideas = { path = "crates/dashboard-ideas" }
 dashboard-subjects = { path = "crates/dashboard-subjects" }
 dashboard-party-history = { path = "crates/dashboard-party-history" }
 dashboard-occupation = { path = "crates/dashboard-occupation" }
@@ -334,6 +335,14 @@ codegen-units = 1
 # Line tables keep the collector's function names through LTO for the stack and profile
 # tools; they change no generated code.
 [profile.release-lto.package.collector]
+debug = "line-tables-only"
+
+# Profiling aid while the ledger lane is measured: line tables name private functions; they
+# change no generated code.
+[profile.release.package.dashboard-politics-ledger]
+debug = "line-tables-only"
+
+[profile.release.package.dashboard-series]
 debug = "line-tables-only"
 
 [patch.crates-io]

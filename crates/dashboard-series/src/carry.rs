@@ -25,6 +25,8 @@ struct Run {
     first: i32,
     value: i128,
     break_before: bool,
+    /// A read supplied it anew at `first`: no equal run before it merges into it.
+    supplying: bool,
     /// The last hour a cut appended of it.
     through: Option<i32>,
 }
@@ -96,26 +98,37 @@ impl Carry {
         {
             return Ok(false);
         }
-        if let Some(run) = edge.run
-            && let Some(span) = hour
-                .checked_sub(1)
-                .and_then(|last| piece(run.first, run.through, last))
-        {
-            writer.run(
-                key,
-                span,
-                run.value,
-                run.break_before && run.through.is_none(),
-                false,
-            )?;
-        }
+        end_run(writer, key, edge.run, hour)?;
         self.edges[index(key)?].run = value.map(|value| Run {
             first: hour,
             value,
             break_before,
+            supplying: false,
             through: None,
         });
         Ok(value.is_some())
+    }
+
+    /// The value of `key` from `hour` on, as a read supplied it there: a run starts at `hour`
+    /// even where the run before holds the same value, apart from it by a supplying boundary.
+    pub fn supplied(
+        &mut self,
+        writer: &mut Writer<'_>,
+        key: KeyHandle,
+        hour: i32,
+        value: i128,
+        break_before: bool,
+    ) -> io::Result<()> {
+        let edge = *self.edge(key)?;
+        end_run(writer, key, edge.run, hour)?;
+        self.edges[index(key)?].run = Some(Run {
+            first: hour,
+            value,
+            break_before,
+            supplying: true,
+            through: None,
+        });
+        Ok(())
     }
 
     /// The value `key` holds now.
@@ -200,13 +213,7 @@ impl Carry {
             if let Some(run) = edge.run
                 && let Some(span) = piece(run.first, run.through, last)
             {
-                writer.run(
-                    key,
-                    span,
-                    run.value,
-                    run.break_before && run.through.is_none(),
-                    false,
-                )?;
+                write_run(writer, key, run, span)?;
             }
             if let Some(held) = edge.evidence
                 && let Some(span) = piece(held.first, held.through, last)
@@ -237,7 +244,7 @@ impl Carry {
             out.extend_from_slice(&key.to_le_bytes());
             match edge.run {
                 Some(run) => {
-                    out.push(1 | u8::from(run.break_before) << 1);
+                    out.push(1 | u8::from(run.break_before) << 1 | u8::from(run.supplying) << 2);
                     out.extend_from_slice(&run.first.to_le_bytes());
                     out.extend_from_slice(&run.value.to_le_bytes());
                     put_hour(out, run.through);
@@ -275,10 +282,11 @@ impl Carry {
             let flags = d.u8()?;
             let run = match flags {
                 0 => None,
-                1 | 3 => Some(Run {
+                1 | 3 | 5 | 7 => Some(Run {
                     first: d.i32()?,
                     value: d.i128()?,
                     break_before: flags & 2 != 0,
+                    supplying: flags & 4 != 0,
                     through: hour(&mut d)?,
                 }),
                 _ => return Err(invalid("carried run flags")),
@@ -318,6 +326,30 @@ impl Carry {
         d.end()?;
         Ok(carry)
     }
+}
+
+/// Appends what the open `run` holds before `hour`, which a cut has not appended.
+fn end_run(writer: &mut Writer<'_>, key: KeyHandle, run: Option<Run>, hour: i32) -> io::Result<()> {
+    if let Some(run) = run
+        && let Some(span) = hour
+            .checked_sub(1)
+            .and_then(|last| piece(run.first, run.through, last))
+    {
+        write_run(writer, key, run, span)?;
+    }
+    Ok(())
+}
+
+/// `run`'s piece `span`: only its first piece starts it, with its break and boundary.
+fn write_run(writer: &mut Writer<'_>, key: KeyHandle, run: Run, span: Span) -> io::Result<()> {
+    let first = run.through.is_none();
+    writer.run(
+        key,
+        span,
+        run.value,
+        run.break_before && first,
+        run.supplying && first,
+    )
 }
 
 fn append(writer: &mut Writer<'_>, key: KeyHandle, held: Held, span: Span) -> io::Result<()> {

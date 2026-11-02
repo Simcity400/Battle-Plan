@@ -1,21 +1,15 @@
-//! Native per-frame flows; cumulative accounting remains in the prepared observer.
-use super::{Identity, Inputs, Terms, flow_rows, flow_token};
+//! The row oracle's per-frame flows: each frame's holders, flows and the deals it leaves out,
+//! as the oracle's scan observes them.
+use super::row::{Inputs, flow_rows};
+use super::{Identity, Terms, flow_token};
 use dashboard_base::prepared::query::progressive::Samples;
-use replay_data::{rows::TableId, rows::tables};
+use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
 
-pub(crate) const TABLES: &[TableId] = &[
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::LexicalTokens,
-    TableId::ResourceDefinitions,
-    TableId::ResourceExchanges,
-];
 pub(crate) const FIELDS: [&str; 5] = [
     "delivered",
     "factories",
@@ -51,50 +45,8 @@ pub(crate) fn pair(token: &str) -> io::Result<(Identity, Identity, u32)> {
     ))
 }
 
-/// A reply's native input projections, refreshed from each visited frame's
-/// actual table identities. Country balance changes retain the holder join;
-/// unchanged exchanges and dictionaries retain their reduced operands.
-#[derive(Default)]
-pub(crate) struct Query {
-    inputs: std::cell::RefCell<Inputs>,
-    changes: std::cell::RefCell<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
-}
-impl Query {
-    pub(crate) fn sample(
-        &self,
-        frame: &DecodedFrame,
-        requested: Option<&[(String, String)]>,
-        format: replay_data::format::FormatVersion,
-    ) -> io::Result<Samples> {
-        let cpu = replay_frame::cpu::scope_phase("trade:query_inputs");
-        let changes = self.changes.borrow_mut().observe(frame, format);
-        let mut inputs = self.inputs.borrow_mut();
-        inputs.refresh(frame, &changes);
-        drop(cpu);
-        let _cpu = replay_frame::cpu::scope_phase("trade:query_flows");
-        sample_inputs(frame, requested, &inputs)
-    }
-}
-
 /// Country selectors have an empty field; native flow tokens select particular fields.
 /// No absent holder or unavailable exchange table supplies zero.
-#[cfg(test)]
-pub(crate) fn sample(
-    frame: &DecodedFrame,
-    requested: Option<&[(String, String)]>,
-) -> io::Result<Samples> {
-    let mut inputs = Inputs::default();
-    inputs.refresh(
-        frame,
-        &dashboard_base::prepared::frame_changes::FrameChanges {
-            rows_changed: [true; replay_data::rows::TABLE_COUNT],
-            table_read: [true; replay_data::rows::TABLE_COUNT],
-            slot_read: [true; replay_data::rows::TABLE_COUNT],
-            updates: None,
-        },
-    );
-    sample_inputs(frame, requested, &inputs)
-}
 pub(super) fn sample_inputs(
     frame: &DecodedFrame,
     requested: Option<&[(String, String)]>,

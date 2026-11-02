@@ -139,9 +139,9 @@ fn answer(
         cancelled: &cancelled,
     };
     if stats {
-        air_statistics::query(&query)
+        air_statistics::answer(&query, &|| query.open::<AirStatisticsObserver>())
     } else {
-        air_missions::query(&query)
+        air_missions::answer(&query, &|| query.open::<AirMissionsObserver>())
     }
     .unwrap()
 }
@@ -445,9 +445,9 @@ fn reached_wings_use_shared_frame_cache_preserve_handles_order_and_counted_refus
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let first = air_missions::query(&query).unwrap();
+    let first = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
     let reads = dashboard_base::prepared::query::frames::reads(&source);
-    let second = air_missions::query(&query).unwrap();
+    let second = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
     assert_eq!(
         dashboard_base::prepared::query::frames::reads(&source),
         reads
@@ -491,7 +491,9 @@ fn cancellation_is_respected_before_any_content_or_page_read() {
         cancelled: &cancelled,
     };
     assert_eq!(
-        air_statistics::query(&query).unwrap_err().kind(),
+        air_statistics::answer(&query, &|| query.open::<AirStatisticsObserver>())
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::Interrupted
     );
 }
@@ -724,7 +726,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let stats = air_statistics::query(&query).unwrap();
+    let stats = air_statistics::answer(&query, &|| query.open::<AirStatisticsObserver>()).unwrap();
     assert_eq!(stats["regions"][0]["name"], "Authored region");
     assert_eq!(stats["channels"][2]["ours"], "Authored channel 3");
     assert_eq!(stats["channels"][2]["enemy"], "Authored channel 15");
@@ -732,7 +734,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
     assert_eq!(runs(&stats, "GER@7|3|c2"), &json!([[100, 101, "37", true]]));
     let params = json!({"branchId":"1","tag":"GER"});
     query.params = &params;
-    let missions = air_missions::query(&query).unwrap();
+    let missions = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
     assert_eq!(missions["missions"][0]["name"], "Authored mission");
     // Mission bit 0 is the strip's first frame, through the mod's GUI.
     assert_eq!(
@@ -924,7 +926,7 @@ fn reached_wing_efficiency_matches_viewer_for_sorties_overrides_and_missing_fuel
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let reply = air_missions::query(&query).unwrap();
+    let reply = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
     for (wing, expected) in reply["wings"].as_array().unwrap().iter().zip(expected) {
         match expected {
             Ok(value) => assert_eq!(wing["efficiency"], value.to_string()),
@@ -950,3 +952,121 @@ fn reached_wing_efficiency_matches_viewer_for_sorties_overrides_and_missing_fuel
 }
 
 mod statistics_read_binding;
+
+fn native_mission_tables(
+    walk: &mut replay::columnar_frames::synthetic::Synthetic,
+    frame: &DecodedFrame,
+) {
+    use dashboard_keyed::native::testing::write;
+    write::<tables::AirWings>(walk, frame);
+    write::<tables::AirRegionalMissions>(walk, frame);
+    write::<tables::CountryLinks>(walk, frame);
+    write::<tables::Countries>(walk, frame);
+}
+
+fn native_statistics_tables(
+    walk: &mut replay::columnar_frames::synthetic::Synthetic,
+    frame: &DecodedFrame,
+) {
+    use dashboard_keyed::native::testing::write;
+    write::<tables::AirStatistics>(walk, frame);
+    write::<tables::CountryLinks>(walk, frame);
+    write::<tables::Countries>(walk, frame);
+}
+
+/// From 100, three wings: one losing planes every hour, one whose missions change at 105 and
+/// whose registration moves at 108, one joining at 110 and leaving at 118; the registrations
+/// unavailable at 114 and 115, and a gap after 120.
+fn native_missions() -> Vec<DecodedFrame> {
+    (100..=130)
+        .filter(|hour| !(121..124).contains(hour))
+        .map(|hour| {
+            let mut wings = vec![
+                wing(1, 40 - (hour - 100), 5),
+                wing(2, 12, if hour >= 105 { 3 } else { 1 }),
+            ];
+            let mut order = if hour >= 108 { vec![2, 1] } else { vec![1, 2] };
+            if (110..118).contains(&hour) {
+                wings.push(wing(3, 9, 8));
+                order.push(3);
+            }
+            let mut frame = missions(hour, wings, &order);
+            if (114..116).contains(&hour) {
+                *frame.tables[TableId::AirRegionalMissions.index()] = TableView::Unavailable {
+                    reason: "Synthetic registrations refusal".into(),
+                };
+            }
+            frame
+        })
+        .collect()
+}
+
+/// From 100, the ring read every hour: one region's channels moving every hour, a second region
+/// from 106, no row at 112, the table unavailable at 116 and 117, and a gap after 122.
+fn native_statistics() -> Vec<DecodedFrame> {
+    (100..=132)
+        .filter(|hour| !(123..126).contains(hour))
+        .map(|hour| {
+            let mut rows = Vec::new();
+            if hour != 112 {
+                let mut channels = [0; 24];
+                channels[0] = i64::from(hour) * 100_000;
+                channels[12] = -i64::from(hour);
+                rows.push(stat(3, channels));
+                if hour >= 106 {
+                    rows.push(stat(4, [i64::from(hour % 3); 24]));
+                }
+            }
+            let mut frame = statistics(hour, rows);
+            if (116..118).contains(&hour) {
+                *frame.tables[TableId::AirStatistics.index()] = TableView::Unavailable {
+                    reason: "Synthetic statistics refusal".into(),
+                };
+            }
+            frame
+        })
+        .collect()
+}
+
+/// The native publications hold the runs, known hours, reads and names the walk's scans hold
+/// of the same hours, whatever segments start, wherever the publisher cuts and after a resume.
+#[test]
+fn the_native_publications_hold_what_the_walks_scans_hold() {
+    use dashboard_keyed::native::testing::assert_published_as_walked;
+    for (starts, cuts, resume) in [
+        (&[][..], &[130][..], None),
+        (&[4, 9][..], &[104, 112, 130][..], Some(112)),
+        (
+            &[3, 14, 15, 20][..],
+            &[102, 115, 120, 125, 130][..],
+            Some(120),
+        ),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (native, walked) = assert_published_as_walked::<AirMissionsObserver>(
+            &native_missions(),
+            native_mission_tables,
+            starts,
+            cuts,
+            resume,
+            &format!("missions: {label}"),
+        );
+        assert_eq!(
+            native.observer.refusals, walked.observer.refusals,
+            "missions: {label}"
+        );
+        let cuts: Vec<i32> = cuts.iter().map(|cut| (cut + 2).min(132)).collect();
+        let (native, walked) = assert_published_as_walked::<AirStatisticsObserver>(
+            &native_statistics(),
+            native_statistics_tables,
+            starts,
+            &cuts,
+            resume.map(|hour| hour + 2),
+            &format!("statistics: {label}"),
+        );
+        assert_eq!(
+            native.observer.refusals, walked.observer.refusals,
+            "statistics: {label}"
+        );
+    }
+}

@@ -2,6 +2,7 @@
 use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_text::metadata::check_cancel;
+use replay_data::{codec::Decoder, rows::TableRows};
 
 const ROSTER_READ_HOURS: i32 = 24;
 
@@ -26,19 +27,10 @@ pub struct Prepared {
     /// published windows report.
     #[serde(default)]
     refusals: catalogue::OwnRefusals,
-    /// Window pages of blocks ended since the last flush, while prepared on
-    /// its own: each section, window and compressed reply.
-    #[serde(skip)]
-    windows: Vec<(String, u64, Vec<u8>)>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
 }
-
-mod block;
-#[cfg(any(test, feature = "test-support"))]
-pub use block::kept_hours;
-pub use block::{FAMILY, fold, observe_block};
 
 impl Prepared {
     /// Runs `run` as this family's own consumer of the shared content
@@ -160,13 +152,12 @@ impl Prepared {
             }
         }
     }
-    pub fn bytes(&self) -> usize {
-        self.series.bytes()
-            + self
-                .windows
-                .iter()
-                .map(|(_, _, page)| page.len())
-                .sum::<usize>()
+    /// The variant catalogue's keys, which a continuation saves beside it.
+    pub(super) fn keys(&self) -> &BTreeMap<String, u64> {
+        &self.keys
+    }
+    pub(super) fn set_keys(&mut self, keys: BTreeMap<String, u64>) {
+        self.keys = keys;
     }
 
     pub fn finish_block(
@@ -194,27 +185,6 @@ impl Prepared {
         series::write_reply(writer, &section, window, &reply)?;
         self.forget_closed_runs();
         Ok(())
-    }
-    /// [`Self::finish_block`] for a family prepared on its own, whose block
-    /// ends without a writer: the window's page is held until the commit
-    /// publishes it ([`Self::publish_windows`]), as the block's end would
-    /// have written it.
-    pub(crate) fn finish_window(
-        &mut self,
-        source: &Source,
-        replay: &Replay,
-        block: usize,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.own(|state| -> io::Result<()> {
-            let (section, window, reply) =
-                state.window_at_end(source, replay, block, context, cancelled)?;
-            let page = series::compress(serde_json::to_vec(&reply)?.as_slice(), 3)?;
-            state.windows.push((section, window, page));
-            state.forget_closed_runs();
-            Ok(())
-        })
     }
     /// The window reply of `block`, at its end: its section and window.
     fn window_at_end(
@@ -281,16 +251,6 @@ impl Prepared {
             }
         }
     }
-    /// Write the windows held since their blocks ended
-    /// ([`Self::finish_window`]), as each block's end wrote them hourly.
-    pub fn publish_windows(&mut self, writer: &mut store::Writer) -> io::Result<()> {
-        for (section, window, page) in std::mem::take(&mut self.windows) {
-            writer.write_at(&section, window, page.as_slice())?;
-            #[cfg(any(test, feature = "test-support"))]
-            dashboard_base::prepared::pages::framing::note_compressed(&page);
-        }
-        Ok(())
-    }
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -311,7 +271,7 @@ impl Prepared {
         dashboard_base::prepared::pages::framing::note_compressed(&bytes);
         Ok(())
     }
-    fn read(
+    pub(super) fn read(
         store: &store::Store,
         key: &store::SourceKey,
         saved: Option<&store::SourceKey>,
@@ -325,87 +285,71 @@ impl Prepared {
         .ok_or_else(|| dashboard_core::invalid("Prepared ace continuation is missing"))?;
         serde_json::from_reader(zstd::stream::Decoder::new(file)?).map_err(Into::into)
     }
-    pub fn resume(
-        store: &store::Store,
-        key: &store::SourceKey,
-        saved: Option<&store::SourceKey>,
-        replay: &Replay,
-        branch: u64,
-    ) -> io::Result<Self> {
-        let mut state = Self::read(store, key, saved, branch)?;
-        let catalogue: Option<series::Catalogue<()>> =
-            series::read_saved_catalogue(store, key, saved, "air-aces", branch)?;
-        state.keys = catalogue
-            .ok_or_else(|| dashboard_core::invalid("Prepared ace catalogue is missing"))?
-            .0;
-        if state.scan.active.is_empty() {
-            return Ok(state);
-        }
-        let file = match saved {
-            Some(previous) if previous != key => {
-                store.read_prefix(previous, key, "map.resume", 0)?
-            }
-            _ => store.read(key, "map.resume", 0)?,
-        };
-        let baseline = match file {
-            Some(file) => {
-                let checkpoint = dashboard_base::prepared_map::decode_resume(file)?;
-                checkpoint
-                    .selects(TableId::AirAces)
-                    .then_some(checkpoint.frame)
-            }
-            None => None,
-        };
-        let baseline = if let Some(baseline) = baseline.filter(|baseline| {
-            baseline.branch == branch && Some(baseline.hour) == state.scan.last_frame
-        }) {
-            baseline
-        } else {
-            // Interleaved branches share one decoder resume page, and aces
-            // prepared on their own commit before the hourly walk writes it
-            // (or write it at another hour). Restore one hour, during
-            // preparation only, when that page is missing or another's.
-            let hour = state
-                .scan
-                .last_frame
-                .ok_or_else(|| dashboard_core::invalid("Ace continuation hour is missing"))?;
-            let replay::container::SeekResult::Frame(frame) =
-                replay.seek_selected(branch, hour, Some(&[TableId::Campaign, TableId::AirAces]))?
-            else {
-                return Err(dashboard_core::invalid(
-                    "Ace continuation frame is unavailable",
-                ));
-            };
-            *frame
-        };
-        state.restore_frame(&baseline)?;
-        Ok(state)
-    }
-    fn restore_frame(&mut self, frame: &DecodedFrame) -> io::Result<()> {
-        let rows = frame.complete::<tables::AirAces>()?;
-        let indices: HashMap<_, _> = rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| (row.id, index))
+    /// Every retained (ace, run): layer n holds each ace's nth run, ids ascending for the codec.
+    fn run_layers(&self) -> Vec<Vec<(usize, usize)>> {
+        let mut order: Vec<usize> = (0..self.scan.aces.len())
+            .filter(|&index| !self.scan.aces[index].runs.is_empty())
             .collect();
-        for &index in &self.scan.active {
-            let ace = &mut self.scan.aces[index];
-            let position = *indices
-                .get(&ace.id)
-                .ok_or_else(|| dashboard_core::invalid("Ace continuation row is missing"))?;
-            ace.runs
-                .last_mut()
-                .ok_or_else(|| dashboard_core::invalid("Ace continuation run is missing"))?
-                .facts
-                .row = RecordedAce::Initial {
-                table: frame.tables[TableId::AirAces.index()].clone(),
-                index: position,
-            };
+        order.sort_unstable_by_key(|&index| self.scan.aces[index].id);
+        let mut layers: Vec<Vec<(usize, usize)>> = Vec::new();
+        for index in order {
+            for run in 0..self.scan.aces[index].runs.len() {
+                if layers.len() == run {
+                    layers.push(Vec::new());
+                }
+                layers[run].push((index, run));
+            }
+        }
+        layers
+    }
+    /// Each layer's count and rows, which the continuation does not hold ([`Self::run_layers`]).
+    pub(super) fn run_rows(&self) -> io::Result<Vec<(usize, Vec<u8>)>> {
+        self.run_layers()
+            .into_iter()
+            .map(|layer| {
+                let rows = layer
+                    .iter()
+                    .map(|&(index, run)| (*self.scan.aces[index].runs[run].facts.row).clone())
+                    .collect::<Vec<_>>();
+                let mut bytes = Vec::new();
+                TableRows::AirAces(rows).encode_rows(&mut bytes)?;
+                Ok((layer.len(), bytes))
+            })
+            .collect()
+    }
+    /// Points every retained run at its row in `saved` ([`Self::run_rows`]).
+    pub(super) fn restore_run_rows(&mut self, saved: &[(usize, Vec<u8>)]) -> io::Result<()> {
+        let layers = self.run_layers();
+        if layers.len() != saved.len() {
+            return Err(dashboard_core::invalid("Ace continuation runs miss their rows"));
+        }
+        for (layer, (count, bytes)) in layers.into_iter().zip(saved) {
+            if layer.len() != *count {
+                return Err(dashboard_core::invalid("Ace continuation runs miss their rows"));
+            }
+            let mut input = Decoder::new(bytes);
+            let rows = TableId::AirAces.decode_rows(*count, &mut input)?;
+            input.finish()?;
+            let ids = rows.rows::<tables::AirAces>().expect("decoded ace rows");
+            if layer
+                .iter()
+                .zip(ids)
+                .any(|(&(index, _), row)| row.id != self.scan.aces[index].id)
+            {
+                return Err(dashboard_core::invalid("Ace continuation row is another ace's"));
+            }
+            let table = SharedView::from(TableView::Complete(rows));
+            for (position, (index, run)) in layer.into_iter().enumerate() {
+                self.scan.aces[index].runs[run].facts.row = RecordedAce::Initial {
+                    table: table.clone(),
+                    index: position,
+                };
+            }
         }
         Ok(())
     }
     #[cfg(test)]
-    fn manifest(
+    pub(super) fn manifest(
         &mut self,
         source: &Source,
         store: &store::Store,
@@ -488,7 +432,7 @@ impl Prepared {
         manifest(&self.scan, params, cat, cancelled)
     }
     #[cfg(test)]
-    fn portrait_at(&self, id: u64, hour: i32) -> Option<PortraitOperands> {
+    pub(super) fn portrait_at(&self, id: u64, hour: i32) -> Option<PortraitOperands> {
         portrait_at(
             &self.portraits,
             self.portrait_through,
@@ -608,7 +552,7 @@ fn kept_manifest(
     with_warnings(kept.1.clone(), cat.as_deref())
 }
 
-fn sample_roster(
+pub(super) fn sample_roster(
     source: &Source,
     branch: u64,
     hour: i32,
@@ -918,9 +862,8 @@ pub fn query(
 mod tests {
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
-    use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame};
-    use replay_data::{rows::AceDeath, rows::TableRows};
-    use std::num::NonZeroU32;
+    use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame};
+    use replay_data::rows::TableRows;
 
     fn work(state: &Prepared) -> dashboard_base::prepared::observer_tests::Work {
         let scan = state.scan.work;
@@ -1201,22 +1144,15 @@ mod tests {
         )
         .unwrap()
     }
-    fn publish(
-        state: &mut Prepared,
-        writer: &mut store::Writer,
-        map: &mut dashboard_base::prepared_map::Builder,
-        source: &Source,
-        block: usize,
-    ) {
+    fn publish(state: &mut Prepared, writer: &mut store::Writer, source: &Source, block: usize) {
         let flag = AtomicBool::new(false);
         let updates = source
             .replay_ref()
             .read_block_selected(&source.replay_ref().index[block], &TableId::ALL)
             .unwrap();
-        let frame_count = updates.len();
         let mut decoder = replay_frame::frame::FrameDecoder::for_tables(&TableId::ALL);
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-        for (next, update) in updates.into_iter().enumerate() {
+        for update in updates {
             let frame = decoder.advance(&update).unwrap();
             state
                 .observe_changed(
@@ -1225,16 +1161,6 @@ mod tests {
                     &tracker.observe(frame, source.replay_ref().format),
                 )
                 .unwrap();
-            map.accept(
-                writer,
-                &update,
-                frame,
-                dashboard_base::prepared_map::Position {
-                    block,
-                    next_frame: next + 1,
-                },
-            )
-            .unwrap();
         }
         state
             .finish_block(
@@ -1247,16 +1173,6 @@ mod tests {
             )
             .unwrap();
         state.flush(writer, 1, &flag).unwrap();
-        map.save_resume(
-            writer,
-            decoder.current().unwrap(),
-            dashboard_base::prepared_map::Position {
-                block,
-                next_frame: frame_count,
-            },
-            &TableId::ALL,
-        )
-        .unwrap();
         assert!(state.scan.aces.iter().all(|ace| ace.runs.len() <= 1));
     }
     fn assert_parity(fixture: &Fixture, source: &Source) {
@@ -1329,132 +1245,6 @@ mod tests {
     }
 
     #[test]
-    fn aces_resume_reads_its_baseline_when_the_walk_did_not_select_it() {
-        let fixture = Fixture::new();
-        let live = super::super::tests::frame(10, vec![super::super::tests::ace(1, true)]);
-        let source =
-            source(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![live])]).unwrap());
-        let mut state = Prepared::default();
-        let mut map = dashboard_base::prepared_map::Builder::new(
-            NonZeroU32::new(24).unwrap(),
-            &TableId::ALL,
-            Default::default(),
-        )
-        .unwrap();
-        let mut writer = fixture.writer();
-        publish(&mut state, &mut writer, &mut map, &source, 0);
-        writer.commit().unwrap();
-        let expected =
-            Prepared::resume(&fixture.store, &fixture.key, None, source.replay_ref(), 1).unwrap();
-        let replay::container::SeekResult::Frame(frame) = source
-            .replay_ref()
-            .seek_selected(1, 10, Some(&[TableId::Campaign]))
-            .unwrap()
-        else {
-            panic!("fixture frame");
-        };
-        let mut writer = fixture.writer();
-        map.save_resume(
-            &mut writer,
-            &frame,
-            dashboard_base::prepared_map::Position {
-                block: 0,
-                next_frame: 1,
-            },
-            &[TableId::Campaign],
-        )
-        .unwrap();
-        writer.commit().unwrap();
-        let actual =
-            Prepared::resume(&fixture.store, &fixture.key, None, source.replay_ref(), 1).unwrap();
-        assert_eq!(
-            serde_json::to_vec(&actual).unwrap(),
-            serde_json::to_vec(&expected).unwrap()
-        );
-    }
-
-    #[test]
-    fn prepared_aces_windows_and_portraits_match_after_two_commits_resume_and_append() {
-        let mut fixture = Fixture::new();
-        let mut live = super::super::tests::ace(1, true);
-        live.assigned_wing = 70;
-        let first = vec![super::super::tests::frame(
-            10,
-            vec![live.clone(), super::super::tests::ace(2, false)],
-        )];
-        let mut dead = live.clone();
-        dead.alive = 0;
-        dead.death = Some(AceDeath {
-            killer_ace: 2,
-            killer_country: 11,
-        });
-        let second = vec![super::super::tests::frame(
-            11,
-            vec![dead.clone(), super::super::tests::ace(2, false)],
-        )];
-        let original = records(1, first.clone());
-        let first_replay =
-            Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&original)).unwrap();
-        let continued = continuation_records(&first_replay, 1, second.clone());
-        let two = source(
-            Replay::from_records(CAMPAIGN.into(), &[original.clone(), continued.clone()]).unwrap(),
-        );
-        assert_eq!(two.replay_ref().index.len(), 2);
-        let mut state = Prepared::default();
-        let mut map = dashboard_base::prepared_map::Builder::new(
-            NonZeroU32::new(24).unwrap(),
-            dashboard_base::prepared_map::selected_tables(),
-            Default::default(),
-        )
-        .unwrap();
-        let mut writer = fixture.writer();
-        publish(&mut state, &mut writer, &mut map, &two, 0);
-        writer.commit().unwrap();
-        state = Prepared::resume(&fixture.store, &fixture.key, None, two.replay_ref(), 1).unwrap();
-        let mut writer = fixture.writer();
-        publish(&mut state, &mut writer, &mut map, &two, 1);
-        writer.commit().unwrap();
-        assert_parity(&fixture, &two);
-        let mut renamed =
-            super::super::tests::frame(13, vec![dead.clone(), super::super::tests::ace(2, false)]);
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *renamed.tables[TableId::Countries.index()]
-        {
-            rows.iter_mut().find(|row| row.id == 9001).unwrap().tag = b"renamed owner".to_vec();
-        }
-        if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
-            &mut *renamed.tables[TableId::VariantDefinitions.index()]
-        {
-            rows[0].display_name = b"Renamed design".to_vec();
-        }
-        let tail = vec![
-            renamed,
-            super::super::tests::frame(14, vec![dead, super::super::tests::ace(2, false)]),
-        ];
-        let appended = continuation_records(two.replay_ref(), 1, tail.clone());
-        let full = source(
-            Replay::from_records(CAMPAIGN.into(), &[original, continued, appended]).unwrap(),
-        );
-        let previous = fixture.key.clone();
-        let mut writer = fixture.append_writer();
-        state = Prepared::resume(
-            &fixture.store,
-            &fixture.key,
-            Some(&previous),
-            full.replay_ref(),
-            1,
-        )
-        .unwrap();
-        publish(&mut state, &mut writer, &mut map, &full, 2);
-        writer.commit().unwrap();
-        assert_parity(&fixture, &full);
-        assert!(
-            state.portrait_at(1, 12).is_none(),
-            "a recording gap cannot supply a portrait"
-        );
-    }
-
-    #[test]
     fn kept_manifests_take_each_requests_content_warnings() {
         let fixture = Fixture::new();
         let frames = vec![super::super::tests::frame(
@@ -1464,14 +1254,8 @@ mod tests {
         let recorded =
             source(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap());
         let mut state = Prepared::default();
-        let mut map = dashboard_base::prepared_map::Builder::new(
-            NonZeroU32::new(24).unwrap(),
-            dashboard_base::prepared_map::selected_tables(),
-            Default::default(),
-        )
-        .unwrap();
         let mut writer = fixture.writer();
-        publish(&mut state, &mut writer, &mut map, &recorded, 0);
+        publish(&mut state, &mut writer, &recorded, 0);
         writer.commit().unwrap();
         let (cat, _folder) = catalogue::tests::folder_catalogue(&[]);
         let cat: io::Result<Arc<Catalogue>> = Ok(Arc::new(cat));
@@ -1528,77 +1312,6 @@ mod tests {
             dashboard_base::prepared::query::observations::usage(&recorded, "air-aces:manifest").2,
             1
         );
-    }
-
-    #[test]
-    fn aces_deferred_dates_survive_two_commits_resume_and_an_appended_death() {
-        let mut fixture = Fixture::new();
-        let live = super::super::tests::frame(10, vec![super::super::tests::ace(1, true)]);
-        let frames = |first, last| {
-            (first..=last)
-                .map(|hour| {
-                    let mut frame = live.clone();
-                    frame.hour = hour;
-                    frame
-                })
-                .collect::<Vec<_>>()
-        };
-        let first = frames(10, 19);
-        let second = frames(20, 29);
-        let original = records(1, first.clone());
-        let prefix =
-            Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&original)).unwrap();
-        let continued = continuation_records(&prefix, 1, second.clone());
-        let two = source(
-            Replay::from_records(CAMPAIGN.into(), &[original.clone(), continued.clone()]).unwrap(),
-        );
-        let mut state = Prepared::default();
-        let mut map = dashboard_base::prepared_map::Builder::new(
-            NonZeroU32::new(24).unwrap(),
-            &TableId::ALL,
-            Default::default(),
-        )
-        .unwrap();
-        for (block, _chunk) in [&first[..], &second[..]].into_iter().enumerate() {
-            let mut writer = fixture.writer();
-            publish(&mut state, &mut writer, &mut map, &two, block);
-            writer.commit().unwrap();
-            state =
-                Prepared::resume(&fixture.store, &fixture.key, None, two.replay_ref(), 1).unwrap();
-        }
-        assert_parity(&fixture, &two);
-        let mut tail = frames(30, 39);
-        let mut dead = live.clone();
-        dead.hour = 40;
-        if let TableView::Complete(TableRows::AirAces(rows)) =
-            &mut *dead.tables[TableId::AirAces.index()]
-        {
-            rows[0].alive = 0;
-            rows[0].death = Some(AceDeath {
-                killer_ace: 2,
-                killer_country: 11,
-            });
-        }
-        tail.push(dead);
-        let appended = continuation_records(two.replay_ref(), 1, tail.clone());
-        let full = source(
-            Replay::from_records(CAMPAIGN.into(), &[original, continued, appended]).unwrap(),
-        );
-        let previous = fixture.key.clone();
-        let mut writer = fixture.append_writer();
-        state = Prepared::resume(
-            &fixture.store,
-            &fixture.key,
-            Some(&previous),
-            full.replay_ref(),
-            1,
-        )
-        .unwrap();
-        publish(&mut state, &mut writer, &mut map, &full, 2);
-        writer.commit().unwrap();
-        assert_eq!(state.scan.aces[0].last_alive, Some(39));
-        assert_eq!(state.scan.aces[0].dead_by, Some(40));
-        assert_parity(&fixture, &full);
     }
 
     #[test]

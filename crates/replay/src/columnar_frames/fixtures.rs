@@ -495,7 +495,7 @@ pub(crate) fn written(
 }
 
 /// [`written`], its root's control records holding `capture` when given.
-pub(crate) fn written_captured(
+pub fn written_captured(
     campaign: &[u8],
     capture: Option<&crate::columnar_file::Capture>,
     runs: &[(u64, i32, u32)],

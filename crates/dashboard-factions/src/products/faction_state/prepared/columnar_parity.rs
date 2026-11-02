@@ -1,6 +1,6 @@
 use super::super::{
-    block,
     columnar::{self, Projector},
+    harness::{Fixture, Walked},
 };
 use super::*;
 use dashboard_base::{
@@ -8,7 +8,7 @@ use dashboard_base::{
     prepared::{
         coverage::{Coverage, SCHEMA},
         frame_changes::FrameChangeTracker,
-        series::tests::{Fixture, assert_payloads_equal},
+        prefix::Prefix,
     },
     test_fixtures as fixtures,
 };
@@ -16,7 +16,7 @@ use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
     segments::{self, Operator, Start},
 };
-use replay_data::{format::FormatVersion, rows::*, scope::CaptureMode};
+use replay_data::{format::FormatVersion, rows::*};
 
 const FORMAT: FormatVersion = FormatVersion::CURRENT;
 
@@ -215,7 +215,7 @@ fn frame(hour: i32) -> DecodedFrame {
     *tables[TableId::ProjectPrograms.index()] =
         TableView::Complete(TableRows::ProjectPrograms(Vec::new()));
     *tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(Vec::new()));
-    for &table in block::TABLES {
+    for &table in columnar::TABLES {
         frame.metrics.table_ns[table.index()] = 1;
     }
     frame
@@ -305,50 +305,33 @@ fn source(inputs: &[DecodedFrame]) -> Source {
     .unwrap()
 }
 
-/// Flushes and saves, as production does at each batch's end.
-fn publish(state: &mut Prepared, fixture: &Fixture, branch: u64) {
-    let mut writer = fixture.writer();
-    state
-        .flush(&mut writer, branch, &AtomicBool::new(false))
-        .unwrap();
-    state.save(&mut writer, branch).unwrap();
-    writer.commit().unwrap();
-}
-
-/// The emit as production loads it from the continuation it saved last.
-fn reloaded(fixture: &Fixture, branch: u64) -> Prepared {
-    let file = fixture
-        .store
-        .read(&fixture.key, &state_section(branch), 0)
-        .unwrap()
-        .unwrap();
-    serde_json::from_reader(zstd::stream::Decoder::new(file).unwrap()).unwrap()
+/// The recorded stack's catalogue, as the native backend loads it.
+fn catalogued(source: &Source, context: &LoadContext) -> Option<Arc<catalogue::Catalogue>> {
+    context
+        .content
+        .as_ref()
+        .and_then(|options| catalogue::catalogue(source, options).ok())
 }
 
 /// The emit of a segment's hours, publishing every third; at `reload`, once published, it
-/// goes on from what it saved.
-fn emit(
-    hours: &mut Vec<columnar::Hour>,
-    projected: &mut Prepared,
-    fixture: &Fixture,
-    branch: u64,
-    reload: Option<i32>,
-) {
+/// goes on from what it published.
+fn emit(hours: &mut Vec<columnar::Hour>, projected: &mut Walked, fixture: &Fixture, reload: Option<i32>) {
     for hour in std::mem::take(hours) {
         let at = hour.hour;
-        projected.observe_projected(hour).unwrap();
+        projected.observe_projected(hour);
         if at % 3 == 0 {
-            publish(projected, fixture, branch);
+            fixture.publish(projected);
             if reload == Some(at) {
-                *projected = reloaded(fixture, branch);
+                fixture.reload();
             }
         }
     }
 }
 
-/// The row path observes `inputs` as production's block fold does, its row blocks starting at
-/// `blocks` and at gaps; the projection walks segments restarting at `restarts` and at gaps.
-/// Both flush alike; every section either publishes must be equal. The projected sections.
+/// The row frames' projection observes `inputs` hour by hour, reading every input anew at
+/// `blocks` and at gaps; the columnar projection walks segments restarting at `restarts` and at
+/// gaps. Both publish through the emit alike; every lane either publishes must be equal. The
+/// columnar publication.
 fn parity(label: &str, inputs: &[DecodedFrame], blocks: &[usize], restarts: &[usize]) -> Fixture {
     let source = source(inputs);
     parity_in(
@@ -374,11 +357,12 @@ fn parity_in(
     let branch = inputs[0].branch;
     let flag = AtomicBool::new(false);
     let [row_sections, projected_sections] = [Fixture::new(), Fixture::new()];
-    let mut row = Prepared::default();
-    let mut projected = Prepared::default();
+    let mut row = Walked::default();
+    let mut projected = Walked::default();
     let mut tracker = FrameChangeTracker::new();
-    let projector = || Projector::new(FORMAT, CaptureMode::Full, source, context).unwrap();
-    let tables = block::whole_tables();
+    let mode = replay_data::scope::CaptureMode::Full;
+    let projector = || Projector::new((FORMAT, mode), source, catalogued(source, context)).unwrap();
+    let tables = columnar::tables();
     let mut walk = Synthetic::new(tables, branch, inputs[0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
     let mut segment = projector();
@@ -391,13 +375,7 @@ fn parity_in(
         let opens = ordinal == 0 || run || restarts.contains(&ordinal);
         if ordinal > 0 && opens {
             segment.end(&mut hours).unwrap();
-            emit(
-                &mut hours,
-                &mut projected,
-                &projected_sections,
-                branch,
-                reload,
-            );
+            emit(&mut hours, &mut projected, &projected_sections, reload);
             segment = projector();
             let start = if run {
                 Start::Run { continues: true }
@@ -431,7 +409,7 @@ fn parity_in(
             row.observe(source, context, frame, &changes, &flag)
                 .unwrap();
             if frame.hour % 3 == 0 {
-                publish(&mut row, &row_sections, branch);
+                row_sections.publish(&mut row);
             }
             segment
                 .hour(
@@ -453,27 +431,12 @@ fn parity_in(
         .unwrap();
     }
     segment.end(&mut hours).unwrap();
-    emit(
-        &mut hours,
-        &mut projected,
-        &projected_sections,
-        branch,
-        reload,
-    );
-    publish(&mut row, &row_sections, branch);
-    publish(&mut projected, &projected_sections, branch);
-    let expected = row_sections.payloads();
-    for name in [
-        section(branch),
-        state_section(branch),
-        series::catalogue_section(FAMILY, branch),
-    ] {
-        assert!(
-            expected.keys().any(|(held, _)| *held == name),
-            "{label}: {name}"
-        );
-    }
-    assert_payloads_equal(&projected_sections.payloads(), &expected, &label);
+    emit(&mut hours, &mut projected, &projected_sections, reload);
+    row_sections.publish(&mut row);
+    projected_sections.publish(&mut projected);
+    let expected = row_sections.dump();
+    assert!(!expected.is_empty(), "{label}");
+    assert_eq!(projected_sections.dump(), expected, "{label}");
     projected_sections
 }
 
@@ -501,16 +464,15 @@ fn reply(
         },
         None,
     );
-    query(
-        &source,
-        &params,
-        &LoadContext { content: None },
-        &fixture.store,
-        &fixture.key,
-        prefix,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
+    fixture
+        .reply(
+            &source,
+            &params,
+            &LoadContext { content: None },
+            prefix,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
 }
 
 fn influence(fixture: &Fixture, inputs: &[DecodedFrame], faction: &str) -> FactionInfluenceReply {
@@ -864,7 +826,7 @@ fn a_gap_breaks_every_lane_and_both_sides_resume_alike() {
 }
 
 #[test]
-fn another_branch_publishes_only_its_own_sections() {
+fn another_branch_reads_alike_at_every_restart() {
     let inputs: Vec<_> = (100..104)
         .map(|hour| {
             let mut input = frame(hour);
@@ -876,9 +838,8 @@ fn another_branch_publishes_only_its_own_sections() {
     for restarts in placements(&inputs) {
         last = Some(parity("branch", &inputs, &[2], &restarts));
     }
-    let published = last.unwrap().payloads();
-    assert!(published.keys().any(|(name, _)| *name == section(2)));
-    assert!(!published.keys().any(|(name, _)| *name == section(1)));
+    let nine = influence(&last.unwrap(), &inputs, "9");
+    assert_eq!(nine.accounts.len(), 2);
 }
 
 fn programme_reference(id: u32) -> u64 {
@@ -1003,6 +964,59 @@ fn dynamic_names_and_scripted_goal_texts_read_alike_at_every_restart() {
     );
 }
 
+/// [`named_hour`] with faction 9's pool and goal progress still: until the viewer changes at
+/// 104 and is renamed at 106, every hour moves only fields no lane and no dynamic text reads.
+fn quiet_named_hour(hour: i32) -> DecodedFrame {
+    let mut input = named_hour(hour);
+    for row in rows!(input, FactionManpower).iter_mut() {
+        if row.faction == 9 && row.ordinal == 0 {
+            row.value = 1000;
+        }
+    }
+    rows!(input, FactionGoalEntries)[0].progress_raw = 0;
+    input
+}
+
+#[test]
+fn held_dynamic_texts_let_an_hour_moving_only_unread_fields_idle_without_a_trigger_frame() {
+    let machine = fixtures::visual_mods::Machine::new("faction_columnar_quiet_names");
+    machine.write("common/factions/goals/mod.txt", NAMED_GOALS.as_bytes());
+    machine.write(
+        "localisation/english/mod_l_english.yml",
+        NAMED_TEXTS.as_bytes(),
+    );
+    let inputs: Vec<_> = (100..109).map(quiet_named_hour).collect();
+    let (source, options) = machine.open_frames(inputs.clone());
+    let context = LoadContext {
+        content: Some(options),
+    };
+    for restarts in [vec![], vec![2], vec![5]] {
+        parity_in("quiet names", &source, &context, &inputs, (&[3], &restarts), None);
+    }
+    let (_, evaluated, built) = projected(&source, &context, &inputs);
+    assert_eq!(evaluated, 3, "the start, the viewer and its renaming");
+    let at = |hour: i32| built[(hour - 100) as usize].0;
+    let anew = |hour: i32| built[(hour - 100) as usize].1;
+    assert!(at(100) > 0, "the first hour evaluates the held texts");
+    assert!(anew(100) > 0, "the first frame builds its tables");
+    for hour in 101..109 {
+        assert_eq!(
+            anew(hour),
+            anew(100),
+            "{hour}: a later frame patches or keeps the tables the first built"
+        );
+    }
+    for hour in [101, 102, 103, 105, 107, 108] {
+        assert_eq!(
+            at(hour),
+            at(hour - 1),
+            "{hour}: the held texts' reads did not move"
+        );
+    }
+    assert!(at(104) > at(103), "the viewer changed");
+    assert!(at(106) > at(105), "the viewer was renamed");
+}
+
 #[test]
 fn an_emit_reloaded_mid_segment_publishes_as_one_never_reloaded() {
     let mut inputs: Vec<_> = (100..110).map(frame).collect();
@@ -1100,17 +1114,24 @@ fn world_hour(hour: i32) -> DecodedFrame {
     input
 }
 
-/// One segment's projection of `inputs`, from a run's start, and how many hours it evaluated.
-fn projected(source: &Source, inputs: &[DecodedFrame]) -> (Vec<columnar::Hour>, usize) {
-    let context = LoadContext { content: None };
+/// One segment's projection of `inputs` read with `context`, from a run's start; how many hours
+/// it evaluated, and how many frames for dynamic texts, and trigger tables built anew for them,
+/// it had built after each hour.
+fn projected(
+    source: &Source,
+    context: &LoadContext,
+    inputs: &[DecodedFrame],
+) -> (Vec<columnar::Hour>, usize, Vec<(usize, u32)>) {
     let branch = inputs[0].branch;
-    let mut walk = Synthetic::new(block::whole_tables(), branch, inputs[0].hour).unwrap();
+    let mut walk = Synthetic::new(columnar::tables(), branch, inputs[0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
-    let mut segment = Projector::new(FORMAT, CaptureMode::Full, source, &context).unwrap();
+    let mode = replay_data::scope::CaptureMode::Full;
+    let mut segment = Projector::new((FORMAT, mode), source, catalogued(source, context)).unwrap();
     segment
         .start(Start::Run { continues: false }, branch, inputs[0].hour)
         .unwrap();
     let mut hours: Vec<columnar::Hour> = Vec::new();
+    let mut built = Vec::with_capacity(inputs.len());
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input);
         walk.end(|state, manifest, frame, starts| {
@@ -1144,9 +1165,10 @@ fn projected(source: &Source, inputs: &[DecodedFrame]) -> (Vec<columnar::Hour>, 
                 .unwrap();
         })
         .unwrap();
+        built.push((segment.trigger_frames(), segment.trigger_tables_anew()));
     }
     segment.end(&mut hours).unwrap();
-    (hours, segment.evaluated)
+    (hours, segment.evaluated, built)
 }
 
 #[test]
@@ -1156,7 +1178,7 @@ fn fifteen_hundred_countries_evaluate_only_the_hours_and_rows_that_changed() {
         parity("1,500 countries", &inputs, &[3], &restarts);
     }
     let source = source(&inputs);
-    let (hours, evaluated) = projected(&source, &inputs);
+    let (hours, evaluated, _) = projected(&source, &LoadContext { content: None }, &inputs);
     assert_eq!(evaluated, 3, "the start, the share and the renaming");
     for hour in &hours {
         let ops = (

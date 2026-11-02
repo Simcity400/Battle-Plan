@@ -689,20 +689,6 @@ fn military_air_events_recorded_again_after_an_unread_interval_refuse_by_name() 
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), refusal(events));
-        // Hourly preparation refuses the same hour with the same words.
-        let mut state = prepared::Prepared::default();
-        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-        let format = replay_data::format::FormatVersion::default();
-        for frame in &frames[..3] {
-            state
-                .observe_changed(frame, &tracker.observe(frame, format))
-                .unwrap();
-        }
-        let error = state
-            .observe_changed(&frames[3], &tracker.observe(&frames[3], format))
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(error.to_string(), refusal(events));
     }
 
     // The same seam with the repeated events dated in their own reads is a

@@ -10,28 +10,34 @@ use crate::Source;
 use crate::content::ContentKey;
 #[cfg(test)]
 use crate::metadata::validate_campaign;
+use crate::LandOwners;
+#[cfg(test)]
 use crate::{
-    CountryMetadata, LandOwners,
+    CountryMetadata,
     metadata::{CountryKeys, short_text},
 };
+#[cfg(test)]
 use installed_content_country_names::country_names::CountryNames;
+#[cfg(test)]
 use installed_content_localisation::localisation::Localisation;
+#[cfg(test)]
 use replay::container::Replay;
+#[cfg(test)]
 use replay_data::{rows::TableId, rows::tables};
 #[cfg(test)]
-use replay_frame::frame::FrameDecoder;
-use replay_frame::{frame::TableView, frame::ViewIdentity};
+use replay_frame::frame::{FrameDecoder, TableView, ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 use ts_rs::TS;
 
 /// Ownership witnesses and the operands used to name their first observation.
+#[cfg(test)]
 pub(crate) const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::States,
@@ -98,6 +104,7 @@ pub fn land_owners(
 }
 
 /// Recording-wide positive ownership evidence. It grows only with new tag/slot witnesses.
+#[cfg(test)]
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Scan {
     #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
@@ -111,17 +118,18 @@ pub(crate) struct Scan {
     unnamed: usize,
     warnings: Vec<String>,
     pub(crate) complete: bool,
-    #[cfg(test)]
     #[serde(skip)]
     work: crate::prepared::observer_tests::Work,
 }
 /// Native tag bytes are lookup keys; insertion ordinals preserve the original
 /// per-slot order when distinct tags have the same shortened display text.
+#[cfg(test)]
 #[derive(Default, Serialize, Deserialize)]
 struct Witnesses {
     #[serde(with = "crate::prepared_production::map_pairs")]
     entries: HashMap<Vec<u8>, (u64, usize, CountryMetadata)>,
 }
+#[cfg(test)]
 impl Scan {
     pub(crate) fn new(replay: &Replay) -> Self {
         Self {
@@ -290,10 +298,7 @@ impl Scan {
                     observed_hour: frame.hour,
                 },
             );
-            #[cfg(test)]
-            {
-                self.work.emitted += 1;
-            }
+            self.work.emitted += 1;
             witnesses.entries.insert(tag.to_vec(), entry);
         }
         self.incomplete |= !owners.is_empty();
@@ -330,11 +335,6 @@ impl Scan {
             warnings,
         }
     }
-    pub(crate) fn warning(&mut self, reason: String) {
-        if !self.warnings.contains(&reason) {
-            self.warnings.push(reason);
-        }
-    }
     pub(crate) fn saved_bytes(&self) -> io::Result<Vec<u8>> {
         crate::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 3)
     }
@@ -344,6 +344,9 @@ impl Scan {
         )?)?)
     }
 }
+
+/// Why every recording refuses the catalogue: its only preparation was the hourly walk.
+pub(crate) const NOT_PREPARED: &str = "Land owners are not prepared natively yet";
 
 pub struct LandOwnersProduct;
 

@@ -149,3 +149,27 @@ fn an_unlinked_country_leaves_its_divisions_templates_unknown_and_its_templates_
     assert_eq!(host.templates[0].fielded, Some(3), "its roster is linked");
     assert!(!host.warnings.iter().any(|w| w.contains(UNLINKED_DIVISION)));
 }
+
+#[test]
+fn a_roster_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
+    let mut cut = frame();
+    // Full leaves DivisionModelInputs out, so a frame in its mode marks it so.
+    for table in [TableId::DivisionTemplates, TableId::DivisionModelInputs] {
+        *cut.tables[table.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+    }
+    let (source, root) = dashboard_base::test_fixtures::file_source(dashboard_base::test_fixtures::replay(vec![cut]));
+    let error = DivisionTemplates::load(
+        &source,
+        &DivisionTemplatesParams { branch_id: "1".into(), hour: 60_000_001, tag: "GER".into(), count_for: ArmyAttribution::Owner },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap_err()
+    .to_string();
+    drop(source);
+    std::fs::remove_dir_all(root).ok();
+    assert_eq!(
+        error,
+        "The recording holds [DivisionTemplates] in its native capture, whose change-run index is not prepared yet"
+    );
+}

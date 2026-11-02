@@ -1,4 +1,5 @@
-//! Each faction's goal lists and labels, published as that faction's own page.
+//! Each faction's goal book: its lists and labels in first-seen order, which its goal lanes
+//! number; and the definitions a reply shows of them.
 use super::*;
 use std::{
     collections::HashMap,
@@ -6,7 +7,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(super) struct GoalList {
+pub(in crate::products::faction_state) struct GoalList {
     pub absent: bool,
     pub reason: Option<String>,
     /// Ordinal, label and native status of each runtime goal.
@@ -25,7 +26,7 @@ impl GoalList {
 /// Values in first-seen order, found again by their hash.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(super) struct Interned<T> {
+pub(in crate::products::faction_state) struct Interned<T> {
     values: Vec<T>,
     #[serde(skip)]
     index: HashMap<u64, Vec<u32>>,
@@ -37,12 +38,12 @@ fn hash_of<T: Hash>(value: &T) -> u64 {
     value.hash(&mut hasher);
     hasher.finish()
 }
-impl<T: Hash + Eq + Serialize> Interned<T> {
+impl<T: Hash + Eq> Interned<T> {
     pub fn get(&self, index: u32) -> Option<&T> {
         self.values.get(index as usize)
     }
-    /// Its index, and the bytes it added when it is new.
-    pub fn intern(&mut self, value: T) -> (u32, usize) {
+    /// Its index, and whether it is new.
+    pub fn intern(&mut self, value: T) -> (u32, bool) {
         // A restored book holds no index: build it once.
         if self.indexed != self.values.len() {
             self.index.clear();
@@ -57,95 +58,25 @@ impl<T: Hash + Eq + Serialize> Interned<T> {
                 .iter()
                 .find(|at| self.values[**at as usize] == value)
         }) {
-            return (at, 0);
+            return (at, false);
         }
         let at = self.values.len() as u32;
-        let bytes = serde_json::to_vec(&value).map_or(0, |text| text.len());
         self.values.push(value);
         self.index.entry(hash).or_default().push(at);
         self.indexed += 1;
-        (at, bytes)
+        (at, true)
     }
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
-pub(super) struct GoalBook {
+pub(in crate::products::faction_state) struct GoalBook {
     pub labels: Interned<GoalLabel>,
     pub lists: Interned<GoalList>,
 }
 /// The list a reply synthesizes for hours a complete roster lacks the faction.
-pub(super) const ABSENT: u32 = u32::MAX;
-pub(super) fn family(faction: u64) -> String {
-    format!("faction-goals-{faction}")
-}
-/// The books, and which changed since their pages were last published.
-#[derive(Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(super) struct GoalPages {
-    books: BTreeMap<u64, GoalBook>,
-    #[serde(skip)]
-    changed: BTreeSet<u64>,
-    #[serde(skip)]
-    pending: usize,
-    #[serde(skip)]
-    writers: BTreeMap<u64, CatalogueWriter>,
-}
-impl GoalPages {
-    pub fn label(&mut self, faction: u64, label: GoalLabel) -> u32 {
-        let (at, bytes) = self.books.entry(faction).or_default().labels.intern(label);
-        self.added(faction, bytes);
-        at
-    }
-    pub fn list(&mut self, faction: u64, list: GoalList) -> u32 {
-        let (at, bytes) = self.books.entry(faction).or_default().lists.intern(list);
-        self.added(faction, bytes);
-        at
-    }
-    fn added(&mut self, faction: u64, bytes: usize) {
-        if bytes > 0 {
-            self.changed.insert(faction);
-            self.pending += bytes;
-        }
-    }
-    /// Bytes held for the next publication.
-    pub fn pending(&self) -> usize {
-        self.pending
-    }
-    pub fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        let keys = BTreeMap::new();
-        for faction in std::mem::take(&mut self.changed) {
-            check_cancel(cancelled)?;
-            self.writers.entry(faction).or_default().write(
-                writer,
-                &family(faction),
-                branch,
-                &keys,
-                &self.books[&faction],
-            )?;
-        }
-        self.pending = 0;
-        Ok(())
-    }
-}
-pub(super) fn read(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
-    faction: u64,
-) -> io::Result<GoalBook> {
-    Ok(
-        series::read_catalogue::<GoalBook>(store, key, &family(faction), branch)?
-            .map(|(_, book)| book)
-            .unwrap_or_default(),
-    )
-}
+pub(in crate::products::faction_state) const ABSENT: u32 = u32::MAX;
 /// The JSON a reply grows by, refused once it would pass the transport budget.
 #[derive(Default)]
-pub(super) struct Budget(usize);
+pub(in crate::products::faction_state) struct Budget(usize);
 impl Budget {
     pub fn add<T: Serialize>(&mut self, value: &T) -> io::Result<()> {
         self.0 += serde_json::to_vec(value)?.len() + 1;
@@ -159,7 +90,7 @@ impl Budget {
     }
 }
 /// Ordered disjoint spans of `spans` outside every span of `held`.
-pub(super) fn outside(spans: &[HourSpan], held: &[HourSpan]) -> Vec<HourSpan> {
+pub(in crate::products::faction_state) fn outside(spans: &[HourSpan], held: &[HourSpan]) -> Vec<HourSpan> {
     let mut result = Vec::new();
     for span in spans {
         let mut start = i64::from(span.first_hour);
@@ -185,7 +116,7 @@ pub(super) fn outside(spans: &[HourSpan], held: &[HourSpan]) -> Vec<HourSpan> {
     result
 }
 /// The reply's lists in shown order, each label they name drawn once as faction details draw it.
-fn definitions(
+pub(in crate::products::faction_state) fn definitions(
     source: &Source,
     context: &LoadContext,
     book: &GoalBook,
@@ -266,207 +197,26 @@ fn definitions(
     }
     Ok(())
 }
-/// The goal view's faction and the hours it asks for; None is open-ended.
-pub(super) struct Asked {
-    pub branch: u64,
-    pub faction: u64,
-    pub first_hour: Option<i32>,
-    pub last_hour: Option<i32>,
-}
-/// One faction's goal history over the asked hours, reading only its own page.
-pub(super) fn query(
-    source: &Source,
-    context: &LoadContext,
-    (store, key): (&store::Store, &store::SourceKey),
-    (keys, catalogue, reader): (&BTreeMap<String, u64>, &Catalogue, &mut Reader<'_>),
-    asked: Asked,
-    prefix: Prefix,
-    cancelled: &AtomicBool,
-) -> io::Result<FactionGoalsReply> {
-    let (first, last) = (
-        asked.first_hour.unwrap_or(i32::MIN),
-        asked.last_hour.unwrap_or(i32::MAX),
-    );
-    // Prefix observations never revise an earlier hour, so runs are clipped, not batches.
-    let from = prefix.coverage.first_hour.max(first);
-    let to = prefix.coverage.last_hour.min(last);
-    let faction = asked.faction;
-    let lane = |kind: Kind, identity: &str| -> io::Result<Option<u64>> {
-        Ok(keys
-            .get(&serde_json::to_string(&(
-                faction.to_string(),
-                kind,
-                identity,
-            ))?)
-            .copied())
-    };
-    let known = match lane(Kind::Known, "goals")? {
-        Some(id) => spans(&reader.runs(id, from, to)?, 1),
-        None => Vec::new(),
-    };
-    let reads = match lane(Kind::Read, "goals")? {
-        Some(id) => spans(&reader.runs(id, from, to)?, 1),
-        None => Vec::new(),
-    };
-    let pending = prefix
-        .pending
-        .iter()
-        .filter(|span| span.first_hour <= last && first <= span.last_hour)
-        .map(|span| HourSpan {
-            first_hour: span.first_hour.max(first),
-            last_hour: span.last_hour.min(last),
-        })
-        .collect();
-    let mut reply = FactionGoalsReply {
-        runs: Vec::new(),
-        lists: Vec::new(),
-        definitions: Vec::new(),
-        progress: Vec::new(),
-        unobserved: missing(from, to, &known),
-        pending,
-        coverage: prefix.coverage,
-        channels: vec![FactionChannelCoverage {
-            channel: "goals".into(),
-            known,
-            read: reads,
-        }],
-        warnings: Vec::new(),
-    };
-    let mut budget = Budget::default();
-    budget.add(&reply)?;
-    let mut lists = BTreeMap::<u32, u32>::new();
-    let mut held = Vec::new();
-    for (&id, lane) in catalogue
-        .lanes
-        .iter()
-        .filter(|(_, lane)| lane.faction == faction)
-    {
-        check_cancel(cancelled)?;
-        match lane.kind {
-            Kind::GoalList => {
-                for run in reader.runs(id, from, to)? {
-                    let list = u32::try_from(run.value)
-                        .ok()
-                        .filter(|list| *list != ABSENT)
-                        .ok_or_else(|| {
-                            dashboard_base::invalid("Faction goal list is unavailable")
-                        })?;
-                    held.push(HourSpan {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                    });
-                    let next = lists.len() as u32;
-                    let run = FactionGoalListRun {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                        list: *lists.entry(list).or_insert(next),
-                        starts_segment: run.break_before,
-                    };
-                    budget.add(&run)?;
-                    reply.runs.push(run);
-                }
-            }
-            Kind::GoalProgress => {
-                let mut runs = Vec::new();
-                for run in reader.runs(id, from, to)? {
-                    let raw = i64::try_from(run.value).map_err(|_| {
-                        dashboard_base::invalid("Faction goal progress is not a fixed-point value")
-                    })?;
-                    let run = FactionGoalProgressRun {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                        progress_raw: raw.to_string(),
-                        progress_percent: dashboard_base::products::faction_goal_progress_percent(
-                            raw,
-                        ),
-                        starts_segment: run.break_before,
-                    };
-                    budget.add(&run)?;
-                    runs.push(run);
-                }
-                if !runs.is_empty() {
-                    reply.progress.push(FactionGoalProgressLane {
-                        ordinal: lane.slot,
-                        runs,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    // Before the faction's first lists, only a complete roster proves it absent.
-    if let Some(roster) = keys.get(&serde_json::to_string(&("0", Kind::Roster, ""))?) {
-        let complete = spans(&reader.runs(*roster, from, to)?, 1);
-        held.sort_by_key(|span| span.first_hour);
-        let absent = outside(&complete, &held);
-        if !absent.is_empty() {
-            let list = lists.len() as u32;
-            lists.insert(ABSENT, list);
-            for span in absent {
-                let run = FactionGoalListRun {
-                    first_hour: span.first_hour,
-                    last_hour: span.last_hour,
-                    list,
-                    starts_segment: false,
-                };
-                budget.add(&run)?;
-                reply.runs.push(run);
-            }
-            reply.runs.sort_by_key(|run| run.first_hour);
-        }
-    }
-    check_cancel(cancelled)?;
-    let book = if lists.keys().any(|list| *list != ABSENT) {
-        read(store, key, asked.branch, faction)?
-    } else {
-        GoalBook::default()
-    };
-    let mut ordered: Vec<_> = lists.into_iter().collect();
-    ordered.sort_by_key(|(_, shown)| *shown);
-    definitions(
-        source,
-        context,
-        &book,
-        ordered,
-        &mut budget,
-        &mut reply,
-        cancelled,
-    )?;
-    reply.progress.sort_by_key(|lane| lane.ordinal);
-    Ok(reply)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn a_restored_book_finds_its_values_again_in_first_seen_order() {
-        let mut pages = GoalPages::default();
+        let mut book = GoalBook::default();
         let label = |name: &str| GoalLabel {
             token: Some(name.into()),
             ..Default::default()
         };
-        assert_eq!(pages.label(9, label("a")), 0);
-        assert_eq!(pages.label(9, label("b")), 1);
-        assert_eq!(pages.label(9, label("a")), 0);
-        assert_eq!(pages.list(9, GoalList::absent()), 0);
-        let restored: GoalPages =
-            serde_json::from_value(serde_json::to_value(&pages).unwrap()).unwrap();
-        let mut restored = restored;
-        assert_eq!(restored.pending(), 0);
-        assert_eq!(restored.label(9, label("b")), 1);
-        assert_eq!(
-            restored.pending(),
-            0,
-            "a held value adds nothing to publish"
-        );
-        assert_eq!(restored.label(9, label("c")), 2);
-        assert!(restored.pending() > 0);
-        assert_eq!(restored.list(9, GoalList::absent()), 0);
-        assert_eq!(
-            restored.label(10, label("a")),
-            0,
-            "each faction has its own book"
-        );
+        assert_eq!(book.labels.intern(label("a")), (0, true));
+        assert_eq!(book.labels.intern(label("b")), (1, true));
+        assert_eq!(book.labels.intern(label("a")), (0, false));
+        assert_eq!(book.lists.intern(GoalList::absent()), (0, true));
+        let mut restored: GoalBook =
+            serde_json::from_value(serde_json::to_value(&book).unwrap()).unwrap();
+        assert_eq!(restored.labels.intern(label("b")), (1, false), "a held value is no new one");
+        assert_eq!(restored.labels.intern(label("c")), (2, true));
+        assert_eq!(restored.lists.intern(GoalList::absent()), (0, false));
+        assert_eq!(restored.labels.get(2), Some(&label("c")));
     }
     #[test]
     fn absence_is_only_the_complete_hours_outside_held_lists() {

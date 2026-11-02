@@ -52,6 +52,7 @@ pub(super) struct Observer {
     guarantees: BTreeSet<(u32, u32, i32)>,
 }
 impl Observer {
+    #[cfg(test)]
     pub(super) fn observe(
         &mut self,
         decoded: &DecodedFrame,

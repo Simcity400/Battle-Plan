@@ -120,16 +120,19 @@ pub(super) struct PairHistory {
     #[serde(skip)]
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for HolderRun {
     fn held(&self, _: &mut dashboard_base::prepared::prepass::HeldBytes) {}
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for PairRead {
     fn held(&self, _: &mut dashboard_base::prepared::prepass::HeldBytes) {}
 }
 
 /// Every pair's coverage runs and reads, its keys and the tags they name
 /// (shared tags once), and the per-country and per-pair indexes.
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for PairHistory {
     fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
         bytes
@@ -504,6 +507,8 @@ fn summed_runs(histories: &[&[PairRead]], within: Option<&HourSpan>) -> Vec<Pair
 
 impl Product for CasualtyPairs {
     const KEY: &'static str = "casualty-pairs";
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::served::PLAN);
     const CONTENT_DEPENDENT: bool = false;
     type Params = CasualtyPairsParams;
     type Reply = CasualtyPairsReply;
@@ -1071,6 +1076,68 @@ pub fn prepared_query(
         prefix.mark(&mut value)?;
     }
     Ok(value)
+}
+
+#[cfg(test)]
+impl PairHistory {
+    /// Every lifetime's runs and every holder pair's coverage, sealed as a window seals them, and
+    /// each country's last tag: two histories publishing alike hold the same.
+    pub(super) fn parity(&self) -> serde_json::Value {
+        let current: HashSet<usize> = self
+            .current
+            .iter()
+            .flatten()
+            .map(|(_, _, index)| *index)
+            .collect();
+        let reads: Vec<_> = self
+            .keys
+            .iter()
+            .map(|(key, &index)| {
+                let mut runs = self.reads[index].clone();
+                if current.contains(&index)
+                    && let (Some(frontier), Some(last)) = (self.frontier, runs.last_mut())
+                {
+                    last.last_hour = frontier;
+                }
+                serde_json::json!([key, runs])
+            })
+            .collect();
+        let coverage: Vec<_> = self
+            .coverage
+            .iter()
+            .map(|(identities, runs)| {
+                let mut runs = runs.clone();
+                if let (Some(frontier), Some(last)) = (self.frontier, runs.last_mut()) {
+                    last.last_hour = frontier;
+                }
+                serde_json::json!([identities, runs])
+            })
+            .collect();
+        let tags: Vec<_> = self
+            .last_tags
+            .iter()
+            .enumerate()
+            .map(|(index, last)| {
+                last.as_ref().map(|(tag, at)| {
+                    let live = self.live.get(index) == Some(&true);
+                    let at = if live {
+                        self.frontier.unwrap_or(*at)
+                    } else {
+                        *at
+                    };
+                    serde_json::json!([&**tag, at, live])
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "reads": reads,
+            "coverage": coverage,
+            "tags": tags,
+            "frontier": self.frontier,
+            "supplying": self.supplying,
+            "supplyingHour": self.supplying_hour,
+        })
+    }
 }
 
 #[cfg(test)]

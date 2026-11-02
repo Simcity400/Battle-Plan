@@ -1,0 +1,284 @@
+//! Workers help the walks under way, an hour at a time. A walk carrying more than one family
+//! posts each hour's operators on the board ([`Board`]) with the workers they keep busy (its
+//! width): its own worker and up to that many less one helpers take them one at a time, and
+//! the hour ends once every one taken has run. A worker with no emit to run helps the earliest
+//! walk under way before it starts another, and one with nothing to pick helps any; a helper
+//! stays with a walk from hour to hour, and goes back to the schedule as soon as it changed.
+
+use std::{
+    io,
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+};
+
+// Locks are taken in the order schedule, crews, hour.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where workers find the walks under way to help, and wait for an hour to help with or for
+/// the schedule to change.
+#[derive(Default)]
+pub(super) struct Board {
+    crews: Mutex<Vec<Arc<Crew>>>,
+    wake: Condvar,
+    /// Changes to what the schedule may hand out: read before a worker asks it, a change since
+    /// sends a waiting worker back to it.
+    changes: AtomicU64,
+    /// Workers waiting on the board for any walk's hour.
+    idle: AtomicUsize,
+}
+
+impl Board {
+    /// The changes so far, read before asking the schedule for a task.
+    pub(super) fn changes(&self) -> u64 {
+        self.changes.load(Ordering::SeqCst)
+    }
+
+    /// What the schedule may hand out changed: every waiting worker goes back to it.
+    pub(super) fn changed(&self) {
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        let crews = lock(&self.crews);
+        for crew in crews.iter() {
+            drop(lock(&crew.hour));
+            crew.posted.notify_all();
+        }
+        drop(crews);
+        self.wake.notify_all();
+    }
+
+    /// The earliest walk under way, while its open hour has room for another worker.
+    pub(super) fn front(&self) -> Option<Arc<Crew>> {
+        let crews = lock(&self.crews);
+        crews
+            .iter()
+            .min_by_key(|crew| crew.at)
+            .filter(|crew| crew.wanting())
+            .map(Arc::clone)
+    }
+
+    /// An hour to help with, the earliest walk's first, waiting for one; None once the
+    /// schedule changed past `seen`.
+    pub(super) fn next(&self, seen: u64) -> Option<Arc<Crew>> {
+        let mut crews = lock(&self.crews);
+        loop {
+            if self.changes() != seen {
+                return None;
+            }
+            // Counted before looking: a walk posting since either is seen or wakes it.
+            self.idle.fetch_add(1, Ordering::SeqCst);
+            let wanting = crews
+                .iter()
+                .filter(|crew| crew.wanting())
+                .min_by_key(|crew| crew.at)
+                .map(Arc::clone);
+            if wanting.is_some() {
+                self.idle.fetch_sub(1, Ordering::SeqCst);
+                return wanting;
+            }
+            crews = self
+                .wake
+                .wait(crews)
+                .unwrap_or_else(PoisonError::into_inner);
+            self.idle.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The crew of a walk of segment `at`, its hours open to helpers until dropped.
+    pub(super) fn join(&self, at: usize) -> io::Result<Joined<'_>> {
+        let crew = Arc::new(Crew {
+            at,
+            hour: Mutex::new(Open::default()),
+            left: Condvar::new(),
+            posted: Condvar::new(),
+            next: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
+            room: AtomicUsize::new(0),
+        });
+        let mut crews = lock(&self.crews);
+        engine_allocation::reserve(&mut *crews, 1)?;
+        crews.push(Arc::clone(&crew));
+        Ok(Joined { board: self, crew })
+    }
+
+    /// An hour with room for `room` helpers was posted: as many workers waiting on the board
+    /// come.
+    fn posted(&self, room: usize) {
+        if room == 0 || self.idle.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        drop(lock(&self.crews));
+        for _ in 0..room.min(self.idle.load(Ordering::SeqCst)) {
+            self.wake.notify_one();
+        }
+    }
+}
+
+/// An hour's work as its walk posts it, its borrows' lifetime erased: the walk withdraws it,
+/// and waits for every helper that took it to leave, before those borrows end ([`Posted`]).
+#[derive(Clone, Copy)]
+struct Job(*const (dyn Fn(usize) + Sync));
+
+// SAFETY: it points at a closure any thread may call, `Sync`, while it is posted.
+unsafe impl Send for Job {}
+
+#[derive(Default)]
+struct Open {
+    job: Option<Job>,
+    /// Helpers inside the hour.
+    active: usize,
+    /// Hours posted so far.
+    hours: u64,
+    /// The walk ended: no hour is posted again.
+    closed: bool,
+}
+
+/// A walk's hours as helpers take them.
+pub(super) struct Crew {
+    at: usize,
+    hour: Mutex<Open>,
+    /// Every helper left the hour.
+    left: Condvar,
+    /// An hour was posted, the walk ended, or the schedule changed.
+    posted: Condvar,
+    /// The next of the open hour's operators to take, how many it has, and the helpers it
+    /// still has room for.
+    next: AtomicUsize,
+    count: AtomicUsize,
+    room: AtomicUsize,
+}
+
+impl Crew {
+    /// Whether its open hour has operators left and room for another helper.
+    fn wanting(&self) -> bool {
+        self.room.load(Ordering::SeqCst) > 0
+            && self.next.load(Ordering::SeqCst) < self.count.load(Ordering::SeqCst)
+    }
+
+    /// Takes the operators of the open hour, and of each hour after it the walk posts, while
+    /// an hour has room and something left for it, the walk goes on and the schedule did not
+    /// change past `seen`.
+    pub(super) fn help(&self, board: &Board, seen: u64) {
+        let mut open = lock(&self.hour);
+        loop {
+            if open.closed || board.changes() != seen {
+                return;
+            }
+            let Some(job) = open.job.filter(|_| self.wanting()) else {
+                return;
+            };
+            let hour = open.hours;
+            open.active += 1;
+            self.room.fetch_sub(1, Ordering::SeqCst);
+            drop(open);
+            let took = {
+                let _leaving = Leaving(self);
+                self.take(job)
+            };
+            open = lock(&self.hour);
+            if took == 0 {
+                return;
+            }
+            while open.hours == hour && !open.closed && board.changes() == seen {
+                open = self
+                    .posted
+                    .wait(open)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+
+    /// Runs the open hour's operators not yet taken, one at a time: how many it ran.
+    fn take(&self, job: Job) -> usize {
+        let count = self.count.load(Ordering::SeqCst);
+        let mut took = 0;
+        loop {
+            let index = self.next.fetch_add(1, Ordering::SeqCst);
+            if index >= count {
+                return took;
+            }
+            // SAFETY: the job is posted until every helper inside the hour left ([`Posted`]).
+            unsafe { (*job.0)(index) };
+            took += 1;
+        }
+    }
+}
+
+struct Leaving<'c>(&'c Crew);
+
+impl Drop for Leaving<'_> {
+    fn drop(&mut self) {
+        let mut open = lock(&self.0.hour);
+        open.active -= 1;
+        if open.active == 0 {
+            self.0.left.notify_all();
+        }
+    }
+}
+
+/// A walk's crew, its hours open to helpers.
+pub(super) struct Joined<'b> {
+    board: &'b Board,
+    crew: Arc<Crew>,
+}
+
+impl Joined<'_> {
+    /// Runs `job` once for each index below `count`, on this thread and on up to `width` less
+    /// one helpers, each taking the lowest index not yet taken: it returns once each has run.
+    /// `job` must not unwind.
+    pub(super) fn hour(&self, count: usize, width: usize, job: &(dyn Fn(usize) + Sync)) {
+        let crew = &*self.crew;
+        let erased: *const (dyn Fn(usize) + Sync + '_) = job;
+        // SAFETY: only the lifetime changes; `Posted` withdraws the job, and waits for every
+        // helper that took it to leave, before this returns or unwinds.
+        let erased = Job(unsafe {
+            std::mem::transmute::<
+                *const (dyn Fn(usize) + Sync + '_),
+                *const (dyn Fn(usize) + Sync + 'static),
+            >(erased)
+        });
+        let room = width.clamp(1, count.max(1)) - 1;
+        {
+            let mut open = lock(&crew.hour);
+            crew.next.store(0, Ordering::SeqCst);
+            crew.count.store(count, Ordering::SeqCst);
+            crew.room.store(room, Ordering::SeqCst);
+            open.job = Some(erased);
+            open.hours += 1;
+        }
+        let _posted = Posted(crew);
+        // Its helpers wait for the next hour whatever its room: one finding none leaves.
+        crew.posted.notify_all();
+        self.board.posted(room);
+        crew.take(erased);
+    }
+}
+
+impl Drop for Joined<'_> {
+    fn drop(&mut self) {
+        lock(&self.board.crews).retain(|crew| !Arc::ptr_eq(crew, &self.crew));
+        lock(&self.crew.hour).closed = true;
+        self.crew.posted.notify_all();
+    }
+}
+
+/// An hour posted, withdrawn once dropped, once no helper is inside it.
+struct Posted<'c>(&'c Crew);
+
+impl Drop for Posted<'_> {
+    fn drop(&mut self) {
+        let crew = self.0;
+        let mut open = lock(&crew.hour);
+        open.job = None;
+        crew.room.store(0, Ordering::SeqCst);
+        crew.count.store(0, Ordering::SeqCst);
+        while open.active > 0 {
+            open = crew
+                .left
+                .wait(open)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}

@@ -73,12 +73,6 @@ pub(super) struct Histories {
     #[serde(skip)]
     pub(super) active: Vec<(usize, Identity)>,
     #[serde(skip)]
-    pub(super) active_tags: Vec<String>,
-    #[serde(skip)]
-    pub(super) observed: Vec<String>,
-    #[serde(skip)]
-    pub(super) removed: Vec<String>,
-    #[serde(skip)]
     slots: HashMap<u32, Vec<usize>>,
     #[serde(skip)]
     undisplayable: Vec<Vec<u8>>,
@@ -99,7 +93,6 @@ impl Histories {
     }
 
     fn countries(&mut self, countries: &Countries) {
-        let previous = std::mem::take(&mut self.active_tags);
         self.active.clear();
         self.slots.clear();
         self.undisplayable.clear();
@@ -122,15 +115,8 @@ impl Histories {
                     .or_default()
                     .push(self.active.len());
                 self.active.push((track, identity));
-                self.active_tags.push(tag.to_owned());
             }
         }
-        let current: HashSet<_> = self.active_tags.iter().map(String::as_str).collect();
-        self.removed.extend(
-            previous
-                .into_iter()
-                .filter(|tag| !current.contains(tag.as_str())),
-        );
     }
 
     fn observe(
@@ -157,9 +143,6 @@ impl Histories {
             None
         };
         track.observe(identity, hour, roster, effective);
-        if track.runs.last().is_some_and(|run| run.first_hour == hour) {
-            self.observed.push(self.active_tags[active].clone());
-        }
         #[cfg(test)]
         {
             self.projected += 1;
@@ -698,124 +681,8 @@ pub struct Scan {
     pub(super) countries: Countries,
     #[serde(skip)]
     census: Census,
-    #[serde(skip)]
-    pub(super) applied: Option<i32>,
-    #[serde(skip)]
-    rates: [usize; 5],
-    #[serde(skip)]
-    joined: bool,
-    /// The scan has read or forgotten variant names since it started: the
-    /// names it holds are then those any scan holds after that hour, where
-    /// before, a scan started afresh knows none a carried one knows.
-    #[serde(skip)]
-    pub(super) names_settled: bool,
-    #[cfg(test)]
-    #[serde(skip)]
-    pub(super) work: dashboard_base::prepared::observer_tests::Work,
 }
 impl Scan {
-    /// Rebuild transient joins from the committed decoder frame without repeating its history or counters.
-    pub(super) fn rejoin(
-        &mut self,
-        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
-        decoded: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        if self.last_hour != Some(decoded.hour) || self.applied.is_some() {
-            return Ok(());
-        }
-        let histories = std::mem::take(&mut self.histories);
-        let result = std::mem::take(&mut self.result);
-        let previous_complete = self.previous_complete;
-        self.last_hour = decoded.hour.checked_sub(1);
-        self.step_changes(frame, decoded, format, cancelled, None)?;
-        self.histories = histories;
-        self.result = result;
-        self.previous_complete = previous_complete;
-        self.histories.countries(&self.countries);
-        self.applied = Some(decoded.hour);
-        Ok(())
-    }
-    pub(super) fn step_changes(
-        &mut self,
-        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
-        decoded: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        cancelled: &AtomicBool,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
-    ) -> io::Result<()> {
-        self.histories.observed.clear();
-        self.histories.removed.clear();
-        let joined = self.countries.update_changed(decoded, changes);
-        self.joined = !matches!(joined, Ok(false));
-        let unchanged = self
-            .last_hour
-            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour))
-            && matches!(joined, Ok(false))
-            && changes.is_some_and(|changes| {
-                ![
-                    TableId::AirWings,
-                    TableId::WingEquipment,
-                    TableId::VariantDefinitions,
-                    TableId::LexicalTokens,
-                ]
-                .iter()
-                .any(|id| changes.rows_changed[id.index()])
-                    && !changes.slot_read[TableId::VariantDefinitions.index()]
-            });
-        if unchanged {
-            self.last_hour = Some(decoded.hour);
-            if self.histories.through.is_some() {
-                self.histories.through = Some(decoded.hour);
-            }
-            if let Some(variants) = &mut self.variants {
-                variants.advance(decoded.hour);
-            }
-            self.result.unreadable_owners[0] += self.rates[0];
-            self.result.unreadable_owners[1] += self.rates[1];
-            self.result.equipment_missing += self.rates[2];
-            self.result.equipment_refused += self.rates[3];
-            self.result.equipment_remainders += self.rates[4];
-            for tag in &self.histories.undisplayable {
-                *self
-                    .result
-                    .undisplayable_tags
-                    .entry(tag.clone())
-                    .or_default() += 1;
-            }
-            return Ok(());
-        }
-        let before = [
-            self.result.unreadable_owners[0],
-            self.result.unreadable_owners[1],
-            self.result.equipment_missing,
-            self.result.equipment_refused,
-            self.result.equipment_remainders,
-        ];
-        #[cfg(test)]
-        {
-            if let Some(changes) = changes {
-                self.work.row_visits += <super::prepared::Air as crate::products::parts_race_prepared::Family>::SAMPLE_TABLES.iter()
-                    .filter(|id| changes.rows_changed[id.index()])
-                    .map(|id| match &*decoded.tables[id.index()] { replay_frame::frame::TableView::Complete(rows)
-                        | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
-            }
-        }
-        self.step(frame, decoded, format, cancelled, changes)?;
-        self.applied = Some(decoded.hour);
-        self.rates = [
-            self.result.unreadable_owners[0],
-            self.result.unreadable_owners[1],
-            self.result.equipment_missing,
-            self.result.equipment_refused,
-            self.result.equipment_remainders,
-        ];
-        for (rate, before) in self.rates.iter_mut().zip(before) {
-            *rate -= before;
-        }
-        Ok(())
-    }
     /// One hour; with its change facts, the variants read only what changed.
     pub(super) fn step(
         &mut self,
@@ -836,8 +703,6 @@ impl Scan {
             counts_pool,
             countries,
             census,
-            joined,
-            names_settled,
             ..
         } = self;
         // The continuation keeps each known variant's token: those variants stay
@@ -864,7 +729,6 @@ impl Scan {
         });
         let hour = decoded.hour;
         let continuous = last_hour.is_some_and(|last| last.checked_add(1) == Some(hour));
-        let gap = last_hour.is_some() && !continuous;
         *last_hour = Some(hour);
         if !continuous {
             variants.forget(hour);
@@ -875,7 +739,6 @@ impl Scan {
         // The catalogue reads every name at a due read, and forgets them all
         // after a gap, where the table is not complete or the read did not
         // land: after any of these, no name it holds comes from before.
-        *names_settled |= gap || read || !complete;
         let check_names = !continuous || complete != *definitions_complete || read;
         *definitions_complete = complete;
         match changes {
@@ -913,12 +776,10 @@ impl Scan {
         let rebuild = !continuous || names_changed;
         let Ok(countries_changed) = countries.update(decoded) else {
             histories.flush();
-            histories.removed.append(&mut histories.active_tags);
             histories.active.clear();
             census.ready = false;
             return Ok(());
         };
-        let countries_changed = countries_changed || *joined;
         let complete = census.update(
             Inputs {
                 decoded,
@@ -963,17 +824,6 @@ impl Scan {
         *previous_complete = complete;
         histories.through = Some(hour);
         Ok(())
-    }
-    pub(super) fn published(&mut self) {
-        // Open tracks and census snapshots retain their Arcs; historical intern entries can go.
-        self.counts_pool.clear();
-        if let Some(variants) = &mut self.variants {
-            for versions in variants.versions.values_mut() {
-                if versions.len() > 1 {
-                    versions.drain(..versions.len() - 1);
-                }
-            }
-        }
     }
     pub(super) fn finish(mut self) -> ScannedAir {
         self.histories.flush();
@@ -1049,463 +899,4 @@ pub(super) fn scan_with_decode(
         },
     )?;
     Ok(observer.finish())
-}
-
-/// A track's last run: its counts on both sides and its hour.
-type TrackRun = (Option<Arc<Counts>>, Option<Arc<Counts>>, i32);
-
-/// One active track's state after an hour that decides its next: its last
-/// run's counts and hour, its last known identity and hour, its identity
-/// track and its last identity segment's hour.
-#[derive(PartialEq)]
-struct TrackTail {
-    run: Option<TrackRun>,
-    known: Option<(Identity, i32)>,
-    identity: String,
-    segment: Option<i32>,
-}
-
-impl TrackTail {
-    /// An active track's tail as extending it through `through` leaves it.
-    /// A track the hour did not observe keeps its tail where it last was:
-    /// the next observation of it, or the next flush, first extends it
-    /// through `through`, so its state then is the extended one. A track the
-    /// hour observed is already there.
-    fn extended(track: &Track, identity: Identity, through: Option<i32>) -> Self {
-        let mut last_identity = track.last_identity.clone();
-        if let Some(hour) = through {
-            last_identity.advance(hour);
-        }
-        Self {
-            run: track.runs.last().map(|run| {
-                (
-                    run.roster.clone(),
-                    run.effective.clone(),
-                    through.unwrap_or(run.last_hour),
-                )
-            }),
-            known: match through {
-                Some(hour) => track.last_known.map(|_| (identity, hour)),
-                None => track.last_known,
-            },
-            identity: serde_json::to_string(&last_identity).unwrap_or_default(),
-            segment: track
-                .segments
-                .last()
-                .map(|segment| through.unwrap_or(segment.last_hour)),
-        }
-    }
-}
-
-/// What decides a scan's next hours: its last hour and read evidence, the
-/// variant names it knows and the variant catalogue's current names, the
-/// country join, the census's readiness, the active tracks' tails (as the
-/// next hour extends them) and the counter rates an unchanged hour adds. The
-/// census itself holds the hour's wings either way, counted with the same
-/// variant names and country join, so it is equal whenever these are.
-/// Whether the hour's join changed is left out: every hour sets it before
-/// reading it, and a census starting afresh joins anew where the carried
-/// one finds its join held.
-///
-/// Of the catalogue, the census and the names check read only each known
-/// variant's current token; its last hour is the scan's. When a version
-/// began is left out: a read keeps a variant's version unless what it read
-/// changed, so a carried catalogue dates a name from the read that first
-/// gave it, a worker's from its own first read, and a restored one from its
-/// restore, with the same name.
-#[derive(PartialEq)]
-struct Decision {
-    last_hour: Option<i32>,
-    previous_complete: [bool; 2],
-    definitions_complete: bool,
-    applied: Option<i32>,
-    rates: [usize; 5],
-    variant_tokens: BTreeMap<u64, String>,
-    names: Option<BTreeMap<u64, String>>,
-    countries: Vec<(Vec<u8>, Option<Identity>)>,
-    census: (bool, Option<bool>),
-    through: Option<i32>,
-    active: Vec<(String, Identity)>,
-    undisplayable: Vec<Vec<u8>>,
-    tracks: Vec<TrackTail>,
-}
-
-/// The counters a scan adds to, which a fold carries by the block's
-/// increase after its tail's hour.
-#[derive(Clone)]
-struct Counters {
-    unreadable_owners: [usize; 2],
-    equipment: [usize; 3],
-    undisplayable_tags: BTreeMap<Vec<u8>, usize>,
-}
-
-/// A worker's scan right after the hour it takes its tail at.
-pub struct Tail {
-    hour: i32,
-    decision: Decision,
-    counters: Counters,
-    /// The tags active then.
-    active: HashSet<String>,
-    /// The tracks projected by then, which tests count.
-    #[cfg(test)]
-    projected: usize,
-}
-
-impl Scan {
-    fn decision(&self) -> Decision {
-        let histories = &self.histories;
-        Decision {
-            last_hour: self.last_hour,
-            previous_complete: self.previous_complete,
-            definitions_complete: self.definitions_complete,
-            applied: self.applied,
-            rates: self.rates,
-            variant_tokens: self.variant_tokens.clone(),
-            names: self.variants.as_ref().map(current_names),
-            countries: self.countries.tags.clone(),
-            census: (self.census.ready, self.census.equipment_complete),
-            through: histories.through,
-            active: histories
-                .active_tags
-                .iter()
-                .cloned()
-                .zip(histories.active.iter().map(|&(_, identity)| identity))
-                .collect(),
-            undisplayable: histories.undisplayable.clone(),
-            tracks: histories
-                .active
-                .iter()
-                .map(|&(track, identity)| {
-                    TrackTail::extended(&histories.tracks[track], identity, histories.through)
-                })
-                .collect(),
-        }
-    }
-
-    fn counters(&self) -> Counters {
-        Counters {
-            unreadable_owners: self.result.unreadable_owners,
-            equipment: [
-                self.result.equipment_missing,
-                self.result.equipment_refused,
-                self.result.equipment_remainders,
-            ],
-            undisplayable_tags: self.result.undisplayable_tags.clone(),
-        }
-    }
-
-    /// The scan right after the hour it takes its tail at, `hour`.
-    pub(super) fn tail(&self, hour: i32) -> Tail {
-        Tail {
-            hour,
-            decision: self.decision(),
-            counters: self.counters(),
-            active: self.histories.active_tags.iter().cloned().collect(),
-            #[cfg(test)]
-            projected: self.histories.projected,
-        }
-    }
-
-    /// Whether this carried scan, having observed the block through the
-    /// tail's hour, decides every later hour as the extract's did from
-    /// `tail`: then each later step is the extract's, as every step reads
-    /// only the hour's frame and what the decision holds. A track idle at
-    /// the tail's hour continues only through adjacent hours, so its history
-    /// decides nothing later. The extract's tracks active then each had a run
-    /// and segment by that hour, which the carried ones continue.
-    pub(super) fn continues(&self, tail: &Tail, block: &Scan) -> bool {
-        self.decision() == tail.decision
-            && tail.active.iter().all(|tag| {
-                block.histories.tags.get(tag).is_some_and(|&track| {
-                    let track = &block.histories.tracks[track];
-                    track
-                        .runs
-                        .first()
-                        .is_some_and(|run| run.first_hour <= tail.hour)
-                        && track
-                            .segments
-                            .first()
-                            .is_some_and(|segment| segment.first_hour <= tail.hour)
-                })
-            })
-    }
-
-    /// Carry this scan to the block's end: of each track, what the extract
-    /// stepped through the tail's hour the carried scan observed itself; the
-    /// run and segment a track active then held at that hour extend the
-    /// carried ones they continued, later ones follow, new tags take the
-    /// next tracks in the order the extract made them, the counters add
-    /// their increase after the tail's hour, and everything else is the
-    /// extract's.
-    pub(super) fn carry(&mut self, tail: Tail, block: Scan) {
-        let Scan {
-            histories,
-            result,
-            previous_complete,
-            variant_tokens,
-            definitions_complete,
-            last_hour,
-            variants,
-            counts_pool,
-            countries,
-            census,
-            applied,
-            rates,
-            joined,
-            ..
-        } = block;
-        let before = tail.counters;
-        for (count, (now, then)) in self.result.unreadable_owners.iter_mut().zip(
-            result
-                .unreadable_owners
-                .into_iter()
-                .zip(before.unreadable_owners),
-        ) {
-            *count += now - then;
-        }
-        for (count, (now, then)) in [
-            &mut self.result.equipment_missing,
-            &mut self.result.equipment_refused,
-            &mut self.result.equipment_remainders,
-        ]
-        .into_iter()
-        .zip(
-            [
-                result.equipment_missing,
-                result.equipment_refused,
-                result.equipment_remainders,
-            ]
-            .into_iter()
-            .zip(before.equipment),
-        ) {
-            *count += now - then;
-        }
-        for (tag, now) in result.undisplayable_tags {
-            let then = before.undisplayable_tags.get(&tag).copied().unwrap_or(0);
-            *self.result.undisplayable_tags.entry(tag).or_default() += now - then;
-        }
-        let Histories {
-            tags,
-            mut tracks,
-            active,
-            active_tags,
-            observed,
-            removed,
-            slots,
-            undisplayable,
-            through,
-            #[cfg(test)]
-            projected,
-        } = histories;
-        let mut order: Vec<(usize, String)> = tags.into_iter().map(|(tag, at)| (at, tag)).collect();
-        order.sort_unstable();
-        let mut carried = vec![0; tracks.len()];
-        for (at, tag) in order {
-            let track = std::mem::take(&mut tracks[at]);
-            let index = match self.histories.tags.get(&tag) {
-                Some(&index) => index,
-                None => {
-                    let index = self.histories.tracks.len();
-                    self.histories.tracks.push(Track::default());
-                    self.histories.tags.insert(tag.clone(), index);
-                    index
-                }
-            };
-            carried[at] = index;
-            carry_track(
-                &mut self.histories.tracks[index],
-                track,
-                tail.active.contains(&tag),
-                tail.hour,
-            );
-        }
-        let held = &mut self.histories;
-        held.active = active
-            .into_iter()
-            .map(|(track, identity)| (carried[track], identity))
-            .collect();
-        held.active_tags = active_tags;
-        held.observed = observed;
-        held.removed = removed;
-        held.slots = slots;
-        held.undisplayable = undisplayable;
-        held.through = through;
-        #[cfg(test)]
-        {
-            held.projected += projected - tail.projected;
-        }
-        self.previous_complete = previous_complete;
-        self.variant_tokens = variant_tokens;
-        self.definitions_complete = definitions_complete;
-        self.last_hour = last_hour;
-        self.variants = variants;
-        self.counts_pool = counts_pool;
-        self.countries = countries;
-        self.census = census;
-        self.applied = applied;
-        self.rates = rates;
-        self.joined = joined;
-    }
-}
-
-/// Each variant the catalogue names now, with its current token: what its
-/// next hours read of it.
-fn current_names(variants: &VariantCatalogue) -> BTreeMap<u64, String> {
-    variants
-        .versions
-        .keys()
-        .filter_map(|&id| variants.current(id).map(|raw| (id, raw.token.clone())))
-        .collect()
-}
-
-/// Carry one track: the runs and segments the extract began by `hour` cover
-/// hours the carried track observed itself, so they go; with `opened`, the
-/// track was active at `hour`, where the carried track's run and segment
-/// continue, so the last of each extend those. Every later run and segment
-/// follows, and a track the extract touched after `hour` takes its identity
-/// and last known hour.
-fn carry_track(carried: &mut Track, extracted: Track, opened: bool, hour: i32) {
-    let Track {
-        mut runs,
-        mut segments,
-        last_identity,
-        last_known,
-    } = extracted;
-    let begun = runs.partition_point(|run| run.first_hour <= hour);
-    if opened
-        && begun > 0
-        && let Some(open) = carried.runs.last_mut()
-    {
-        open.last_hour = runs[begun - 1].last_hour;
-    }
-    runs.drain(..begun);
-    let begun = segments.partition_point(|segment| segment.first_hour <= hour);
-    if opened
-        && begun > 0
-        && let Some(open) = carried.segments.last_mut()
-    {
-        open.last_hour = segments[begun - 1].last_hour;
-    }
-    segments.drain(..begun);
-    let touched = opened || !runs.is_empty() || !segments.is_empty();
-    carried.runs.extend(runs);
-    carried.segments.extend(segments);
-    if touched {
-        carried.last_identity = last_identity;
-        carried.last_known = last_known;
-    }
-}
-
-/// What a block extract keeps of an air census ([`Held`]): its tracks, runs
-/// and counts (each shared count once), its census, variant catalogue (with the
-/// operands its changed reads keep) and country join, and its tail's decision.
-mod held {
-    use super::*;
-    use dashboard_base::prepared::prepass::{Held, HeldBytes};
-
-    impl Held for Counts {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes
-                .heap(&self.planes_by_token)
-                .heap(&self.wings_by_tokens);
-        }
-    }
-
-    impl Held for RawRun {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes.heap(&self.roster).heap(&self.effective);
-        }
-    }
-
-    impl Held for ScannedAir {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes
-                .heap(&self.series)
-                .heap(&self.segments)
-                .heap(&self.undisplayable_tags);
-        }
-    }
-
-    impl Held for Track {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes.heap(&self.runs).heap(&self.segments);
-        }
-    }
-
-    impl Held for Histories {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes
-                .heap(&self.tags)
-                .heap(&self.tracks)
-                .heap(&self.active)
-                .heap(&self.active_tags)
-                .heap(&self.observed)
-                .heap(&self.removed)
-                .heap(&self.slots)
-                .heap(&self.undisplayable);
-        }
-    }
-
-    impl Held for PartSum {
-        fn held(&self, _: &mut HeldBytes) {}
-    }
-
-    impl Held for CountryCounts {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes
-                .heap(&self.parts)
-                .heap(&self.signatures)
-                .heap(&self.snapshot);
-        }
-    }
-
-    impl Held for WingCounts {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes.heap(&self.counts);
-        }
-    }
-
-    impl Held for Census {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes
-                .heap(&self.wings)
-                .heap(&self.tokens)
-                .heap(&self.totals)
-                .heap(&self.dirty);
-        }
-    }
-
-    impl Held for Scan {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes
-                .heap(&self.histories)
-                .heap(&self.result)
-                .heap(&self.variant_tokens)
-                .heap(&self.counts_pool)
-                .heap(&self.countries.tags)
-                .heap(&self.census)
-                .heap(&self.variants);
-        }
-    }
-
-    impl Held for TrackTail {
-        fn held(&self, bytes: &mut HeldBytes) {
-            bytes.heap(&self.run).heap(&self.identity);
-        }
-    }
-
-    impl Held for Tail {
-        fn held(&self, bytes: &mut HeldBytes) {
-            let decision = &self.decision;
-            bytes
-                .heap(&decision.variant_tokens)
-                .heap(&decision.names)
-                .heap(&decision.countries)
-                .heap(&decision.active)
-                .heap(&decision.undisplayable)
-                .heap(&decision.tracks)
-                .heap(&self.counters.undisplayable_tags)
-                .heap(&self.active);
-        }
-    }
 }

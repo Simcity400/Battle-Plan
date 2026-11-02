@@ -3,6 +3,7 @@
 pub mod budget;
 pub mod cache;
 pub mod carry;
+mod chunked;
 pub mod codec;
 mod events;
 pub mod family;
@@ -27,7 +28,7 @@ pub use pages::{PageRead, PageWrite, StoreRead, StoreWrite};
 pub use query::{Cursor, EventQuery, Selection, Snapshot, Viewport};
 pub use seal::{Pending, Sealed, Work};
 pub use types::*;
-pub use writer::Writer;
+pub use writer::{Tree, Writer};
 
 use std::io;
 

@@ -2833,7 +2833,7 @@ fn a_project_s_first_repair_advance_is_its_first_output_read_counting_one() {
 }
 
 #[test]
-fn construction_observer_restores_claims_from_the_shared_frame_after_two_commits() {
+fn a_scan_saved_and_taken_up_twice_claims_as_one_observed_whole() {
     let flag = AtomicBool::new(false);
     let mut frames: Vec<_> = (100..=151)
         .filter(|hour| *hour != 132)
@@ -2867,19 +2867,26 @@ fn construction_observer_restores_claims_from_the_shared_frame_after_two_commits
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
     let expected = timed_scan(&replay, 1, &flag).unwrap();
     let mut scan = super::Scan::default();
+    let mut rows = super::row::Rows::default();
     for frame in &frames {
         let read = frame.metrics.table_ns[TableId::StateGarrisons.index()] != 0;
-        scan.observe_reads(frame, read, read, read, [true; 2], true);
+        scan.observe_reads(&rows.hour(frame, [read; 3]), true);
         if [117, 125].contains(&frame.hour) {
+            // The building tables it diffs against are saved with it.
             let saved = serde_json::to_vec(&scan).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
-            assert!(value["changes"].get("states").is_none());
-            assert!(value.get("dictionary").is_none());
+            assert!(value["changes"]["states"].is_array());
             scan = serde_json::from_slice(&saved).unwrap();
-            scan.restore_frame(frame);
         }
     }
-    scan.finish(&replay, 1);
+    scan.finish(
+        replay
+            .branches
+            .iter()
+            .find(|start| start.id == 1)
+            .map(|start| dashboard_text::metadata::branch_bounds(&replay, start).1),
+    );
+    scan.log.dictionaries = rows.dictionaries;
     assert_eq!(
         serde_json::to_value(&scan.log).unwrap(),
         serde_json::to_value(expected).unwrap()

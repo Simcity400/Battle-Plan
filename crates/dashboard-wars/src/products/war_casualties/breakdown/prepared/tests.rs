@@ -60,7 +60,6 @@ fn publish(
     chunk: &[DecodedFrame],
     fixture: &mut Fixture,
     casualties: &mut super::super::super::prepared::Prepared,
-    wars: &mut wars::prepared::Observer,
     append: bool,
 ) {
     let flag = AtomicBool::new(false);
@@ -74,7 +73,6 @@ fn publish(
                 &flag,
             )
             .unwrap();
-        wars.observe(frame).unwrap();
     }
     let mut writer = if append {
         fixture.append_writer()
@@ -85,14 +83,53 @@ fn publish(
         .finish_block(&mut writer, 1, chunk[0].hour, chunk.last().unwrap().hour)
         .unwrap();
     casualties.flush(&mut writer, 1, &flag).unwrap();
-    wars.flush(&mut writer, 1, &flag).unwrap();
     writer.commit().unwrap();
     *casualties = serde_json::from_slice(&serde_json::to_vec(casualties).unwrap()).unwrap();
-    *wars = wars::prepared::Observer::restore(
-        series::read_catalogue(&fixture.store, &fixture.key, "wars", 1)
-            .unwrap()
-            .unwrap(),
-    );
+}
+
+/// The wars the row walk reads of `source`, as the breakdown joins them.
+fn scanned_wars<'a>(
+    source: &'a Source,
+    context: &'a LoadContext,
+    flag: &'a AtomicBool,
+) -> impl Fn(
+    &WarsParams,
+    &HashSet<(u32, u32)>,
+    Option<&Arc<dashboard_base::catalogue::Catalogue>>,
+) -> io::Result<Option<WarsReply>>
++ 'a {
+    move |params: &WarsParams,
+          selected: &HashSet<(u32, u32)>,
+          _: Option<&Arc<dashboard_base::catalogue::Catalogue>>| {
+        wars::Wars::shared(source, params, Some(selected), context, flag)
+            .map(|reply| Some((*reply).clone()))
+    }
+}
+
+fn query(
+    source: &Source,
+    params: &CasualtyBreakdownParams,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    flag: &AtomicBool,
+) -> io::Result<Option<CasualtyBreakdownReply>> {
+    let wars = scanned_wars(source, context, flag);
+    super::query(source, params, context, store, key, &wars, flag)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn query_through(
+    source: &Source,
+    params: &CasualtyBreakdownParams,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    through: Option<i32>,
+    flag: &AtomicBool,
+) -> io::Result<Option<CasualtyBreakdownReply>> {
+    let wars = scanned_wars(source, context, flag);
+    super::query_through(source, params, context, store, key, through, &wars, flag)
 }
 
 fn assert_parity(source: &Source, fixture: &Fixture, tags: &[&str]) {
@@ -149,7 +186,6 @@ fn prepared_breakdown_matches_after_two_commits_resume_append_gaps_and_ended_ene
     let mut fixture = Fixture::new();
     let first = source(&chunks[..1]);
     let mut casualties = super::super::super::prepared::Prepared::new(first.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
     for ordinal in 0..chunks.len() {
         let current = source(&chunks[..=ordinal]);
         publish(
@@ -157,7 +193,6 @@ fn prepared_breakdown_matches_after_two_commits_resume_append_gaps_and_ended_ene
             &chunks[ordinal],
             &mut fixture,
             &mut casualties,
-            &mut wars,
             ordinal == 2,
         );
         assert_parity(
@@ -267,14 +302,12 @@ fn earlier_ambiguous_native_holders_refuse_a_later_unambiguous_window() {
     let mut fixture = Fixture::new();
     let full = source(&chunks);
     let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
     for chunk in &chunks {
         publish(
             &full,
             chunk,
             &mut fixture,
             &mut casualties,
-            &mut wars,
             false,
         );
     }
@@ -370,14 +403,12 @@ fn replacement_holder_under_an_old_tag_keeps_native_lifetimes_separate() {
     let full = source(&chunks);
     let mut fixture = Fixture::new();
     let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
     for chunk in &chunks {
         publish(
             &full,
             chunk,
             &mut fixture,
             &mut casualties,
-            &mut wars,
             false,
         );
     }
@@ -427,14 +458,12 @@ fn selecting_both_endpoints_keeps_the_existing_first_endpoint_priority() {
     let full = source(&chunks);
     let mut fixture = Fixture::new();
     let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
     for chunk in &chunks {
         publish(
             &full,
             chunk,
             &mut fixture,
             &mut casualties,
-            &mut wars,
             false,
         );
     }
@@ -608,13 +637,11 @@ fn unprepared_inputs_remain_pending_and_complete_empty_relations_are_available()
         .is_none()
     );
     let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
     publish(
         &full,
         &chunks[0],
         &mut fixture,
         &mut casualties,
-        &mut wars,
         false,
     );
     let reply = query(
@@ -661,13 +688,11 @@ fn a_window_past_the_prepared_prefix_answers_the_prefix_newest_window() {
     let full = source(&chunks);
     let mut fixture = Fixture::new();
     let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
     publish(
         &full,
         &chunks[0],
         &mut fixture,
         &mut casualties,
-        &mut wars,
         false,
     );
     let through = chunks[0].last().unwrap().hour;

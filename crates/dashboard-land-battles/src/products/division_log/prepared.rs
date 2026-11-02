@@ -177,6 +177,7 @@ pub(super) struct Counts {
     keys: BTreeMap<(Dimension, Dimension, usize), Counter>,
     series: series::Accumulator,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for Dimension {
     fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
         if let Self::Value(value) = self {
@@ -184,10 +185,12 @@ impl dashboard_base::prepared::prepass::Held for Dimension {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for Counter {
     fn held(&self, _: &mut dashboard_base::prepared::prepass::HeldBytes) {}
 }
 /// Each page and count key, and the series' batch.
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for Counts {
     fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
         bytes.heap(&self.pages).heap(&self.keys).heap(&self.series);
@@ -252,6 +255,7 @@ impl Counts {
     }
 }
 impl Scan {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn resume(&mut self, frame: &DecodedFrame) {
         if self.previous_census == Some(frame.hour) && frame.complete::<tables::Divisions>().is_ok()
         {
@@ -275,6 +279,7 @@ impl Scan {
         self.observe(frame);
         self.counts.observe(frame.hour, &self.events[first..])
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn prepare_changed(
         &mut self,
         frame: &DecodedFrame,
@@ -287,10 +292,24 @@ impl Scan {
     pub fn configure(&mut self, format: replay_data::format::FormatVersion) {
         self.format = format;
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn publish_block(
         &mut self,
         source: &Source,
         context: &LoadContext,
+        writer: &mut store::Writer,
+        branch: u64,
+        ordinal: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let names = names_content(source, context);
+        self.publish_block_named(source, &names, writer, branch, ordinal, cancelled)
+    }
+    /// [`Self::publish_block`] naming from `names`, resolved before.
+    pub fn publish_block_named(
+        &mut self,
+        source: &Source,
+        names: &Names,
         writer: &mut store::Writer,
         branch: u64,
         ordinal: usize,
@@ -301,7 +320,7 @@ impl Scan {
             window: ordinal,
         };
         let cpu = ::replay_frame::cpu::scope("division log reply", None);
-        let reply = self.reply(source, &params, context, cancelled)?;
+        let reply = self.reply_named(source, &params, names, cancelled)?;
         series::write_reply(
             writer,
             &format!("division-log-{branch}"),
@@ -310,12 +329,12 @@ impl Scan {
         )?;
         drop(cpu);
         let cpu = ::replay_frame::cpu::scope("division log manifest", None);
-        let manifest = self.manifest(
+        let manifest = self.manifest_named(
             source,
             &BranchParams {
                 branch_id: branch.to_string(),
             },
-            context,
+            names,
             cancelled,
         )?;
         series::write_reply(
@@ -326,6 +345,15 @@ impl Scan {
         )?;
         drop(cpu);
         let _cpu = ::replay_frame::cpu::scope("division log counts", None);
+        self.counts.publish(writer, branch, cancelled)
+    }
+    /// The totals through the hour observed last, published between blocks.
+    pub fn publish_counts(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         self.counts.publish(writer, branch, cancelled)
     }
 }
@@ -454,7 +482,7 @@ fn blocked_ranges(params: &DivisionLogTotalsParams) -> Vec<(i32, i32)> {
     }
     result
 }
-fn totals(
+pub(super) fn totals(
     params: &DivisionLogTotalsParams,
     store: &store::Store,
     key: &store::SourceKey,

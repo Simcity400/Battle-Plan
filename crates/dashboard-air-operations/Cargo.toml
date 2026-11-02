@@ -29,6 +29,7 @@ ts-rs = "11.1"
 mimalloc.workspace = true
 engine-executable.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-keyed = { path = "../dashboard-keyed", features = ["test-support"] }
 store = { path = "../store", features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }
 viewer-foundation = { path = "../viewer-foundation" }

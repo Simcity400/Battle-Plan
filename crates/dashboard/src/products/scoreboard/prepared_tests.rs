@@ -1,6 +1,7 @@
 use super::*;
+use crate::native_fixtures::{Recorded, UNIT_HOURS, streams};
+use crate::prepared::pipeline;
 use crate::test_fixtures::continuation_records;
-use replay::publication::replace_file;
 use replay_data::rows::*;
 use std::path::PathBuf;
 
@@ -34,21 +35,6 @@ impl Fixture {
         .unwrap();
         self.stores
             .push(crate::prepared::files(&source, None).unwrap().0);
-        source
-    }
-    fn replace(&self, replay: &Replay) {
-        let candidate = self.root.join("next");
-        std::fs::write(&candidate, replay.bytes()).unwrap();
-        replace_file(&candidate, &self.path).unwrap();
-    }
-    fn run(&mut self, expected_blocks: usize) -> Source {
-        let source = self.source();
-        assert_eq!(
-            crate::prepared::pipeline::run(&source, None, &AtomicBool::new(false), |_| {})
-                .unwrap()
-                .new_blocks,
-            expected_blocks
-        );
         source
     }
 }
@@ -221,12 +207,101 @@ fn parity(
         assert_eq!(index["maxima"][name.as_str().unwrap()], maximum.to_string());
     }
 }
-fn all_frame(hour: i32) -> DecodedFrame {
-    let mut frame = multi_measure_frame(
-        hour,
-        if hour < 102 { 100 } else { 102 },
-        Some(if hour < 102 { 7 } else { 11 }),
+
+// The tables the native recording holds: every one the scoreboard's suppliers read.
+streams!(
+    Campaign,
+    Countries,
+    CountryLinks,
+    CountryAppearance,
+    CountryCounterInputs,
+    CountryExperienceGains,
+    CountryCommandPower,
+    CountryStabilityInputs,
+    SliceReads,
+    CountryFactories,
+    States,
+    Provinces,
+    Nukes,
+    LexicalTokens,
+    VariantDefinitions,
+    VariantChanges,
+    VariantModules,
+    VariantUpgrades,
+    ProductionLines,
+    ProductionLineOutput,
+    RocketProductionOutput,
+    AirWings,
+    WingEquipment,
+    TaskForces,
+    Ships,
+    ShipModels,
+    DivisionCensus,
+    Divisions,
+    DivisionTemplateIcons,
+    DivisionLandInputs,
+    SentVolunteers,
+    VolunteerHosts,
+    WarRelations,
+    Politics,
+    PoliticalParties,
+    Autonomy,
+);
+
+const SOURCE: &str = "scoreboard-prepared";
+/// The first hour of each part the recording grows by: its first run's first unit and its
+/// second, then, after the two hours from `GAP` no run holds, its second run's two.
+const FIRST: i32 = 100;
+const SECOND: i32 = FIRST + UNIT_HOURS;
+const GAP: i32 = SECOND + UNIT_HOURS;
+const THIRD: i32 = GAP + 2;
+const FOURTH: i32 = THIRD + UNIT_HOURS;
+
+/// The native runs of the recording grown by its first `parts` parts.
+fn runs(parts: u32) -> Vec<(u64, i32, u32)> {
+    let mut runs = vec![(1, FIRST, parts.min(2))];
+    if parts > 2 {
+        runs.push((1, THIRD, parts - 2));
+    }
+    runs
+}
+
+fn hours(from: i32, to: i32) -> Vec<DecodedFrame> {
+    (from..to).map(all_frame).collect()
+}
+
+/// A session of the recording as it is now, prepared: hours were left to prepare, and none is
+/// once it is.
+fn prepare(recorded: &Recorded) -> Source {
+    let (source, flag) = (recorded.source(SOURCE), AtomicBool::new(false));
+    assert!(
+        pipeline::restore(&source, None, &flag).unwrap().is_none(),
+        "hours are left to prepare"
     );
+    pipeline::run(&source, None, &flag, |_| {}).unwrap();
+    assert!(
+        pipeline::restore(&source, None, &flag).unwrap().is_some(),
+        "no hour is left to prepare"
+    );
+    source
+}
+
+fn all_frame(hour: i32) -> DecodedFrame {
+    let first = hour < SECOND;
+    // Its hour 100 gives the first capture's production, 102 a later capture's.
+    let mut frame = multi_measure_frame(
+        if first { 100 } else { 102 },
+        if first { FIRST } else { SECOND },
+        Some(if first { 7 } else { 11 }),
+    );
+    frame.hour = hour;
+    for table in [
+        TableId::RocketProductionOutput,
+        TableId::ProductionLines,
+        TableId::VariantDefinitions,
+    ] {
+        frame.metrics.table_ns[table.index()] = u64::from(hour == FIRST || hour == SECOND);
+    }
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *frame.tables[TableId::Countries.index()]
     {
@@ -238,7 +313,7 @@ fn all_frame(hour: i32) -> DecodedFrame {
             political_power_raw: (id == 3).then_some(i64::MAX),
             ..Default::default()
         }));
-        if hour >= 106 {
+        if hour >= THIRD {
             rows[0].tag = b"renamed native holder".to_vec();
         }
     }
@@ -265,7 +340,7 @@ fn all_frame(hour: i32) -> DecodedFrame {
         ]);
         rows.sort_by_key(|row| row.id);
     }
-    *frame.tables[TableId::CountryFactories.index()] = if hour == 101 {
+    *frame.tables[TableId::CountryFactories.index()] = if hour == FIRST + 1 {
         TableView::Unavailable {
             reason: "native factory counter unavailable".into(),
         }
@@ -283,15 +358,17 @@ fn all_frame(hour: i32) -> DecodedFrame {
         TableView::Complete(TableRows::CountryCounterInputs(vec![
             CountryCounterInputRow {
                 country: 11,
-                owned_state_count: match hour {
-                    106 => -3,
-                    107 => 0,
-                    _ => 3,
+                owned_state_count: if hour == THIRD {
+                    -3
+                } else if hour == THIRD + 1 {
+                    0
+                } else {
+                    3
                 },
                 ..Default::default()
             },
         ]));
-    if hour == 101
+    if hour == FIRST + 1
         && let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
             &mut *frame.tables[TableId::CountryCounterInputs.index()]
     {
@@ -356,7 +433,7 @@ fn all_frame(hour: i32) -> DecodedFrame {
             ..Default::default()
         }]));
     *frame.tables[TableId::DivisionLandInputs.index()] =
-        TableView::Complete(TableRows::DivisionLandInputs(if hour == 101 {
+        TableView::Complete(TableRows::DivisionLandInputs(if hour == FIRST + 1 {
             Vec::new()
         } else {
             vec![DivisionLandInputsRow {
@@ -381,7 +458,7 @@ fn all_frame(hour: i32) -> DecodedFrame {
                 second_country,
                 start_hour: 90,
                 first_casualties: i64::MAX,
-                second_casualties: if hour == 103 { -7 } else { 5 },
+                second_casualties: if hour == SECOND + 1 { -7 } else { 5 },
                 ..Default::default()
             })
             .collect(),
@@ -401,7 +478,7 @@ fn all_frame(hour: i32) -> DecodedFrame {
     ] {
         frame.metrics.table_ns[id.index()] = 1;
     }
-    if hour == 103 {
+    if hour == SECOND + 1 {
         *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
             reason: "native counter unavailable".into(),
         };
@@ -409,17 +486,17 @@ fn all_frame(hour: i32) -> DecodedFrame {
             reason: "air census unavailable".into(),
         };
     }
-    if hour >= 108 {
+    if hour >= FOURTH {
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *frame.tables[TableId::Countries.index()]
         {
             rows.retain(|row| row.id != 9003);
             rows[1].tag = b"GER".to_vec();
-            if hour == 109 {
+            if hour > FOURTH {
                 rows[1].id = 9999;
             }
         }
-        if hour == 109 {
+        if hour > FOURTH {
             if let TableView::Complete(TableRows::CountryLinks(rows)) =
                 &mut *frame.tables[TableId::CountryLinks.index()]
             {
@@ -441,25 +518,39 @@ fn all_frame(hour: i32) -> DecodedFrame {
 
 #[test]
 fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gaps_and_renames() {
-    let first = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(1, vec![all_frame(100), all_frame(101)])],
-    )
-    .unwrap();
-    let mut fixture = Fixture::new(&first);
+    for tables in [
+        crate::products::air_force::facts::TABLES,
+        crate::products::army_size::facts::TABLES,
+        crate::products::war_casualties::facts::TABLES,
+        crate::products::country_factories::facts::TABLES,
+        crate::products::country_balances::facts::TABLES,
+        crate::products::navy::facts::TABLES,
+        crate::products::country_nukes::facts::TABLES,
+        crate::prepared_production::TABLES,
+        crate::products::country_stability::facts::TABLES,
+        crate::products::territory::facts::TABLES,
+    ] {
+        assert!(
+            tables.iter().all(|table| STREAMS.contains(table)),
+            "the native recording holds every table the scoreboard's suppliers read: {tables:?}"
+        );
+    }
+    let recorded = Recorded::new();
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, hours(FIRST, SECOND))]).unwrap();
+    recorded.record(&first, &runs(1), STREAMS, write_hour);
     let columns = ScoreboardColumnKey::ALL.to_vec();
     let selection = request(
         columns.clone(),
         vec!["GER".into(), "opponent-2".into(), "opponent-3".into()],
         None,
     );
-    let unopened = fixture.source();
+    let unopened = recorded.source(SOURCE);
     // Unprepared, only columns one frame proves answer; cumulative ones wait.
     assert!(
         query(
             &unopened,
             &selection,
-            100,
+            FIRST,
             true,
             false,
             ScoreboardColumnKey::PoliticalPower,
@@ -471,75 +562,75 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
         query(
             &unopened,
             &selection,
-            100,
+            FIRST,
             false,
             false,
             ScoreboardColumnKey::Factories,
             true
         )
         .is_object(),
-        "a page keeps exact factory cells while other suppliers are preparing"
+        "a page answers while its suppliers are preparing"
     );
+    let pending = query(
+        &unopened,
+        &selection,
+        FIRST,
+        true,
+        false,
+        ScoreboardColumnKey::Factories,
+        true,
+    );
+    assert_eq!(pending["coverage"]["lastHour"], FIRST - 1, "{pending}");
     assert!(
-        query(
-            &unopened,
-            &selection,
-            100,
-            true,
-            false,
-            ScoreboardColumnKey::Factories,
-            true
-        )
-        .is_null(),
-        "a tag selection of the index waits for the whole branch's identities"
+        pending["preparing"]
+            .as_array()
+            .is_some_and(|preparing| preparing.contains(&json!("factories"))),
+        "an index sorted by unprepared factories is pending on them: {pending}"
     );
-    let source = fixture.run(1);
+    let source = prepare(&recorded);
     parity(
         &source,
         &selection,
-        100,
+        FIRST,
         ScoreboardColumnKey::Factories,
         true,
     );
     parity(
         &source,
         &selection,
-        101,
+        FIRST + 1,
         ScoreboardColumnKey::Factories,
         true,
     );
     let ambiguous = query(
         &source,
         &selection,
-        101,
+        FIRST + 1,
         false,
         false,
         ScoreboardColumnKey::Territory,
         true,
     );
     assert_eq!(
-        at(&ambiguous["data"], 101)["GER"][2]["territory"],
+        at(&ambiguous["data"], FIRST + 1)["GER"][2]["territory"],
         json!([null, null, false]),
         "conflicting native aliases must leave the owned-state cell unknown"
     );
     for column in ["factories", "factoriesBuilt", "factoriesTopbar"] {
         assert_eq!(
-            at(&ambiguous["data"], 101)["GER"][2][column],
+            at(&ambiguous["data"], FIRST + 1)["GER"][2][column],
             json!([null, null, false]),
             "an unavailable factory read must leave {column} unknown"
         );
     }
+    // The run gains a unit, which a preparation takes up from where the last left off.
     let second = first
-        .append(&[continuation_records(
-            &first,
-            1,
-            vec![all_frame(102), all_frame(103)],
-        )])
+        .append(&[continuation_records(&first, 1, hours(SECOND, GAP))])
         .unwrap();
-    fixture.replace(&second);
-    fixture.run(1);
-    for hour in 100..=103 {
-        let clean = fixture.source();
+    recorded.record(&second, &runs(2), STREAMS, write_hour);
+    prepare(&recorded);
+    for hour in [FIRST, FIRST + 1, SECOND - 1, SECOND, SECOND + 1] {
+        let clean = recorded.source(SOURCE);
         parity(
             &clean,
             &selection,
@@ -548,20 +639,22 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
             true,
         );
     }
-    let resumed = fixture.run(0);
-    let (store, key) = crate::prepared::files(&resumed, None).unwrap();
-    assert!(store.range_count(&key, "measure-pp-1").unwrap().unwrap() >= 2);
+    // Prepared again with nothing new, the store publishes nothing.
+    let again = recorded.source(SOURCE);
+    let flag = AtomicBool::new(false);
+    assert!(pipeline::restore(&again, None, &flag).unwrap().is_some());
+    let store = crate::prepared::files(&again, None).unwrap().0;
+    let held = store.manifest_identity().unwrap();
+    pipeline::run(&again, None, &flag, |_| {}).unwrap();
+    assert_eq!(store.manifest_identity().unwrap(), held);
+    // A later run of the branch, after two hours no run holds.
     let grown = second
-        .append(&[continuation_records(
-            &second,
-            1,
-            vec![all_frame(106), all_frame(107)],
-        )])
+        .append(&[continuation_records(&second, 1, hours(THIRD, FOURTH))])
         .unwrap();
-    fixture.replace(&grown);
-    let appended = fixture.run(1);
-    for hour in [104, 105, 106, 107] {
-        let clean = fixture.source();
+    recorded.record(&grown, &runs(3), STREAMS, write_hour);
+    let appended = prepare(&recorded);
+    for hour in [GAP, GAP + 1, THIRD, THIRD + 1] {
+        let clean = recorded.source(SOURCE);
         parity(
             &clean,
             &selection,
@@ -584,14 +677,14 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
                     descending,
                 }),
             );
-            let clean = fixture.source();
-            parity(&clean, &top, 107, sort, descending);
+            let clean = recorded.source(SOURCE);
+            parity(&clean, &top, THIRD + 1, sort, descending);
         }
     }
     let index = query(
         &appended,
         &selection,
-        107,
+        THIRD + 1,
         true,
         true,
         ScoreboardColumnKey::Factories,
@@ -604,18 +697,19 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
             .iter()
             .any(|row| row["tag"] == "renamed native holder")
     );
+    // That run gains a unit, in which another country takes up a tag and a new id.
     let reused = grown
         .append(&[continuation_records(
             &grown,
             1,
-            vec![all_frame(108), all_frame(109)],
+            hours(FOURTH, FOURTH + UNIT_HOURS),
         )])
         .unwrap();
-    fixture.replace(&reused);
-    fixture.run(1);
+    recorded.record(&reused, &runs(4), STREAMS, write_hour);
+    prepare(&recorded);
     let pick = request(columns, vec!["GER".into()], None);
-    for hour in [108, 109] {
-        let clean = fixture.source();
+    for hour in [FOURTH, FOURTH + 1] {
+        let clean = recorded.source(SOURCE);
         parity(&clean, &pick, hour, ScoreboardColumnKey::Factories, true);
     }
 }
@@ -623,25 +717,36 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
 #[test]
 fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_in_both_directions()
 {
-    let mut first_frame = countries(100, 24);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *first_frame.tables[TableId::Countries.index()]
-    {
-        rows[0].political_power_raw = Some(i64::MIN);
-        rows[23].political_power_raw = Some(i64::MAX);
-    }
-    let first =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first_frame.clone()])]).unwrap();
-    let mut fixture = Fixture::new(&first);
-    fixture.run(1);
-    first_frame.hour = 101;
+    let frame = |hour: i32| {
+        let mut frame = countries(hour, 24);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].political_power_raw = Some(i64::MIN);
+            rows[23].political_power_raw = Some(i64::MAX);
+        }
+        frame
+    };
+    let recorded = Recorded::new();
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, (FIRST..SECOND).map(frame).collect())],
+    )
+    .unwrap();
+    recorded.record(&first, &runs(1), STREAMS, write_hour);
+    prepare(&recorded);
     let second = first
-        .append(&[continuation_records(&first, 1, vec![first_frame])])
+        .append(&[continuation_records(
+            &first,
+            1,
+            (SECOND..GAP).map(frame).collect(),
+        )])
         .unwrap();
-    fixture.replace(&second);
-    fixture.run(1);
+    recorded.record(&second, &runs(2), STREAMS, write_hour);
+    // Political power is the balances family's, prepared natively beside the other suppliers.
+    prepare(&recorded);
     for descending in [true, false] {
-        let source = fixture.source();
+        let source = recorded.source(SOURCE);
         let selection = request(
             vec![
                 ScoreboardColumnKey::PoliticalPower,
@@ -660,7 +765,7 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
         let first_page_index = query(
             &source,
             &first_page_selection,
-            101,
+            SECOND,
             true,
             true,
             ScoreboardColumnKey::PoliticalPower,
@@ -675,7 +780,7 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
         let first_page_cells = query(
             &source,
             &request(selection.columns.clone(), first_page_tags, None),
-            101,
+            SECOND,
             false,
             false,
             ScoreboardColumnKey::PoliticalPower,
@@ -688,7 +793,7 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
         let index = query(
             &source,
             &selection,
-            101,
+            SECOND,
             true,
             true,
             ScoreboardColumnKey::PoliticalPower,
@@ -716,7 +821,7 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
         let page = query(
             &source,
             &mounted,
-            101,
+            SECOND,
             false,
             false,
             ScoreboardColumnKey::PoliticalPower,
@@ -739,8 +844,8 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
         )
         .unwrap();
         assert_eq!(
-            at(&page["data"], 101),
-            at(&serde_json::to_value(oracle).unwrap(), 101)
+            at(&page["data"], SECOND),
+            at(&serde_json::to_value(oracle).unwrap(), SECOND)
         );
     }
 }
@@ -784,269 +889,7 @@ fn scoreboard_prepared_registry_routes_without_preparation_or_an_oracle_scan() {
 }
 
 #[test]
-fn scoreboard_factory_moments_answer_beyond_preparation_as_preparation_does() {
-    use ScoreboardColumnKey::{Factories, FactoriesBuilt, FactoriesTopbar};
-    // Two prefix blocks, unrecorded hours 104 and 105, a rename at 106, a tag
-    // reused by another holder at 108 and a replaced native holder at 109.
-    let blocks: [&[i32]; 4] = [&[100, 101], &[102, 103], &[106, 107], &[108, 109]];
-    let frames = |hours: &[i32]| {
-        hours
-            .iter()
-            .map(|&hour| all_frame(hour))
-            .collect::<Vec<_>>()
-    };
-    let mut prefix =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, frames(blocks[0]))]).unwrap();
-    prefix = prefix
-        .append(&[continuation_records(&prefix, 1, frames(blocks[1]))])
-        .unwrap();
-    let mut full = prefix
-        .append(&[continuation_records(&prefix, 1, frames(blocks[2]))])
-        .unwrap();
-    full = full
-        .append(&[continuation_records(&full, 1, frames(blocks[3]))])
-        .unwrap();
-    let columns = vec![Factories, FactoriesBuilt, FactoriesTopbar];
-    let pick = request(
-        columns.clone(),
-        vec![
-            "GER".into(),
-            "opponent-2".into(),
-            "opponent-3".into(),
-            "renamed native holder".into(),
-        ],
-        None,
-    );
-    let top = request(
-        columns,
-        Vec::new(),
-        Some(ScoreboardTop {
-            count: 2,
-            sort: Factories,
-            descending: true,
-        }),
-    );
-    // What the widget asks at a moment: the ranked index with bars, and the
-    // mounted page with supplying dates. A tag selection of the index waits
-    // for the whole branch's identities, so it is compared apart.
-    let observe = |source: &Source| -> Vec<Value> {
-        let mut replies = Vec::new();
-        for hour in 100..=109 {
-            let index = query(source, &top, hour, true, true, Factories, true);
-            assert!(!index.is_null(), "index at {hour}");
-            let order: Vec<_> = index["data"]["series"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["tag"].clone())
-                .collect();
-            replies.push(json!([
-                hour,
-                order,
-                index["maxima"],
-                at(&index["data"], hour)
-            ]));
-            let page = query(source, &pick, hour, false, false, Factories, true);
-            assert!(!page.is_null(), "page at {hour}");
-            replies.push(json!([hour, at(&page["data"], hour)]));
-        }
-        replies
-    };
-
-    // Nothing prepared: the moment used to wait for complete preparation.
-    let mut fixture = Fixture::new(&full);
-    let cold = observe(&fixture.source());
-    let renamed = query(&fixture.source(), &pick, 107, false, false, Factories, true);
-    assert_eq!(
-        at(&renamed["data"], 107)["renamed native holder"][2]["factories"][1],
-        107,
-        "a sampled count is dated by its own frame"
-    );
-
-    // A genuine prefix: the first two blocks prepared into this recording's
-    // store, so accepted coverage and identities end at hour 103.
-    let prefix_source = Source::from_replay(
-        crate::SourceKey {
-            source_id: "scoreboard-prepared".into(),
-            revision: crate::protocol::replay_revision(&fixture.path).unwrap(),
-        },
-        fixture.path.clone(),
-        Arc::new(prefix),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    fixture
-        .stores
-        .push(crate::prepared::files(&prefix_source, None).unwrap().0);
-    crate::prepared::pipeline::run(&prefix_source, None, &AtomicBool::new(false), |_| {}).unwrap();
-    let (store, key) = crate::prepared::files(&prefix_source, None).unwrap();
-    let mut writer = store.extend(&key).unwrap();
-    writer
-        .write_at(
-            "preparation-coverage-1",
-            0,
-            serde_json::to_vec(&crate::prepared::pipeline::Coverage {
-                schema: crate::prepared::pipeline::SCHEMA,
-                first_hour: 100,
-                last_hour: 103,
-                complete: false,
-            })
-            .unwrap()
-            .as_slice(),
-        )
-        .unwrap();
-    writer.commit().unwrap();
-    let joined_source = fixture.source();
-    assert_eq!(
-        crate::prepared::pipeline::coverage(&joined_source, None, 1, &AtomicBool::new(false))
-            .unwrap()
-            .unwrap()
-            .last_hour,
-        103
-    );
-    let joined = observe(&joined_source);
-    assert_eq!(
-        joined_source
-            .state::<country_factories::Scans>()
-            .lock()
-            .unwrap()
-            .runs,
-        0,
-        "direct moments never call the factory oracle"
-    );
-
-    // Before the whole branch's identities exist, a tag selection of the
-    // index stays pending: "GER" names a holder renamed at 106 and the one
-    // that took the tag at 108, which no prefix and moment can tell apart.
-    let alone = request(
-        vec![Factories, FactoriesBuilt, FactoriesTopbar],
-        vec!["GER".into()],
-        None,
-    );
-    for source in [&fixture.source(), &joined_source] {
-        for hour in 100..=109 {
-            assert!(
-                query(source, &alone, hour, true, true, Factories, true).is_null(),
-                "tag index at {hour} before the whole branch's identities"
-            );
-        }
-    }
-
-    // Complete preparation of the same recording.
-    let mut complete = Fixture::new(&full);
-    let prepared = observe(&complete.run(4));
-    let complete_source = complete.source();
-    for hour in 100..=109 {
-        for selection in [&pick, &alone] {
-            assert!(
-                !query(
-                    &complete_source,
-                    selection,
-                    hour,
-                    true,
-                    true,
-                    Factories,
-                    true
-                )
-                .is_null(),
-                "tag index at {hour} once prepared"
-            );
-        }
-    }
-    assert_eq!(cold.len(), prepared.len());
-    for (index, (direct, expected)) in cold.iter().zip(&prepared).enumerate() {
-        assert_eq!(direct, expected, "cold reply {index}");
-    }
-    for (index, (prefixed, expected)) in joined.iter().zip(&prepared).enumerate() {
-        assert_eq!(prefixed, expected, "prefix and tail reply {index}");
-    }
-}
-
-#[test]
-fn scoreboard_cold_factory_moment_matches_the_scan() {
-    use ScoreboardColumnKey::{Factories, FactoriesBuilt, FactoriesTopbar};
-    let mut frame = countries(100, 24);
-    if let TableView::Complete(TableRows::CountryFactories(rows)) =
-        &mut *frame.tables[TableId::CountryFactories.index()]
-    {
-        // A country without a factory read ranks unknown, last.
-        rows.retain(|row| row.country != 17);
-    }
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source();
-    let columns = vec![Factories, FactoriesBuilt, FactoriesTopbar];
-    let index = query(
-        &source,
-        &request(
-            columns.clone(),
-            Vec::new(),
-            Some(ScoreboardTop {
-                count: 24,
-                sort: Factories,
-                descending: true,
-            }),
-        ),
-        100,
-        true,
-        true,
-        Factories,
-        true,
-    );
-    let rows = index["data"]["series"].as_array().unwrap();
-    assert_eq!(rows.len(), 24);
-    assert_eq!(rows[0]["tag"], "country-00024");
-    assert_eq!(rows[23]["tag"], "country-00017");
-    let tags: Vec<String> = rows
-        .iter()
-        .map(|row| row["tag"].as_str().unwrap().to_owned())
-        .collect();
-    let selection = request(columns, tags, None);
-    let page = query(&source, &selection, 100, false, false, Factories, true);
-    let oracle_source = Source::from_replay(
-        source.key().clone(),
-        source.path().to_path_buf(),
-        source.replay(),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let oracle = serde_json::to_value(
-        Scoreboard::load(
-            &oracle_source,
-            &selection,
-            &LoadContext { content: None },
-            &AtomicBool::new(false),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let expected = at(&oracle, 100);
-    assert_eq!(at(&page["data"], 100), expected);
-    assert_eq!(at(&index["data"], 100).as_object().unwrap().len(), 24);
-    for column in ["factories", "factoriesBuilt", "factoriesTopbar"] {
-        let maximum = expected
-            .as_object()
-            .unwrap()
-            .values()
-            .filter_map(|row| row[2][column][0].as_str())
-            .map(|amount| amount.parse::<i128>().unwrap())
-            .max()
-            .unwrap()
-            .max(0);
-        assert_eq!(index["maxima"][column], maximum.to_string());
-    }
-    assert_eq!(
-        source
-            .state::<country_factories::Scans>()
-            .lock()
-            .unwrap()
-            .runs,
-        0
-    );
-}
-
-#[test]
-fn default_scoreboard_cells_keep_exact_factories_and_mark_pending_suppliers() {
+fn default_scoreboard_cells_mark_every_unprepared_supplier_pending() {
     use ScoreboardColumnKey::*;
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![all_frame(100)])]).unwrap();
@@ -1067,14 +910,10 @@ fn default_scoreboard_cells_keep_exact_factories_and_mark_pending_suppliers() {
     assert_eq!(page["coverage"]["lastHour"], 99);
     assert_eq!(page["pending"], json!([{"firstHour":100,"lastHour":100}]));
     let preparing = page["preparing"].as_array().unwrap();
-    assert!(preparing.contains(&json!("casualtiesTaken")));
-    assert!(!preparing.contains(&json!("factories")));
-    let factory = request(vec![Factories], vec!["GER".into()], None);
-    let exact = query(&source, &factory, 100, false, false, Factories, true);
-    assert_eq!(
-        at(&page["data"], 100)["GER"][2]["factories"],
-        at(&exact["data"], 100)["GER"][2]["factories"]
-    );
+    // Factory counts are read from the factories family's publication alone, never sampled.
+    for column in ["casualtiesTaken", "factories"] {
+        assert!(preparing.contains(&json!(column)), "{column}: {page}");
+    }
     assert!(
         page["data"]["series"]
             .as_array()
@@ -1084,7 +923,6 @@ fn default_scoreboard_cells_keep_exact_factories_and_mark_pending_suppliers() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|column| column["key"] != "factories")
                 .all(|column| column["runs"].as_array().unwrap().is_empty()))
     );
 }

@@ -4,21 +4,29 @@
 //! and each family's ordered emit publishes through a stage of its own of the one publisher
 //! ([`Publisher`]), which ownership guards. The change-run index the viewer's map reads is
 //! prepared before the run ([`crate::prepared::change_runs`]). A family prepared ahead ([`registry::Descriptor::ahead`]) walks the whole
-//! recording first, in a run of its own that decodes its tables alone ([`walk_all`]). Every other
+//! recording first, in a run of its own that decodes its tables alone ([`walk_all`]). A
+//! recording-wide job with a native backend is a member of the run as a family is. Every other
 //! family, and every recording-wide job without a native
 //! implementation, is refused by name on every branch ([`plan::native`]). Content is loaded once,
-//! on loader threads before the run ([`content`]). A family takes up its committed publication
+//! on loader threads before the run ([`content`]). A family that fails, loading its content, in
+//! its operators or emit, or sealing or committing a batch, fails alone ([`backend::alone`]): its
+//! publication refuses by its name, from the first hour it left unpublished on each branch, with
+//! its own error ([`fail`]), and every other family goes on. Only publication's stop is the
+//! run's ([`publication::halted`]). A family takes up its committed publication
 //! on each branch, as the recording a live recorder writes grows: it goes on from the hour after
 //! its last with the state and carry it saved there, and prepares only the hours the recording
 //! holds since.
 
 mod backend;
 mod content;
+mod convoys;
 mod families;
+mod groups;
 mod identities;
 mod measure;
+mod repairs;
 mod shape;
-mod status;
+pub(super) mod status;
 #[cfg(test)]
 mod tests;
 
@@ -26,7 +34,7 @@ pub use measure::{GOAL, Goal, Measured, Phases, Run};
 
 use super::{
     plan,
-    publication::{Family, Publisher, Stage, Stopped},
+    publication::{self, Family, Hours, Made, Publisher, Stage, Stopped},
     registry::FamilyId,
 };
 use crate::{
@@ -67,7 +75,35 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
     crate::metadata::check_cancel(cancelled)
 }
 
-/// Every family with a native backend, in the order their lanes run.
+/// The run's workers when none are asked: the processors this process may run on.
+#[cfg(not(test))]
+fn parallelism() -> usize {
+    #[cfg(windows)]
+    if let Some(count) = affinity() {
+        return count;
+    }
+    std::thread::available_parallelism().map_or(1, usize::from)
+}
+
+/// Tests run one worker unless they ask for more, so concurrent tests don't each start a
+/// worker per processor.
+#[cfg(test)]
+fn parallelism() -> usize {
+    1
+}
+
+/// The processors of this process's affinity mask; None when it spans processor groups.
+#[cfg(all(windows, not(test)))]
+fn affinity() -> Option<usize> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+    let (mut process, mut system) = (0usize, 0usize);
+    // A process spanning groups may read zero masks; std's count stands then.
+    let read = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+    let count = process.count_ones() as usize;
+    (read != 0 && count != 0).then_some(count)
+}
+
+/// Every family and recording-wide job with a native backend, in the order their lanes run.
 pub(crate) fn names() -> Vec<&'static str> {
     families::REGISTERED
         .iter()
@@ -233,7 +269,7 @@ pub(crate) fn complete(
     content: Option<&ContentOptions>,
     family: &str,
 ) -> io::Result<bool> {
-    let family = FamilyId::parse(family)?;
+    let family = FamilyId::publisher(family)?;
     let (store, key) = crate::prepared::files(source, content)?;
     let Some(published) = gates::current(&store, &key) else {
         return Ok(false);
@@ -255,22 +291,6 @@ pub(crate) fn complete(
     Ok(true)
 }
 
-/// Whether a native preparation published to `source`'s store.
-pub(crate) fn published(source: &Source, content: Option<&ContentOptions>) -> io::Result<bool> {
-    let (store, _) = crate::prepared::files(source, content)?;
-    Ok(status::held(&store)?.is_some())
-}
-
-/// Clears `source`'s store when a native preparation published to it, for its rows to prepare it:
-/// nothing of it is theirs.
-pub(crate) fn release(source: &Source, content: Option<&ContentOptions>) -> io::Result<()> {
-    let (store, key) = crate::prepared::files(source, content)?;
-    if status::held(&store)?.is_some() {
-        store.replace(key)?.commit()?;
-    }
-    Ok(())
-}
-
 /// What the publications of `recording` under `content` are bound to: its campaign, and whether
 /// content was read and verified.
 fn binding(recording: &Recording, content: Option<&ContentOptions>) -> Binding {
@@ -287,7 +307,7 @@ fn selected(names: Option<&[&str]>) -> io::Result<Vec<&'static families::Registe
         return Ok(families::REGISTERED.iter().collect());
     };
     for name in names {
-        let family = FamilyId::parse(name)?;
+        let family = FamilyId::publisher(name)?;
         if !families::REGISTERED
             .iter()
             .any(|registered| registered.name == family.name())
@@ -303,7 +323,9 @@ fn selected(names: Option<&[&str]>) -> io::Result<Vec<&'static families::Registe
         .filter(|registered| {
             names
                 .iter()
-                .any(|name| FamilyId::parse(name).is_ok_and(|id| id.name() == registered.name))
+                .any(|name| {
+                    FamilyId::publisher(name).is_ok_and(|id| id.name() == registered.name)
+                })
         })
         .collect())
 }
@@ -343,9 +365,12 @@ fn taken(
 struct Done {
     accepted: Accepted,
     measured: Option<Measured>,
-    /// Each family that failed and why, and the change-run index's failure.
+    /// Each family whose failure its publication could not refuse with, and why.
     failure: Option<io::Error>,
 }
+
+/// Each family that failed, and why.
+pub(crate) type Failed = BTreeMap<FamilyId, String>;
 
 fn run(
     source: &Source,
@@ -358,11 +383,15 @@ fn run(
     let whole = Clock::start();
     let started_with = if options.measure { working_set()? } else { 0 };
     check_cancel(cancelled)?;
+    // Families draw artwork on their ordered emits: the renderer is created apart, from the start.
+    if content.is_some() {
+        shader_pipeline::artwork::warm();
+    }
     let plan = plan::native();
     let chosen = selected(options.families)?;
     let threads = options
         .threads
-        .unwrap_or_else(crate::prepared::pipeline::parallelism)
+        .unwrap_or_else(parallelism)
         .max(1);
     let shape = Shape::new(&recording)?;
     let (store, key) = crate::prepared::files(source, content)?;
@@ -392,7 +421,7 @@ fn run(
     check_cancel(cancelled)?;
     let held = status::held(&store)?;
     if held.is_none() && store.current()?.is_some() {
-        // A row preparation's publication: nothing of it is a native family's.
+        // A publication no preparation marked: nothing of it is a family's.
         store.replace(key.clone())?.commit()?;
     }
     let names: Vec<&str> = chosen.iter().map(|registered| registered.name).collect();
@@ -412,7 +441,7 @@ fn run(
     if resume.replaced || held.as_deref() != Some(&mark[..]) {
         publisher.coordinate(|writer| status::coordinate(writer, plan, &shape, &mark))?;
     }
-    let mut failed: BTreeMap<FamilyId, String> = BTreeMap::new();
+    let mut failed = Failed::new();
     let mut staged = Vec::new();
     // Where each family goes on, for its lane to borrow.
     let mut goings: Vec<Vec<Going>> = Vec::new();
@@ -431,27 +460,39 @@ fn run(
                 goings.push(going);
                 staged.push((registered, family, stage, passes));
             }
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            Err(error) if publication::halted(&error) => return Err(error),
+            Err(error) => {
                 failed.insert(family.id, format!("Its carry could not be read: {error}"));
             }
-            Err(error) => return Err(error),
         }
     }
     let mut members: Vec<Box<dyn Member + '_>> = Vec::new();
     for ((registered, family, stage, passes), going) in staged.into_iter().zip(&goings) {
         let taken = Taken { passes, going };
         match (registered.bind)(family.id, &loading, stage, taken) {
-            Ok(member) => members.push(member),
+            // What it reads of the world is declared before the run, which reads it again.
+            Ok(member) => match member.needs() {
+                Ok(_) => members.push(member),
+                Err(error) => {
+                    failed.insert(
+                        family.id,
+                        format!("Its reads could not be declared: {error}"),
+                    );
+                }
+            },
             Err(error) => {
                 failed.insert(family.id, format!("It could not be bound: {error}"));
             }
         }
     }
     let prepared: Vec<FamilyId> = families.iter().map(|family| family.id).collect();
+    // Those that failed before the run refuse at once: none of their queries waits on it. One
+    // whose refusal could not be published yet is tried again after the run.
+    refuse(&publisher, &shape, &recording, &mut failed)?;
     let ahead = ahead_first(plan, &mut members);
     let replay = source.replay_ref();
     let mut bytes = status::stored(&store)?;
-    let report = |failed: &BTreeMap<FamilyId, String>, bytes: u64| {
+    let report = |failed: &Failed, bytes: u64| {
         status::accepted(
             plan,
             &shape,
@@ -466,7 +507,9 @@ fn run(
         )
     };
     let settings = Settings::new(threads);
-    let walked = {
+    // Each lane's batch seals and commits beside it while it goes on with the next.
+    let sealers = members.len().min(threads);
+    let walked = publisher.sealing(sealers, || {
         let scratch = segments::Folder::new(store.folder().with_extension("spill"))?;
         let walk = Walk {
             shape: &shape,
@@ -487,8 +530,8 @@ fn run(
         // Each spill went with its handle; the folder goes once empty.
         let _ = std::fs::remove_dir(store.folder().with_extension("spill"));
         walked
-    };
-    let walked = match walked {
+    });
+    let mut walked = match walked {
         Ok(walked) if !walked.ran.cancelled => walked,
         Ok(_) => {
             drop(members);
@@ -501,28 +544,7 @@ fn run(
             return Err(error);
         }
     };
-    for (member, outcome) in members.iter().zip(&walked.ran.outcomes) {
-        if let Some(failure) = outcome
-            .as_ref()
-            .and_then(|outcome| outcome.failure.as_ref())
-        {
-            let how = if failure.panicked {
-                "panicked"
-            } else {
-                "failed"
-            };
-            failed.insert(
-                member.id(),
-                format!(
-                    "Its {:?} {how} at segment {}: {}",
-                    failure.operation, failure.at, failure.error
-                ),
-            );
-        }
-    }
-    for member in &mut members {
-        member.settle()?;
-    }
+    failed.append(&mut walked.failed);
     let ended_with = if options.measure { working_set()? } else { 0 };
     let spent: Vec<(&'static str, backend::Spent)> = members
         .iter()
@@ -537,6 +559,7 @@ fn run(
         .map(|member| member.id().name())
         .collect();
     drop(members);
+    let unshown = refuse(&publisher, &shape, &recording, &mut failed)?;
     let done = report(&failed, status::stored(&store)?);
     let measured = options
         .measure
@@ -563,15 +586,93 @@ fn run(
             })
         })
         .transpose()?;
-    let errors: Vec<String> = failed
-        .iter()
-        .map(|(family, why)| format!("{}: {why}", family.name()))
-        .collect();
     Ok(Done {
         accepted: done,
         measured,
-        failure: (!errors.is_empty()).then(|| io::Error::other(errors.join("; "))),
+        failure: (!unshown.is_empty()).then(|| io::Error::other(unshown.join("; "))),
     })
+}
+
+/// Publishes each family of `failed` as its refusal ([`fail`]). One its publication now refuses
+/// with leaves `failed`: its branches' ends say why. One with nothing left to refuse stays, for
+/// its status rows to say why; so does one whose refusal could not be published, which is
+/// returned by name, with why, for the job to say. Publication's stop is the run's own failure.
+fn refuse(
+    publisher: &Publisher<'_>,
+    shape: &Shape,
+    recording: &Recording,
+    failed: &mut Failed,
+) -> io::Result<Vec<String>> {
+    let mut unshown = Vec::new();
+    let mut shown = Vec::new();
+    for (&family, why) in failed.iter() {
+        match fail(publisher, shape, recording, family, why) {
+            Ok(true) => shown.push(family),
+            Ok(false) => {}
+            Err(error) if publication::halted(&error) => return Err(error),
+            Err(error) => unshown.push(format!(
+                "{}: {why}; its refusal could not be published: {error}",
+                family.name()
+            )),
+        }
+    }
+    for family in shown {
+        failed.remove(&family);
+    }
+    Ok(unshown)
+}
+
+/// Publishes `family`'s failure, `why`, through a stage of its own, as its refusal from the first
+/// hour it left unpublished on each branch of `shape` it had not ended: its queries answer what
+/// it published before and refuse the rest by its name, never waiting on a run it left. Whether
+/// it refused any.
+fn fail(
+    publisher: &Publisher<'_>,
+    shape: &Shape,
+    recording: &Recording,
+    family: FamilyId,
+    why: &str,
+) -> io::Result<bool> {
+    let mut stage = publisher.stage(family)?;
+    let mut refused = false;
+    for &branch in shape.branches().keys() {
+        let committed = publisher.committed(family, branch);
+        let frontier = committed.as_ref().map(|published| &published.frontier);
+        if frontier.is_some_and(|frontier| frontier.end.is_some()) {
+            continue;
+        }
+        let Some((at, first)) = shape.unpublished(branch, frontier) else {
+            continue;
+        };
+        let placed = *shape.get(at);
+        let first_hour = i32::try_from(first - placed.first)
+            .ok()
+            .and_then(|past| placed.first_hour.checked_add(past))
+            .ok_or_else(|| io::Error::other("A family's next hour passes the clock"))?;
+        let hours = Hours {
+            branch,
+            run: placed.run,
+            first,
+            last: placed.last,
+            first_hour,
+            last_hour: placed.last_hour,
+            ends_segment: true,
+            ends_branch: placed.ends_branch,
+            proof: shape.proof(recording, at),
+        };
+        let made = Made::Refused {
+            hour: first_hour,
+            reason: why.to_owned(),
+            from: None,
+        };
+        stage.processed(hours, made, None, None)?;
+        refused = true;
+    }
+    if refused {
+        stage.send()?;
+        stage.settle()?;
+    }
+    Ok(refused)
 }
 
 /// Commits made while a run goes on, for the thread reporting them, and the run's end.
@@ -677,26 +778,73 @@ pub(crate) struct Walks {
     pub lap: Lap,
     /// The narrow run's stats, world cycles and time, when it had something to do.
     pub ahead: Option<(segments::Stats, u64, Lap)>,
+    /// Each family that failed in its run, or committing its last batch, and why.
+    pub failed: Failed,
 }
 
-/// Makes `recording`'s walks decode the tables `members` with something to do read, and the
-/// campaign row every world frame holds.
-fn select(recording: &mut Recording, shape: &Shape, members: &[Box<dyn Member + '_>]) {
-    let mut tables: Vec<TableId> = members
-        .iter()
-        .filter(|member| !member.idle(shape))
-        .flat_map(|member| member.tables().iter().copied())
-        .chain([TableId::Campaign])
-        .collect();
+/// Waits for each of `members`' last batch to be committed, noting in `failed` each one that
+/// failed in its run, as `outcomes` give them, or committing that batch: its failure is its own.
+/// Publication's stop is the run's.
+fn settle(
+    members: &mut [Box<dyn Member + '_>],
+    outcomes: &[Option<Outcome>],
+    failed: &mut Failed,
+) -> io::Result<()> {
+    for (member, outcome) in members.iter_mut().zip(outcomes) {
+        if let Some(failure) = outcome
+            .as_ref()
+            .and_then(|outcome| outcome.failure.as_ref())
+        {
+            let how = if failure.panicked {
+                "panicked"
+            } else {
+                "failed"
+            };
+            failed.insert(
+                member.id(),
+                format!(
+                    "Its {:?} {how} at segment {}: {}",
+                    failure.operation, failure.at, failure.error
+                ),
+            );
+        }
+        match member.settle() {
+            Ok(()) => {}
+            Err(error) if publication::halted(&error) => return Err(error),
+            Err(error) => {
+                failed
+                    .entry(member.id())
+                    .or_insert_with(|| format!("Its last batch was not committed: {error}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The tables a walk of families reading `reads` decodes: theirs, and the campaign row every
+/// world frame holds.
+fn decoded(reads: impl IntoIterator<Item = TableId>) -> Vec<TableId> {
+    let mut tables: Vec<TableId> = reads.into_iter().chain([TableId::Campaign]).collect();
     tables.sort_unstable_by_key(|table| table.index());
     tables.dedup();
-    recording.select(&tables);
+    tables
+}
+
+/// Makes `recording`'s walks decode what `members` with something to do read ([`decoded`]).
+fn select(recording: &mut Recording, shape: &Shape, members: &[Box<dyn Member + '_>]) {
+    recording.select(&decoded(
+        members
+            .iter()
+            .filter(|member| !member.idle(shape))
+            .flat_map(|member| member.tables().iter().copied()),
+    ));
 }
 
 /// Runs `walk`'s members over `recording`, the first `ahead` of them, those of families prepared
 /// ahead ([`ahead_first`]), before the rest: in a narrow run of their own over the whole recording
 /// that decodes their tables alone, their last batches committed as it ends; then the rest in the
-/// union run. A cancelled narrow run leaves the union run undone.
+/// union run, theirs committed as it ends ([`settle`]). A cancelled narrow run leaves the union
+/// run undone.
 pub(crate) fn walk_all(
     recording: &mut Recording,
     ahead: usize,
@@ -715,6 +863,7 @@ pub(crate) fn walk_all(
     } = walk;
     let (narrow, union) = members.split_at_mut(ahead);
     let mut outcomes: Vec<Option<Outcome>> = narrow.iter().map(|_| None).collect();
+    let mut failed = Failed::new();
     let mut first = None;
     if narrow.iter().any(|member| !member.idle(shape)) {
         select(recording, shape, narrow);
@@ -739,11 +888,10 @@ pub(crate) fn walk_all(
                 ran: Ran { outcomes, ..ran },
                 lap,
                 ahead: None,
+                failed,
             });
         }
-        for member in narrow.iter_mut() {
-            member.settle()?;
-        }
+        settle(narrow, &outcomes, &mut failed)?;
         first = Some((ran.stats, ran.world, lap));
     }
     select(recording, shape, union);
@@ -761,11 +909,15 @@ pub(crate) fn walk_all(
     };
     let mut ran = run_walk(recording, together)?;
     let lap = clock.lap();
+    if !ran.cancelled {
+        settle(union, &ran.outcomes, &mut failed)?;
+    }
     outcomes.append(&mut ran.outcomes);
     Ok(Walks {
         ran: Ran { outcomes, ..ran },
         lap,
         ahead: first,
+        failed,
     })
 }
 

@@ -22,21 +22,29 @@
 //! screen) through the recorded content stack: the first folder the technology
 //! is placed in whose tab is available, with tab availability decided from
 //! content and recorded DLC alone ([`shown_folders`]).
+//!
+//! The segment driver prepares it: [`facts`] projects each hour's index step
+//! and fresh reads from columns, [`emit`] carries every country's state
+//! through them and publishes it, and [`query`] answers from the publication.
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
     Artwork, ResearchBonus, ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory,
-    ResearchOutcome, ResearchProgress, ResearchSlotHistory, ResearchSlotState, Source,
+    ResearchModifiers, ResearchOutcome, ResearchProgress, ResearchSlotHistory, ResearchSlotState,
+    Source,
 };
-use replay_data::{
-    rows::ResearchSlotRow, rows::ResearchTechnologyRow, rows::TableId, rows::tables,
-};
+use replay_data::{rows::ResearchSlotRow, rows::ResearchTechnologyRow};
+#[cfg(test)]
+use replay_data::{rows::TableId, rows::tables};
+#[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::LazyLock;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
-    sync::{Arc, LazyLock, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -49,9 +57,12 @@ use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
+pub mod emit;
+pub mod facts;
 pub mod grants;
 mod modifiers;
-pub mod prepared;
+pub mod query;
+pub mod served;
 
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 
@@ -338,6 +349,7 @@ impl Country {
         *total = *total - self.budget_bytes + bytes;
         self.budget_bytes = bytes;
     }
+    /// A read of `inputs` with the bonus and modifier rows read with them, where they were.
     fn observe_inputs(
         &mut self,
         identity: (u32, u32),
@@ -347,8 +359,39 @@ impl Country {
         bonuses: Option<&[replay_data::rows::ResearchAppliedBonusRow]>,
         modifier_rows: Option<&[replay_data::rows::ResearchModifierRow]>,
     ) {
+        if !valid_inputs(inputs) {
+            return;
+        }
+        let owned: Vec<_> = inputs
+            .iter()
+            .map(|input| {
+                (
+                    bonuses.and_then(|rows| attributed_bonuses(input, rows)),
+                    modifiers::breakdown(input, modifier_rows),
+                )
+            })
+            .collect();
+        let attributions: Vec<Attribution<'_>> = owned
+            .iter()
+            .map(|(bonuses, modifiers)| Attribution {
+                bonuses: bonuses.as_deref(),
+                modifiers: modifiers.as_ref(),
+            })
+            .collect();
+        self.observe_attributed(identity, hour, inputs, inventory, &attributions);
+    }
+
+    /// A read of valid `inputs`, each with its attribution at its position.
+    fn observe_attributed(
+        &mut self,
+        identity: (u32, u32),
+        hour: i32,
+        inputs: &[&replay_data::rows::ResearchInputRow],
+        inventory: Option<&Inventory<'_>>,
+        attributions: &[Attribution<'_>],
+    ) {
         let before = history_mark(&self.history);
-        self.observe_inputs_inner(identity, hour, inputs, inventory, bonuses, modifier_rows);
+        self.observe_inputs_inner(identity, hour, inputs, inventory, attributions);
         self.retained_bytes += history_growth(&self.history, &before);
     }
 
@@ -396,23 +439,8 @@ impl Country {
         hour: i32,
         inputs: &[&replay_data::rows::ResearchInputRow],
         inventory: Option<&Inventory<'_>>,
-        bonuses: Option<&[replay_data::rows::ResearchAppliedBonusRow]>,
-        modifier_rows: Option<&[replay_data::rows::ResearchModifierRow]>,
+        attributions: &[Attribution<'_>],
     ) {
-        // Any number of slots: content and effects set how many a country has.
-        // A recorded occurrence must be a template index. One that was not
-        // recorded keeps the read; only the joins that need it are refused.
-        if inputs.iter().enumerate().any(|(i, r)| {
-            r.index as usize != i
-                || r.technology_present > 1
-                || (r.technology_present != 0
-                    && (matches!(r.database_index, replay_data::rows::Recorded::Value(index) if index <= 0)
-                        || r.token.is_empty()
-                        || r.token.len() > 512
-                        || std::str::from_utf8(&r.token).is_err()))
-        }) {
-            return;
-        }
         let read_after = self.read_after;
         let continuous = self.identity == Some(identity)
             && self
@@ -424,7 +452,7 @@ impl Country {
             self.samples.clear();
         }
         let mut slots = Vec::with_capacity(inputs.len());
-        let mut technologies = BTreeMap::new();
+        let mut technologies: BTreeMap<u32, Technology> = BTreeMap::new();
         // Inventory is sorted by (country, template index). Only former/current
         // assignments need completion evidence; never rescan the full catalogue
         // once per country per hour. A read of no slots still completes them.
@@ -439,17 +467,17 @@ impl Country {
                         .map(|&(_, _, occurrence, _, _)| occurrence),
                 )
             {
-                if let Some(row) = inventory.find(occurrence) {
-                    technologies.insert(occurrence, row.clone());
+                if let Some(technology) = inventory.find(occurrence) {
+                    technologies.insert(occurrence, technology);
                 }
             }
         }
         let mut definitions = BTreeMap::new();
         let mut unjoined = BTreeMap::new();
-        let mut details = BTreeMap::new();
+        let mut details: BTreeMap<u32, DetailsRef<'_>> = BTreeMap::new();
         self.samples
             .retain(|index, _| inputs.iter().any(|r| r.index == *index));
-        for &input in inputs {
+        for (&input, attribution) in inputs.iter().zip(attributions) {
             let occurrence = match input.database_index {
                 replay_data::rows::Recorded::Value(index) if input.technology_present != 0 => {
                     Some(index as u32)
@@ -484,7 +512,7 @@ impl Country {
             if !same {
                 samples.clear();
             }
-            let modifier_data = modifiers::breakdown(input, modifier_rows);
+            let modifier_data = attribution.modifiers;
             let remaining_days = if input.technology_present != 0 {
                 let daily_rate = samples
                     .iter()
@@ -509,7 +537,6 @@ impl Country {
                             .then_some(i128::from(input.research_speed_raw))
                     });
                 let daily_rate = modifier_data
-                    .as_ref()
                     .and_then(|m| modifiers::rate(m, input.ahead_reduction_raw, hour))
                     .or(daily_rate);
                 daily_rate.and_then(|rate| remaining(input, rate))
@@ -527,61 +554,19 @@ impl Country {
                 );
                 technologies.insert(
                     occurrence,
-                    ResearchTechnologyRow {
-                        country: input.country,
-                        database_index: occurrence as i32,
-                        applied_bonus_count: input.bonus_count as i32,
-                        technology_handle: input.technology_handle,
+                    Technology {
                         classifier: input.classifier,
                         level: input.level,
-                        researched: 0,
-                        progress_raw: input.progress_raw,
+                        researched: false,
                         ahead_reduction_years_raw: input.ahead_reduction_raw,
                     },
                 );
             }
-            let attributed = bonuses.and_then(|bonuses| {
-                let matching: Vec<_> = bonuses
-                    .iter()
-                    .filter(|b| {
-                        b.country == input.country
-                            && b.index == input.index
-                            && b.technology_handle == input.technology_handle
-                    })
-                    .collect();
-                if matching.len() != input.bonus_count as usize
-                    || matching.iter().enumerate().any(|(i, b)| {
-                        b.ordinal as usize != i || b.resolved > 1 || b.name.len() > 512
-                    })
-                {
-                    return None;
-                }
-                Some(
-                    matching
-                        .into_iter()
-                        .map(|b| ResearchBonus {
-                            id: b.id,
-                            token: (b.resolved != 0)
-                                .then(|| std::str::from_utf8(&b.name).ok().map(str::to_owned))
-                                .flatten(),
-                            name: None,
-                            cost_reduction_raw: (b.resolved != 0)
-                                .then_some(b.cost_reduction_raw)
-                                .flatten()
-                                .map(|v| v.to_string()),
-                            speed_bonus_raw: (b.resolved != 0)
-                                .then(|| b.speed_bonus_raw.to_string()),
-                            ahead_reduction_years_raw: (b.resolved != 0)
-                                .then(|| b.ahead_reduction_raw.to_string()),
-                        })
-                        .collect(),
-                )
-            });
             details.insert(
                 input.index,
-                ResearchDetails {
+                DetailsRef {
                     remaining_days,
-                    bonuses: attributed,
+                    bonuses: attribution.bonuses,
                     modifiers: modifier_data,
                 },
             );
@@ -591,7 +576,7 @@ impl Country {
             identity,
             hour,
             &slots.iter().collect::<Vec<_>>(),
-            &technologies.iter().map(|(&h, t)| (h, t)).collect(),
+            &technologies,
             &definitions,
             &unjoined,
             Some(&details),
@@ -692,10 +677,10 @@ impl Country {
         identity: (u32, u32),
         hour: i32,
         slots: &[&ResearchSlotRow],
-        technologies: &BTreeMap<u32, &ResearchTechnologyRow>,
+        technologies: &BTreeMap<u32, Technology>,
         definitions: &BTreeMap<u32, String>,
         unjoined: &BTreeMap<u32, UnjoinedTechnology>,
-        details: Option<&BTreeMap<u32, ResearchDetails>>,
+        details: Option<&BTreeMap<u32, DetailsRef<'_>>>,
     ) {
         let previous = self.history.coverage.last().map(|c| c.last_hour);
         let previous_read = self.observed_read.replace(hour);
@@ -734,7 +719,7 @@ impl Country {
                 }
                 if technologies.get(&occurrence).is_some_and(|t| {
                     t.level > level
-                        || (level == 0 && t.researched != 0)
+                        || (level == 0 && t.researched)
                         || t.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED
                 }) {
                     let entry = &mut self
@@ -767,7 +752,7 @@ impl Country {
                 });
                 let completed = technology.is_some_and(|t| {
                     t.level > level
-                        || (!researched && t.researched != 0)
+                        || (!researched && t.researched)
                         || (!transferred
                             && t.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED)
                 });
@@ -834,7 +819,7 @@ impl Country {
             // A completed assignment can remain linked for an observation. Do not
             // invent a new assignment until its recorded state becomes active again.
             if technology.classifier == engine_research::ctechnology::CLASSIFIER_COMPLETED
-                || (technology.researched != 0
+                || (technology.researched
                     && technology.classifier != engine_research::ctechnology::CLASSIFIER_ACTIVE)
             {
                 continue;
@@ -855,7 +840,7 @@ impl Country {
             self.entry_occurrences[row.index as usize] = Some(occurrence);
             self.active.insert(
                 row.index,
-                (occurrence, technology.level, technology.researched != 0),
+                (occurrence, technology.level, technology.researched),
             );
         }
         for row in slots {
@@ -877,27 +862,27 @@ impl Country {
                 .map(|occurrence| {
                     let technology = technologies[&occurrence];
                     (
-                        definitions[&occurrence].clone(),
+                        definitions[&occurrence].as_str(),
                         technology.classifier,
-                        technology.researched != 0,
+                        technology.researched,
                         technology.ahead_reduction_years_raw,
                     )
                 })
                 .or_else(|| {
                     unjoined.get(&row.index).map(|technology| {
                         (
-                            technology.token.clone(),
+                            technology.token.as_str(),
                             technology.classifier,
                             false,
                             technology.ahead_reduction_years_raw,
                         )
                     })
                 });
-            let entry_first_observed_hour = held.as_ref().and_then(|(token, ..)| {
+            let entry_first_observed_hour = held.and_then(|(token, ..)| {
                 slot.entries
                     .last()
                     .filter(|entry| {
-                        &entry.token == token
+                        entry.token == token
                             && occurrence.is_some()
                             && self.entry_occurrences[row.index as usize] == occurrence
                     })
@@ -911,18 +896,13 @@ impl Country {
                         || (researched
                             && classifier != engine_research::ctechnology::CLASSIFIER_ACTIVE))
             });
-            let (token, ahead_reduction_years_raw) = held.map_or((None, None), |held| {
-                (Some(held.0), Some(held.3.to_string()))
-            });
-            if let Some(token) = token
-                .as_ref()
-                .filter(|_| entry_first_observed_hour.is_none())
-            {
+            let (token, ahead) = held.map_or((None, None), |held| (Some(held.0), Some(held.3)));
+            if let Some(token) = token.filter(|_| entry_first_observed_hour.is_none()) {
                 let continues = continuous
                     && slot.states.last().is_some_and(|last| {
                         follows(read_after, last.last_hour, hour)
                             && last.entry_first_observed_hour.is_none()
-                            && last.token.as_ref() == Some(token)
+                            && last.token.as_deref() == Some(token)
                     });
                 if !continues {
                     self.unjoined_starts.insert(row.index, hour);
@@ -930,44 +910,206 @@ impl Country {
             } else {
                 self.unjoined_starts.remove(&row.index);
             }
-            let state = ResearchSlotState {
-                first_hour: hour,
-                last_hour: hour,
-                details: details.and_then(|d| d.get(&row.index)).cloned(),
-                entry_first_observed_hour,
+            let read = StateRead {
                 token,
-                speed_multiplier_raw: row.research_speed_raw.to_string(),
-                banked_days_raw: row.banked_days_raw.to_string(),
-                applied_days_raw: row.applied_days_raw.to_string(),
-                ahead_reduction_years_raw,
+                entry_first_observed_hour,
+                speed_multiplier_raw: row.research_speed_raw,
+                banked_days_raw: row.banked_days_raw,
+                applied_days_raw: row.applied_days_raw,
+                ahead_reduction_years_raw: ahead,
+                details: details.and_then(|d| d.get(&row.index)).copied(),
             };
             if let Some(last) = slot
                 .states
                 .last_mut()
                 .filter(|last| continuous && follows(read_after, last.last_hour, hour))
+                && read.continues(last, hour)
             {
-                let mut comparable = state.clone();
-                comparable.first_hour = last.first_hour;
-                comparable.last_hour = last.last_hour;
-                // A steady countdown needs one segment, not one per day. A
-                // different rate, bonus, missing sample or assignment breaks it.
-                if let (Some(before), Some(now)) = (&last.details, &mut comparable.details)
-                    && before.remaining_days.map(|days| {
-                        days.saturating_sub(
-                            ((i64::from(hour) - i64::from(last.first_hour)) / 24) as u32,
-                        )
-                    }) == now.remaining_days
-                {
-                    now.remaining_days = before.remaining_days;
-                }
-                if *last == comparable {
-                    last.last_hour = hour;
-                    continue;
-                }
+                last.last_hour = hour;
+                continue;
             }
-            slot.states.push(state);
+            slot.states.push(read.state(hour));
         }
     }
+}
+
+/// A read's slot state, borrowed until it starts a state of its own.
+struct StateRead<'a> {
+    token: Option<&'a str>,
+    entry_first_observed_hour: Option<i32>,
+    speed_multiplier_raw: i64,
+    banked_days_raw: i64,
+    applied_days_raw: i64,
+    ahead_reduction_years_raw: Option<i64>,
+    details: Option<DetailsRef<'a>>,
+}
+
+impl StateRead<'_> {
+    /// Whether it equals `last`, the state before, read on at `hour`. A steady countdown needs
+    /// one segment, not one per day. A different rate, bonus, missing sample or assignment
+    /// breaks it.
+    fn continues(&self, last: &ResearchSlotState, hour: i32) -> bool {
+        let details = match (&last.details, &self.details) {
+            (None, None) => true,
+            (Some(before), Some(now)) => {
+                let counted = before.remaining_days.map(|days| {
+                    days.saturating_sub(((i64::from(hour) - i64::from(last.first_hour)) / 24) as u32)
+                });
+                (counted == now.remaining_days || before.remaining_days == now.remaining_days)
+                    && before.bonuses.as_deref() == now.bonuses
+                    && before.modifiers.as_ref() == now.modifiers
+            }
+            _ => false,
+        };
+        details
+            && last.token.as_deref() == self.token
+            && last.entry_first_observed_hour == self.entry_first_observed_hour
+            && raw_is(&last.speed_multiplier_raw, self.speed_multiplier_raw)
+            && raw_is(&last.banked_days_raw, self.banked_days_raw)
+            && raw_is(&last.applied_days_raw, self.applied_days_raw)
+            && match (&last.ahead_reduction_years_raw, self.ahead_reduction_years_raw) {
+                (None, None) => true,
+                (Some(text), Some(value)) => raw_is(text, value),
+                _ => false,
+            }
+    }
+
+    fn state(&self, hour: i32) -> ResearchSlotState {
+        ResearchSlotState {
+            first_hour: hour,
+            last_hour: hour,
+            details: self.details.map(|details| details.owned()),
+            entry_first_observed_hour: self.entry_first_observed_hour,
+            token: self.token.map(str::to_owned),
+            speed_multiplier_raw: self.speed_multiplier_raw.to_string(),
+            banked_days_raw: self.banked_days_raw.to_string(),
+            applied_days_raw: self.applied_days_raw.to_string(),
+            ahead_reduction_years_raw: self.ahead_reduction_years_raw.map(|raw| raw.to_string()),
+        }
+    }
+}
+
+/// Whether `text` is `value` as `to_string` writes it.
+fn raw_is(text: &str, value: i64) -> bool {
+    let mut digits = [0_u8; 20];
+    let mut at = digits.len();
+    let mut rest = value.unsigned_abs();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    match text.as_bytes().split_first() {
+        Some((b'-', tail)) => value < 0 && tail == &digits[at..],
+        _ => value >= 0 && text.as_bytes() == &digits[at..],
+    }
+}
+
+/// A slot read's details, borrowed from its attribution.
+#[derive(Clone, Copy)]
+pub(crate) struct DetailsRef<'a> {
+    remaining_days: Option<u32>,
+    bonuses: Option<&'a [ResearchBonus]>,
+    modifiers: Option<&'a ResearchModifiers>,
+}
+
+impl DetailsRef<'_> {
+    fn owned(&self) -> ResearchDetails {
+        ResearchDetails {
+            remaining_days: self.remaining_days,
+            bonuses: self.bonuses.map(<[ResearchBonus]>::to_vec),
+            modifiers: self.modifiers.cloned(),
+        }
+    }
+}
+
+/// What a slot read's bonus and modifier rows attribute to it: None where they were not read
+/// with it or do not attribute.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Attribution<'a> {
+    pub(crate) bonuses: Option<&'a [ResearchBonus]>,
+    pub(crate) modifiers: Option<&'a ResearchModifiers>,
+}
+
+/// A template occurrence's inventory fields the country step reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Technology {
+    pub(crate) classifier: u32,
+    pub(crate) level: i32,
+    pub(crate) researched: bool,
+    pub(crate) ahead_reduction_years_raw: i64,
+}
+
+impl From<&ResearchTechnologyRow> for Technology {
+    fn from(row: &ResearchTechnologyRow) -> Self {
+        Self {
+            classifier: row.classifier,
+            level: row.level,
+            researched: row.researched != 0,
+            ahead_reduction_years_raw: row.ahead_reduction_years_raw,
+        }
+    }
+}
+
+/// Whether a read's slots can be observed: any number of slots, as content and effects set
+/// how many a country has. A recorded occurrence must be a template index. One that was not
+/// recorded keeps the read; only the joins that need it are refused.
+pub(crate) fn valid_inputs(inputs: &[&replay_data::rows::ResearchInputRow]) -> bool {
+    !inputs.iter().enumerate().any(|(i, r)| {
+        r.index as usize != i
+            || r.technology_present > 1
+            || (r.technology_present != 0
+                && (matches!(r.database_index, replay_data::rows::Recorded::Value(index) if index <= 0)
+                    || r.token.is_empty()
+                    || r.token.len() > 512
+                    || std::str::from_utf8(&r.token).is_err()))
+    })
+}
+
+/// The bonuses `rows` attribute to `input`'s slot: its owner's rows of the slot, in key order,
+/// with the slot's technology, as many as it applied and numbered from zero.
+pub(crate) fn attributed_bonuses(
+    input: &replay_data::rows::ResearchInputRow,
+    rows: &[replay_data::rows::ResearchAppliedBonusRow],
+) -> Option<Vec<ResearchBonus>> {
+    let matching: Vec<_> = rows
+        .iter()
+        .filter(|b| {
+            b.country == input.country
+                && b.index == input.index
+                && b.technology_handle == input.technology_handle
+        })
+        .collect();
+    if matching.len() != input.bonus_count as usize
+        || matching
+            .iter()
+            .enumerate()
+            .any(|(i, b)| b.ordinal as usize != i || b.resolved > 1 || b.name.len() > 512)
+    {
+        return None;
+    }
+    Some(
+        matching
+            .into_iter()
+            .map(|b| ResearchBonus {
+                id: b.id,
+                token: (b.resolved != 0)
+                    .then(|| std::str::from_utf8(&b.name).ok().map(str::to_owned))
+                    .flatten(),
+                name: None,
+                cost_reduction_raw: (b.resolved != 0)
+                    .then_some(b.cost_reduction_raw)
+                    .flatten()
+                    .map(|v| v.to_string()),
+                speed_bonus_raw: (b.resolved != 0).then(|| b.speed_bonus_raw.to_string()),
+                ahead_reduction_years_raw: (b.resolved != 0)
+                    .then(|| b.ahead_reduction_raw.to_string()),
+            })
+            .collect(),
+    )
 }
 
 /// The folder each token is shown in: the first folder it is placed in whose
@@ -1183,11 +1325,13 @@ pub fn research_branch(
 
 /// The Countries fields a country's research holder is read from; its id is
 /// the row key.
+#[cfg(test)]
 static HOLDER_FIELDS: LazyLock<u64> = LazyLock::new(|| {
     crate::prepared::frame_changes::field_mask(TableId::Countries, &["canonical_slot", "tag"])
 });
 
 /// One owner's rows of a table keyed country first.
+#[cfg(test)]
 fn owned<T>(rows: &[T], owner: u32, country: impl Fn(&T) -> u32) -> &[T] {
     let first = rows.partition_point(|row| country(row) < owner);
     let count = rows[first..].partition_point(|row| country(row) == owner);
@@ -1196,6 +1340,7 @@ fn owned<T>(rows: &[T], owner: u32, country: impl Fn(&T) -> u32) -> &[T] {
 
 /// Each owner's rows of a table keyed country first, for the owners holding
 /// any: with `owners` ascending, a slot's rows in table order.
+#[cfg(test)]
 fn owner_rows<'a, T>(
     rows: &'a [T],
     owners: &[u32],
@@ -1209,6 +1354,7 @@ fn owner_rows<'a, T>(
 }
 
 /// The parts as one slice, borrowed unless several owners hold rows.
+#[cfg(test)]
 fn joined<'a, T: Clone>(parts: &[&'a [T]]) -> Cow<'a, [T]> {
     match parts {
         [] => Cow::Owned(Vec::new()),
@@ -1224,9 +1370,20 @@ fn joined<'a, T: Clone>(parts: &[&'a [T]]) -> Cow<'a, [T]> {
 pub(crate) struct FreshRead<'a> {
     inputs: Vec<&'a replay_data::rows::ResearchInputRow>,
     read: Option<i32>,
-    bonuses: Option<Cow<'a, [replay_data::rows::ResearchAppliedBonusRow]>>,
-    modifiers: Option<Cow<'a, [replay_data::rows::ResearchModifierRow]>>,
+    joins: Joins<'a>,
     inventory: Option<Inventory<'a>>,
+}
+
+/// What a fresh read's slots join beside their own rows.
+pub(crate) enum Joins<'a> {
+    /// The bonus and modifier rows read with them, where they come from the same read.
+    Rows {
+        bonuses: Option<Cow<'a, [replay_data::rows::ResearchAppliedBonusRow]>>,
+        modifiers: Option<Cow<'a, [replay_data::rows::ResearchModifierRow]>>,
+    },
+    /// What those rows attribute to each slot, at its position; empty where the slots are not
+    /// observable.
+    Attributed(Vec<Attribution<'a>>),
 }
 
 /// The technology inventory a read joins its assignments to: its owner's rows.
@@ -1237,22 +1394,25 @@ pub(crate) enum Inventory<'a> {
         owner: u32,
         rows: &'a [ResearchTechnologyRow],
     },
-    /// The owner's rows of the template indexes `covered` names, those it
-    /// holds: a lookup of an index it does not name is not made.
-    Rows(&'a BTreeMap<u32, ResearchTechnologyRow>),
+    /// The owner's rows by template index, ascending: all of them, or those of the indexes a
+    /// lookup can ask for.
+    Held(&'a [(u32, Technology)]),
 }
 
 impl Inventory<'_> {
     /// The owner's row of a template index.
-    fn find(&self, occurrence: u32) -> Option<&ResearchTechnologyRow> {
+    fn find(&self, occurrence: u32) -> Option<Technology> {
         match self {
             Self::Table { owner, rows } => rows
                 .binary_search_by_key(&(*owner, occurrence), |t| {
                     (t.country, t.database_index as u32)
                 })
                 .ok()
-                .map(|index| &rows[index]),
-            Self::Rows(rows) => rows.get(&occurrence),
+                .map(|index| Technology::from(&rows[index])),
+            Self::Held(rows) => rows
+                .binary_search_by_key(&occurrence, |&(index, _)| index)
+                .ok()
+                .map(|at| rows[at].1),
         }
     }
 }
@@ -1266,6 +1426,7 @@ pub(crate) trait Reads {
 }
 
 /// An hour's research rows and read hours, read from its frame.
+#[cfg(test)]
 pub(crate) struct FrameReads<'a> {
     hour: i32,
     inputs: &'a [replay_data::rows::ResearchInputRow],
@@ -1275,6 +1436,7 @@ pub(crate) struct FrameReads<'a> {
     modifiers: Option<&'a [replay_data::rows::ResearchModifierRow]>,
 }
 
+#[cfg(test)]
 impl<'a> FrameReads<'a> {
     /// `frame`'s, when its research rows and read hours are complete.
     pub(crate) fn of(frame: &'a DecodedFrame) -> Option<Self> {
@@ -1338,8 +1500,7 @@ impl<'a> FrameReads<'a> {
         FreshRead {
             inputs,
             read,
-            bonuses,
-            modifiers,
+            joins: Joins::Rows { bonuses, modifiers },
             inventory: self
                 .inventory
                 .zip(owner)
@@ -1348,6 +1509,7 @@ impl<'a> FrameReads<'a> {
     }
 }
 
+#[cfg(test)]
 impl Reads for FrameReads<'_> {
     fn read_hour(&self, _: u32, owner: u32) -> Option<i32> {
         self.read_hour_of(TableId::ResearchInputs, owner)
@@ -1377,20 +1539,6 @@ type CountryRows = BTreeMap<u32, Vec<(usize, u32, Vec<u8>)>>;
 /// The read hours of the slots whose hours changed, None for a slot with none.
 type SlotDates = Vec<(u32, Option<Vec<(u32, i32)>>)>;
 
-/// A scan's indexes of the frame it last refreshed from ([`Scan::refresh`]),
-/// apart from any country's state.
-pub(crate) struct Index {
-    country_reads: Option<super::territory::CountryReads>,
-    country_count: usize,
-    country_rows: CountryRows,
-    owners: BTreeMap<u32, Vec<u32>>,
-    input_slots: BTreeSet<u32>,
-    input_dates: BTreeMap<u32, Vec<(u32, i32)>>,
-    future_read: Option<i32>,
-    indexed: Option<i32>,
-    ready: bool,
-}
-
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Scan {
     countries: BTreeMap<String, Country>,
@@ -1400,9 +1548,11 @@ pub(crate) struct Scan {
     bytes: usize,
     #[serde(skip)]
     budget_ready: bool,
+    #[cfg(test)]
     #[serde(skip)]
     country_reads: Option<super::territory::CountryReads>,
     /// How many Countries rows `country_reads` was read from.
+    #[cfg(test)]
     #[serde(skip)]
     country_count: usize,
     #[serde(skip)]
@@ -1410,6 +1560,7 @@ pub(crate) struct Scan {
     #[serde(skip)]
     owners: BTreeMap<u32, Vec<u32>>,
     /// The canonical slots whose owners hold ResearchInputs rows.
+    #[cfg(test)]
     #[serde(skip)]
     input_slots: BTreeSet<u32>,
     #[serde(skip)]
@@ -1417,6 +1568,7 @@ pub(crate) struct Scan {
     /// The latest ResearchInputs read hour seen later than the hour holding
     /// it. Until that hour passes, an hour is observed from its whole tables:
     /// such a read becomes fresh without any row changing.
+    #[cfg(test)]
     #[serde(skip)]
     future_read: Option<i32>,
     /// Slots observed again at the next hour although no row of theirs
@@ -1425,6 +1577,7 @@ pub(crate) struct Scan {
     #[serde(skip)]
     recheck: BTreeSet<u32>,
     /// The hour whose rows the indexes above were refreshed from.
+    #[cfg(test)]
     #[serde(skip)]
     indexed: Option<i32>,
     #[serde(skip)]
@@ -1433,17 +1586,6 @@ pub(crate) struct Scan {
     ready: bool,
     #[serde(skip)]
     observed: BTreeSet<String>,
-    #[cfg(test)]
-    #[serde(skip)]
-    work: crate::prepared::observer_tests::Work,
-    /// Hours whose indexes changed by their recorded rows alone.
-    #[cfg(test)]
-    #[serde(skip)]
-    row_hours: usize,
-    /// Refresh every changed table's index from its whole rows.
-    #[cfg(test)]
-    #[serde(skip)]
-    whole_tables: bool,
 }
 impl Scan {
     #[cfg(test)]
@@ -1503,6 +1645,7 @@ impl Scan {
             false,
         )
     }
+    #[cfg(test)]
     fn observe_selected_changed(
         &mut self,
         frame: &DecodedFrame,
@@ -1511,7 +1654,7 @@ impl Scan {
         deferred: bool,
     ) -> io::Result<()> {
         let previous = self.begin_hour(frame.hour);
-        let Some((dirty, countries_changed)) = self.refresh(frame, changes, deferred, None) else {
+        let Some((dirty, countries_changed)) = self.refresh(frame, changes, deferred) else {
             self.close_held(previous);
             self.last_bad = Some(frame.hour);
             return Ok(());
@@ -1551,7 +1694,10 @@ impl Scan {
             return Ok(());
         };
         self.ready = true;
-        self.indexed = Some(hour);
+        #[cfg(test)]
+        {
+            self.indexed = Some(hour);
+        }
         let slots =
             slots.ok_or_else(|| io::Error::other("Refreshed research holders are missing"))?;
         self.apply(
@@ -1587,41 +1733,6 @@ impl Scan {
                 }
             }
         }
-    }
-
-    /// Forget the indexes: the next [`Self::refresh`] rebuilds them, as it
-    /// does for a scan read back.
-    pub(crate) fn clear_index(&mut self) {
-        self.take_index();
-    }
-
-    /// The indexes, leaving none.
-    pub(crate) fn take_index(&mut self) -> Index {
-        let ready = std::mem::replace(&mut self.ready, false);
-        Index {
-            country_reads: self.country_reads.take(),
-            country_count: std::mem::take(&mut self.country_count),
-            country_rows: std::mem::take(&mut self.country_rows),
-            owners: std::mem::take(&mut self.owners),
-            input_slots: std::mem::take(&mut self.input_slots),
-            input_dates: std::mem::take(&mut self.input_dates),
-            future_read: self.future_read.take(),
-            indexed: self.indexed.take(),
-            ready,
-        }
-    }
-
-    /// Hold `index` as these indexes.
-    pub(crate) fn set_index(&mut self, index: Index) {
-        self.country_reads = index.country_reads;
-        self.country_count = index.country_count;
-        self.country_rows = index.country_rows;
-        self.owners = index.owners;
-        self.input_slots = index.input_slots;
-        self.input_dates = index.input_dates;
-        self.future_read = index.future_read;
-        self.indexed = index.indexed;
-        self.ready = index.ready;
     }
 
     /// An hour's first step, before its tables are read: carries end at the
@@ -1682,14 +1793,14 @@ impl Scan {
     /// hour's changes (or rebuilt). It reads the frame alone and the indexes
     /// the hours before left, never a country's state. The slots to observe
     /// again and whether the holders changed; None when a table it needs is
-    /// incomplete, so the next hour rebuilds them. `recorded` keeps every
-    /// index value [`Self::apply`] reads that the hour changed.
-    pub(crate) fn refresh(
+    /// incomplete, so the next hour rebuilds them. The projection's index step
+    /// ([`facts`]) takes it from columns.
+    #[cfg(test)]
+    fn refresh(
         &mut self,
         frame: &DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
         deferred: bool,
-        mut recorded: Option<&mut IndexChanges>,
     ) -> Option<(BTreeSet<u32>, bool)> {
         let (Ok(rows), Ok(links), Ok(inputs)) = (
             frame.complete::<tables::Countries>(),
@@ -1716,11 +1827,7 @@ impl Scan {
             && !links_changed
             && self.indexed.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
             && self.future_read.is_none_or(|read| read < frame.hour);
-        #[cfg(test)]
-        let narrow = narrow && !self.whole_tables;
         let changed_rows = |table: TableId| if narrow { changes.rows(table) } else { None };
-        #[cfg(test)]
-        let mut rebuilt = !narrow;
         let countries_changed =
             if forced || links_changed || changes.rows_changed[TableId::Countries.index()] {
                 // Recorded changes that add or delete no country and touch no
@@ -1730,21 +1837,11 @@ impl Scan {
                         deleted.is_empty()
                             && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
                     });
-                #[cfg(test)]
-                {
-                    if !kept && self.country_reads.is_some() {
-                        self.work.row_visits += rows.len();
-                    }
-                }
                 let same = self
                     .country_reads
                     .as_ref()
                     .is_some_and(|seen| kept || seen.matches(frame, rows));
                 if !same {
-                    #[cfg(test)]
-                    {
-                        rebuilt = true;
-                    }
                     self.country_count = rows.len();
                     self.country_reads =
                         Some(if !links_changed && let Some(seen) = &self.country_reads {
@@ -1766,9 +1863,6 @@ impl Scan {
                                 .push((index, row.id, row.tag.clone()));
                         }
                     }
-                    if let Some(recorded) = recorded.as_deref_mut() {
-                        recorded.countries = Some((Arc::clone(slots), self.country_rows.clone()));
-                    }
                 }
                 !same
             } else {
@@ -1782,9 +1876,6 @@ impl Scan {
                     .or_default()
                     .push(link.id);
             }
-            if let Some(recorded) = recorded.as_deref_mut() {
-                recorded.owners = Some(self.owners.clone());
-            }
         }
         let slots = Arc::clone(self.country_reads.as_ref().unwrap().slots());
         let mut dirty = BTreeSet::new();
@@ -1797,10 +1888,6 @@ impl Scan {
                     .map(|row| row.key)
                     .chain(deleted.iter().copied())
                 {
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += 1;
-                    }
                     if let Some(&slot) = slots.get(&((key >> 32) as u32)) {
                         touched.insert(slot);
                     }
@@ -1819,17 +1906,9 @@ impl Scan {
                     dirty.insert(slot);
                 }
             } else {
-                #[cfg(test)]
-                {
-                    rebuilt = true;
-                }
                 dirty.extend(self.input_slots.iter().copied());
                 self.input_slots.clear();
                 for input in inputs {
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += 1;
-                    }
                     if let Some(&slot) = slots.get(&input.country) {
                         self.input_slots.insert(slot);
                     }
@@ -1849,10 +1928,6 @@ impl Scan {
                     .chain(deleted.iter().copied())
                     .filter(|key| (key >> 32) as u32 == table)
                 {
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += 1;
-                    }
                     if let Some(&slot) = slots.get(&(key as u32)) {
                         touched.insert(slot);
                     }
@@ -1876,9 +1951,6 @@ impl Scan {
                     let dates = (!dates.is_empty()).then_some(dates);
                     if self.input_dates.get(&slot) != dates.as_ref() {
                         dirty.insert(slot);
-                        if let Some(recorded) = recorded.as_deref_mut() {
-                            recorded.slot_dates.push((slot, dates.clone()));
-                        }
                         match dates {
                             Some(dates) => {
                                 self.input_dates.insert(slot, dates);
@@ -1890,18 +1962,10 @@ impl Scan {
                     }
                 }
             } else {
-                #[cfg(test)]
-                {
-                    rebuilt = true;
-                }
                 let first = reads.partition_point(|row| row.table < table);
                 let count = reads[first..].partition_point(|row| row.table == table);
                 let mut dates = BTreeMap::<u32, Vec<(u32, i32)>>::new();
                 for row in &reads[first..first + count] {
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += 1;
-                    }
                     if let Some(&slot) = slots.get(&row.owner) {
                         dates
                             .entry(slot)
@@ -1924,10 +1988,6 @@ impl Scan {
                         .copied(),
                 );
                 self.input_dates = dates;
-                if let Some(recorded) = recorded {
-                    recorded.dates = Some(self.input_dates.clone());
-                    recorded.slot_dates.clear();
-                }
             }
         }
         if countries_changed || !deferred {
@@ -1935,10 +1995,6 @@ impl Scan {
         }
         self.ready = true;
         self.indexed = Some(frame.hour);
-        #[cfg(test)]
-        {
-            self.row_hours += usize::from(!rebuilt);
-        }
         Some((dirty, countries_changed))
     }
 
@@ -2080,14 +2136,33 @@ impl Scan {
                     && i64::from(read) - i64::from(last)
                         <= i64::from(replay_data::cadence::STAGGER_PERIOD)
             });
-            state.observe_inputs(
-                (*country_id, canonical),
-                read,
-                &read_rows.inputs,
-                read_rows.inventory.as_ref(),
-                read_rows.bonuses.as_deref(),
-                read_rows.modifiers.as_deref(),
-            );
+            let identity = (*country_id, canonical);
+            let inventory = read_rows.inventory.as_ref();
+            match &read_rows.joins {
+                Joins::Rows { bonuses, modifiers } => state.observe_inputs(
+                    identity,
+                    read,
+                    &read_rows.inputs,
+                    inventory,
+                    bonuses.as_deref(),
+                    modifiers.as_deref(),
+                ),
+                Joins::Attributed(attributions) if valid_inputs(&read_rows.inputs) => {
+                    if attributions.len() != read_rows.inputs.len() {
+                        return Err(io::Error::other(
+                            "A fresh research read's attributions were not kept",
+                        ));
+                    }
+                    state.observe_attributed(
+                        identity,
+                        read,
+                        &read_rows.inputs,
+                        inventory,
+                        attributions,
+                    );
+                }
+                Joins::Attributed(_) => {}
+            }
             if let Some(due) = state.carry_until.and_then(|until| until.checked_add(1)) {
                 self.deadlines.remove(&(due, tag.to_owned()));
             }
@@ -2113,10 +2188,6 @@ impl Scan {
             }
             self.observed.insert(tag.to_owned());
             state.charge(&mut self.bytes);
-        }
-        #[cfg(test)]
-        {
-            self.work.history_visits += self.observed.len();
         }
         check_bytes(self.bytes)
     }
@@ -2179,6 +2250,8 @@ fn research_branch_selected(
         .collect())
 }
 
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 #[cfg(test)]
@@ -2212,6 +2285,7 @@ impl Product for Research {
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
     type Reply = ResearchReply;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.validate()

@@ -12,7 +12,7 @@ use replay_data::rows::{
 };
 use replay_frame::frame::TableView;
 
-type Reply = Result<serde_json::Value, String>;
+pub(super) type Reply = Result<serde_json::Value, String>;
 
 struct Budget(usize);
 impl Drop for Budget {
@@ -23,12 +23,12 @@ impl Drop for Budget {
 
 /// What each product answers for one tag: overviews, every window, and each key's factors
 /// at each origin.
-struct Requests {
-    tag: String,
-    windows: std::ops::RangeInclusive<i32>,
-    keys: Vec<String>,
-    groups: Vec<&'static str>,
-    origins: Vec<Option<i32>>,
+pub(super) struct Requests {
+    pub tag: String,
+    pub windows: std::ops::RangeInclusive<i32>,
+    pub keys: Vec<String>,
+    pub groups: Vec<&'static str>,
+    pub origins: Vec<Option<i32>>,
 }
 
 fn reply<T: Serialize>(result: io::Result<T>) -> Reply {
@@ -37,7 +37,7 @@ fn reply<T: Serialize>(result: io::Result<T>) -> Reply {
         .map_err(|error| format!("{:?}: {error}", error.kind()))
 }
 
-fn replies(source: &Source, requests: &Requests) -> Vec<(String, Reply)> {
+pub(super) fn replies(source: &Source, requests: &Requests) -> Vec<(String, Reply)> {
     let context = LoadContext { content: None };
     let flag = AtomicBool::new(false);
     let mut out = Vec::new();
@@ -98,9 +98,9 @@ fn replies(source: &Source, requests: &Requests) -> Vec<(String, Reply)> {
 /// How a preparation publishes the branch: chunks spilled at every observed hour, and a
 /// resume from the store after every block.
 #[derive(Clone, Copy, Debug)]
-struct Mode {
-    spill: bool,
-    resume: bool,
+pub(super) struct Mode {
+    pub spill: bool,
+    pub resume: bool,
 }
 
 const MODES: [Mode; 4] = [
@@ -122,7 +122,7 @@ const MODES: [Mode; 4] = [
     },
 ];
 
-fn prepare(replay: &Replay, tags: &[&str], mode: Mode) -> fixtures::FixturePages {
+pub(super) fn prepare(replay: &Replay, tags: &[&str], mode: Mode) -> fixtures::FixturePages {
     let flag = AtomicBool::new(false);
     let _budget = Budget(
         crate::prepared::pages::TEST_BATCH_BYTES.replace(if mode.spill { 1 } else { usize::MAX }),
@@ -191,7 +191,7 @@ fn assert_parity(
 }
 
 /// The windows a branch's hours touch, with one empty window on each side.
-fn windows(replay: &Replay) -> std::ops::RangeInclusive<i32> {
+pub(super) fn windows(replay: &Replay) -> std::ops::RangeInclusive<i32> {
     let blocks = branch_blocks(replay, 1);
     let first = blocks.first().unwrap().first_hour.div_euclid(DETAIL_HOURS);
     let last = blocks.last().unwrap().last_hour.div_euclid(DETAIL_HOURS);
@@ -218,7 +218,7 @@ fn keys(scan: &ScannedLines) -> Vec<String> {
 /// hours without changing on days 10 to 13; line 5's cost turns negative and its speed
 /// overflows on day 22; Germany's holder changes on day 30; a country with a multibyte tag
 /// holds a line from day 2.
-fn branch_frames() -> Vec<DecodedFrame> {
+pub(super) fn branch_frames() -> Vec<DecodedFrame> {
     (0..40 * 24)
         .map(|offset| {
             let day = offset / 24;

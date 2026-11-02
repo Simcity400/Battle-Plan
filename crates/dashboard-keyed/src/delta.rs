@@ -4,11 +4,14 @@ use replay_data::rows::RowCodec;
 use replay_frame::frame::{SharedView, TableView};
 use replay_data::rows::TableSchema;
 
-/// Names an hour no longer holds, then names it holds in whole-observation push order.
+/// Names an hour no longer holds, then names it holds in whole-observation push order; and
+/// the changes of names the scan has numbered, by key ([`Names::key`]).
 #[derive(Default)]
 pub struct Delta {
     pub(crate) removed: Vec<String>,
     pub(crate) set: Vec<(String, i128)>,
+    /// None where the key no longer holds a value, unless the hour also sets it.
+    pub(crate) keyed: Vec<(u64, Option<i128>)>,
 }
 
 impl Delta {
@@ -21,19 +24,31 @@ impl Delta {
         self.set.push((name, value));
     }
 
+    /// Numbered `key` no longer holds a value, unless the hour also sets it.
+    pub fn remove_key(&mut self, key: u64) {
+        self.keyed.push((key, None));
+    }
+
+    /// Numbered `key` holds `value`.
+    pub fn set_key(&mut self, key: u64, value: i128) {
+        self.keyed.push((key, Some(value)));
+    }
+
     pub fn clear(&mut self) {
         self.removed.clear();
         self.set.clear();
+        self.keyed.clear();
     }
 
     pub fn is_empty(&self) -> bool {
-        self.removed.is_empty() && self.set.is_empty()
+        self.removed.is_empty() && self.set.is_empty() && self.keyed.is_empty()
     }
 
     pub fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
         bytes
             .heap(&self.removed)
-            .add(self.set.capacity() * size_of::<(String, i128)>());
+            .add(self.set.capacity() * size_of::<(String, i128)>())
+            .add(self.keyed.capacity() * size_of::<(u64, Option<i128>)>());
         for (name, _) in &self.set {
             bytes.heap(name);
         }
@@ -46,6 +61,11 @@ pub struct Names<'a>(pub(crate) &'a std::collections::HashMap<String, u64>);
 impl Names<'_> {
     pub fn numbered(&self, name: &str) -> bool {
         self.0.contains_key(name)
+    }
+
+    /// The key `name` is numbered with, if it is.
+    pub fn key(&self, name: &str) -> Option<u64> {
+        self.0.get(name).copied()
     }
 }
 

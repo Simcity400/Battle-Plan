@@ -5,6 +5,7 @@
 
 pub(super) mod emit;
 
+pub use emit::Branch;
 pub(super) use emit::Carried;
 
 use super::{
@@ -410,11 +411,11 @@ struct Saved {
 }
 
 /// One segment's projection.
-pub struct Projector {
+pub struct Projector<'a> {
     format: FormatVersion,
     mode: CaptureMode,
-    source: Arc<Source>,
-    context: Arc<LoadContext>,
+    source: &'a Source,
+    context: &'a LoadContext,
     catalogue: Option<Arc<dashboard_text::catalogue::Catalogue>>,
     fields: Fields,
     shapes: [Option<Status>; FOLLOWED.len()],
@@ -520,13 +521,13 @@ fn bad_classification(row: &NavalCombatResultDetailsRow) -> bool {
     })
 }
 
-impl Projector {
+impl<'a> Projector<'a> {
     /// A segment's projection, naming through `content`, the recording's prepared content.
     pub fn new(
         format: FormatVersion,
         mode: CaptureMode,
-        source: Arc<Source>,
-        context: Arc<LoadContext>,
+        source: &'a Source,
+        context: &'a LoadContext,
         content: &ships_sunk::PreparedContent,
     ) -> io::Result<Self> {
         let field = columns::field;
@@ -767,7 +768,7 @@ impl Projector {
     }
 }
 
-impl Projector {
+impl Projector<'_> {
     /// Combat `id`'s details row at `province` this hour, read once (`decoded`).
     fn detail<'d>(
         &self,
@@ -1233,8 +1234,8 @@ impl Projector {
         let at = (hour.branch, hour.hour);
         let (sighted, read) = view_reads::record(|| {
             battle_titles::sighting(
-                &self.source,
-                &self.context,
+                self.source,
+                self.context,
                 at,
                 &wanted,
                 points.clone(),
@@ -1247,8 +1248,8 @@ impl Projector {
         }
         // The names read a table the naming frame lacks: read them again with every table.
         battle_titles::sighting(
-            &self.source,
-            &self.context,
+            self.source,
+            self.context,
             at,
             &wanted,
             points,
@@ -1333,7 +1334,7 @@ impl Projector {
     }
 }
 
-impl Operator<World> for Projector {
+impl Operator<World> for Projector<'_> {
     type Output = Hour;
 
     fn starts_at(&self, start: Start<'_>) -> bool {

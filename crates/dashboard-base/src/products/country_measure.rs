@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
+pub mod served;
+
 pub struct CountryMeasure;
 
 /// Decimal places of both recorded native fixed-point balances.
@@ -80,6 +82,7 @@ impl Product for CountryMeasure {
     const CONTENT_DEPENDENT: bool = false;
     type Params = MeasureParams;
     type Reply = MeasureReply;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     fn types() -> Vec<String> {
         vec![
             Measure::decl(),

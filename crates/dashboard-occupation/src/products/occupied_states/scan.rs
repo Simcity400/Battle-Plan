@@ -1,4 +1,6 @@
 //! Occupation joins frozen at their supplying read; hourly owner/name projection.
+// The row scan is the projection's parity oracle; the projection reads through its shared part.
+#![cfg_attr(not(test), allow(dead_code))]
 use super::*;
 use dashboard_text::metadata::CountryKeys;
 #[cfg(test)]
@@ -93,7 +95,7 @@ pub(super) struct Scan<'a> {
     /// unreadable hour or one without resistance rows), not counting the
     /// first observation of a scan that carries nothing: after one, this
     /// scan holds what any scan of the same hours holds, however far back it
-    /// began ([`super::prepared::look_back_window`]).
+    /// began.
     #[serde(skip)]
     pub(super) resets: usize,
     #[cfg(test)]
@@ -656,6 +658,7 @@ impl<'a> Scan<'a> {
         scan
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn forget_runtime(&mut self) {
         self.hourly = None;
         self.state_slots.clear();

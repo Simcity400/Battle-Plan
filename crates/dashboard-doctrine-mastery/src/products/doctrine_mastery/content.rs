@@ -316,6 +316,24 @@ fn track_label(
     }
 }
 
+/// The tables a description reads at its hour, in table order: the effect descriptions' and
+/// the doctrine state the shared effect and trigger readers reach.
+pub fn description_tables() -> &'static [replay_data::rows::TableId] {
+    use replay_data::rows::TableId;
+    static TABLES: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
+        let mut tables = BTreeSet::from_iter(dashboard_text::effect_description::recorded_tables());
+        tables.extend([
+            TableId::DoctrineLeaderMastery,
+            TableId::DoctrineCostReductions,
+            TableId::DoctrineMasteryGrants,
+            TableId::DoctrineEquipmentBonuses,
+        ]);
+        tables.extend(super::DoctrineMasteryObserver::TABLES.iter().copied());
+        tables.into_iter().collect()
+    });
+    &TABLES
+}
+
 /// Selected descriptions never read beyond the accepted prefix, choose a nearby
 /// hour, or retain mutable text in the content-binding-only caches.
 fn reached(
@@ -323,7 +341,7 @@ fn reached(
     notes: &mut Notes,
 ) -> io::Result<Option<(Box<replay_frame::frame::DecodedFrame>, u32)>> {
     use dashboard_base::metadata::{self, TaggedCountry};
-    use replay_data::rows::{TableId, tables};
+    use replay_data::rows::tables;
     let Some(hour) = query
         .params
         .get("hour")
@@ -339,21 +357,11 @@ fn reached(
         ));
         return Ok(None);
     }
-    let mut tables = BTreeSet::from_iter(dashboard_text::effect_description::recorded_tables());
-    tables.extend([
-        TableId::DoctrineLeaderMastery,
-        TableId::DoctrineCostReductions,
-        TableId::DoctrineMasteryGrants,
-        TableId::DoctrineEquipmentBonuses,
-    ]);
-    // Shared effect/trigger readers reach doctrine state as well as text state.
-    tables.extend(super::DoctrineMasteryObserver::TABLES.iter().copied());
-    let tables = tables.into_iter().collect::<Vec<_>>();
-    let frame = match dashboard_base::prepared::query::progressive::frame_at(
+    let frame = match dashboard_base::prepared::query::native::frame_at(
         query.source,
         query.branch,
         hour,
-        &tables,
+        description_tables(),
         query.cancelled,
     ) {
         Ok(Some(frame)) => frame,

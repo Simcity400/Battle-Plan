@@ -1343,69 +1343,6 @@ fn present_artwork(
     Ok(())
 }
 
-/// [`present_artwork`] for a serialized roster reply (a day's first view, whose screen cache
-/// keeps the reply with its artwork as descriptors, whatever the presentation).
-pub(crate) fn present_artwork_json(
-    source: &Source,
-    context: &LoadContext,
-    data: &mut serde_json::Value,
-) -> io::Result<()> {
-    let Some(entries) = data.get_mut("artwork").and_then(serde_json::Value::as_array_mut) else {
-        return Ok(());
-    };
-    let mut artwork: Vec<String> = entries
-        .iter()
-        .map(|entry| entry.as_str().unwrap_or_default().to_owned())
-        .collect();
-    let failed = draw_artwork(source, context, &mut artwork)?;
-    let kept = keep_drawn(&mut artwork, &failed);
-    *entries = artwork.into_iter().map(serde_json::Value::String).collect();
-    if failed.is_empty() {
-        return Ok(());
-    }
-    let mut held: Vec<String> = data
-        .get("reasons")
-        .and_then(|reasons| serde_json::from_value(reasons.clone()).ok())
-        .unwrap_or_default();
-    let mut reasons = Reasons::of(&mut held);
-    let mut counted = BTreeMap::<String, u64>::new();
-    let values = data
-        .get_mut("countries")
-        .and_then(serde_json::Value::as_array_mut)
-        .into_iter()
-        .flatten()
-        .filter_map(|country| country.get_mut("operatives")?.as_array_mut())
-        .flatten()
-        .filter_map(|entry| entry.get_mut("runs")?.as_array_mut())
-        .flatten()
-        .filter_map(|run| run.get_mut("value"));
-    for value in values {
-        for (art, missing) in [
-            ("portrait", "portraitMissing"),
-            ("assignmentIcon", "assignmentIconMissing"),
-        ] {
-            let Some(index) = value.get(art).and_then(serde_json::Value::as_u64) else {
-                continue;
-            };
-            let index = index as u32;
-            value[art] = kept
-                .get(index as usize)
-                .copied()
-                .flatten()
-                .map_or(serde_json::Value::Null, Into::into);
-            if let Some(reason) = failed.get(&index) {
-                value[missing] = reasons.index(reason).into();
-                *counted.entry(reason.clone()).or_default() += 1;
-            }
-        }
-    }
-    data["reasons"] = serde_json::to_value(held)?;
-    if let Some(warnings) = data.get_mut("warnings").and_then(serde_json::Value::as_array_mut) {
-        warnings.extend(counted_warnings(counted).map(serde_json::Value::String));
-    }
-    Ok(())
-}
-
 /// Drops the entries of a drawn artwork dictionary that `failed` names, keeping the rest in
 /// order; returns each old index's new one (`None` for a dropped entry).
 fn keep_drawn(artwork: &mut Vec<String>, failed: &BTreeMap<u32, String>) -> Vec<Option<u32>> {
@@ -1556,6 +1493,8 @@ fn operation_name(frame: &replay_frame::frame::DecodedFrame, id: u64) -> Option<
 impl Product for OperativesRoster {
     const KEY: &'static str = "operatives-roster";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::intelligence_prepared::served::PLAN);
     type Params = OperativeRosterParams;
     type Reply = OperativeRosterReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

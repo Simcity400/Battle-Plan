@@ -13,10 +13,7 @@ use dashboard_base::{
     products::table_missing_reason,
 };
 
-use dashboard_base::{
-    Source, catalogue, content,
-    prepared::frame_changes::{FrameChanges, field_mask},
-};
+use dashboard_base::{Source, catalogue, content, prepared::frame_changes::field_mask};
 use dashboard_text::{
     faction_names,
     metadata::{self, TaggedCountry, tagged_countries},
@@ -28,9 +25,9 @@ use installed_content_localisation::localisation::Localisation;
 use replay::container::Replay;
 use replay_data::{
     BranchId, format::FormatVersion, rows::AirWingGameScoreStatsRow, rows::CountryFactoriesRow,
-    rows::CountryGameScoreInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DeltaRow,
+    rows::CountryGameScoreInputRow, rows::CountryLinkRow, rows::CountryRow,
     rows::FactionMemberRow, rows::GameScoreAirSite, rows::GameScoreMultiplierRow, rows::TableId,
-    rows::full_mask, rows::tables,
+    rows::tables,
 };
 use replay_frame::{
     frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
@@ -48,7 +45,12 @@ use std::{
 use ts_rs::TS;
 
 pub struct GameScore;
-pub mod prepared;
+pub mod emit;
+pub mod facts;
+pub mod query;
+#[cfg(any(test, feature = "test-support"))]
+pub mod row;
+pub mod served;
 const Q: i64 = 100_000;
 const PARTS: [&str; 6] = ["army", "navy", "air", "industry", "land", "total"];
 
@@ -638,28 +640,6 @@ fn sample(
     }
 }
 
-impl ScoreSamples {
-    /// Global multipliers use distinct field names, including for an empty country tag.
-    fn values(&self) -> dashboard_base::prepared::query::progressive::Samples {
-        let mut values = BTreeMap::new();
-        for (tag, (scores, identity)) in &self.countries {
-            for (field, amount) in PARTS.iter().zip(scores.amounts()) {
-                values.insert(
-                    (tag.clone(), (*field).into()),
-                    (*identity, amount.raw.map(i128::from)),
-                );
-            }
-        }
-        for (field, amount) in PARTS.iter().zip(self.multipliers.amounts()) {
-            values.insert(
-                (String::new(), format!("multiplier:{field}")),
-                (None, amount.raw.map(i128::from)),
-            );
-        }
-        values
-    }
-}
-
 impl ScoreContext<'_> {
     fn scores(
         &self,
@@ -961,8 +941,6 @@ pub struct Naming {
     templates: Result<std::sync::Arc<Catalog>, String>,
     fallback: Localisation,
     warnings: Vec<String>,
-    /// The content's multipliers, read at the first hour without captured ones.
-    multipliers: std::sync::OnceLock<GameScoreValues>,
 }
 impl Naming {
     pub fn load(source: &Source, context: &LoadContext) -> Self {
@@ -1003,24 +981,46 @@ impl Naming {
             templates,
             fallback,
             warnings: naming_warnings,
-            multipliers: std::sync::OnceLock::new(),
         }
     }
-    /// The multipliers the recorded content defines, as the direct reader
-    /// uses for hours whose capture was disabled.
-    pub fn content_multipliers(&self, source: &Source, context: &LoadContext) -> GameScoreValues {
-        self.multipliers
-            .get_or_init(|| read_content_multipliers(source, context))
-            .clone()
-    }
-    pub fn observer<'a>(&'a self, replay: &'a Replay) -> ScoreObserver<'a> {
-        let language = &replay.identity.language;
+    pub fn observer<'a>(&'a self, recorded_language: &'a str) -> ScoreObserver<'a> {
         ScoreObserver::new(
             self.localisation.as_deref().ok(),
             &self.fallback,
             self.templates.as_deref().map_err(Clone::clone),
-            language.strip_prefix("l_").unwrap_or(language),
+            recorded_language,
         )
+    }
+}
+
+/// What a native preparation reads of the recorded content, loaded once before its run: the
+/// naming content, the defines' multipliers for hours whose capture was disabled, and the sort
+/// hints with the warnings they make.
+pub struct ScoreContent {
+    naming: Naming,
+    recorded_language: String,
+    multipliers: GameScoreValues,
+    hints: BTreeMap<String, String>,
+    hint_warnings: BTreeMap<(GameScoreMissingKind, String), u64>,
+}
+
+impl ScoreContent {
+    pub fn load(source: &Source, context: &LoadContext) -> Self {
+        let naming = Naming::load(source, context);
+        let language = &source.replay_ref().identity.language;
+        let mut hint_warnings = BTreeMap::new();
+        let hints = score_hints(naming.localisation.as_deref().ok(), &mut hint_warnings);
+        Self {
+            recorded_language: language.strip_prefix("l_").unwrap_or(language).to_owned(),
+            multipliers: read_content_multipliers(source, context),
+            naming,
+            hints,
+            hint_warnings,
+        }
+    }
+
+    pub(crate) fn observer(&self) -> ScoreObserver<'_> {
+        self.naming.observer(&self.recorded_language)
     }
 }
 
@@ -1061,7 +1061,7 @@ impl Product for GameScore {
             GameScoreCountry::decl(),
             GameScoreWarning::decl(),
             GameScoreReply::decl(),
-            prepared::GameScoreStateReply::decl(),
+            query::GameScoreStateReply::decl(),
         ]
     }
 
@@ -1188,7 +1188,7 @@ fn scan(
                     if budget > MAX_PRODUCT_REPLY_BYTES {
                         return Err(oversized());
                     }
-                    let facts = observer.observe(decoded, replay, old_multipliers)?;
+                    let facts = observer.observe(decoded, replay.format, old_multipliers)?;
                     reply.multipliers.push(
                         frame.hour,
                         &facts.multipliers,
@@ -1389,15 +1389,59 @@ const ROW_TABLES: [TableId; 12] = [
     TableId::LexicalTokens,
 ];
 
-/// Whether a changed row is new, or changes a field in `fields`. A new row
-/// carries every recorded field.
-fn reads(row: &DeltaRow, fields: u64) -> bool {
-    row.mask & fields != 0 || row.mask == full_mask(row.recorded_fields)
+/// A table's changed rows at an hour, each its key and the fields it wrote, and the keys of
+/// its deleted rows.
+type Rows<'e> = (&'e [(u128, u64)], &'e [u128]);
+
+/// Whether a changed row is new, or changes a field in `fields`: a new row writes every field.
+fn reads(mask: u64, fields: u64) -> bool {
+    mask & fields != 0
 }
 
 /// Whether a table's changed rows add, remove or change a field in `fields`.
-fn touches((changed, deleted): (&[DeltaRow], &[u128]), fields: u64) -> bool {
-    !deleted.is_empty() || changed.iter().any(|row| reads(row, fields))
+fn touches((changed, deleted): Rows<'_>, fields: u64) -> bool {
+    !deleted.is_empty() || changed.iter().any(|&(_, mask)| reads(mask, fields))
+}
+
+/// One table's changes at an hour, as [`Edits`] holds them.
+#[derive(Default)]
+pub(crate) struct Edited {
+    /// Its rows are the hour before's changed by these alone.
+    pub(crate) exact: bool,
+    /// The hour changed, added or removed any of its rows, or changed its status.
+    pub(crate) moved: bool,
+    /// Each changed row's key and the fields it wrote, every field for a new row.
+    pub(crate) changed: Vec<(u128, u64)>,
+    pub(crate) deleted: Vec<u128>,
+}
+
+/// An hour's changes to [`SCORE_TABLES`], by their position there.
+pub(crate) struct Edits {
+    pub(crate) tables: Vec<Edited>,
+}
+
+impl Edits {
+    pub(crate) fn new() -> Self {
+        Self {
+            tables: SCORE_TABLES.iter().map(|_| Edited::default()).collect(),
+        }
+    }
+
+    fn of(&self, table: TableId) -> Option<&Edited> {
+        let at = SCORE_TABLES.iter().position(|held| *held == table)?;
+        self.tables.get(at)
+    }
+
+    /// `table`'s changed rows, when its rows are the hour before's changed by them alone.
+    fn rows(&self, table: TableId) -> Option<Rows<'_>> {
+        self.of(table)
+            .filter(|edited| edited.exact)
+            .map(|edited| (edited.changed.as_slice(), edited.deleted.as_slice()))
+    }
+
+    fn moved(&self, table: TableId) -> bool {
+        self.of(table).is_none_or(|edited| edited.moved)
+    }
 }
 
 /// Whether a slot's name operands, or those of an overlord its name can
@@ -1578,11 +1622,44 @@ impl<'a> ScoreObserver<'a> {
     pub(crate) fn observe(
         &mut self,
         decoded: &DecodedFrame,
-        replay: &Replay,
+        format: FormatVersion,
         old_multipliers: &mut impl FnMut() -> GameScoreValues,
     ) -> io::Result<&FrameScores> {
-        self.observe_changed(decoded, replay, old_multipliers, None)
+        self.observe_changed(decoded, format, old_multipliers, None)
             .map(|(facts, _)| facts)
+    }
+
+    /// Whether names reach slot zero, whose refusal names its hour: every hour a score table
+    /// changes in is then read whole.
+    pub(crate) fn names_hourly(&self) -> bool {
+        self.names.as_ref().is_some_and(|names| names.views.is_empty())
+    }
+
+    /// The hour's facts read whole.
+    pub(crate) fn observe_whole(
+        &mut self,
+        decoded: &DecodedFrame,
+        format: FormatVersion,
+        old_multipliers: &mut impl FnMut() -> GameScoreValues,
+    ) -> io::Result<&FrameScores> {
+        let samples = sample(decoded, format, old_multipliers);
+        self.present(decoded, samples)
+    }
+
+    /// The facts of an hour that changes nothing they read, going on from the held hour, the
+    /// hour before; false when there is none, and the hour is read whole.
+    pub(crate) fn advance(&mut self, hour: i32) -> bool {
+        let (Some(held), Some((previous, _)), Some(_)) =
+            (&mut self.held, &mut self.previous, &self.current)
+        else {
+            return false;
+        };
+        if held.hour.checked_add(1) != Some(hour) || previous.checked_add(1) != Some(hour) {
+            return false;
+        }
+        held.hour = hour;
+        *previous = hour;
+        true
     }
 
     /// The hour's facts and what changed in them. With the hour's changed
@@ -1590,12 +1667,12 @@ impl<'a> ScoreObserver<'a> {
     pub(crate) fn observe_changed(
         &mut self,
         decoded: &DecodedFrame,
-        replay: &Replay,
+        format: FormatVersion,
         old_multipliers: &mut impl FnMut() -> GameScoreValues,
-        changes: Option<&FrameChanges>,
+        changes: Option<&Edits>,
     ) -> io::Result<(&FrameScores, Change)> {
         if let Some(changes) = changes
-            && let Some(change) = self.observe_rows(decoded, replay.format, changes)?
+            && let Some(change) = self.observe_rows(decoded, format, changes)?
         {
             let facts = self.current.as_ref().expect("facts read from changed rows");
             return Ok((facts, change));
@@ -1615,7 +1692,7 @@ impl<'a> ScoreObserver<'a> {
             let facts = self.current.as_ref().expect("previous score facts");
             return Ok((facts, Change::Same));
         }
-        let samples = sample(decoded, replay.format, old_multipliers);
+        let samples = sample(decoded, format, old_multipliers);
         Ok((self.present(decoded, samples)?, Change::All))
     }
 
@@ -1652,7 +1729,7 @@ impl<'a> ScoreObserver<'a> {
         &mut self,
         decoded: &DecodedFrame,
         format: FormatVersion,
-        changes: &FrameChanges,
+        changes: &Edits,
     ) -> io::Result<Option<Change>> {
         #[cfg(test)]
         if self.whole_tables {
@@ -1664,7 +1741,7 @@ impl<'a> ScoreObserver<'a> {
         if held.branch != decoded.branch
             || held.hour.checked_add(1) != Some(decoded.hour)
             || names.views.is_empty()
-            || changes.rows_changed[TableId::CountryLinks.index()]
+            || changes.moved(TableId::CountryLinks)
         {
             return Ok(None);
         }
@@ -1683,7 +1760,7 @@ impl<'a> ScoreObserver<'a> {
         if country_rows.len() != held.countries {
             return Ok(None);
         }
-        let mut rows: [(&[DeltaRow], &[u128]); ROW_TABLES.len()] = [(&[], &[]); ROW_TABLES.len()];
+        let mut rows: [Rows<'_>; ROW_TABLES.len()] = [(&[], &[]); ROW_TABLES.len()];
         for ((rows, table), before) in rows.iter_mut().zip(ROW_TABLES).zip(&held.incomplete) {
             *rows = match changes.rows(table) {
                 Some(changed) => changed,
@@ -1759,7 +1836,7 @@ impl<'a> ScoreObserver<'a> {
         // A change to Countries alone, without a holder change, reads nothing.
         if !SCORE_TABLES
             .iter()
-            .any(|table| *table != TableId::Countries && changes.rows_changed[table.index()])
+            .any(|table| *table != TableId::Countries && changes.moved(*table))
         {
             return Ok(Some(Change::Same));
         }
@@ -1778,11 +1855,11 @@ impl<'a> ScoreObserver<'a> {
         let mut value_slots = HashSet::new();
         let mut faction_slots = HashSet::new();
         let mut noted = BTreeMap::<(GameScoreMissingKind, String), i64>::new();
-        for row in inputs.0 {
-            let raw = row.key as u32;
+        for &(key, mask) in inputs.0 {
+            let raw = key as u32;
             match metadata::link_slot(links, raw) {
                 Some(slot) => {
-                    if reads(row, *INPUT_FIELDS) {
+                    if reads(mask, *INPUT_FIELDS) {
                         value_slots.insert(slot);
                     }
                 }
@@ -1809,18 +1886,18 @@ impl<'a> ScoreObserver<'a> {
         for raw in factories
             .0
             .iter()
-            .filter(|row| reads(row, *FACTORY_FIELDS))
-            .map(|row| row.key)
+            .filter(|&&(_, mask)| reads(mask, *FACTORY_FIELDS))
+            .map(|&(key, _)| key)
             .chain(factories.1.iter().copied())
         {
             value_slots.extend(metadata::link_slot(links, raw as u32));
         }
         let registered = decoded.complete::<tables::AirBaseRegistrations>().ok();
-        for row in registrations.0 {
-            if !reads(row, *REGISTRATION_FIELDS) {
+        for &(key, mask) in registrations.0 {
+            if !reads(mask, *REGISTRATION_FIELDS) {
                 continue;
             }
-            let key = ((row.key >> 32) as u64, row.key as u32);
+            let key = ((key >> 32) as u64, key as u32);
             let wings = registered
                 .and_then(|rows| {
                     rows.binary_search_by_key(&key, |row| (row.base, row.slot))
@@ -1839,8 +1916,8 @@ impl<'a> ScoreObserver<'a> {
         for wing in wings
             .0
             .iter()
-            .filter(|row| reads(row, *WING_FIELDS))
-            .map(|row| row.key)
+            .filter(|&&(_, mask)| reads(mask, *WING_FIELDS))
+            .map(|&(key, _)| key)
             .chain(wings.1.iter().copied())
         {
             if let Some(slots) = held.wing_slots.get(&(wing as u64)) {
@@ -1850,15 +1927,15 @@ impl<'a> ScoreObserver<'a> {
         let colour_ids: HashSet<u32> = appearance
             .0
             .iter()
-            .filter(|row| reads(row, *COLOUR_FIELDS))
-            .map(|row| row.key as u32)
+            .filter(|&&(_, mask)| reads(mask, *COLOUR_FIELDS))
+            .map(|&(key, _)| key as u32)
             .chain(appearance.1.iter().map(|key| *key as u32))
             .collect();
         let unresolved = !held.unresolved_members.is_empty();
         for (raw, present) in members
             .0
             .iter()
-            .map(|row| (row.key as u32, true))
+            .map(|&(key, _)| (key as u32, true))
             .chain(members.1.iter().map(|key| (*key as u32, false)))
         {
             match metadata::link_slot(links, raw) {
@@ -2385,5 +2462,7 @@ fn score_hints(
         .collect()
 }
 
+#[cfg(test)]
+mod columnar_tests;
 #[cfg(test)]
 mod tests;

@@ -1647,84 +1647,17 @@ impl DecodeLane {
         }
         let (branch, hour) = target;
         let wanted = || {
-            #[cfg(test)]
-            tests::before_walk_wanted();
             !read.is_some_and(|read| read.cancelled()) && Self::lock(shared).still_wanted(target)
         };
         if (playback.branch(), playback.hour()) == (branch, hour) {
-            Self::note_page_route(target, playback, "held");
+            Self::note_grid_route(target, "held");
             return Ok(true);
         }
-        let behind = Self::lock(shared).behind;
-        let visit_from = hour.saturating_sub(behind);
-        let limit = if visit_from >= hour {
-            hour
-        } else {
-            visit_from.saturating_sub(1)
-        };
-        let mut paged = match playback.advance_pages(branch, hour, visit_from, &wanted)? {
-            std::ops::ControlFlow::Continue(reached) => reached,
-            std::ops::ControlFlow::Break(()) => return Ok(false),
-        };
-        Self::note_page_route(
-            target,
-            playback,
-            if paged.is_some() { "pages" } else { "native" },
-        );
+        Self::note_grid_route(target, "native");
         if !wanted() {
             return Ok(false);
         }
-        let mut from = match paged {
-            Some(reached) if reached == hour => {
-                return Ok(true);
-            }
-            _ => playback.walk_start(branch, hour),
-        };
-        if paged.is_none()
-            && let Some(start) = from.and_then(|at| Hour::try_from(at).ok())
-            && let Some(entry) = playback.page_entry(branch, start, limit)
-            && entry > start
-        {
-            while let Some(at) = from.filter(|at| *at < i64::from(entry)) {
-                let step = (at + i64::from(DECODE_STEP)).min(i64::from(entry));
-                let Ok(step) = Hour::try_from(step) else {
-                    break;
-                };
-                if let Err(error) = playback.advance_cancellable(branch, step, &|| !wanted()) {
-                    if source_pressure(&error) || error.kind() == io::ErrorKind::Interrupted {
-                        return Err(error);
-                    }
-                    break;
-                }
-                from = Some(i64::from(step));
-                if !wanted() {
-                    return Ok(false);
-                }
-            }
-            paged = match playback.advance_pages(branch, hour, visit_from, &wanted)? {
-                std::ops::ControlFlow::Continue(reached) => reached,
-                std::ops::ControlFlow::Break(()) => return Ok(false),
-            };
-            Self::note_page_route(
-                target,
-                playback,
-                if paged.is_some() {
-                    "native+pages"
-                } else {
-                    "native"
-                },
-            );
-            if !wanted() {
-                return Ok(false);
-            }
-            match paged {
-                Some(reached) if reached == hour => {
-                    return Ok(true);
-                }
-                Some(reached) => from = Some(i64::from(reached)),
-                None => from = playback.walk_start(branch, hour),
-            }
-        }
+        let mut from = playback.walk_start(branch, hour);
         // Native steps for the rest; the last is the caller's.
         while let Some(at) = from.filter(|at| i64::from(hour) - at > i64::from(DECODE_STEP)) {
             let Ok(step) = Hour::try_from(at + i64::from(DECODE_STEP)) else {
@@ -1745,16 +1678,12 @@ impl DecodeLane {
         Ok(true)
     }
 
-    fn note_page_route((branch, hour): (BranchId, Hour), playback: &Playback, route: &str) {
+    fn note_grid_route((branch, hour): (BranchId, Hour), route: &str) {
         if !page_grid() || !viewer_foundation::profile_writer::profiling() {
             return;
         }
-        let (skip, held) = playback.page_skip();
-        let held = held.map_or_else(|| "none".to_owned(), |held| held.to_string());
         viewer_foundation::profile_writer::profile_print(format!(
-            "PROFILE grid lane target branch {branch} hour {hour} route {route} page_skip {} held {held} page_fallbacks {}",
-            skip.unwrap_or("none"),
-            playback.page_fallbacks(),
+            "PROFILE grid lane target branch {branch} hour {hour} route {route}"
         ));
     }
 
@@ -2522,35 +2451,11 @@ impl coordinator::BuildTarget for Coordinator {
             }),
         );
         let memos = Arc::clone(&self.memos);
-        let snow_replay = self.playback.replay_handle();
         submit(
             "snow",
             Box::new(move |view, _spans| {
-                let live = || {
-                    let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
-                    view.snow_product(&memos.snow_shared)
-                };
-                Part::Snow(match view.map_export.reader(&snow_replay) {
-                    Ok(exports) => {
-                        let _cost = replay_frame::cpu::scope("viewer", Some("codec"));
-                        exports.build_or_restore_admitted(
-                            view.frame.branch,
-                            view.frame.hour,
-                            dashboard_base::map_export::Headroom {
-                                available: memory_pressure::available(),
-                                low: memory_pressure::system_low(),
-                            },
-                            live,
-                        )
-                    }
-                    Err(reason) => {
-                        println!(
-                            "PROFILE map_export_snow branch={} hour={} result=miss restore_us=0 reason={reason:?}",
-                            view.frame.branch, view.frame.hour
-                        );
-                        live()
-                    }
-                })
+                let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
+                Part::Snow(view.snow_product(&memos.snow_shared))
             }),
         );
         PreparedTarget::Parts(Box::new(pending), jobs)
@@ -2707,13 +2612,13 @@ impl Pipeline {
     /// while spiking the frames they arrived on.
     #[cfg(test)]
     pub fn new(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
-        Self::with_checkpoint_source(content, replay, None)
+        Self::with_map_binding(content, replay, None)
     }
 
-    pub fn with_checkpoint_source(
+    pub fn with_map_binding(
         content: Arc<Content>,
         replay: Arc<Replay>,
-        checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+        binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
         let parallel = builder_count();
         let pool = Arc::new(Pool::new(parallel)?);
@@ -2725,7 +2630,7 @@ impl Pipeline {
             frame_workers,
             None,
             parallel,
-            checkpoints,
+            binding,
         )
     }
 
@@ -2735,7 +2640,7 @@ impl Pipeline {
         content: Arc<Content>,
         replay: Arc<Replay>,
         resources: &Resources,
-        checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+        binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
         let parallel = viewer_foundation::parallel::Spawn::threads(&*resources.pool);
         Self::start(
@@ -2745,7 +2650,7 @@ impl Pipeline {
             resources.frame_workers.clone(),
             None,
             parallel,
-            checkpoints,
+            binding,
         )
     }
 
@@ -2774,7 +2679,7 @@ impl Pipeline {
         frame_workers: Workers,
         shared_decoder: Option<Arc<SharedDecoder>>,
         parallel: usize,
-        checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+        binding: Option<Arc<crate::map_binding::MapBinding>>,
     ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
         // Keep the original result-channel width. Complete unsent targets retain
@@ -2789,14 +2694,14 @@ impl Pipeline {
             Some(_) => None,
             None => {
                 let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new()?));
-                let page_workers = viewer_foundation::parallel::usable_processors()
+                let map_workers = viewer_foundation::parallel::usable_processors()
                     .saturating_sub(viewer_foundation::parallel::Spawn::threads(&*pool))
                     .max(1);
                 let mut playback = Playback::unloaded(Arc::clone(&replay))?
                     .with_reader(reader)
-                    .with_page_workers(page_workers);
-                if let Some(checkpoints) = checkpoints {
-                    playback = playback.with_checkpoint_source(checkpoints);
+                    .with_map_workers(map_workers);
+                if let Some(binding) = binding {
+                    playback = playback.with_map_binding(binding);
                 }
                 Some(DecodeLane::start(playback)?)
             }

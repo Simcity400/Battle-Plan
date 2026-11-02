@@ -431,7 +431,7 @@ pub(super) fn attach(
                 }
                 if let std::collections::btree_map::Entry::Vacant(entry) = frames.entry(hour) {
                     entry.insert(
-                        crate::prepared::query::progressive::frame_at(
+                        crate::prepared::query::native::frame_at(
                             source,
                             branch,
                             hour,
@@ -474,7 +474,7 @@ pub(super) fn attach(
                         predicting.entry(hour)
                     {
                         entry.insert(
-                            crate::prepared::query::progressive::frame_at(
+                            crate::prepared::query::native::frame_at(
                                 source, branch, hour, TABLES, cancelled,
                             )
                             .map_err(|why| why.to_string())?,

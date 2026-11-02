@@ -1011,10 +1011,7 @@ fn library_preparation_prepares_unopened_published_sessions_and_their_growth() {
     let source = service.open_map(&fixture.paths[0], None).unwrap();
     wait_library_source(&source);
     assert!(service.inner.pending.lock().unwrap().leases.is_empty());
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&source, None).unwrap(),
-        Some(0)
-    );
+    assert!(restored(&source));
     service.prepare_library(&fixture.paths).unwrap();
     assert!(
         service.inner.sources.lock().unwrap().library.is_empty(),
@@ -1025,10 +1022,7 @@ fn library_preparation_prepares_unopened_published_sessions_and_their_growth() {
     let grown = service.open_map(&fixture.paths[0], None).unwrap();
     assert_ne!(grown.key().revision, source.key().revision);
     wait_library_source(&grown);
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&grown, None).unwrap(),
-        Some(0)
-    );
+    assert!(restored(&grown));
     service.shutdown();
 }
 
@@ -1067,10 +1061,7 @@ fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
             assert!(library_source(&service, older).is_none());
         }
         wait_library_source(&source);
-        assert_eq!(
-            crate::prepared::unprepared_blocks(&source, None).unwrap(),
-            Some(0)
-        );
+        assert!(restored(&source));
     }
     service.shutdown();
 }
@@ -1098,10 +1089,7 @@ fn library_preparation_pauses_queued_work_and_resumes_outside_library() {
         crate::prepared::status(&source, "paused", "status").pause_reason,
         Some(crate::prepared::PauseReason::DiskSpace)
     );
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&source, None).unwrap(),
-        None
-    );
+    assert!(!restored(&source));
     service.prepare_library(&fixture.paths).unwrap();
     assert!(
         !source
@@ -1114,10 +1102,7 @@ fn library_preparation_pauses_queued_work_and_resumes_outside_library() {
     // Even after the configured library changes, paused retained paths resume.
     service.prepare_library(&[]).unwrap();
     wait_library_source(&source);
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&source, None).unwrap(),
-        Some(0)
-    );
+    assert!(restored(&source));
     service.shutdown();
 }
 
@@ -1237,10 +1222,7 @@ fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() 
         &receive,
     );
     wait_library_source(&grown);
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&grown, None).unwrap(),
-        Some(0)
-    );
+    assert!(restored(&grown));
 
     service.shutdown();
 }
@@ -2270,10 +2252,7 @@ fn app_start_prepares_every_recording_behind_its_store_newest_first() {
         }
         drop(sources);
         wait_library_source(&source);
-        assert_eq!(
-            crate::prepared::unprepared_blocks(&source, None).unwrap(),
-            Some(0)
-        );
+        assert!(restored(&source));
         assert!(library_source(&service, &paths[3]).is_none());
     }
     service.prepare_library(paths).unwrap();
@@ -2481,10 +2460,7 @@ fn opening_a_newer_revision_takes_over_its_library_preparation() {
     );
     // One writer at a time: the grown revision does not fail on the store.
     wait_library_source(&grown);
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&grown, None).unwrap(),
-        Some(0)
-    );
+    assert!(restored(&grown));
     service.shutdown();
 }
 
@@ -2844,10 +2820,7 @@ fn a_damaged_store_is_cleared_and_prepared_again() {
         &receive,
     );
     wait_library_source(&source);
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&source, None).unwrap(),
-        Some(0)
-    );
+    assert!(restored(&source));
     service.shutdown();
 }
 
@@ -2859,25 +2832,13 @@ fn a_complete_store_that_cannot_be_restored_is_prepared_again() {
     let earlier = Service::new(Arc::new(|_| true)).unwrap();
     let prepared = earlier.open_map(path, None).unwrap();
     crate::prepared::pipeline::run(&prepared, None, &AtomicBool::new(false), |_| {}).unwrap();
-    // ...then its branch continuations were damaged; the checkpoint stays complete.
+    // ...then its mark was damaged; its pages stay.
     let (store, key) = crate::prepared::files(&prepared, None).unwrap();
-    let branches: std::collections::BTreeSet<_> = prepared
-        .replay_ref()
-        .index
-        .iter()
-        .map(|block| block.branch)
-        .collect();
     let mut writer = store.extend(&key).unwrap();
-    for branch in branches {
-        writer
-            .write_at(&format!("preparation-branch-{branch}"), 0, &b"damaged"[..])
-            .unwrap();
-    }
+    writer
+        .write_at(crate::prepared::coverage::PLAN, 0, &b"damaged"[..])
+        .unwrap();
     writer.commit().unwrap();
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&prepared, None).unwrap(),
-        Some(0)
-    );
     assert!(!matches!(
         crate::prepared::pipeline::restore(&prepared, None, &AtomicBool::new(false)),
         Ok(Some(_))
@@ -2988,6 +2949,13 @@ fn a_view_closed_while_the_scan_orders_its_work_leaves_library_work() {
     assert!(!claimed(&grown));
     drop(hold);
     service.shutdown();
+}
+
+/// Whether `source`'s store restores as a complete preparation.
+fn restored(source: &crate::Source) -> bool {
+    crate::prepared::pipeline::restore(source, None, &AtomicBool::new(false))
+        .unwrap()
+        .is_some()
 }
 
 /// Prepare `path` completely, as an earlier app session or another writer would.

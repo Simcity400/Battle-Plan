@@ -11,7 +11,6 @@ pub mod allocator;
 pub mod content_check;
 pub mod prepared;
 pub mod prepared_focus;
-pub use dashboard_stability::prepared_stability;
 pub mod products;
 pub mod readiness;
 pub mod reply_cache;
@@ -77,9 +76,9 @@ pub fn typescript_contract() -> String {
         ResearchFolder::decl(),
         ResearchTechnologyFolder::decl(),
         ResearchDefinitionText::decl(),
-        products::research::prepared::ResearchStateSlot::decl(),
-        products::research::prepared::ResearchState::decl(),
-        products::research::prepared::ResearchStateReply::decl(),
+        products::research::query::ResearchStateSlot::decl(),
+        products::research::query::ResearchState::decl(),
+        products::research::query::ResearchStateReply::decl(),
         products::research::grants::GrantRestriction::decl(),
         products::research::grants::ResearchGrant::decl(),
         products::research::grants::GrantInventory::decl(),
@@ -228,5 +227,7 @@ pub fn typescript_contract() -> String {
 mod contract_tests;
 #[cfg(test)]
 mod mod_fixtures;
+#[cfg(test)]
+mod native_fixtures;
 #[cfg(test)]
 pub(crate) use dashboard_base::test_fixtures;

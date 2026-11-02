@@ -95,15 +95,6 @@ impl Recorded<'_> {
     }
 }
 
-/// Adapter inputs are transient samples plus the branch's real bounds.
-pub type AdapterTail<'a> = (
-    (i32, i32),
-    &'a BTreeMap<(String, String), Vec<Run>>,
-    &'a [HourSpan],
-    &'a BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
-    bool,
-);
-
 thread_local! {
     /// While set, sampled reads refuse to decode recorded blocks.
     static WITHOUT_DECODES: Cell<bool> = const { Cell::new(false) };
@@ -1483,45 +1474,6 @@ fn state_point(hours: &[i32], hour: i32) -> bool {
             .is_some_and(|next| hours.contains(&next))
 }
 
-/// [`state_tail`] with a sampler that carries its own state from hour to hour
-/// ([`SampleRecorded`]): each target block, after its cadence look-back, is
-/// decoded in order, so a family read at its own cadence answers a state hour
-/// from its last read at or before it, looking back within its read cadence.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn state_tail_recorded(
-    source: &Source,
-    product: &'static str,
-    branch: u64,
-    coverage: Option<&Coverage>,
-    tables: &[TableId],
-    cadence: i32,
-    requested: &[(String, String)],
-    cached_requested: &[(String, String)],
-    hours: &[i32],
-    sample: SampleRecorded<'_>,
-    cancelled: &AtomicBool,
-) -> io::Result<(
-    BTreeMap<(String, String), Vec<Run>>,
-    Vec<HourSpan>,
-    BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
-)> {
-    state_tail_recorded_bounded(
-        source,
-        product,
-        branch,
-        coverage,
-        tables,
-        cadence,
-        requested,
-        cached_requested,
-        hours,
-        sample,
-        false,
-        false,
-        cancelled,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn state_tail_recorded_bounded(
     source: &Source,
@@ -1599,124 +1551,6 @@ fn with_predecessors<'a>(
                 && other.first_hour <= block.first_hour
         })
         .collect()
-}
-
-/// [`tail_recorded`] for a family read at its own cadence (a daily read),
-/// whose sampler answers only from a read it has seen. A short tail is read
-/// exactly, hour by hour, after its cadence look-back, so the read before the
-/// tail carries into its first hours. A longer one samples each block after the prefix
-/// at its first hour, from its keyframe on, whose sample answers a requested
-/// key: the family's first fresh supplying read in the block, exact at its
-/// hour, which stands for the block's hours after the prefix, approximate.
-/// The look-back is bounded by the family's read cadence, never by a chosen
-/// count. A block with no such read, or whose hours are all a recorded gap,
-/// is not sampled. `first_sample` must use the observation cache (or enforce
-/// `decodes_allowed` itself) so a cache-only request never reads a missing block.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn tail_first_read(
-    source: &Source,
-    product: &'static str,
-    branch: u64,
-    coverage: Option<&Coverage>,
-    tables: &[TableId],
-    cadence: i32,
-    requested: &[(String, String)],
-    cached_requested: &[(String, String)],
-    window: (i32, i32),
-    sample: SampleRecorded<'_>,
-    first_sample: &(dyn Fn(&replay::container::BlockIndex) -> io::Result<Samples> + Sync),
-    cancelled: &AtomicBool,
-) -> io::Result<(
-    BTreeMap<(String, String), Vec<Run>>,
-    Vec<HourSpan>,
-    BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
-)> {
-    check_cancel(cancelled)?;
-    if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
-        return Ok((BTreeMap::new(), Vec::new(), BTreeMap::new()));
-    }
-    let replay = source.replay_ref();
-    let first = coverage.map_or(i64::from(window.0), |coverage| {
-        i64::from(window.0).max(i64::from(coverage.last_hour) + 1)
-    });
-    let blocks: Vec<_> = replay
-        .index
-        .iter()
-        .filter(|block| {
-            block.branch == branch
-                && i64::from(block.last_hour) >= first
-                && block.first_hour <= window.1
-        })
-        .collect();
-    // The supplying cadence look-back keeps each short tail exact.
-    if blocks.len() < EXACT_ZOOM_BLOCKS {
-        return cached_recorded_blocks(
-            source,
-            product,
-            branch,
-            tables,
-            cadence,
-            requested,
-            cached_requested,
-            (first, window.1),
-            blocks,
-            sample,
-            None,
-            false,
-            false,
-            cancelled,
-        );
-    }
-    let mut result = TailData::default();
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
-    let first_sample_read = |block: &replay::container::BlockIndex| {
-        if let Some(position) = replay.block_position(block) {
-            consumer.reading(position);
-        }
-        first_sample(block)
-    };
-    let read_ahead =
-        std::thread::available_parallelism().map_or(1, |threads| (threads.get() / 2).max(1));
-    let mut accept = |block: &replay::container::BlockIndex, observed: Samples| -> io::Result<()> {
-        if let Some(position) = replay.block_position(block) {
-            consumer.at(position);
-        }
-        check_cancel(cancelled)?;
-        if !observed.values().any(|(_, value)| value.is_some()) {
-            return Ok(());
-        }
-        let start = i64::from(block.first_hour).max(first) as i32;
-        let end = block.last_hour.min(window.1);
-        let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
-        sampled_spans(&mut result, &spans, observed.iter());
-        Ok(())
-    };
-    if block_decodes_disabled() {
-        // The extractor shares the observation cache's miss/busy refusal,
-        // so held first reads can answer here without scheduling workers.
-        for block in blocks {
-            accept(block, first_sample(block)?)?;
-        }
-    } else {
-        dashboard_core::blocks::scan_blocks_by(
-            blocks,
-            read_ahead,
-            cancelled,
-            &first_sample_read,
-            |reads| {
-                for (block, read) in reads {
-                    accept(block, read?)?;
-                }
-                Ok(())
-            },
-        )?;
-    }
-    Ok(result)
 }
 
 /// One sampled observation stands for each clipped, gap-free span. An unchanged

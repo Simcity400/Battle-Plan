@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-# The products' test fixtures, for the tests of crates above this one.
+# The products' test fixtures and the row oracle, for the tests of crates above this one.
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
@@ -20,7 +20,9 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
+dashboard-series.workspace = true
 dashboard-text.workspace = true
+dashboard-world.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }

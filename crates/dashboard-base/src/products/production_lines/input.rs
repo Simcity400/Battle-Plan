@@ -1,3 +1,4 @@
+use super::columnar::{Designs, Hour as Native, Organisation, Organisations};
 use super::*;
 use crate::prepared::frame_changes::{FrameChanges, field_mask};
 use replay_data::rows::{
@@ -39,7 +40,7 @@ pub(super) struct HourInput {
     pub unlinked_lines: Vec<ProductionLineRow>,
     pub output: BTreeMap<u32, Vec<ProductionLineOutputRow>>,
     pub unlinked_output: Vec<ProductionLineOutputRow>,
-    pub modifier_countries: BTreeMap<u32, CountryProductionModifiersRow>,
+    pub modifier_countries: BTreeMap<u32, std::sync::Arc<CountryProductionModifiersRow>>,
     pub modifier_lines: BTreeMap<u64, ProductionLineModifiersRow>,
     pub organisations: BTreeMap<u64, RawOrganisation>,
     pub author_names: BTreeMap<u64, RawOrganisation>,
@@ -106,6 +107,20 @@ pub(super) struct World {
     saved_variants: BTreeSet<u64>,
     /// Definitions the cache took since the last ledger record.
     saved_definitions: BTreeSet<u64>,
+    /// A native walk's tables whose view this hour the world has not looked at yet.
+    stale: super::columnar::Bits,
+    /// A native walk's definitions were compared since VariantDefinitions last changed.
+    definitions_seen: bool,
+    /// A native walk's VariantStats was complete at the last extract.
+    designs_seen: bool,
+    /// What a native walk's hours did to the organisations since the last extract, in order.
+    organisations: Vec<super::columnar::Organisations>,
+    /// Each equipment type token's spelling as a native walk last read it.
+    spellings: BTreeMap<u32, String>,
+    /// A native walk's icon operands the cached choices were made with, and each variant's
+    /// choice, by whether its definition was known then.
+    icon_hour: Option<std::sync::Arc<Result<IconHour, String>>>,
+    icon_cache: BTreeMap<u64, (bool, IconChoice)>,
 }
 
 /// The world in one ledger record: the latest version of each variant and the definitions
@@ -880,7 +895,7 @@ impl World {
                     frame
                         .complete::<tables::CountryProductionModifiers>()?
                         .iter()
-                        .map(|row| (row.country, row.clone())),
+                        .map(|row| (row.country, std::sync::Arc::new(row.clone()))),
                 );
                 input.modifier_lines.extend(
                     frame
@@ -960,6 +975,485 @@ impl World {
     }
 }
 
+/// The fold's tables in the order a quiet hour looks at them.
+static FOLD_TABLES: std::sync::LazyLock<Vec<TableId>> =
+    std::sync::LazyLock::new(PreparedTables::tables);
+
+/// A native walk's hours ([`Native`]), read as the methods above read a frame: each decides,
+/// and extracts, what it would of the frame the hour's facts describe.
+impl World {
+    /// Takes in a native hour: the views it built anew are yet to be looked at, and what it did
+    /// to the organisations waits for the next extract.
+    pub fn native_hour(&mut self, hour: &mut Native) {
+        self.stale = hour.rebuilt;
+        // Spellings follow every hour's edits, as a later census's frame shows them.
+        if hour.facts.as_ref().is_some_and(|facts| facts.respell_all) {
+            for spelling in self.spellings.values_mut() {
+                spelling.clear();
+            }
+            self.icon_cache.clear();
+        }
+        for (token, spelling) in hour
+            .facts
+            .as_mut()
+            .map(|facts| std::mem::take(&mut facts.respellings))
+            .unwrap_or_default()
+        {
+            if self.spellings.get(&token) != Some(&spelling) {
+                self.spellings.insert(token, spelling);
+                self.icon_cache.clear();
+            }
+        }
+        if hour.rebuilt.get(TableId::VariantDefinitions) {
+            self.definitions_seen = false;
+        }
+        match hour
+            .facts
+            .as_mut()
+            .and_then(|facts| facts.organisations.take())
+        {
+            // What the organisations were before no longer matters.
+            Some(Organisations::Reset) => {
+                self.organisations.clear();
+                self.organisations.push(Organisations::Reset);
+            }
+            Some(updates) => self.organisations.push(updates),
+            None => {}
+        }
+    }
+
+    /// Each equipment type token's spelling a native walk read.
+    pub fn spellings(&self) -> &BTreeMap<u32, String> {
+        &self.spellings
+    }
+
+    /// Takes up spellings a native walk read before a resume.
+    pub fn take_spellings(&mut self, spellings: BTreeMap<u32, String>) {
+        self.spellings = spellings;
+        self.icon_cache.clear();
+    }
+
+    /// [`Self::quiet`] of a native hour.
+    pub fn quiet_native(&mut self, hour: &mut Native, evidence: bool) -> bool {
+        if self.last_hour.and_then(|last| last.checked_add(1)) != Some(hour.hour) {
+            return false;
+        }
+        let read = |table: TableId| hour.reads.get(table);
+        let empty_catalogue = self.variants.versions.is_empty()
+            && self.definitions.is_empty()
+            && hour.definitions_empty;
+        if (!evidence
+            && (read(TableId::ProductionLines)
+                || read(TableId::ProductionLineOutput)
+                || self.design_hour != hour.stats_sampled.or(hour.modules_sampled)))
+            || (read(TableId::VariantDefinitions) && !(evidence && empty_catalogue))
+        {
+            return false;
+        }
+        let census = read(TableId::ProductionLines);
+        for &table in FOLD_TABLES.iter() {
+            if table == TableId::VariantChanges || !self.stale.get(table) {
+                continue;
+            }
+            let unchanged = !hour.relevant.get(table)
+                || (table == TableId::Countries
+                    && hour.complete.get(table)
+                    && hour
+                        .facts
+                        .as_ref()
+                        .and_then(|facts| facts.identities.as_ref())
+                        .is_some_and(|identities| identities.keys == self.country_keys));
+            if unchanged {
+                self.stale.set(table, false);
+            } else if !census && super::prepared::PICTURED.contains(&table) {
+                self.pictured_changed = true;
+                self.stale.set(table, false);
+            } else {
+                return false;
+            }
+        }
+        if census && self.pictured_changed {
+            return false;
+        }
+        if hour.variant_changes {
+            if !self.definitions_seen {
+                return false;
+            }
+            let raws = std::mem::take(&mut hour.raws);
+            let naming = self
+                .variants
+                .observe_hour_changed(hour.hour, hour.variants, |_| raws);
+            if !naming.is_empty() {
+                self.naming = Some((hour.hour, naming));
+                return false;
+            }
+        } else {
+            self.variants.advance(hour.hour);
+        }
+        self.last_hour = Some(hour.hour);
+        crate::prepared::prepass::note("production-lines.quiet_hour");
+        true
+    }
+
+    /// [`Self::evidence`] of a native hour.
+    pub fn evidence_native(&mut self, hour: &Native) -> ReadEvidence {
+        let read = |table: TableId| hour.reads.get(table);
+        let design_hour = hour
+            .complete
+            .get(TableId::VariantStats)
+            .then_some(hour.stats_sampled.or(hour.modules_sampled))
+            .flatten();
+        if self.design_hour != design_hour {
+            self.revision += 1;
+            self.design_hour = design_hour;
+        }
+        ReadEvidence {
+            hour: hour.hour,
+            lines_read: read(TableId::ProductionLines),
+            output_read: read(TableId::ProductionLineOutput),
+            modifiers_read: read(TableId::CountryProductionModifiers)
+                && read(TableId::ProductionLineModifiers),
+            design_revision: self.revision,
+            design_read_hour: design_hour,
+            organisation_read_hour: hour.details_sampled,
+            organisation_changed: false,
+            author_names_due: hour.variants == equipment::VariantHour::Read
+                || read(TableId::ProductionLines)
+                || read(TableId::VariantStats)
+                || read(TableId::VariantModules),
+        }
+    }
+
+    /// [`Self::identity_changed`] of a native hour.
+    pub fn identity_changed_native(&self, hour: &Native) -> bool {
+        [TableId::Countries, TableId::CountryLinks]
+            .into_iter()
+            .any(|table| hour.relevant.get(table) && self.stale.get(table))
+    }
+
+    /// [`Self::extract_cached`] of a native hour.
+    pub fn extract_native(
+        &mut self,
+        hour: &mut Native,
+        icons: Option<&IconContent>,
+        previous: Option<HourInput>,
+    ) -> io::Result<HourInput> {
+        let at = hour.hour;
+        let (reads, complete, relevant, rebuilt, stale) = (
+            hour.reads,
+            hour.complete,
+            hour.relevant,
+            hour.rebuilt,
+            self.stale,
+        );
+        let read = |table: TableId| reads.get(table);
+        let complete = |table: TableId| complete.get(table);
+        let changed = |table: TableId| relevant.get(table) && stale.get(table);
+        let mut facts = hour.facts.take().map(|facts| *facts).unwrap_or_default();
+        let raws = std::mem::take(&mut hour.raws);
+        let naming = match self.naming.take() {
+            Some((named, naming)) if named == at => naming,
+            _ => self
+                .variants
+                .observe_hour_changed(at, hour.variants, |_| raws),
+        };
+        self.pending_bytes += naming
+            .iter()
+            .map(|(_, version)| record_bytes(version))
+            .sum::<usize>();
+        for (id, _) in &naming {
+            self.flushed.insert(*id);
+            self.saved_variants.insert(*id);
+        }
+        let countries_changed =
+            previous.is_none() || changed(TableId::Countries) || changed(TableId::CountryLinks);
+        let stats_changed = previous.is_none() || changed(TableId::VariantStats);
+        let definitions_read = (hour.variant_changes || read(TableId::VariantDefinitions))
+            && complete(TableId::VariantDefinitions);
+        let mut refresh = BTreeSet::new();
+        let mut altered = BTreeSet::new();
+        if definitions_read && !self.definitions_seen {
+            for (token, spelling) in std::mem::take(&mut facts.spellings) {
+                if self.spellings.get(&token) != Some(&spelling) {
+                    self.spellings.insert(token, spelling);
+                    self.icon_cache.clear();
+                }
+            }
+            for definition in facts.definitions.take().unwrap_or_default() {
+                if self.definitions.get(&definition.id) != Some(&definition) {
+                    refresh.insert(definition.id);
+                    if self.definitions.contains_key(&definition.id) {
+                        altered.insert(definition.id);
+                    }
+                    self.saved_definitions.insert(definition.id);
+                    crate::prepared::prepass::note("production-lines.definition_projection");
+                    self.definitions.insert(definition.id, definition);
+                }
+            }
+            self.definitions_seen = true;
+        }
+        let stats_complete = complete(TableId::VariantStats);
+        let design_hour = stats_complete
+            .then_some(hour.stats_sampled.or(hour.modules_sampled))
+            .flatten();
+        if self.design_hour != design_hour
+            || match (self.designs_seen, stats_complete) {
+                (true, true) => rebuilt.get(TableId::VariantStats),
+                (false, false) => false,
+                _ => true,
+            }
+        {
+            self.revision += 1;
+        }
+        self.designs_seen = stats_complete;
+        self.design_hour = design_hour;
+        let identities = if countries_changed {
+            Some(facts.identities.take().ok_or_else(|| {
+                crate::invalid("A native production hour changed the countries without them")
+            })?)
+        } else {
+            None
+        };
+        let lines_complete = complete(TableId::ProductionLines);
+        let modifiers_complete = complete(TableId::CountryProductionModifiers)
+            && complete(TableId::ProductionLineModifiers);
+        let modifiers_read =
+            read(TableId::CountryProductionModifiers) && read(TableId::ProductionLineModifiers);
+        let mut input = previous.unwrap_or_else(|| HourInput {
+            rows_complete: false,
+            linked: BTreeSet::new(),
+            identities_changed: true,
+            author_names_due: false,
+            hour: at,
+            last_hour: at,
+            countries: None,
+            holders: BTreeMap::new(),
+            lines_complete,
+            lines_read: read(TableId::ProductionLines),
+            output_read: read(TableId::ProductionLineOutput),
+            output_complete: complete(TableId::ProductionLineOutput),
+            organisations_complete: complete(TableId::IndustrialOrganisations),
+            organisations_named: complete(TableId::IndustrialOrganisations)
+                && complete(TableId::LexicalTokens),
+            modifiers_complete,
+            modifiers_read,
+            modifier_refusal: facts.refusal.clone(),
+            lines: BTreeMap::new(),
+            unlinked_lines: Vec::new(),
+            output: BTreeMap::new(),
+            unlinked_output: Vec::new(),
+            modifier_countries: BTreeMap::new(),
+            modifier_lines: BTreeMap::new(),
+            organisations: BTreeMap::new(),
+            author_names: BTreeMap::new(),
+            organisation_names: BTreeMap::new(),
+            designs: BTreeMap::new(),
+            design_revision: self.revision,
+            design_read_hour: design_hour,
+            organisation_read_hour: None,
+            icons: BTreeMap::new(),
+        });
+        input.hour = at;
+        input.last_hour = at;
+        input.rows_complete = complete(TableId::Countries);
+        let mut keys = None;
+        input.identities_changed = identities.as_ref().is_some_and(|identities| {
+            input.holders != identities.holders
+                || input.linked != identities.linked
+                || input.countries != identities.selected
+        });
+        if let Some(identities) = identities {
+            input.holders = identities.holders;
+            input.countries = identities.selected;
+            input.linked = identities.linked;
+            keys = Some(identities.keys);
+        }
+        input.lines_complete = lines_complete;
+        input.lines_read = read(TableId::ProductionLines);
+        input.output_read = read(TableId::ProductionLineOutput);
+        input.output_complete = complete(TableId::ProductionLineOutput);
+        input.organisations_complete = complete(TableId::IndustrialOrganisations);
+        input.organisations_named = complete(TableId::IndustrialOrganisations)
+            && complete(TableId::LexicalTokens)
+            && complete(TableId::Countries)
+            && complete(TableId::CountryLinks);
+        input.modifiers_complete = modifiers_complete;
+        input.modifiers_read = modifiers_read;
+        input.modifier_refusal = facts.refusal.take();
+        input.design_revision = self.revision;
+        input.design_read_hour = design_hour;
+        input.organisation_read_hour = hour.details_sampled;
+        input.author_names_due = hour.variants == equipment::VariantHour::Read
+            || definitions_read
+            || (input.lines_read && input.lines_complete)
+            || read(TableId::VariantStats)
+            || read(TableId::VariantModules);
+        if stats_changed {
+            match facts.designs.take() {
+                Some(Designs::Incomplete) => input.designs.clear(),
+                Some(Designs::Whole(rows)) => {
+                    input.designs.clear();
+                    for (variant, design) in rows {
+                        crate::prepared::prepass::note("production-lines.design_projection");
+                        input.designs.insert(variant, design);
+                    }
+                }
+                Some(Designs::Rows { changed, deleted }) => {
+                    for variant in deleted {
+                        input.designs.remove(&variant);
+                    }
+                    for (variant, design) in changed {
+                        crate::prepared::prepass::note("production-lines.design_projection");
+                        input.designs.insert(variant, design);
+                    }
+                }
+                None => {
+                    return Err(crate::invalid(
+                        "A native production hour changed the designs without them",
+                    ));
+                }
+            }
+        }
+        for update in std::mem::take(&mut self.organisations) {
+            match update {
+                Organisations::Reset => {
+                    input.organisations.clear();
+                    input.author_names.clear();
+                    input.organisation_names.clear();
+                }
+                Organisations::Updates(rows) => {
+                    for (id, organisation) in rows {
+                        let Some(organisation) = organisation else {
+                            input.organisations.remove(&id);
+                            input.author_names.remove(&id);
+                            input.organisation_names.remove(&id);
+                            continue;
+                        };
+                        let Organisation { raw, author, name } = *organisation;
+                        if input.author_names.get(&id).is_none_or(|old| {
+                            RawOrganisation {
+                                first_hour: author.first_hour,
+                                ..old.clone()
+                            } != author
+                        }) {
+                            crate::prepared::prepass::note(
+                                "production-lines.organisation_projection",
+                            );
+                            input.organisation_names.insert(id, name);
+                            input.author_names.insert(id, author);
+                        }
+                        input.organisations.insert(id, raw);
+                    }
+                }
+            }
+        }
+        if input.lines_read && complete(TableId::CountryLinks) {
+            let census = facts
+                .census
+                .take()
+                .ok_or_else(|| crate::invalid("A native production census hour holds no census"))?;
+            input.lines = census.lines;
+            input.unlinked_lines = census.unlinked_lines;
+            input.output = census.output;
+            input.unlinked_output = census.unlinked_output;
+            input.modifier_countries = census.modifier_countries;
+            input.modifier_lines = census.modifier_lines;
+        }
+        if (definitions_read || input.lines_read)
+            && complete(TableId::LexicalTokens)
+            && let (Some(content), Some(chosen)) = (icons, facts.icons.take())
+        {
+            // A choice is made of the operands, the definition and its spelling alone.
+            if self
+                .icon_hour
+                .as_ref()
+                .is_none_or(|held| !std::sync::Arc::ptr_eq(held, &chosen.hour))
+            {
+                self.icon_cache.clear();
+                self.icon_hour = Some(std::sync::Arc::clone(&chosen.hour));
+            }
+            for (&token, spelling) in chosen.tokens.iter() {
+                if self.spellings.get(&token) != Some(spelling) {
+                    self.spellings.insert(token, spelling.clone());
+                    self.icon_cache.clear();
+                }
+            }
+            for id in &refresh {
+                self.icon_cache.remove(id);
+            }
+            let mut produced = refresh.clone();
+            produced.extend(naming.iter().map(|(id, _)| *id));
+            if input.lines_read {
+                produced.extend(
+                    input
+                        .lines
+                        .values()
+                        .flatten()
+                        .chain(&input.unlinked_lines)
+                        .map(|row| row.variant),
+                );
+                produced.extend(
+                    input
+                        .output
+                        .values()
+                        .flatten()
+                        .chain(&input.unlinked_output)
+                        .map(|row| row.variant),
+                );
+            }
+            for id in produced {
+                let known = self.variants.current(id).is_some();
+                let cached = self
+                    .icon_cache
+                    .get(&id)
+                    .filter(|(was, _)| *was == known)
+                    .map(|(_, icon)| icon.clone());
+                let icon = match cached {
+                    Some(icon) => icon,
+                    None => {
+                        let icon = match (&*chosen.hour, self.definitions.get(&id)) {
+                            (Err(error), _) => IconChoice::unknown(error.clone()),
+                            (Ok(_), None) => IconChoice::unknown(
+                                "the variant's definition is not recorded yet".to_owned(),
+                            ),
+                            (Ok(_), Some(_)) if !known => IconChoice::unknown(
+                                "the variant's definition is not recorded at this time".to_owned(),
+                            ),
+                            (Ok(state), Some(definition)) => icon_choice(
+                                content,
+                                state,
+                                definition,
+                                self.spellings
+                                    .get(&definition.equipment_token)
+                                    .map_or("", String::as_str),
+                            ),
+                        };
+                        self.icon_cache.insert(id, (known, icon.clone()));
+                        icon
+                    }
+                };
+                if definitions_read
+                    && known
+                    && self.definitions.contains_key(&id)
+                    && (refresh.contains(&id) || naming.iter().any(|(changed, _)| *changed == id))
+                {
+                    self.pending_bytes += record_bytes(&icon);
+                    self.icon_events
+                        .push((id, at, icon.clone(), altered.contains(&id)));
+                }
+                input.icons.insert(id, icon);
+            }
+        }
+        self.stale.clear();
+        self.pictured_changed = false;
+        if let Some(keys) = keys {
+            self.country_keys = keys;
+        }
+        self.last_hour = Some(at);
+        Ok(input)
+    }
+}
+
 struct PreparedTables;
 impl PreparedTables {
     fn tables() -> Vec<TableId> {
@@ -991,7 +1485,7 @@ fn candidates<T: RowCodec>(changes: &FrameChanges, table: TableId, rows: &[T]) -
         None => rows.iter().map(RowCodec::key).collect(),
     }
 }
-fn remove_user(index: &mut BTreeMap<u32, BTreeSet<u64>>, key: u32, id: u64) {
+pub(super) fn remove_user(index: &mut BTreeMap<u32, BTreeSet<u64>>, key: u32, id: u64) {
     if let Some(users) = index.get_mut(&key) {
         users.remove(&id);
         if users.is_empty() {
@@ -999,7 +1493,7 @@ fn remove_user(index: &mut BTreeMap<u32, BTreeSet<u64>>, key: u32, id: u64) {
         }
     }
 }
-fn organisation_tokens(
+pub(super) fn organisation_tokens(
     row: Option<&IndustrialOrganisationRow>,
     detail: Option<&IndustrialOrganisationDetailsRow>,
 ) -> BTreeSet<u32> {

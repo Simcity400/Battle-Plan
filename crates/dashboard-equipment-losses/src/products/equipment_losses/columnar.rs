@@ -1,7 +1,10 @@
 use super::*;
-use dashboard_base::products::equipment::{RawVariant, VariantHour};
+use dashboard_base::products::equipment::{
+    RawVariant, VariantHour,
+    columnar::{Naming, slots},
+};
 use dashboard_text::metadata::slot_read;
-use dashboard_world::{Naming as Names, Needs, Roster, World};
+use dashboard_world::{Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
@@ -10,9 +13,6 @@ use replay::{
 use replay_data::{format::FormatVersion, rows::*};
 use replay_frame::frame::TableView;
 use std::{collections::HashSet, mem::size_of, sync::Arc};
-
-mod naming;
-mod slots;
 
 /// What a projection reads of its walk's world: the countries and their cosmetic tags.
 pub fn needs() -> Needs {
@@ -136,21 +136,7 @@ impl Item for Hour {
             let variants: usize = input
                 .variants
                 .iter()
-                .map(|(_, variant)| {
-                    [&variant.token, &variant.display_name, &variant.suffix]
-                        .into_iter()
-                        .chain(&variant.name_tag)
-                        .chain(&variant.type_tag)
-                        .chain(&variant.design)
-                        .map(String::capacity)
-                        .sum::<usize>()
-                        + variant.refusals.capacity() * size_of::<(String, String)>()
-                        + variant
-                            .refusals
-                            .iter()
-                            .map(|(label, reason)| label.capacity() + reason.capacity())
-                            .sum::<usize>()
-                })
+                .map(|(_, variant)| variant.heap())
                 .sum();
             input.shared
                 + identities
@@ -185,8 +171,6 @@ impl Records {
 struct Fields {
     campaign: usize,
     country_slot: usize,
-    country_tag: usize,
-    appearance_name: usize,
     grouped: usize,
     ungrouped: usize,
     player_country: usize,
@@ -202,8 +186,6 @@ impl Fields {
         Ok(Self {
             campaign: columns::field(TableId::Campaign, "id")?,
             country_slot: columns::field(TableId::Countries, "canonical_slot")?,
-            country_tag: columns::field(TableId::Countries, "tag")?,
-            appearance_name: columns::field(TableId::CountryAppearance, "name_tag")?,
             grouped: columns::field(TableId::DivisionCensus, "grouped")?,
             ungrouped: columns::field(TableId::DivisionCensus, "ungrouped")?,
             player_country: columns::field(TableId::Players, "country")?,
@@ -318,7 +300,7 @@ pub struct Projector {
     shapes: [Option<columns::Status>; TABLE_COUNT],
     fields: Fields,
     census: Census,
-    naming: naming::Naming,
+    naming: Naming,
     log: slots::Index<u32>,
     dates: slots::Index<i32>,
     log_pending: slots::Index<u32>,
@@ -344,7 +326,7 @@ impl Projector {
             shapes: [None; TABLE_COUNT],
             fields: Fields::new()?,
             census: Census::default(),
-            naming: naming::Naming::new()?,
+            naming: Naming::new()?,
             log: slots::Index::default(),
             dates: slots::Index::default(),
             log_pending: slots::Index::default(),
@@ -363,7 +345,7 @@ impl Projector {
 
     #[cfg(test)]
     pub(super) fn naming_reads(&self) -> usize {
-        self.naming.reads
+        self.naming.reads()
     }
 
     #[cfg(test)]
@@ -1027,7 +1009,6 @@ impl Operator<World> for Projector {
         let (names, variants) = self.naming.project(
             state,
             (roster, names),
-            &self.fields,
             self.format,
             hour.hour,
             whole,

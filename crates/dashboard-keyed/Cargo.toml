@@ -19,6 +19,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
+dashboard-series.workspace = true
 dashboard-text.workspace = true
 dashboard-world.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
@@ -36,6 +37,7 @@ store = { path = "../store", features = ["test-support"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+dashboard-keyed = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }

@@ -104,7 +104,8 @@ impl Summary {
             last_hour: b.last_hour,
             first_value: self.first_value,
             last_value: b.last_value,
-            last_value_hour: if !b.has_break
+            // A break after `b`'s one stretch is a coverage gap: the value still began in `self`.
+            last_value_hour: if b.last_value_hour == b.first_hour
                 && !b.first_break
                 && adjacent
                 && b.min_value == b.max_value

@@ -1,12 +1,6 @@
 use super::*;
-use crate::test_fixtures::{CAMPAIGN, continuation_records, records, source as frame};
-use replay::container::Replay;
 use serde_json::json;
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 fn ui(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -237,105 +231,6 @@ fn replies_classify_by_their_own_coverage_and_sampling_fields() {
         classify("decryption", &json!({}), &json!({"coverage":[]}), false),
         Outcome::Exact
     );
-}
-
-fn recording() -> Replay {
-    let power = |hour: i32| Some(i64::from(hour % 5));
-    let mut replay = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(
-            1,
-            vec![frame(1, 0, power(0)), frame(1, 1, power(1))],
-        )],
-    )
-    .unwrap();
-    for block in 1..15 {
-        let hours = [block * 2, block * 2 + 1];
-        replay = replay
-            .append(&[continuation_records(
-                &replay,
-                1,
-                hours
-                    .iter()
-                    .map(|&hour| frame(1, hour, power(hour)))
-                    .collect(),
-            )])
-            .unwrap();
-    }
-    replay
-}
-
-#[test]
-fn coverage_gated_replies_wait_for_preparation_and_sampled_ones_do_not() {
-    let replay = recording();
-    assert_eq!(replay.index.len(), 15);
-    let root = std::env::temp_dir().join(format!("replay-readiness-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&root).unwrap();
-    let path = root.join("campaign.battleplan");
-    std::fs::write(&path, replay.bytes()).unwrap();
-    let source = Arc::new(
-        crate::Source::open(
-            crate::SourceKey {
-                source_id: "readiness".into(),
-                revision: crate::protocol::replay_revision(&path).unwrap(),
-            },
-            path,
-            &AtomicBool::new(false),
-        )
-        .unwrap(),
-    );
-    let flag = AtomicBool::new(false);
-    let ask = |product: &str, params: Value| {
-        let request = crate::transport::ProductRequest {
-            source_id: source.key().source_id.clone(),
-            revision: source.key().revision.clone(),
-            product: product.into(),
-            params: params.clone(),
-        };
-        let reply: Value = serde_json::from_str(
-            &crate::prepared::query::query(&source, &request, None, &flag).unwrap(),
-        )
-        .unwrap();
-        let finished = crate::prepared::pipeline::coverage(&source, None, 1, &flag)
-            .unwrap()
-            .is_some_and(|coverage| coverage.complete);
-        classify(product, &params, &reply["data"], finished)
-    };
-    let family = json!({"kind":"country-measure","measure":"politicalPower"});
-    let sampled = || {
-        ask(
-            "series-summary",
-            json!({"branchId":"1","family":family,"tags":["GER"],"from":0,"to":29,"width":30}),
-        )
-    };
-    let gated = || ask("country-groups", json!({"branchId":"1"}));
-    let events = || {
-        ask(
-            "events-page",
-            json!({"branchId":"1","family":family,"tags":["GER"],"to":29,"pageSize":20}),
-        )
-    };
-    // Nothing prepared: the sampled summary already answers the whole branch,
-    // while the event list holds no accepted events yet.
-    assert_eq!(sampled(), Outcome::Sampled { approximate: true });
-    assert_eq!(gated(), Outcome::Sampled { approximate: true });
-    assert_eq!(events(), Outcome::Prefix);
-    // One accepted block of fifteen.
-    let (prefix, _) =
-        crate::prepared::pipeline::run_measured(&source, None, &flag, true, Duration::ZERO, |_| {})
-            .unwrap();
-    assert_eq!(prefix.next_block, 1);
-    assert!(sampled().ready());
-    // Groups finish on their own before the hourly walk accepts its first block.
-    assert_eq!(gated(), Outcome::Exact);
-    assert_eq!(events(), Outcome::Prefix);
-    assert!(events().ready());
-    crate::prepared::pipeline::run(&source, None, &flag, |_| {}).unwrap();
-    assert_eq!(sampled(), Outcome::Exact);
-    assert_eq!(gated(), Outcome::Exact);
-    assert_eq!(events(), Outcome::Exact);
-    drop(source);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 /// Requests name their first view's class, which the probe reports beside

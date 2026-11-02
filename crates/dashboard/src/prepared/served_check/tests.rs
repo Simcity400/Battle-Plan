@@ -282,6 +282,98 @@ fn numbers_compare_by_their_exact_value_and_absent_apart_from_null() {
 }
 
 #[test]
+fn an_ignored_path_is_passed_over_and_only_it() {
+    let path = |text: &str| text.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let ignored = [path("data.pages.*.firstHour")];
+    let at = |reference: Value, candidate: Value| {
+        difference_ignoring(
+            &Reply::Answered(json!({ "data": reference })),
+            &Reply::Answered(json!({ "data": candidate })),
+            &[],
+            &ignored,
+        )
+    };
+    let page = |first: i32, value: i32| json!({ "firstHour": first, "value": value });
+    assert_eq!(
+        at(
+            json!({ "pages": [page(1, 7)] }),
+            json!({ "pages": [page(3, 7)] })
+        ),
+        None
+    );
+    assert!(
+        at(
+            json!({ "pages": [page(1, 7)] }),
+            json!({ "pages": [page(1, 8)] })
+        )
+        .is_some()
+    );
+    assert!(at(json!({ "firstHour": 1 }), json!({ "firstHour": 3 })).is_some());
+    assert!(at(json!({ "pages": [page(1, 7)] }), json!({ "pages": [] })).is_some());
+}
+
+#[test]
+fn an_ignored_path_is_passed_over_where_absent_and_inside_unordered_arrays() {
+    let path = |text: &str| text.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let unordered = [vec!["series".to_owned()]];
+    let ignored = [path("data.firstHour"), path("data.series.*.firstHour")];
+    let at = |reference: Value, candidate: Value| {
+        difference_ignoring(
+            &Reply::Answered(json!({ "data": reference })),
+            &Reply::Answered(json!({ "data": candidate })),
+            &unordered,
+            &ignored,
+        )
+    };
+    assert_eq!(
+        at(json!({ "firstHour": 1, "v": 2 }), json!({ "v": 2 })),
+        None
+    );
+    assert!(at(json!({ "firstHour": 1, "v": 2 }), json!({ "v": 3 })).is_some());
+    let run = |first: i32, value: i32| json!({ "firstHour": first, "value": value });
+    assert_eq!(
+        at(
+            json!({ "series": [run(1, 7), run(2, 8)] }),
+            json!({ "series": [run(5, 8), run(6, 7)] })
+        ),
+        None
+    );
+    assert!(
+        at(
+            json!({ "series": [run(1, 7), run(2, 7)] }),
+            json!({ "series": [run(1, 7), run(2, 8)] })
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn ignoring_an_unordered_arrays_elements_passes_over_them_all() {
+    let unordered = [vec!["series".to_owned()]];
+    let ignored = [vec!["data".to_owned(), "series".to_owned(), "*".to_owned()]];
+    let at = |reference: Value, candidate: Value| {
+        difference_ignoring(
+            &Reply::Answered(json!({ "data": reference })),
+            &Reply::Answered(json!({ "data": candidate })),
+            &unordered,
+            &ignored,
+        )
+    };
+    assert_eq!(
+        at(json!({ "series": [1, 2] }), json!({ "series": [3] })),
+        None
+    );
+    assert_eq!(at(json!({ "series": [1] }), json!({ "series": [] })), None);
+    assert!(
+        at(
+            json!({ "series": [1], "v": 1 }),
+            json!({ "series": [], "v": 2 })
+        )
+        .is_some()
+    );
+}
+
+#[test]
 fn a_plan_the_store_refuses_checks_nothing() {
     let store = Tiny(facts());
     let recorded = record(
@@ -318,6 +410,7 @@ fn the_families_on_columnar_segments_serve_by_plans_of_their_own() {
         "naval",
         "politics_ledger",
         "stockpile",
+        "casualties",
     ] {
         let owners = owners(family).unwrap();
         assert!(!owners.is_empty(), "{family} serves nothing");

@@ -606,15 +606,15 @@ fn raids_shared_driver_binds_success_and_failure_before_observation() {
             let content = binding.ok().and_then(|(content, _)| content);
             let loads = || source.state::<ContentCache>().lock().unwrap().content.loads();
             assert_eq!(loads(), 1, "configuration caches the named failure too");
-            let mut state = prepared::Prepared::default();
+            let mut scan = Scan::new();
             let format = source.replay_ref().format;
-            state.observe_changed(
+            scan.format = format;
+            scan.observe_changed(
                 &first,
-                source.replay_ref().format,
                 content.as_deref(),
-                &FrameChangeTracker::new().observe(&first, format),
+                Some(&FrameChangeTracker::new().observe(&first, format)),
             )?;
-            let mut baseline = state.work();
+            let mut baseline = scan.work;
             baseline.content_loads = loads();
             observer_tests::unchanged_frames(
                 baseline,
@@ -622,13 +622,8 @@ fn raids_shared_driver_binds_success_and_failure_before_observation() {
                 hours as i32,
                 format,
                 |read, changes| {
-                    state.observe_changed(
-                        read,
-                        source.replay_ref().format,
-                        content.as_deref(),
-                        changes,
-                    )?;
-                    let mut work = state.work();
+                    scan.observe_changed(read, content.as_deref(), Some(changes))?;
+                    let mut work = scan.work;
                     work.content_loads = loads();
                     Ok(work)
                 },

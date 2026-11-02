@@ -1,12 +1,14 @@
-//! What an hour changed in the factions' inputs, read from its frame: one evaluation for the
-//! block fold and the columnar walk. The ordered emit ([`Prepared::apply`]) numbers its lanes,
-//! choices and goal books, resolves retained owners, and reads every faction the catalogue
-//! holds but the hour lists nowhere.
+//! What an hour changed in the factions' inputs, read from its frame. The ordered emit
+//! ([`super::super::emit`]) numbers its lanes, choices and goal books, resolves retained owners,
+//! and reads every faction the publication holds but the hour lists nowhere.
 use super::*;
 use dashboard_base::prepared::frame_changes::field_mask;
-use replay_data::rows::{DeltaRow, FactionAccountRow};
+use dashboard_base::products::faction_details::ViewerText;
+use replay_data::rows::{DeltaRow, FactionAccountRow, TABLE_COUNT};
 use replay_frame::frame::ViewIdentity;
-use std::{cell::RefCell, mem::size_of, sync::LazyLock};
+#[cfg(test)]
+use std::cell::RefCell;
+use std::{cell::OnceCell, mem::size_of, sync::LazyLock};
 
 /// What an hour changed since the hour before, as the projection reads it.
 pub(in crate::products::faction_state) trait Edits {
@@ -17,6 +19,8 @@ pub(in crate::products::faction_state) trait Edits {
     fn rows(&self, table: TableId) -> Option<(&[DeltaRow], &[u128])>;
     /// The changes as a trigger evaluation's inputs read them.
     fn tables(&self) -> &dyn reuse::TableChanges;
+    /// Whether `table`'s status may differ from the hour before's.
+    fn restated(&self, table: TableId) -> bool;
 }
 
 impl Edits for FrameChanges {
@@ -29,13 +33,20 @@ impl Edits for FrameChanges {
     fn tables(&self) -> &dyn reuse::TableChanges {
         self
     }
+    fn restated(&self, table: TableId) -> bool {
+        self.rows_changed[table.index()]
+    }
 }
 
-/// The hour's frames: the family's own tables, every table a trigger reads, which a dynamic
-/// text asks for, and the programmes' supplying read.
+/// The hour's frames: the family's own tables, the tables a dynamic text reads, and the
+/// programmes' supplying read.
 pub(in crate::products::faction_state) trait Frames {
     fn own(&self) -> &DecodedFrame;
+    /// The own tables and every table a dynamic text may read.
     fn whole(&self) -> io::Result<&DecodedFrame>;
+    /// The own tables and `tables`, at least: what a held text's reads are read again on. The
+    /// hour's first ask decides it.
+    fn reading(&self, tables: &[TableId]) -> io::Result<&DecodedFrame>;
     /// The hour of the programmes' supplying read, as [`progressive::walked_read_hour`] finds it.
     fn read_hour(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>>;
     /// The supplying read at `hour`: the programme tables, with every scripted-text table
@@ -54,13 +65,15 @@ pub(in crate::products::faction_state) trait Frames {
 }
 
 /// A frame holding every table the hour reads, its supplying reads walked in the recording.
-pub(super) struct Whole<'f, 's, 'a> {
-    pub(super) frame: &'f DecodedFrame,
-    pub(super) walks: RefCell<&'s mut Supplying<'a>>,
+#[cfg(test)]
+pub(in crate::products::faction_state) struct Whole<'f, 's, 'a> {
+    pub(in crate::products::faction_state) frame: &'f DecodedFrame,
+    pub(in crate::products::faction_state) walks: RefCell<&'s mut Supplying<'a>>,
 }
 
+#[cfg(test)]
 impl<'f, 's, 'a> Whole<'f, 's, 'a> {
-    pub(super) fn new(frame: &'f DecodedFrame, walks: &'s mut Supplying<'a>) -> Self {
+    pub(in crate::products::faction_state) fn new(frame: &'f DecodedFrame, walks: &'s mut Supplying<'a>) -> Self {
         Self {
             frame,
             walks: RefCell::new(walks),
@@ -68,11 +81,15 @@ impl<'f, 's, 'a> Whole<'f, 's, 'a> {
     }
 }
 
+#[cfg(test)]
 impl Frames for Whole<'_, '_, '_> {
     fn own(&self) -> &DecodedFrame {
         self.frame
     }
     fn whole(&self) -> io::Result<&DecodedFrame> {
+        Ok(self.frame)
+    }
+    fn reading(&self, _: &[TableId]) -> io::Result<&DecodedFrame> {
         Ok(self.frame)
     }
     fn read_hour(&self, cancelled: &AtomicBool) -> io::Result<Option<i32>> {
@@ -139,7 +156,7 @@ fn timeless_label(mut label: GoalLabel) -> GoalLabel {
     label
 }
 
-pub(super) trait SelectionTable: TableSchema {
+pub(in crate::products::faction_state) trait SelectionTable: TableSchema {
     const KIND: Kind;
     fn owner(row: &Self::Row) -> u64;
     fn ordinal(row: &Self::Row) -> u32;
@@ -367,18 +384,18 @@ fn goal_absent(frame: &DecodedFrame, faction: u64) -> bool {
 #[derive(Default)]
 pub(in crate::products::faction_state) struct Projected {
     /// Every membership reference joined: a retained owner survives only then.
-    pub(super) joined: bool,
+    pub(in crate::products::faction_state) joined: bool,
     /// The hour's Factions roster is complete.
-    pub(super) roster: bool,
+    pub(in crate::products::faction_state) roster: bool,
     /// The factions the hour witnesses, when they differ from those the emit holds.
-    pub(super) witnessed: Option<Arc<BTreeSet<u64>>>,
+    pub(in crate::products::faction_state) witnessed: Option<Arc<BTreeSet<u64>>>,
     /// What a faction the hour lists nowhere reads, when it differs from the emit's.
-    pub(super) ghost: Option<Arc<Ghost>>,
-    pub(super) accounts: Accounts,
+    pub(in crate::products::faction_state) ghost: Option<Arc<Ghost>>,
+    pub(in crate::products::faction_state) accounts: Accounts,
     /// The witnessed factions whose inputs may have changed, ascending.
-    pub(super) factions: Vec<FactionOps>,
+    pub(in crate::products::faction_state) factions: Vec<FactionOps>,
     /// Whether the hour read each channel's table.
-    pub(super) reads: [bool; CHANNELS.len()],
+    pub(in crate::products::faction_state) reads: [bool; CHANNELS.len()],
 }
 impl Projected {
     /// The bytes it owns on the heap; the witnessed set and the template are the projection's.
@@ -492,11 +509,11 @@ impl ChannelOp {
 }
 /// What a faction no table of the hour names reads: it has no rows anywhere.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct Ghost {
+pub(in crate::products::faction_state) struct Ghost {
     /// Why each of rules, programmes, minimums and doctrines is unavailable.
-    pub(super) selections: [String; 4],
-    pub(super) manpower: String,
-    pub(super) goals: GoalList,
+    pub(in crate::products::faction_state) selections: [String; 4],
+    pub(in crate::products::faction_state) manpower: String,
+    pub(in crate::products::faction_state) goals: GoalList,
 }
 fn ghost(frame: &DecodedFrame) -> Ghost {
     let goals = if frame.complete::<tables::Factions>().is_ok() {
@@ -531,14 +548,14 @@ fn ghost(frame: &DecodedFrame) -> Ghost {
     }
 }
 #[derive(Default)]
-pub(super) struct Accounts {
+pub(in crate::products::faction_state) struct Accounts {
     /// Every account of the hour's rows is projected; the emit adds each its catalogue holds.
-    pub(super) full: bool,
-    pub(super) unavailable: bool,
+    pub(in crate::products::faction_state) full: bool,
+    pub(in crate::products::faction_state) unavailable: bool,
     /// Ascending by account.
-    pub(super) ops: Vec<AccountOp>,
+    pub(in crate::products::faction_state) ops: Vec<AccountOp>,
 }
-pub(super) enum AccountOp {
+pub(in crate::products::faction_state) enum AccountOp {
     Whole {
         account: u32,
         /// None when the hour has no row of the account.
@@ -548,13 +565,13 @@ pub(super) enum AccountOp {
     Share { account: u32, share: i64 },
 }
 impl AccountOp {
-    pub(super) fn account(&self) -> u32 {
+    pub(in crate::products::faction_state) fn account(&self) -> u32 {
         match self {
             Self::Whole { account, .. } | Self::Share { account, .. } => *account,
         }
     }
 }
-pub(super) enum AccountRow {
+pub(in crate::products::faction_state) enum AccountRow {
     /// Its country's identity is unavailable.
     Unidentified,
     Identified {
@@ -565,7 +582,7 @@ pub(super) enum AccountRow {
         owner: Owner,
     },
 }
-pub(super) enum Owner {
+pub(in crate::products::faction_state) enum Owner {
     /// Membership inputs are unavailable and its country is no explicit member.
     Unjoined,
     Member {
@@ -578,19 +595,19 @@ pub(super) enum Owner {
     /// No membership and no supplying faction: the account's retained owner, if any.
     Retained,
 }
-pub(super) struct UpgradeOp {
-    pub(super) group: u32,
-    pub(super) name: Choice,
-    pub(super) choice: Choice,
+pub(in crate::products::faction_state) struct UpgradeOp {
+    pub(in crate::products::faction_state) group: u32,
+    pub(in crate::products::faction_state) name: Choice,
+    pub(in crate::products::faction_state) choice: Choice,
 }
-pub(super) struct FactionOps {
-    pub(super) faction: u64,
+pub(in crate::products::faction_state) struct FactionOps {
+    pub(in crate::products::faction_state) faction: u64,
     /// Whether each channel is known, when that changed; the emit reads it with the hour's reads.
-    pub(super) known: Option<[bool; CHANNELS.len()]>,
+    pub(in crate::products::faction_state) known: Option<[bool; CHANNELS.len()]>,
     /// In the order the faction's lanes are observed.
-    pub(super) channels: Vec<ChannelOp>,
+    pub(in crate::products::faction_state) channels: Vec<ChannelOp>,
 }
-pub(super) enum ChannelOp {
+pub(in crate::products::faction_state) enum ChannelOp {
     Selections {
         kind: Kind,
         values: Vec<(u32, u32, Choice)>,
@@ -611,12 +628,12 @@ pub(super) enum ChannelOp {
     /// Only progress changed since the faction's last whole goals: by ordinal.
     GoalProgress(Vec<(u32, i64)>),
 }
-pub(super) struct ManpowerOp {
-    pub(super) total: i128,
-    pub(super) entries: Vec<ManpowerEntry>,
-    pub(super) failure: Option<String>,
+pub(in crate::products::faction_state) struct ManpowerOp {
+    pub(in crate::products::faction_state) total: i128,
+    pub(in crate::products::faction_state) entries: Vec<ManpowerEntry>,
+    pub(in crate::products::faction_state) failure: Option<String>,
 }
-pub(super) enum ManpowerEntry {
+pub(in crate::products::faction_state) enum ManpowerEntry {
     Unidentified {
         ordinal: u32,
         reason: String,
@@ -630,18 +647,18 @@ pub(super) enum ManpowerEntry {
         value: i32,
     },
 }
-pub(super) struct GoalsOp {
-    pub(super) absent: bool,
-    pub(super) reason: Option<String>,
+pub(in crate::products::faction_state) struct GoalsOp {
+    pub(in crate::products::faction_state) absent: bool,
+    pub(in crate::products::faction_state) reason: Option<String>,
     /// Each held goal of the first three lists, in list order.
-    pub(super) entries: Vec<GoalEntry>,
+    pub(in crate::products::faction_state) entries: Vec<GoalEntry>,
 }
-pub(super) struct GoalEntry {
-    pub(super) kind: u8,
-    pub(super) ordinal: u32,
-    pub(super) label: GoalLabel,
-    pub(super) status: i32,
-    pub(super) progress: i64,
+pub(in crate::products::faction_state) struct GoalEntry {
+    pub(in crate::products::faction_state) kind: u8,
+    pub(in crate::products::faction_state) ordinal: u32,
+    pub(in crate::products::faction_state) label: GoalLabel,
+    pub(in crate::products::faction_state) status: i32,
+    pub(in crate::products::faction_state) progress: i64,
 }
 /// An account's projected inputs, whose share alone may change without a whole projection.
 struct AccountMemo {
@@ -669,6 +686,35 @@ impl AccountMemo {
             && self.tokens == row.upgrade_tokens
     }
 }
+/// A dynamic text's last evaluation and what it read; stale once a read may read otherwise.
+struct Held<T> {
+    value: T,
+    inputs: reuse::Inputs,
+    stale: bool,
+}
+
+impl<T> Held<T> {
+    fn new(value: T, inputs: reuse::Inputs) -> Self {
+        Self {
+            value,
+            inputs,
+            stale: false,
+        }
+    }
+}
+
+/// The tables whose status decides what a faction no table names reads.
+const GHOST_TABLES: [TableId; 8] = [
+    TableId::Factions,
+    TableId::FactionRules,
+    TableId::FactionPrograms,
+    TableId::FactionMinimumUpgrades,
+    TableId::FactionDoctrine,
+    TableId::FactionManpower,
+    TableId::FactionGoalStatus,
+    TableId::FactionGoalEntries,
+];
+
 /// What decides the known channels of every witnessed faction at once.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct KnownInputs {
@@ -691,15 +737,19 @@ pub(in crate::products::faction_state) struct Runtime {
     witnessed: Arc<BTreeSet<u64>>,
     ready: bool,
     previous: Option<Previous>,
-    /// Cached dynamic-name inputs require whole frames while any expansion is held.
-    labels: BTreeMap<(u64, Kind, u32), reuse::Inputs>,
+    /// Each dynamic rule or doctrine name, by faction, kind and ordinal, with its token.
+    labels: BTreeMap<(u64, Kind, u32), Held<(u32, FactionRuleDetail)>>,
     dynamic: BTreeMap<u32, bool>,
     /// Labels of goals whose texts read only the goal tables, for `goal_dictionary`.
     goal_labels: BTreeMap<Option<u32>, GoalLabel>,
     goal_expands: BTreeMap<u32, bool>,
     goal_dictionary: Option<ViewIdentity>,
-    /// Scripted goal texts' inputs, by faction; held, they need whole frames.
-    goal_inputs: BTreeMap<u64, reuse::Inputs>,
+    /// Each scripted goal label, by faction and token.
+    goal_texts: BTreeMap<(u64, Option<u32>), Held<GoalLabel>>,
+    /// The hour the held texts were last checked at.
+    checked: Option<i32>,
+    /// The held texts changed since [`Self::gather_reads`] gathered their reads.
+    reads_moved: bool,
     /// The last supplying read of programme operands: its branch, hour, whether it holds the
     /// scripted-text tables, and frame.
     supplying: Option<(u64, i32, bool, Arc<DecodedFrame>)>,
@@ -737,19 +787,105 @@ impl Runtime {
     }
 
     #[cfg(test)]
-    pub(super) fn country_rebuilds(&self) -> usize {
+    pub(in crate::products::faction_state) fn country_rebuilds(&self) -> usize {
         self.countries.rebuilds
     }
 
-    /// A dynamic name or scripted goal text is held: its hours need whole frames.
-    pub(super) fn holds_dynamic(&self) -> bool {
-        !self.labels.is_empty() || !self.goal_inputs.is_empty()
+    /// A dynamic name or scripted goal text is held: each hour checks its reads.
+    pub(in crate::products::faction_state) fn holds_dynamic(&self) -> bool {
+        !self.labels.is_empty() || !self.goal_texts.is_empty()
     }
 
-    /// Hours through `last` the block fold carried quietly: their inputs were the hour
-    /// before's, and the emit published their reads.
-    pub(super) fn quiet(&mut self, last: i32) {
-        self.last = Some(last);
+    /// Gathers into `fields` the fields of each table the held texts read, when they changed
+    /// since the last gathering: whether it did.
+    pub(in crate::products::faction_state) fn gather_reads(
+        &mut self,
+        fields: &mut [u64; TABLE_COUNT],
+    ) -> bool {
+        if !std::mem::take(&mut self.reads_moved) {
+            return false;
+        }
+        fields.fill(0);
+        let held = self
+            .labels
+            .values()
+            .map(|held| &held.inputs)
+            .chain(self.goal_texts.values().map(|held| &held.inputs));
+        for reads in held.filter_map(reuse::Inputs::declared) {
+            for read in reads {
+                fields[read.table.index()] |= read.fields;
+            }
+        }
+        true
+    }
+
+    /// Checks every held text against what changed since the hour before: one whose every
+    /// read reads alike goes on to `hour`, the others are stale. Whether none is.
+    pub(in crate::products::faction_state) fn check_held(
+        &mut self,
+        since: Option<&reuse::Since<'_>>,
+        hour: i32,
+    ) -> bool {
+        self.checked = Some(hour);
+        let mut fresh = true;
+        let mut check = |inputs: &mut reuse::Inputs| {
+            let stale = !since.is_some_and(|since| inputs.advance(since));
+            fresh &= !stale;
+            stale
+        };
+        for held in self.labels.values_mut() {
+            held.stale = check(&mut held.inputs);
+        }
+        for held in self.goal_texts.values_mut() {
+            held.stale = check(&mut held.inputs);
+        }
+        fresh
+    }
+
+    /// Reads again the inputs of each stale text whose reads moved, on a frame of the tables
+    /// they read: one reading alike is fresh, without its evaluation's world.
+    fn confirm_stale(
+        &mut self,
+        frames: &dyn Frames,
+        since: Option<&reuse::Since<'_>>,
+        cat: Option<&catalogue::Catalogue>,
+    ) -> io::Result<()> {
+        let (Some(since), Some(cat)) = (since, cat) else {
+            return Ok(());
+        };
+        let mut tables = Vec::new();
+        let stale = self
+            .labels
+            .values()
+            .filter(|held| held.stale)
+            .map(|held| &held.inputs)
+            .chain(
+                self.goal_texts
+                    .values()
+                    .filter(|held| held.stale)
+                    .map(|held| &held.inputs),
+            );
+        for reads in stale.filter_map(reuse::Inputs::declared) {
+            tables.extend(reads.iter().map(|read| read.table));
+        }
+        if tables.is_empty() {
+            return Ok(());
+        }
+        tables.sort_unstable();
+        tables.dedup();
+        let frame = frames.reading(&tables)?;
+        let text = ViewerText::new(frame, cat);
+        let mut confirm = |inputs: &mut reuse::Inputs| {
+            inputs.declared().is_some()
+                && inputs.confirm_since(frame, Some(since), |key| text.reread(key))
+        };
+        for held in self.labels.values_mut().filter(|held| held.stale) {
+            held.stale = !confirm(&mut held.inputs);
+        }
+        for held in self.goal_texts.values_mut().filter(|held| held.stale) {
+            held.stale = !confirm(&mut held.inputs);
+        }
+        Ok(())
     }
 
     /// The projection of an hour that changed nothing it reads since the hour before, which
@@ -769,58 +905,10 @@ impl Runtime {
         }
     }
 
-    /// Whether the hour after the last projected one may be projected idle: nothing it reads
-    /// changed, and no held dynamic text needs asking again.
+    /// Whether the hour after the last projected one may be projected idle, once nothing it
+    /// reads changed and every held text read alike ([`Self::check_held`]).
     pub(in crate::products::faction_state) fn may_idle(&self, hour: i32) -> bool {
-        self.ready
-            && self.last.and_then(|last| last.checked_add(1)) == Some(hour)
-            && !self.holds_dynamic()
-    }
-
-    /// Dynamic names need whole frames because kept frames may hold stale trigger-kit rows.
-    pub(super) fn needs_whole(
-        &mut self,
-        source: &Source,
-        context: &LoadContext,
-        frame: &DecodedFrame,
-    ) -> bool {
-        self.goal_dictionary(frame);
-        if self.holds_dynamic() {
-            return true;
-        }
-        let Some(cat) = context
-            .content
-            .as_ref()
-            .and_then(|options| catalogue::catalogue(source, options).ok())
-        else {
-            return false;
-        };
-        let tokens: Vec<u32> = frame
-            .complete::<tables::FactionRules>()
-            .into_iter()
-            .flatten()
-            .map(|row| row.token)
-            .chain(
-                frame
-                    .complete::<tables::FactionDoctrine>()
-                    .into_iter()
-                    .flatten()
-                    .map(|row| row.token),
-            )
-            .collect();
-        let goals: Vec<u32> = frame
-            .complete::<tables::FactionGoalEntries>()
-            .into_iter()
-            .flatten()
-            .filter(|row| row.kind <= 2)
-            .filter_map(|row| row.token)
-            .collect();
-        tokens
-            .into_iter()
-            .any(|token| self.dynamic_name(frame, token, Some(&*cat)))
-            || goals
-                .into_iter()
-                .any(|token| self.goal_expands(frame, token, &cat))
+        self.ready && self.last.and_then(|last| last.checked_add(1)) == Some(hour)
     }
 
     /// The hour's projection: what may have changed since the hour before, evaluated.
@@ -861,6 +949,9 @@ impl Runtime {
             self.accounts.clear();
             self.manpower.clear();
             self.goals.clear();
+            self.labels.clear();
+            self.goal_texts.clear();
+            self.reads_moved = true;
         }
         let mut projected = Projected {
             joined: joins.joined,
@@ -870,11 +961,14 @@ impl Runtime {
             ..Default::default()
         };
         (self.joined, self.roster) = (projected.joined, projected.roster);
-        let template = ghost(frame);
-        if !self.ready || self.ghost.as_deref() != Some(&template) {
-            let template = Arc::new(template);
-            projected.ghost = Some(Arc::clone(&template));
-            self.ghost = Some(template);
+        // What a faction no table names reads follows its tables' statuses alone.
+        if !self.ready || !continues || GHOST_TABLES.iter().any(|&table| edits.restated(table)) {
+            let template = ghost(frame);
+            if !self.ready || self.ghost.as_deref() != Some(&template) {
+                let template = Arc::new(template);
+                projected.ghost = Some(Arc::clone(&template));
+                self.ghost = Some(template);
+            }
         }
         // Read once a faction's programmes are evaluated.
         let mut supplying = None;
@@ -883,27 +977,44 @@ impl Runtime {
         let viewer_changed = [TableId::LocalPlayer, TableId::CountryLinks]
             .iter()
             .any(|table| changes.rows_changed[table.index()]);
-        // Re-expand when a previous input changes or becomes a gap; otherwise the value holds.
+        // A held text holds while every input it read reads alike; otherwise it is evaluated.
+        let count = self.labels.len() + self.goal_texts.len();
         self.labels
             .retain(|&(faction, _, _), _| owners.contains(&faction));
+        self.goal_texts
+            .retain(|&(faction, _), _| owners.contains(&faction));
+        self.reads_moved |= self.labels.len() + self.goal_texts.len() != count;
         let since = reuse::Since::hour_before(frame, edits.tables());
-        let mut stale = BTreeSet::new();
-        for (&(faction, _, _), inputs) in &mut self.labels {
-            if !since.as_ref().is_some_and(|since| inputs.advance(since)) {
-                stale.insert(faction);
-            }
+        if self.checked != Some(frame.hour) {
+            self.check_held(since.as_ref(), frame.hour);
         }
-        self.goal_inputs
-            .retain(|faction, _| owners.contains(faction));
-        let mut stale_goals = BTreeSet::new();
-        for (&faction, inputs) in &mut self.goal_inputs {
-            if viewer_changed || !since.as_ref().is_some_and(|since| inputs.advance(since)) {
-                stale_goals.insert(faction);
+        if viewer_changed {
+            for held in self.labels.values_mut() {
+                held.stale = true;
             }
+            for held in self.goal_texts.values_mut() {
+                held.stale = true;
+            }
+        } else {
+            self.confirm_stale(frames, since.as_ref(), cat)?;
         }
+        let stale: BTreeSet<u64> = self
+            .labels
+            .iter()
+            .filter(|(_, held)| held.stale)
+            .map(|(&(faction, _, _), _)| faction)
+            .collect();
+        let stale_goals: BTreeSet<u64> = self
+            .goal_texts
+            .iter()
+            .filter(|(_, held)| held.stale)
+            .map(|(&(faction, _), _)| faction)
+            .collect();
         for faction in &stale_goals {
             self.goals.remove(faction);
         }
+        // The hour's shared scripted text, once a text is evaluated.
+        let shared = OnceCell::new();
         let reserved = changes.rows_changed[TableId::ReservedCountryNaming.index()];
         let known = KnownInputs {
             accounts: joins.joined && joins.accounts_joined,
@@ -972,19 +1083,18 @@ impl Runtime {
             }
             let renamed = viewer_changed || stale.contains(&faction);
             if dirty.affects(Kind::Rule, faction) || renamed {
-                self.labels
-                    .retain(|&(owner, kind, _), _| owner != faction || kind != Kind::Rule);
                 self.channel(&rules, &mut ops.channels, |state, row, _| {
                     let detail = state.label(
-                        frames,
+                        (frames, &shared),
                         Kind::Rule,
                         (faction, row.ordinal),
                         row.token,
                         cat,
-                        |frame| selectors::rule(frame, faction, row, cat),
+                        |frame, held| selectors::rule_in(frame, faction, row, cat, held),
                     )?;
                     Ok((row.ordinal, 0, detail.into()))
                 })?;
+                self.forget_labels(faction, Kind::Rule, rules.rows.iter().map(|row| row.ordinal));
             }
             let kept = self
                 .kept_programmes
@@ -1014,19 +1124,19 @@ impl Runtime {
                 })?;
             }
             if dirty.affects(Kind::Doctrine, faction) || renamed {
-                self.labels
-                    .retain(|&(owner, kind, _), _| owner != faction || kind != Kind::Doctrine);
                 self.channel(&doctrines, &mut ops.channels, |state, row, _| {
                     let detail = state.label(
-                        frames,
+                        (frames, &shared),
                         Kind::Doctrine,
                         (faction, row.ordinal),
                         row.token,
                         cat,
-                        |frame| selectors::doctrine(frame, faction, row, cat),
+                        |frame, held| selectors::doctrine_in(frame, faction, row, cat, held),
                     )?;
                     Ok((row.ordinal, 0, detail.into()))
                 })?;
+                let ordinals = doctrines.rows.iter().map(|row| row.ordinal);
+                self.forget_labels(faction, Kind::Doctrine, ordinals);
             }
             // Country zero's member is named by its own reserved naming read.
             let reserved_renamed = reserved && manpower.rows.iter().any(|row| row.country == 0);
@@ -1040,7 +1150,7 @@ impl Runtime {
                 }
             }
             if dirty.affects(Kind::GoalList, faction) || stale_goals.contains(&faction) {
-                if let Some(op) = self.goals(frames, faction, goals_absent, cat)? {
+                if let Some(op) = self.goals((frames, &shared), faction, goals_absent, cat)? {
                     ops.channels.push(op);
                 }
             }
@@ -1103,24 +1213,50 @@ impl Runtime {
         dynamic
     }
 
-    /// A rule or doctrine's name; a dynamic one is read on the whole frame, its inputs held.
-    fn label(
+    /// A rule or doctrine's name; a dynamic one is held while its inputs read alike, else
+    /// evaluated on the whole frame in the hour's shared text.
+    fn label<'f>(
         &mut self,
-        frames: &dyn Frames,
+        (frames, shared): (&'f dyn Frames, &OnceCell<ViewerText<'f>>),
         kind: Kind,
         (faction, ordinal): (u64, u32),
         token: u32,
-        cat: Option<&catalogue::Catalogue>,
-        name: impl FnOnce(&DecodedFrame) -> FactionRuleDetail,
+        cat: Option<&'f catalogue::Catalogue>,
+        name: impl FnOnce(&DecodedFrame, Option<&ViewerText<'_>>) -> FactionRuleDetail,
     ) -> io::Result<FactionRuleDetail> {
         let frame = frames.own();
+        let at = (faction, kind, ordinal);
         if !self.dynamic_name(frame, token, cat) {
-            return Ok(name(frame));
+            self.reads_moved |= self.labels.remove(&at).is_some();
+            return Ok(name(frame, None));
         }
+        if let Some(held) = self.labels.get(&at)
+            && !held.stale
+            && held.value.0 == token
+        {
+            return Ok(held.value.1.clone());
+        }
+        // A name is dynamic only by a catalogue's localisation.
+        let Some(cat) = cat else {
+            return Ok(name(frame, None));
+        };
         let whole = frames.whole()?;
-        let (detail, inputs) = reuse::capture(whole, || name(whole));
-        self.labels.insert((faction, kind, ordinal), inputs);
+        let text = shared.get_or_init(|| ViewerText::new(whole, cat));
+        let (detail, inputs) = reuse::capture(whole, || name(whole, Some(text)));
+        self.labels
+            .insert(at, Held::new((token, detail.clone()), inputs));
+        self.reads_moved = true;
         Ok(detail)
+    }
+
+    /// Lets go of `faction`'s held `kind` names whose ordinal its rows no longer hold.
+    fn forget_labels(&mut self, faction: u64, kind: Kind, ordinals: impl Iterator<Item = u32>) {
+        let ordinals: BTreeSet<u32> = ordinals.collect();
+        let count = self.labels.len();
+        self.labels.retain(|&(owner, held, ordinal), _| {
+            owner != faction || held != kind || ordinals.contains(&ordinal)
+        });
+        self.reads_moved |= self.labels.len() != count;
     }
 
     /// Goal label caches hold for one dictionary read; another read clears them.
@@ -1134,6 +1270,8 @@ impl Runtime {
             self.goal_expands.clear();
             self.goal_labels.clear();
             self.goals.clear();
+            self.reads_moved |= !self.goal_texts.is_empty();
+            self.goal_texts.clear();
             self.goal_dictionary = Some(table.identity());
         }
     }
@@ -1683,33 +1821,37 @@ impl Runtime {
         }))
     }
 
-    fn goal_labels(
+    /// `faction`'s labels of `tokens`: a scripted one held while its inputs read alike, else
+    /// evaluated on the whole frame; the others as the dictionary spells them.
+    fn goal_labels<'f>(
         &mut self,
-        frames: &dyn Frames,
+        (frames, shared): (&'f dyn Frames, &OnceCell<ViewerText<'f>>),
         faction: u64,
-        cat: Option<&catalogue::Catalogue>,
+        cat: Option<&'f catalogue::Catalogue>,
         tokens: &[Option<u32>],
     ) -> io::Result<Vec<GoalLabel>> {
         let frame = frames.own();
-        self.goal_inputs.remove(&faction);
-        let mut expands = false;
-        if let Some(cat) = cat {
-            for token in tokens.iter().flatten() {
-                expands |= self.goal_expands(frame, *token, cat);
-            }
-        }
-        if expands {
-            let whole = frames.whole()?;
-            let (labels, inputs) = reuse::capture(whole, || {
-                faction_details::goal_labels(whole, faction, cat, tokens.iter().copied())
+        let mut expands = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            expands.push(match (cat, token) {
+                (Some(cat), Some(token)) => self.goal_expands(frame, *token, cat),
+                _ => false,
             });
-            self.goal_inputs.insert(faction, inputs);
-            return Ok(labels.into_iter().map(timeless_label).collect());
         }
+        let count = self.goal_texts.len();
+        self.goal_texts.retain(|&(owner, token), _| {
+            owner != faction
+                || tokens
+                    .iter()
+                    .zip(&expands)
+                    .any(|(held, expands)| *expands && *held == token)
+        });
+        self.reads_moved |= self.goal_texts.len() != count;
         let missing: BTreeSet<Option<u32>> = tokens
             .iter()
-            .filter(|token| !self.goal_labels.contains_key(token))
-            .copied()
+            .zip(&expands)
+            .filter(|&(token, expands)| !*expands && !self.goal_labels.contains_key(token))
+            .map(|(token, _)| *token)
             .collect();
         if !missing.is_empty() {
             let labels = faction_details::goal_labels(frame, faction, cat, missing.iter().copied());
@@ -1719,20 +1861,41 @@ impl Runtime {
                     .zip(labels.into_iter().map(timeless_label)),
             );
         }
-        Ok(tokens
-            .iter()
-            .map(|token| self.goal_labels[token].clone())
-            .collect())
+        let mut labels = Vec::with_capacity(tokens.len());
+        for (&token, &expands) in tokens.iter().zip(&expands) {
+            let (true, Some(cat)) = (expands, cat) else {
+                labels.push(self.goal_labels[&token].clone());
+                continue;
+            };
+            let at = (faction, token);
+            if let Some(held) = self.goal_texts.get(&at)
+                && !held.stale
+            {
+                labels.push(held.value.clone());
+                continue;
+            }
+            let whole = frames.whole()?;
+            let text = shared.get_or_init(|| ViewerText::new(whole, cat));
+            let (label, inputs) = reuse::capture(whole, || {
+                faction_details::goal_label_in(whole, faction, Some(cat), token, text)
+            });
+            let label = timeless_label(label);
+            self.goal_texts
+                .insert(at, Held::new(label.clone(), inputs));
+            self.reads_moved = true;
+            labels.push(label);
+        }
+        Ok(labels)
     }
 
     /// A witnessed faction's goal lists: whole, only its changed progress, or None when
     /// nothing changed.
-    fn goals(
+    fn goals<'f>(
         &mut self,
-        frames: &dyn Frames,
+        (frames, shared): (&'f dyn Frames, &OnceCell<ViewerText<'f>>),
         faction: u64,
         absent: bool,
-        cat: Option<&catalogue::Catalogue>,
+        cat: Option<&'f catalogue::Catalogue>,
     ) -> io::Result<Option<ChannelOp>> {
         let frame = frames.own();
         let held = if absent {
@@ -1744,7 +1907,9 @@ impl Runtime {
         let held = match held {
             Ok(held) => held,
             Err(reason) => {
-                self.goal_inputs.remove(&faction);
+                let count = self.goal_texts.len();
+                self.goal_texts.retain(|&(owner, _), _| owner != faction);
+                self.reads_moved |= self.goal_texts.len() != count;
                 self.goals.remove(&faction);
                 return Ok(Some(ChannelOp::Goals(GoalsOp {
                     absent,
@@ -1770,7 +1935,7 @@ impl Runtime {
             return Ok((!values.is_empty()).then_some(ChannelOp::GoalProgress(values)));
         }
         let tokens: Vec<_> = rows.iter().map(|row| row.token).collect();
-        let labels = self.goal_labels(frames, faction, cat, &tokens)?;
+        let labels = self.goal_labels((frames, shared), faction, cat, &tokens)?;
         let entries = rows
             .iter()
             .zip(labels)

@@ -1,9 +1,10 @@
 //! The output capture observes building spend and the railway's first progress
 //! call. Its separate factory totals already exclude CIC-bank draws, railway
 //! carries and instant progress; never price completions.
-use super::{ConstructionProject, EndKind, ProjectKind, ScannedLog, UnknownEnd, ended};
-use replay_data::{rows::ConstructionLineOutputRow, rows::Recorded, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+use super::{
+    ConstructionProject, EndKind, ProjectKind, ScannedLog, UnknownEnd, ended, observed::Output,
+};
+use replay_data::rows::{ConstructionLineOutputRow, Recorded};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::TS;
@@ -81,38 +82,37 @@ impl OutputScan {
         });
     }
 
-    pub(super) fn observe(&mut self, log: &mut ScannedLog, frame: &DecodedFrame) {
+    /// The output table's read at `hour`.
+    pub(super) fn observe(&mut self, log: &mut ScannedLog, hour: i32, output: &Output) {
         for (index, project) in log.projects.iter().enumerate().skip(self.indexed) {
             let id = project.id.parse().expect("native construction handle");
             self.projects.insert(id, Some(index));
             self.active.insert(id);
             // A census now owns the line: only its output read before this stays unattributed.
             if let Some(gap) = self.unattributed.remove(&id) {
-                log.output_unknown[gap].until.get_or_insert(frame.hour);
+                log.output_unknown[gap].until.get_or_insert(hour);
             }
         }
         self.indexed = log.projects.len();
-        let rows = frame.complete::<tables::ConstructionLineOutput>().ok();
-        let unavailable_reason = match &*frame.tables[TableId::ConstructionLineOutput.index()] {
-            TableView::Unavailable { reason } if reason.contains("not recorded") => {
-                SpendingGap::NotRecorded
-            }
-            _ => SpendingGap::ReadFailed,
+        let (rows, unavailable_reason) = match output {
+            Output::Read(rows) => (Some(rows.as_slice()), SpendingGap::ReadFailed),
+            Output::Unavailable(reason) => (None, *reason),
+            Output::NotRead => return,
         };
         log.output_reads
-            .push((frame.hour, rows.is_none().then_some(unavailable_reason)));
+            .push((hour, rows.is_none().then_some(unavailable_reason)));
         match (rows, self.unavailable) {
             (None, None) => {
                 self.unavailable = Some(log.output_unknown.len());
                 log.output_unknown.push(OutputUnknown {
-                    known_at: frame.hour,
+                    known_at: hour,
                     reason: unavailable_reason,
                     line: None,
                     until: None,
                 });
             }
             (Some(_), Some(index)) => {
-                log.output_unknown[index].until = Some(frame.hour);
+                log.output_unknown[index].until = Some(hour);
                 self.unavailable = None;
             }
             _ => {}
@@ -144,17 +144,17 @@ impl OutputScan {
                 None => Some(SpendingGap::FinalOutputMissing),
             };
             if project.end.is_some() {
-                apply_ending(project, row, frame.hour, self.restarted.contains(&id));
+                apply_ending(project, row, hour, self.restarted.contains(&id));
             }
             if let Some(reason) = reason {
                 log.output_reasons.insert((reason, project.id.clone()));
             }
             let repair_ticks = row.map_or(0, |row| row.repair_ticks);
             if repair_ticks > 0 && project.first_repair_tick.is_none() {
-                project.first_repair_tick = Some(frame.hour);
+                project.first_repair_tick = Some(hour);
             }
             log.outputs[index].push(ConstructionOutputRead {
-                known_at: frame.hour,
+                known_at: hour,
                 since_hour: row.map(|row| row.since_hour),
                 construction_raw: row
                     .filter(|_| reason.is_none())
@@ -181,7 +181,7 @@ impl OutputScan {
                     let index = *self.unattributed.entry(row.line).or_insert_with(|| {
                         let index = log.output_unknown.len();
                         log.output_unknown.push(OutputUnknown {
-                            known_at: frame.hour,
+                            known_at: hour,
                             reason: SpendingGap::OwnerUnknown,
                             line: Some(row.line),
                             until: None,
@@ -189,7 +189,7 @@ impl OutputScan {
                         index
                     });
                     if row.ended {
-                        log.output_unknown[index].until = frame.hour.checked_add(1);
+                        log.output_unknown[index].until = hour.checked_add(1);
                     }
                 }
                 if row.ended {
@@ -263,7 +263,8 @@ mod tests {
     };
     use dashboard_core::test_fixtures::{CAMPAIGN, records};
     use replay::container::Replay;
-    use replay_data::{rows::ConstructionCompletion, rows::TableRows};
+    use replay_data::{rows::ConstructionCompletion, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
     use std::sync::atomic::AtomicBool;
 
     #[test]

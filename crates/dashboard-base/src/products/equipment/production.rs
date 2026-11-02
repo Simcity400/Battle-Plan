@@ -3,7 +3,7 @@
 
 #[path = "production/rocket.rs"]
 mod rocket;
-pub(crate) use rocket::RocketProduced;
+pub(crate) use rocket::{RocketProduced, RocketRead};
 
 use super::{self as equipment, Domain, Texts, VariantCatalogue};
 use crate::products::LoadContext;
@@ -32,6 +32,108 @@ const CACHED_BRANCHES: usize = 2;
 pub(crate) type Identity = (u32, u32, u32);
 /// What a country produced: a variant, and what the input was for.
 pub(crate) type Entry = (u64, Purpose);
+
+/// The countries production reads at an hour: each UTF-8 tag's (canonical slot, id) where
+/// the links resolve a holder, the canonical slot each raw link id names, and the resolved
+/// tags that are not UTF-8.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CountryHolders {
+    pub holders: BTreeMap<String, Option<(u32, u32)>>,
+    pub slots: Arc<HashMap<u32, u32>>,
+    pub unnamed: usize,
+}
+
+impl CountryHolders {
+    /// `countries` resolved through `slots`, as [`crate::products::territory::CountryReads`]
+    /// resolves them.
+    pub fn of(countries: &[replay_data::rows::CountryRow], slots: Arc<HashMap<u32, u32>>) -> Self {
+        let tagged = crate::metadata::tagged_countries_indexed(countries, &slots);
+        let mut holders = BTreeMap::new();
+        let mut unnamed = 0;
+        for (tag, lookup) in tagged {
+            match std::str::from_utf8(tag) {
+                Ok(tag) => {
+                    holders.insert(
+                        tag.to_owned(),
+                        lookup.found().map(|(country, slot)| (slot, country.id)),
+                    );
+                }
+                Err(_) => unnamed += usize::from(matches!(lookup, TaggedCountry::Found(..))),
+            }
+        }
+        Self {
+            holders,
+            slots,
+            unnamed,
+        }
+    }
+
+    /// What `reads` resolves, `unnamed` of its resolved tags not UTF-8.
+    pub(crate) fn read(reads: &crate::products::territory::CountryReads, unnamed: usize) -> Self {
+        Self {
+            holders: reads.holders().clone(),
+            slots: Arc::clone(reads.slots()),
+            unnamed,
+        }
+    }
+}
+
+/// A table's rows in key order: a row frame's, or those a columnar walk keeps by key.
+pub(crate) enum Rows<'a, R> {
+    Slice(&'a [R]),
+    Keyed(&'a BTreeMap<u128, R>),
+}
+
+impl<R> Clone for Rows<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R> Copy for Rows<'_, R> {}
+
+impl<'a, R> Rows<'a, R> {
+    pub(crate) fn iter(self) -> RowsIter<'a, R> {
+        match self {
+            Self::Slice(rows) => RowsIter::Slice(rows.iter()),
+            Self::Keyed(rows) => RowsIter::Keyed(rows.values()),
+        }
+    }
+}
+
+pub(crate) enum RowsIter<'a, R> {
+    Slice(std::slice::Iter<'a, R>),
+    Keyed(std::collections::btree_map::Values<'a, u128, R>),
+}
+
+impl<R> Clone for RowsIter<'_, R> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Slice(rows) => Self::Slice(rows.clone()),
+            Self::Keyed(rows) => Self::Keyed(rows.clone()),
+        }
+    }
+}
+
+impl<'a, R> Iterator for RowsIter<'a, R> {
+    type Item = &'a R;
+
+    fn next(&mut self) -> Option<&'a R> {
+        match self {
+            Self::Slice(rows) => rows.next(),
+            Self::Keyed(rows) => rows.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Slice(rows) => rows.size_hint(),
+            Self::Keyed(rows) => rows.size_hint(),
+        }
+    }
+}
+
+impl<R> ExactSizeIterator for RowsIter<'_, R> {}
 
 /// What a production tick's applied input was for, as the collector recorded
 /// it. Input whose purpose was not recorded is its own entry (`Unknown`): a
@@ -139,6 +241,90 @@ pub struct TagHistory {
     pub(crate) taken: Option<(Identity, u64)>,
     /// The identity and hour the last sample was extended to.
     pub(crate) last: Option<(Identity, i32)>,
+    /// The entries of `current` and `cost_current` changed since each of preparation's readers
+    /// last took them.
+    #[serde(skip)]
+    pub(crate) edits: Edits,
+}
+
+/// Calls `extend` on the track of each of `tags`, which are ascending, walking both in order.
+pub(crate) fn each_track<'a>(
+    tracks: &mut BTreeMap<String, TagHistory>,
+    tags: impl IntoIterator<Item = &'a str>,
+    mut extend: impl FnMut(&mut TagHistory),
+) {
+    let mut tracks = tracks.iter_mut().peekable();
+    for tag in tags {
+        while tracks.peek().is_some_and(|(held, _)| held.as_str() < tag) {
+            tracks.next();
+        }
+        if let Some((held, track)) = tracks.peek_mut()
+            && held.as_str() == tag
+        {
+            extend(&mut **track);
+        }
+    }
+}
+
+/// Preparation's readers of a track's inventories, each taking its changes in turn.
+pub(crate) const SPENT_READER: usize = 0;
+pub(crate) const INVENTORY_READER: usize = 1;
+pub(crate) const ROWS_READER: usize = 2;
+const READERS: usize = 3;
+/// A log longer than this is dropped, and every reader reads the inventories whole.
+const EDITS_HELD: usize = 1 << 12;
+
+/// The entries a track's inventories changed at, logged once for every reader: each takes
+/// those logged since it last took them, or reads both inventories whole where they were
+/// replaced. A reader that has not taken them yet reads them whole too.
+#[derive(Clone, Debug)]
+pub(crate) struct Edits {
+    log: Vec<Entry>,
+    taken: [usize; READERS],
+    whole: [bool; READERS],
+}
+
+impl Default for Edits {
+    fn default() -> Self {
+        Self {
+            log: Vec::new(),
+            taken: [0; READERS],
+            whole: [true; READERS],
+        }
+    }
+}
+
+impl Edits {
+    /// `entry` changed in either inventory.
+    pub(crate) fn note(&mut self, entry: Entry) {
+        if self.log.len() >= EDITS_HELD {
+            self.replaced();
+            return;
+        }
+        self.log.push(entry);
+    }
+
+    /// Both inventories were replaced: every reader reads them whole.
+    pub(crate) fn replaced(&mut self) {
+        self.log.clear();
+        self.taken = [0; READERS];
+        self.whole = [true; READERS];
+    }
+
+    /// The entries changed since `reader` last took them, ascending and once each, in `out`;
+    /// true when it must read the inventories whole instead.
+    pub(crate) fn take(&mut self, reader: usize, out: &mut Vec<Entry>) -> bool {
+        out.clear();
+        out.extend_from_slice(&self.log[self.taken[reader]..]);
+        self.taken[reader] = self.log.len();
+        out.sort_unstable();
+        out.dedup();
+        if self.taken.iter().all(|&taken| taken == self.log.len()) {
+            self.log.clear();
+            self.taken = [0; READERS];
+        }
+        std::mem::take(&mut self.whole[reader])
+    }
 }
 
 /// One branch's scan.

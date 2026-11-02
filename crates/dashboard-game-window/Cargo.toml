@@ -58,6 +58,7 @@ viewer-foundation = { path = "../viewer-foundation", features = ["test-support"]
 [target.'cfg(all())'.dev-dependencies]
 dashboard-army = { workspace = true, features = ["test-support"] }
 dashboard-forces = { workspace = true, features = ["test-support"] }
+dashboard-keyed = { workspace = true, features = ["test-support"] }
 dashboard-land-battles = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-weather = { workspace = true, features = ["test-support"] }

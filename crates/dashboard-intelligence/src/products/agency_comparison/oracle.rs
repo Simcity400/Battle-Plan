@@ -69,8 +69,16 @@ impl ScannedAgencies {
     ) -> io::Result<(BTreeMap<String, Identity>, usize, BTreeMap<u8, usize>)> {
         let mut countries = std::mem::take(&mut self.native_countries);
         countries.update(frame, None);
-        let result = self.observe_frame_countries(frame, replay, &countries, None);
+        let mut active = BTreeMap::new();
+        let result = self.observe_frame_countries(
+            frame,
+            replay,
+            &countries,
+            None,
+            (&mut active, true),
+        );
         self.native_countries = countries;
-        result
+        let (unresolved, unsupported) = result?;
+        Ok((active, unresolved, unsupported))
     }
 }

@@ -47,6 +47,7 @@ dashboard-military-air-ledger.workspace = true
 dashboard-stability.workspace = true
 dashboard-place-names.workspace = true
 dashboard-manpower.workspace = true
+dashboard-measure.workspace = true
 dashboard-world-tension.workspace = true
 dashboard-keyed.workspace = true
 dashboard-air-operations.workspace = true
@@ -57,6 +58,7 @@ dashboard-weather.workspace = true
 dashboard-economy.workspace = true
 dashboard-politics.workspace = true
 dashboard-country-nukes.workspace = true
+dashboard-ideas.workspace = true
 dashboard-subjects.workspace = true
 dashboard-party-history.workspace = true
 dashboard-occupation.workspace = true
@@ -133,6 +135,7 @@ dashboard-world-tension = { workspace = true, features = ["test-support"] }
 dashboard-economy = { workspace = true, features = ["test-support"] }
 dashboard-politics = { workspace = true, features = ["test-support"] }
 dashboard-country-nukes = { workspace = true, features = ["test-support"] }
+dashboard-ideas = { workspace = true, features = ["test-support"] }
 dashboard-subjects = { workspace = true, features = ["test-support"] }
 dashboard-party-history = { workspace = true, features = ["test-support"] }
 dashboard-occupation = { workspace = true, features = ["test-support"] }
@@ -161,6 +164,7 @@ store = { path = "../store", features = ["test-support"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+dashboard-keyed = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-weather = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

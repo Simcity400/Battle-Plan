@@ -244,3 +244,27 @@ fn priority_names_are_the_effective_interface_tooltips_of_the_priority_buttons()
     let r = reply_with(&read, &read, "GER", &need, Some(&cat));
     assert_eq!(r.orders[0].priority_name.as_deref(), Some("Rebound low"), "each order takes its stored priority's button");
 }
+
+#[test]
+fn a_queue_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
+    let mut cut = frame();
+    // Full leaves DivisionModelInputs out, so a frame in its mode marks it so.
+    for table in [TableId::DeploymentLines, TableId::DivisionModelInputs] {
+        *cut.tables[table.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+    }
+    let (source, root) = dashboard_base::test_fixtures::file_source(dashboard_base::test_fixtures::replay(vec![cut]));
+    let error = TrainingQueue::load(
+        &source,
+        &TrainingQueueParams { branch_id: "1".into(), hour: 60_000_008, tag: "GER".into() },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap_err()
+    .to_string();
+    drop(source);
+    std::fs::remove_dir_all(root).ok();
+    assert_eq!(
+        error,
+        "The recording holds [DeploymentLines] in its native capture, whose change-run index is not prepared yet"
+    );
+}

@@ -27,12 +27,16 @@
 //! never undo an annexation, and an hour whose existence is unknown says
 //! nothing. Annexations still name how a side left, and by which route.
 
-use super::history::{self, Field, HolderTag, Metadata, Part, tag_at};
+use super::history::{
+    self, HolderTag, Part, Run,
+    emit::{CIVIL_WAR, CIVIL_WAR_RIVAL, EXISTS},
+    tag_at,
+};
 use dashboard_base::{
     invalid,
-    prepared::series::{self, Reader, Run},
     products::{Product, country_groups::HourSpan},
 };
+use dashboard_series::{PageRead, Snapshot, family::Directory};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -163,67 +167,64 @@ struct Listing {
     last: i32,
 }
 
-/// Every civil war through `through`, the last prepared hour, with the
-/// branch's recorded annexations as outcome evidence.
-pub fn query(
-    store: &store::Store,
-    key: &store::SourceKey,
-    params: &CivilWarsParams,
-    through: Option<i32>,
-    annexations: &[Annexation],
-    cancelled: &AtomicBool,
-) -> io::Result<CivilWarsReply> {
-    let branch: u64 = params
+/// The reply before the family's first publication on the branch: no hour is prepared yet.
+pub fn unpublished(params: &CivilWarsParams, through: Option<i32>) -> io::Result<CivilWarsReply> {
+    params
         .branch_id
-        .parse()
+        .parse::<u64>()
         .map_err(|_| invalid("Invalid civil war branch"))?;
-    let mut reply = CivilWarsReply {
+    Ok(CivilWarsReply {
         branch_id: params.branch_id.clone(),
         last_hour: through,
         known: Vec::new(),
         wars: Vec::new(),
         warnings: Vec::new(),
-    };
+    })
+}
+
+/// Every civil war through `through`, the last prepared hour, from the publication `snapshot`
+/// pins, with the branch's recorded annexations as outcome evidence.
+pub fn query<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    params: &CivilWarsParams,
+    through: Option<i32>,
+    annexations: &[Annexation],
+    cancelled: &AtomicBool,
+) -> io::Result<CivilWarsReply> {
+    let mut reply = unpublished(params, through)?;
     let Some(through) = through else {
         return Ok(reply);
     };
-    let Some((_, metadata)) =
-        series::read_catalogue::<Metadata>(store, key, history::FAMILY, branch)?
-    else {
-        return Ok(reply);
-    };
-    let mut reader = Reader::new(store, key, history::values_section(branch), cancelled)?;
-    reply.known = history::known(&mut reader, &metadata, Part::CivilWars, i32::MIN, through)?;
+    reply.known = history::known(snapshot, directory, Part::CivilWars, i32::MIN, through)?;
+    let tags = history::tags(snapshot, directory)?;
     let mut listings = Vec::new();
     let mut at_war = BTreeMap::new();
     let mut exists = BTreeMap::new();
-    for (&id, (holder, field)) in &metadata.fields {
+    for (holder, actor) in history::holders(directory) {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("Civil war request cancelled"));
         }
-        let rival = match field {
-            Field::CivilWarRival(rival) => rival,
-            Field::CivilWar => {
-                at_war.insert(*holder, reader.runs(id, i32::MIN, through)?);
-                continue;
+        if let Some(key) = directory.key(actor, CIVIL_WAR, None) {
+            at_war.insert(holder, history::runs(snapshot, key, i32::MIN, through)?);
+        }
+        if let Some(key) = directory.key(actor, EXISTS, None) {
+            exists.insert(holder, history::runs(snapshot, key, i32::MIN, through)?);
+        }
+        for &(rival, key) in directory.dimensions(actor, CIVIL_WAR_RIVAL) {
+            let rival = u32::try_from(rival).map_err(|_| invalid("A civil-war rival is not a holder"))?;
+            for run in history::runs(snapshot, key, i32::MIN, through)? {
+                listings.push(Listing {
+                    a: holder.min(rival),
+                    b: holder.max(rival),
+                    first: run.first_hour,
+                    last: run.last_hour,
+                });
             }
-            Field::Exists => {
-                exists.insert(*holder, reader.runs(id, i32::MIN, through)?);
-                continue;
-            }
-            _ => continue,
-        };
-        for run in reader.runs(id, i32::MIN, through)? {
-            listings.push(Listing {
-                a: *holder.min(rival),
-                b: *holder.max(rival),
-                first: run.first_hour,
-                last: run.last_hour,
-            });
         }
     }
-    reply.wars = episodes(listings, &metadata, &at_war, &exists, annexations);
-    for (reason, count) in &metadata.refusals {
+    reply.wars = episodes(listings, &tags, &at_war, &exists, annexations);
+    for (reason, count) in &history::refusals(snapshot, directory, through)? {
         if reason.contains("civil-war") {
             reply
                 .warnings
@@ -238,9 +239,12 @@ pub fn query(
 /// existence check.
 type HolderRuns = BTreeMap<u32, Vec<Run>>;
 
+/// Each holder's tags from each hour it was first read with them.
+type Tags = BTreeMap<u32, Vec<(i32, String)>>;
+
 fn episodes(
     mut listings: Vec<Listing>,
-    metadata: &Metadata,
+    tags: &Tags,
     at_war: &HolderRuns,
     exists: &HolderRuns,
     annexations: &[Annexation],
@@ -272,7 +276,7 @@ fn episodes(
     }
     let mut wars: Vec<CivilWar> = groups
         .into_iter()
-        .map(|group| war(group, metadata, at_war, exists, annexations))
+        .map(|group| war(group, tags, at_war, exists, annexations))
         .collect();
     wars.sort_by_key(|war| (war.first_hour, war.id.clone()));
     wars
@@ -280,7 +284,7 @@ fn episodes(
 
 fn war(
     mut group: Vec<Listing>,
-    metadata: &Metadata,
+    tags: &Tags,
     at_war: &HolderRuns,
     exists: &HolderRuns,
     annexations: &[Annexation],
@@ -304,7 +308,7 @@ fn war(
         .enumerate()
         .map(|(index, holder)| (*holder, index as u32))
         .collect();
-    let tags = |holder: u32| metadata.tags.get(&holder).map(Vec::as_slice).unwrap_or(&[]);
+    let tags = |holder: u32| tags.get(&holder).map(Vec::as_slice).unwrap_or(&[]);
     let existed = |holder: u32| tags(holder).first().is_some_and(|(hour, _)| *hour < first);
     let mut sides: Vec<CivilWarSide> = order
         .iter()

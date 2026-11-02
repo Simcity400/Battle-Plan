@@ -295,6 +295,7 @@ pub struct Totals {
 
 impl Totals {
     pub fn merge(&mut self, other: &Self) -> io::Result<()> {
+        self.entries.reserve(other.entries.len());
         for (field, entry) in &other.entries {
             self.entries.entry(*field).or_default().merge(entry)?;
         }

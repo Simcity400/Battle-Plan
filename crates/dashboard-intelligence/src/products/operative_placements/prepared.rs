@@ -1,12 +1,10 @@
 //! Placement changes are append-only events; continuation retains the latest
 //! pair values. Successful membership dates use separate shared series runs.
 use super::*;
-use dashboard_base::Source;
 use dashboard_base::prepared::{
     frame_changes::FrameChanges,
     series::{self, Accumulator, Reader},
 };
-use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::check_cancel;
 
 const COVERAGE: u64 = 0;
@@ -41,8 +39,8 @@ impl Prepared {
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(
         &mut self,
-        source: &Source,
-        context: &LoadContext,
+        source: &dashboard_base::Source,
+        context: &dashboard_core::config::LoadContext,
         frame: &DecodedFrame,
     ) -> io::Result<()> {
         let changes = self
@@ -327,59 +325,3 @@ pub fn query(
 
 #[cfg(test)]
 mod tests;
-
-pub(crate) fn first_view(
-    source: &Source,
-    branch: u64,
-    first: i32,
-    last: i32,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-) -> io::Result<serde_json::Value> {
-    let content = context
-        .content
-        .as_ref()
-        .map(|options| dashboard_base::catalogue::catalogue(source, options))
-        .transpose()
-        .map_err(dashboard_text::catalogue::ContentError::from);
-    let mut scan = Scan::default();
-    let branch_first = source
-        .block_windows(branch)
-        .first()
-        .expect("branch windows")
-        .first_hour;
-    let mut supplying = None;
-    let mut countries = super::super::operative_rows::CountryInputs::default();
-    super::super::intelligence_prepared::first_views::day(
-        source,
-        branch,
-        first,
-        last,
-        &[
-            TableId::Campaign,
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::SimulationFeatures,
-            TableId::OperativeMemberships,
-        ],
-        cancelled,
-        |frame| {
-            if frame.hour == branch_first || super::super::operative_rows::membership_read(frame) {
-                supplying.get_or_insert(frame.hour);
-            }
-            countries.update(frame, None);
-            scan.observe_bound(frame, &countries, &content)?;
-            if frame.hour < first {
-                for pair in scan.history.pairs.values_mut() {
-                    if pair.runs.len() > 1 {
-                        pair.runs.drain(..pair.runs.len() - 1);
-                    }
-                }
-            }
-            Ok(())
-        },
-    )?;
-    let mut data = serde_json::to_value(scan.reply(branch))?;
-    data["sampledFrom"] = serde_json::to_value(supplying)?;
-    Ok(data)
-}

@@ -1,4 +1,4 @@
-//! Stability: displayed stability, war support and maximum command power over a branch with the breakdown behind them, each part over time, and the daily country scans that feed their prepared series.
+//! Stability: displayed stability, war support and maximum command power over a branch with the breakdown behind them, each part over time, and army, navy and air experience prepared from each country's daily reads.
 //!
 //! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::country_stability`), names what it
@@ -11,10 +11,9 @@
 #[global_allocator]
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-pub mod prepared_stability;
-
 pub mod products {
     pub mod country_stability;
+    pub mod experience;
     pub mod stability_parts;
 
     dashboard_base::reply_warnings!(

@@ -71,6 +71,7 @@ pub(super) fn assign_sides_with_anchors(
 
 /// The sides `hour` assigns `countries` before any key is resolved: None
 /// where [`assign_sides_with_anchors`] finds none.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn native_roster(
     groups: &country_groups::Scan,
     hour: i32,
@@ -327,6 +328,7 @@ pub(super) struct SideKey {
     factions: Vec<u64>,
     members: Vec<String>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl dashboard_base::prepared::prepass::Held for SideKey {
     fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
         bytes

@@ -91,13 +91,13 @@ impl Prepared {
         result
     }
 
-    /// The marks an hour's observation sets from the tables its update
-    /// rebuilt (`rebuilt`), for an hour observed as one at which nothing the
-    /// roster reads changed: the next membership or operations read then
-    /// joins afresh, as it does after any rebuild of its inputs. The
-    /// intelligence family prepared on its own tells the roster of an hour's
-    /// rebuilds this way where the hour's change facts leave them out
-    /// (`intelligence_prepared::Observer::observe_quiet`).
+    /// The marks an hour's observation sets from the tables it changed in
+    /// any field, read or not (`rebuilt`): the next membership read then joins
+    /// afresh, as it does after any rebuild of its inputs, though the hour's
+    /// change facts report only the fields the roster reads. Operations names
+    /// afresh only from those change facts ([`OPERATION_INPUTS`]): its name is
+    /// its definition's token alone, and its read every hour would otherwise
+    /// observe every roster at each preparation tick.
     pub(crate) fn note_rebuilt(&mut self, rebuilt: &dyn Fn(TableId) -> bool) {
         if rebuilt(TableId::CharacterOperatives)
             && let Some(scan) = &mut self.scan
@@ -105,7 +105,6 @@ impl Prepared {
             scan.characters = None;
         }
         self.membership_dirty |= MEMBERSHIP_INPUTS.iter().any(|&table| rebuilt(table));
-        self.operations_dirty |= OPERATION_INPUTS.iter().any(|&table| rebuilt(table));
     }
 
     pub fn observe_bound(
@@ -388,7 +387,8 @@ impl Prepared {
                     .held
                     .values()
                     .filter_map(|held| {
-                        (1..=24)
+                        // Truncated day rounding holds a cooldown's zero for 47 hours.
+                        (1..=48)
                             .filter_map(|offset| frame.hour.checked_add(offset))
                             .find(|&hour| {
                                 (held.value.captured == Some(true)
@@ -501,7 +501,7 @@ pub fn query(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<OperativeRosterReply>> {
     validate_countries(&params.branch_id, &params.tags).map_err(dashboard_core::invalid)?;
-    let history = super::super::intelligence_prepared::first_views::histories(
+    let history = super::super::intelligence_prepared::histories(
         source, context, store, source_key, branch, cancelled,
     )?;
     let mut reply = query_history(store, source_key, branch, params, &history, cancelled)?;
@@ -764,171 +764,4 @@ pub(crate) fn selection_complete(
     coverage.is_some_and(|coverage| {
         coverage.complete && last.is_some_and(|last| coverage.last_hour >= last)
     })
-}
-
-pub(crate) fn first_view(
-    source: &Source,
-    params: &Params,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-) -> io::Result<serde_json::Value> {
-    validate_countries(&params.branch_id, &params.tags).map_err(dashboard_core::invalid)?;
-    let branch = params
-        .branch_id
-        .parse()
-        .map_err(|_| dashboard_core::invalid("Invalid operative branch"))?;
-    let first = params
-        .first_hour
-        .ok_or_else(|| dashboard_core::invalid("Missing operative day"))?;
-    let last = params.last_hour.unwrap_or(first);
-    let content = super::super::operative_content::content(source, context);
-    if content
-        .as_ref()
-        .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
-    {
-        return Err(content.err().expect("interrupted content"));
-    }
-    let branch_first = source
-        .block_windows(branch)
-        .first()
-        .expect("branch windows")
-        .first_hour;
-    let mut identities = dashboard_base::products::country_history::HistoryScan::new(false, &[]);
-    let mut supplying = None;
-    let mut operations_supply = None;
-    // Project the holders known from the day and accepted identity history.
-    // The selection remains provisional until the whole branch is prepared.
-    super::super::intelligence_prepared::first_views::day(
-        source,
-        branch,
-        first,
-        last,
-        &[TableId::Campaign, TableId::Countries, TableId::CountryLinks],
-        cancelled,
-        |frame| {
-            identities.observe(frame);
-            Ok(())
-        },
-    )?;
-    let identities = identities.finish();
-    let mut selected =
-        dashboard_base::products::country_history::selected_identities(&identities, &params.tags);
-    let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let coverage = dashboard_base::prepared::coverage::product_coverage(
-        source,
-        context.content.as_ref(),
-        branch,
-        dashboard_base::products::country_history::IDENTITIES_PRODUCT,
-        cancelled,
-    )?;
-    let history = dashboard_base::prepared::query::progressive::histories(
-        &store,
-        &key,
-        branch,
-        coverage.as_ref(),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        source.replay_ref(),
-        &[],
-        cancelled,
-    )?;
-    selected.extend(
-        dashboard_base::products::country_history::selected_identities(&history, &params.tags),
-    );
-    let selection_pending = !selection_complete(source, branch, coverage.as_ref());
-    let tags: Vec<_> = identities
-        .countries
-        .iter()
-        .filter(|(_, country)| {
-            country
-                .identities
-                .iter()
-                .any(|identity| selected.contains(&(identity.slot, identity.country_id)))
-        })
-        .map(|(tag, _)| tag.clone())
-        .collect();
-    let mut scan = Scan::new(
-        &tags,
-        content.as_ref().ok().and_then(|content| content.as_deref()),
-        content.as_ref().err().map(ToString::to_string),
-        true,
-    )?;
-    let mut countries = super::super::operative_rows::CountryInputs::default();
-    super::super::intelligence_prepared::first_views::day(
-        source,
-        branch,
-        first,
-        last,
-        super::super::intelligence_prepared::TABLES,
-        cancelled,
-        |frame| {
-            if frame.hour == branch_first || super::super::operative_rows::membership_read(frame) {
-                supplying.get_or_insert(frame.hour);
-            }
-            if frame.hour == branch_first || super::super::operative_rows::operations_read(frame) {
-                operations_supply.get_or_insert(frame.hour);
-            }
-            countries.update(frame, None);
-            scan.observe_indices(
-                frame,
-                content.as_ref().ok().and_then(|content| content.as_deref()),
-                Some(&selected),
-                None,
-                None,
-                (false, true),
-                &countries,
-            )?;
-            if frame.hour < first {
-                for history in &mut scan.histories {
-                    for entry in &mut history.reply.operatives {
-                        if entry.runs.len() > 1 {
-                            entry.runs.drain(..entry.runs.len() - 1);
-                        }
-                    }
-                }
-            }
-            Ok(())
-        },
-    )?;
-    for history in &mut scan.histories {
-        if let Some(recorded) = identities.countries.get(&history.reply.tag) {
-            history.reply.identities = recorded.identities.as_ref().clone();
-        }
-        history.reply.operatives.retain(|entry| {
-            entry.runs.iter().any(|run| run.last_hour >= first)
-                || params.include_departed && entry.departed_hour.is_some_and(|hour| hour <= last)
-        });
-    }
-    // The artwork stays as descriptors: the screen cache keeping this reply is keyed without
-    // the presentation, so it is drawn after the cache answers ([`super::present_artwork_json`]).
-    let reply = scan.reply(branch, Some(&selected))?;
-    let mut data = serde_json::to_value(reply)?;
-    for country in data["countries"]
-        .as_array_mut()
-        .expect("operative countries")
-    {
-        for entry in country["operatives"]
-            .as_array_mut()
-            .expect("operative entries")
-        {
-            entry["preparing"] = serde_json::json!(["joinedHour", "departedHour"]);
-        }
-    }
-    data["sampledFrom"] = serde_json::to_value(
-        supplying
-            .filter(|_| !selection_pending)
-            .zip(operations_supply)
-            .map(|(roster, operations)| roster.max(operations)),
-    )?;
-    let preparing: Vec<_> = [
-        params.include_departed.then_some("departed"),
-        selection_pending.then_some("countries"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if !preparing.is_empty() {
-        data["preparing"] = serde_json::to_value(preparing)?;
-    }
-    Ok(data)
 }

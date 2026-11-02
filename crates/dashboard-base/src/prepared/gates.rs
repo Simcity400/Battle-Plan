@@ -1,8 +1,7 @@
 //! Every gate of a prepared store, decoded once when the store is bound ([`super::files`]) and
 //! then once per publication, in the thread that published it, from the publication as it was
-//! committed ([`store::on_publication`]): the hourly walk's and each family's and job's coverage
-//! page with its refusals, the version stamps the row pages were published under, each family's
-//! publication root with its hole summary, and the identities of the pages queries key their
+//! committed ([`store::on_publication`]): each family's and job's coverage page with its
+//! refusals, each family's publication root with its hole summary, and the identities of the pages queries key their
 //! answers by. Each store folder holds one current publication, under the key it was committed
 //! with, whichever source binds the folder. A query takes the one of its key from memory
 //! ([`current`]), or a view publishing nothing when the folder publishes nothing to its key,
@@ -14,7 +13,7 @@
 //! while a source binds it ([`lease`]), and goes with the last.
 
 use super::{
-    coverage::{self, Page, Versions},
+    coverage::{self, Page},
     roots,
 };
 use std::{
@@ -85,7 +84,6 @@ impl Gate {
 
 #[derive(Clone, Default)]
 struct Branch {
-    walk: Gate,
     /// Each family's and each job's, by name.
     named: BTreeMap<String, Gate>,
     identities: Option<[u64; 3]>,
@@ -94,8 +92,6 @@ struct Branch {
 /// The gates of one publication of a store, under the key it was committed with.
 pub struct Published {
     snapshot: store::Snapshot,
-    versions_id: Option<[u64; 3]>,
-    versions: Decoded<Option<Arc<Versions>>>,
     plan_id: Option<[u64; 3]>,
     plan: Option<Arc<Vec<u8>>>,
     branches: BTreeMap<u64, Branch>,
@@ -106,8 +102,6 @@ impl Published {
     fn empty(folder: &Path, key: &store::SourceKey) -> Self {
         Self {
             snapshot: store::Snapshot::empty(folder, key.clone()),
-            versions_id: None,
-            versions: Ok(None),
             plan_id: None,
             plan: None,
             branches: BTreeMap::new(),
@@ -125,27 +119,13 @@ impl Published {
         self.snapshot.scope()
     }
 
-    /// The hourly walk's gate on `branch`.
-    pub fn walk(&self, branch: u64) -> Option<&Gate> {
-        self.branches.get(&branch).map(|gates| &gates.walk)
-    }
-
     /// The gate of the family or job `name` on `branch`.
     pub fn gate(&self, branch: u64, name: &str) -> Option<&Gate> {
         self.branches.get(&branch)?.named.get(name)
     }
 
-    /// The version stamps the row preparation's pages were published under; None when no row
-    /// preparation published any.
-    pub fn versions(&self) -> io::Result<Option<&Versions>> {
-        match &self.versions {
-            Ok(versions) => Ok(versions.as_deref()),
-            Err(error) => Err(raised(error)),
-        }
-    }
-
-    /// The mark of the plan a native recording's preparation published under
-    /// ([`coverage::PLAN`]); None for a store prepared from the row recording.
+    /// The mark a preparation published under ([`coverage::PLAN`]); None for a store no
+    /// preparation marked.
     pub fn plan(&self) -> Option<&[u8]> {
         self.plan.as_deref().map(Vec::as_slice)
     }
@@ -168,8 +148,6 @@ pub fn decode(store: &store::Store, held: Option<&Published>) -> io::Result<Opti
 /// Every gate `snapshot` publishes, as its manifest lists their pages, decoding only the pages
 /// that changed since `held` was decoded.
 fn build(snapshot: store::Snapshot, held: Option<&Published>) -> io::Result<Published> {
-    let mut versions_id = None;
-    let mut versions = Ok(None);
     let mut plan_id = None;
     let mut plan = None;
     let mut built: BTreeMap<u64, Branch> = BTreeMap::new();
@@ -189,44 +167,26 @@ fn build(snapshot: store::Snapshot, held: Option<&Published>) -> io::Result<Publ
             };
             continue;
         }
-        if section == coverage::VERSIONS {
-            versions_id = snapshot.range_id(section, 0)?.map(|id| id.cache_key());
-            versions = match held {
-                Some(held) if held.versions_id == versions_id => held.versions.clone(),
-                _ => decoded(&snapshot, section, |bytes| {
-                    serde_json::from_slice::<Versions>(bytes).map_err(io::Error::from)
-                })?,
-            };
-            continue;
-        }
         if let Some(branch) = section.strip_prefix(IDENTITIES).and_then(digits) {
             built.entry(branch).or_default().identities =
                 snapshot.range_id(section, 0)?.map(|id| id.cache_key());
             continue;
         }
-        let (branch, name) = match (coverage::walk_of(section), coverage::family_of(section)) {
-            (Some(branch), _) => (branch, None),
-            (None, Some((name, branch))) => (branch, Some(name)),
-            (None, None) => continue,
+        let Some((name, branch)) = coverage::family_of(section) else {
+            continue;
         };
-        let previous = held.and_then(|held| held.branches.get(&branch));
-        let gates = built.entry(branch).or_default();
-        match name {
-            None => {
-                let previous = previous.map(|gates| &gates.walk);
-                gates.walk = decode_gate(&snapshot, section, None, previous)?;
-            }
-            Some(name) => {
-                let previous = previous.and_then(|gates| gates.named.get(name));
-                let gate = decode_gate(&snapshot, section, Some((name, branch)), previous)?;
-                gates.named.insert(name.to_owned(), gate);
-            }
-        }
+        let previous = held
+            .and_then(|held| held.branches.get(&branch))
+            .and_then(|gates| gates.named.get(name));
+        let gate = decode_gate(&snapshot, section, (name, branch), previous)?;
+        built
+            .entry(branch)
+            .or_default()
+            .named
+            .insert(name.to_owned(), gate);
     }
     Ok(Published {
         snapshot,
-        versions_id,
-        versions,
         plan_id,
         plan,
         branches: built,
@@ -256,12 +216,12 @@ fn decoded<T>(
         .map_err(|error| Arc::from(error.to_string())))
 }
 
-/// The gate whose coverage page is `section` and, for a family, whose publication is its root
-/// on its branch, decoded unless `previous` holds the same ranges.
+/// The gate whose coverage page is `section` and whose publication is its family's or job's
+/// root on its branch, decoded unless `previous` holds the same ranges.
 fn decode_gate(
     snapshot: &store::Snapshot,
     section: &str,
-    root: Option<(&str, u64)>,
+    (family, branch): (&str, u64),
     previous: Option<&Gate>,
 ) -> io::Result<Gate> {
     let mut gate = Gate {
@@ -271,9 +231,6 @@ fn decode_gate(
     gate.page = match previous {
         Some(previous) if previous.id == gate.id => previous.page.clone(),
         _ => decoded(snapshot, section, Page::parse)?,
-    };
-    let Some((family, branch)) = root else {
-        return Ok(gate);
     };
     let section = roots::root_section(family, branch);
     gate.root = match snapshot.range_count(&section) {

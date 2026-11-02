@@ -369,6 +369,16 @@ impl Look {
         row: &replay_data::rows::CountryRow,
         appearance: &replay_data::rows::CountryAppearanceRow,
     ) -> Option<Self> {
+        Self::read_with(frame, row, appearance, &|slot| civil_war(frame, slot))
+    }
+
+    /// [`Self::read_with_appearance`], a dynamic country's civil war answered by `civil_war`.
+    fn read_with(
+        frame: &dyn replay_frame::frame::DecodedSource,
+        row: &replay_data::rows::CountryRow,
+        appearance: &replay_data::rows::CountryAppearanceRow,
+        civil_war: &dyn Fn(u32) -> Result<bool, String>,
+    ) -> Option<Self> {
         let name_tag = std::str::from_utf8(&appearance.name_tag).ok()?;
         let cosmetic_tag = std::str::from_utf8(&appearance.cosmetic_tag).ok()?;
         Some(Self {
@@ -383,7 +393,7 @@ impl Look {
             civil_war: if name_tag.is_empty() {
                 Ok(false)
             } else {
-                civil_war(frame, row.canonical_slot)
+                civil_war(row.canonical_slot)
             },
         })
     }
@@ -421,6 +431,22 @@ impl NamingCountry {
             look: appearance
                 .filter(|appearance| appearance.country == row.id)
                 .and_then(|appearance| Look::read_with_appearance(frame, row, appearance)),
+        }
+    }
+
+    /// [`Self::read_with_appearance`], a dynamic country's civil war answered by `civil_war`:
+    /// [`CivilWars::holds`] of the frame's hour, indexed once for every country asked.
+    pub fn read_with_civil_war(
+        frame: &dyn replay_frame::frame::DecodedSource,
+        row: &replay_data::rows::CountryRow,
+        appearance: Option<&replay_data::rows::CountryAppearanceRow>,
+        civil_war: &dyn Fn(u32) -> Result<bool, String>,
+    ) -> Self {
+        Self {
+            slot: row.canonical_slot,
+            look: appearance
+                .filter(|appearance| appearance.country == row.id)
+                .and_then(|appearance| Look::read_with(frame, row, appearance, civil_war)),
         }
     }
 

@@ -1,8 +1,10 @@
 //! Reading a keyed family's prepared pages for a query: the catalogue (the
 //! carried scan with its names) and the runs of the names a request selects
-//! within its window, clipped to the hours preparation has accepted.
+//! within its window, clipped to the hours preparation has accepted. A family
+//! prepared on a native recording is read from its publication alike
+//! ([`crate::native`]).
 
-use crate::{KNOWN, Observer, READ, Scan, series_section};
+use crate::{KNOWN, Observer, READ, Scan, native, series_section};
 use dashboard_base::prepared::series::{self, Reader, Run};
 use dashboard_base::products::country_groups::HourSpan;
 use serde::Serialize;
@@ -46,15 +48,33 @@ pub fn window(
     through: Option<i32>,
     cancelled: &AtomicBool,
 ) -> io::Result<KeyedWindow> {
-    let mut window = KeyedWindow {
-        first_hour: from,
-        last_hour: to,
-        ..Default::default()
-    };
     if from > to {
-        return Ok(window);
+        return Ok(empty(from, to));
     }
-    for run in clipped(reader.runs(KNOWN, from, to)?, through) {
+    let keyed: Vec<(String, u64)> = keyed.into_iter().collect();
+    let mut runs = Vec::with_capacity(keyed.len() + 2);
+    for key in [KNOWN, READ].into_iter().chain(keyed.iter().map(|(_, key)| *key)) {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        runs.push(reader.runs(key, from, to)?);
+    }
+    windowed(keyed, runs, from, to, through)
+}
+
+/// The window `from..=to` of `keyed` series, given KNOWN's runs, READ's and then each of
+/// theirs, read only through `through`.
+pub(crate) fn windowed(
+    keyed: Vec<(String, u64)>,
+    runs: Vec<Vec<Run>>,
+    from: i32,
+    to: i32,
+    through: Option<i32>,
+) -> io::Result<KeyedWindow> {
+    let mut window = empty(from, to);
+    let mut runs = runs.into_iter();
+    let (Some(known), Some(reads)) = (runs.next(), runs.next()) else {
+        return Err(io::Error::other("A keyed window misses its own runs"));
+    };
+    for run in clipped(known, through) {
         match window.known.last_mut() {
             Some(span) if span.last_hour.checked_add(1) == Some(run.first_hour) => {
                 span.last_hour = run.last_hour;
@@ -65,14 +85,13 @@ pub fn window(
             }),
         }
     }
-    for run in clipped(reader.runs(READ, from, to)?, through) {
+    for run in clipped(reads, through) {
         let hour = i32::try_from(run.value)
             .map_err(|_| io::Error::other("Invalid supplying read hour"))?;
         window.reads.push((run.first_hour, run.last_hour, hour));
     }
-    for (name, key) in keyed {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let runs: Vec<KeyedRun> = clipped(reader.runs(key, from, to)?, through)
+    for ((name, _), runs) in keyed.into_iter().zip(runs) {
+        let runs: Vec<KeyedRun> = clipped(runs, through)
             .map(|run| {
                 (
                     run.first_hour,
@@ -92,8 +111,14 @@ pub fn window(
 /// A keyed family's published catalogue and a reader of its series.
 pub struct Opened<'a, O> {
     pub scan: Scan<O>,
-    pub reader: Reader<'a>,
+    series: Series<'a>,
     cancelled: &'a AtomicBool,
+}
+
+/// Where a family's runs are read: the walk's pages, or a native publication.
+enum Series<'a> {
+    Pages(Reader<'a>),
+    Native(native::Opened),
 }
 
 /// The family's pages on `branch`; None before its first publication.
@@ -109,7 +134,7 @@ pub fn open<'a, O: Observer>(
     let reader = Reader::new(store, key, series_section(O::NAME, branch), cancelled)?;
     Ok(Some(Opened {
         scan,
-        reader,
+        series: Series::Pages(reader),
         cancelled,
     }))
 }
@@ -142,12 +167,26 @@ impl<O: Observer> Opened<'_, O> {
             .filter(|(name, _)| select(name))
             .map(|(name, key)| (name.to_owned(), key))
             .collect();
-        window(&mut self.reader, keyed, from, to, through, self.cancelled)
+        match &mut self.series {
+            Series::Pages(reader) => window(reader, keyed, from, to, through, self.cancelled),
+            Series::Native(opened) => {
+                if from > to {
+                    return Ok(empty(from, to));
+                }
+                let mut keys = vec![KNOWN, READ];
+                keys.extend(keyed.iter().map(|(_, key)| *key));
+                let runs = opened.runs(&keys, from, to, self.cancelled)?;
+                windowed(keyed, runs, from, to, through)
+            }
+        }
     }
 
     /// The values of `keys` at `hour`, None where a key holds none then.
     pub fn values_at(&mut self, keys: &[u64], hour: i32) -> io::Result<Vec<Option<i128>>> {
-        self.reader.values_at(keys, hour)
+        match &mut self.series {
+            Series::Pages(reader) => reader.values_at(keys, hour),
+            Series::Native(opened) => opened.values_at(keys, hour, self.cancelled),
+        }
     }
 
     /// [`Self::values_at`] of `keys` at each of the ascending `hours`, as each key's
@@ -157,7 +196,10 @@ impl<O: Observer> Opened<'_, O> {
         keys: &[u64],
         hours: &[i32],
     ) -> io::Result<Vec<Vec<(usize, Option<i128>)>>> {
-        self.reader.changes_at(keys, hours)
+        match &mut self.series {
+            Series::Pages(reader) => reader.changes_at(keys, hours),
+            Series::Native(opened) => opened.changes_at(keys, hours, self.cancelled),
+        }
     }
 }
 
@@ -199,6 +241,19 @@ impl Query<'_> {
     /// The family's pages; None before its first publication.
     pub fn open<O: Observer>(&self) -> io::Result<Option<Opened<'_, O>>> {
         open::<O>(self.store, self.key, self.branch, self.cancelled)
+    }
+
+    /// The family's publication on a native recording ([`native`]); None before its first.
+    pub fn open_native<O: Observer>(&self) -> io::Result<Option<Opened<'_, O>>> {
+        Ok(
+            native::open::<O>(self.source, self.content, self.branch, self.cancelled)?.map(
+                |(scan, opened)| Opened {
+                    scan,
+                    series: Series::Native(opened),
+                    cancelled: self.cancelled,
+                },
+            ),
+        )
     }
 
     /// The requested window, `firstHour..=lastHour` of the params, within

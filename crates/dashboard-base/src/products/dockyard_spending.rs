@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub mod prepared;
+pub mod served;
 
 pub struct DockyardSpending;
 
@@ -150,6 +151,7 @@ pub use super::purpose_split::{month_of, months};
 impl Product for DockyardSpending {
     const KEY: &'static str = "dockyard-spending";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static crate::prepared::served::Plan> = Some(&served::PLAN);
     type Params = DockyardSpendingParams;
     type Reply = DockyardSpendingReply;
 

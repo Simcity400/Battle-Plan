@@ -1,4 +1,6 @@
 //! Additional consumer of the occupation scan's already-decoded daily joins.
+// Read by the row scan, the projection's parity oracle, but for its mean.
+#![cfg_attr(not(test), allow(dead_code))]
 use super::*;
 use crate::products::occupation_trend::{
     History, OccupationCollaboration, OccupationCollaborationActor, OccupationTrendRun, same_value,
@@ -395,6 +397,7 @@ impl TrendScan {
 
     /// The occupiers' runs, by tag, as a flush ranks them: those ending at
     /// or after `first`, from `first` on.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn ranked(
         &self,
         first: i32,
@@ -418,6 +421,7 @@ impl TrendScan {
 
     /// The warnings a flush publishes with the occupiers' series, and those
     /// it adds when collaboration is shown.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn warnings(&self) -> (Vec<String>, Vec<String>) {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.refused.lines("recorded occupation trend facts"));

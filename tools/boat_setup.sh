@@ -76,7 +76,7 @@ fi
 sha256sum package-lock.json | cut -d" " -f1 > "$ROOT/node-lock.sha256"
 /usr/bin/time -v cargo xwin check --workspace --all-targets --target x86_64-pc-windows-msvc
 # The release snapshot covers all four operational artifacts, with Cargo's normal release profile.
-/usr/bin/time -v cargo xwin build --release -p dashboard --bin preparation-cost -p viewer --bin viewer -p recorder --bin recorder -p collector --lib --target x86_64-pc-windows-msvc
+/usr/bin/time -v cargo xwin build --release -p dashboard --bin columnar-family-check -p viewer --bin viewer -p recorder --bin recorder -p collector --lib --target x86_64-pc-windows-msvc
 python3 "$ROOT/remote.py" checkpoint
 printf '%s\n' "${1:-source revision not supplied}" > "$ROOT/source-revision"
 { rustc -vV; cargo xwin --version; clang-cl --version; lld-link --version; node --version; cat "$ROOT/xwin/xwin/DONE"; cargo xwin env --target x86_64-pc-windows-msvc; } > "$ROOT/toolchain.txt"

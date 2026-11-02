@@ -1,9 +1,10 @@
-//! Inventory projection for the requested country and recorded hour. Dynamic
-//! grant facts come from rows; their spelling and presentation use bound content.
+//! A country's grant inventory: its dynamic facts come from its owners' ResearchModifiers rows
+//! at a read its supplying read admits ([`super::emit`]); their names are localised from bound
+//! content when a reply is made.
 use super::*;
 use replay_data::rows::ResearchModifierRow as R;
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GrantRestriction {
     pub token: String,
@@ -11,7 +12,7 @@ pub struct GrantRestriction {
     pub database_index: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchGrant {
     pub id: i32,
@@ -28,7 +29,7 @@ pub struct ResearchGrant {
     pub categories: Vec<GrantRestriction>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GrantInventory {
     pub next_id: Option<i32>,
@@ -46,24 +47,141 @@ impl GrantInventory {
     }
 }
 
-pub(super) const TABLES: &[TableId] = &[
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::ResearchModifiers,
-    TableId::SliceReads,
-    TableId::LexicalTokens,
-];
+/// Why a reply shows no inventory at an hour no supplying read admits.
+pub(super) const UNADMITTED: &str = "Research grants lack a continuous supplying read at this hour";
 
+/// Whether `row` belongs to a country's grant inventory.
+pub(super) fn inventory_row(row: &R) -> bool {
+    row.index == engine_research::research_modifiers::grants::INVENTORY_INDEX
+}
+
+/// Whether `row` names a restriction, whose token `assemble` spells.
+pub(super) fn spells(row: &R) -> bool {
+    matches!(row.kind, R::GRANT_TECHNOLOGY | R::GRANT_CATEGORY)
+}
+
+/// The inventory one slot's grant rows hold, in their table order, every name unlocalised;
+/// `token` spells a restriction's token.
+pub(super) fn assemble(
+    selected: &[&R],
+    mut token: impl FnMut(u32) -> Result<String, String>,
+) -> Result<GrantInventory, String> {
+    let mut counters = selected.iter().filter(|row| row.kind == R::GRANT_COUNTER);
+    let counter = counters
+        .next()
+        .ok_or("Research grant inventory is not recorded")?;
+    if counters.next().is_some() {
+        return Err("Research grant inventory has multiple country counters".into());
+    }
+    let next_id = i32::try_from(counter.raw)
+        .map_err(|_| "Research grant counter is outside its signed width")?;
+    let mut grants = Vec::new();
+    let mut parents = selected
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| matches!(row.kind, R::SPEED_GRANT | R::COST_GRANT))
+        .peekable();
+    while let Some((position, row)) = parents.next() {
+        let end = parents.peek().map_or(selected.len(), |(next, _)| *next);
+        let children = &selected[position + 1..end];
+        let cost = row.kind == R::COST_GRANT;
+        let mut usage = children.iter().filter(|value| {
+            value.kind == R::GRANT_USES
+                && value.source_id == row.source_id
+                && value.count == u32::from(cost)
+        });
+        let usage_row = usage.next().ok_or("Research grant uses are not recorded")?;
+        if usage.next().is_some() {
+            return Err("Research grant has multiple use records".into());
+        }
+        let mut restrictions = |kind| -> Result<Vec<GrantRestriction>, String> {
+            children
+                .iter()
+                .filter(|value| {
+                    value.kind == kind
+                        && value.source_id == row.source_id
+                        && value.count == u32::from(cost)
+                })
+                .map(|value| {
+                    let spelling = token(
+                        u32::try_from(value.raw)
+                            .map_err(|_| "Research grant token is outside its native width")?,
+                    )?;
+                    Ok(GrantRestriction {
+                        name: None,
+                        token: spelling,
+                        database_index: if kind == R::GRANT_TECHNOLOGY {
+                            Some(i32::try_from(value.auxiliary).map_err(|_| {
+                                "Research grant technology index is outside its native width"
+                            })?)
+                        } else {
+                            None
+                        },
+                    })
+                })
+                .collect()
+        };
+        let technologies = restrictions(R::GRANT_TECHNOLOGY)?;
+        let categories = restrictions(R::GRANT_CATEGORY)?;
+        let spelling =
+            String::from_utf8(row.name.clone()).map_err(|_| "Research grant name has invalid text")?;
+        grants.push(ResearchGrant {
+            id: row.source_id as i32,
+            ordinal: row.count,
+            kind: if cost { "cost" } else { "speed" }.into(),
+            name: None,
+            token: spelling,
+            uses: i32::try_from(usage_row.raw)
+                .map_err(|_| "Research grant uses are outside their signed width")?,
+            active_claims: if cost {
+                None
+            } else {
+                Some(
+                    i32::try_from(usage_row.auxiliary)
+                        .map_err(|_| "Research grant claims are outside their signed width")?,
+                )
+            },
+            speed_bonus_raw: (!cost).then(|| row.raw.to_string()),
+            ahead_reduction_raw: (!cost).then(|| row.auxiliary.to_string()),
+            cost_reduction_raw: cost.then(|| row.raw.to_string()),
+            technologies,
+            categories,
+        });
+    }
+    Ok(GrantInventory {
+        next_id: Some(next_id),
+        grants,
+        unavailable: None,
+    })
+}
+
+/// `inventory` with each restriction's and grant's name localised, in the order the row read
+/// names them.
+pub(super) fn localised(
+    mut inventory: GrantInventory,
+    mut localise: impl FnMut(&str) -> Option<String>,
+) -> GrantInventory {
+    for grant in &mut inventory.grants {
+        for restriction in grant
+            .technologies
+            .iter_mut()
+            .chain(grant.categories.iter_mut())
+        {
+            restriction.name = localise(&restriction.token);
+        }
+        grant.name = localise(&grant.token);
+    }
+    inventory
+}
+
+/// The row frame's inventory of `tag`, as a supplying read at its hour shows it.
+#[cfg(test)]
 pub(super) fn inventory(
     frame: &DecodedFrame,
     tag: &str,
-    mut localise: impl FnMut(&str) -> Option<String>,
+    localise: impl FnMut(&str) -> Option<String>,
 ) -> GrantInventory {
-    fn read(
-        frame: &DecodedFrame,
-        tag: &str,
-        localise: &mut impl FnMut(&str) -> Option<String>,
-    ) -> Result<GrantInventory, String> {
+    fn read(frame: &DecodedFrame, tag: &str) -> Result<GrantInventory, String> {
         let countries = frame
             .complete::<tables::Countries>()
             .map_err(|e| e.to_string())?;
@@ -79,191 +197,36 @@ pub(super) fn inventory(
         let tokens = frame
             .complete::<tables::LexicalTokens>()
             .map_err(|e| e.to_string())?;
-        let token = |id: u32| -> Result<String, String> {
+        let selected: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                inventory_row(row) && crate::metadata::link_slot(links, row.country) == Some(slot)
+            })
+            .collect();
+        assemble(&selected, |id| {
             let row = tokens
                 .iter()
                 .find(|row| row.token == id)
                 .ok_or_else(|| format!("Research grant restriction token {id} is not recorded"))?;
             String::from_utf8(row.literal.clone())
                 .map_err(|_| format!("Research grant restriction token {id} has invalid text"))
-        };
-        let selected: Vec<_> = rows
-            .iter()
-            .filter(|row| {
-                row.index == engine_research::research_modifiers::grants::INVENTORY_INDEX
-                    && crate::metadata::link_slot(links, row.country) == Some(slot)
-            })
-            .collect();
-        let mut counters = selected.iter().filter(|row| row.kind == R::GRANT_COUNTER);
-        let counter = counters
-            .next()
-            .ok_or("Research grant inventory is not recorded")?;
-        if counters.next().is_some() {
-            return Err("Research grant inventory has multiple country counters".into());
-        }
-        let next_id = i32::try_from(counter.raw)
-            .map_err(|_| "Research grant counter is outside its signed width")?;
-        let mut grants = Vec::new();
-        let mut parents = selected
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| matches!(row.kind, R::SPEED_GRANT | R::COST_GRANT))
-            .peekable();
-        while let Some((position, row)) = parents.next() {
-            let end = parents.peek().map_or(selected.len(), |(next, _)| *next);
-            let children = &selected[position + 1..end];
-            let cost = row.kind == R::COST_GRANT;
-            let mut usage = children.iter().filter(|value| {
-                value.kind == R::GRANT_USES
-                    && value.source_id == row.source_id
-                    && value.count == u32::from(cost)
-            });
-            let usage_row = usage.next().ok_or("Research grant uses are not recorded")?;
-            if usage.next().is_some() {
-                return Err("Research grant has multiple use records".into());
-            }
-            let mut restrictions = |kind| -> Result<Vec<GrantRestriction>, String> {
-                children.iter().filter(|value| value.kind == kind && value.source_id == row.source_id
-                    && value.count == u32::from(cost)).map(|value| {
-                    let spelling = token(u32::try_from(value.raw).map_err(|_| "Research grant token is outside its native width")?)?;
-                    Ok(GrantRestriction { name: localise(&spelling), token: spelling,
-                        database_index: if kind == R::GRANT_TECHNOLOGY { Some(i32::try_from(value.auxiliary)
-                            .map_err(|_| "Research grant technology index is outside its native width")?) } else { None } })
-                }).collect()
-            };
-            let technologies = restrictions(R::GRANT_TECHNOLOGY)?;
-            let categories = restrictions(R::GRANT_CATEGORY)?;
-            let spelling = String::from_utf8(row.name.clone())
-                .map_err(|_| "Research grant name has invalid text")?;
-            grants.push(ResearchGrant {
-                id: row.source_id as i32,
-                ordinal: row.count,
-                kind: if cost { "cost" } else { "speed" }.into(),
-                name: localise(&spelling),
-                token: spelling,
-                uses: i32::try_from(usage_row.raw)
-                    .map_err(|_| "Research grant uses are outside their signed width")?,
-                active_claims: if cost {
-                    None
-                } else {
-                    Some(
-                        i32::try_from(usage_row.auxiliary)
-                            .map_err(|_| "Research grant claims are outside their signed width")?,
-                    )
-                },
-                speed_bonus_raw: (!cost).then(|| row.raw.to_string()),
-                ahead_reduction_raw: (!cost).then(|| row.auxiliary.to_string()),
-                cost_reduction_raw: cost.then(|| row.raw.to_string()),
-                technologies,
-                categories,
-            });
-        }
-        Ok(GrantInventory {
-            next_id: Some(next_id),
-            grants,
-            unavailable: None,
         })
     }
-    read(frame, tag, &mut localise).unwrap_or_else(GrantInventory::unavailable)
+    match read(frame, tag) {
+        Ok(inventory) => localised(inventory, localise),
+        Err(reason) => GrantInventory::unavailable(reason),
+    }
 }
 
-/// A bounded owner-read proof, including empty-slot countries and every intervening hour.
-pub(super) fn at_hour(
-    source: &Source,
-    branch: u64,
-    hour: i32,
-    tag: &str,
-    cancelled: &AtomicBool,
-    localise: impl FnMut(&str) -> Option<String>,
-) -> io::Result<GrantInventory> {
-    let frames = crate::prepared::query::progressive::read_window(
-        source,
-        branch,
-        hour.saturating_sub(replay_data::cadence::STAGGER_PERIOD - 1),
-        hour,
-        TABLES,
-        cancelled,
-    )?;
-    let mut identity = None;
-    let mut previous = None;
-    let mut admitted = false;
-    for frame in &frames {
-        let current = frame
-            .complete::<tables::Countries>()
-            .ok()
-            .zip(frame.complete::<tables::CountryLinks>().ok())
-            .and_then(|(countries, links)| {
-                crate::metadata::tagged_country(countries, links, tag).found()
-            })
-            .map(|(country, slot)| (country.id, slot));
-        if current != identity
-            || previous.and_then(|last: i32| last.checked_add(1)) != Some(frame.hour)
-        {
-            admitted = false;
-        }
-        identity = current;
-        previous = Some(frame.hour);
-        let read = current.and_then(|(id, _)| {
-            frame
-                .complete::<tables::SliceReads>()
-                .ok()
-                .and_then(|reads| {
-                    replay_data::sliced::read_hour(reads, TableId::ResearchModifiers, id)
-                })
-        });
-        if read == Some(frame.hour) {
-            admitted = true;
-        }
-        let owner_reads_match = current.is_some_and(|(_, slot)| {
-            let Some((links, reads, rows)) = frame
-                .complete::<tables::CountryLinks>()
-                .ok()
-                .zip(frame.complete::<tables::SliceReads>().ok())
-                .zip(frame.complete::<tables::ResearchModifiers>().ok())
-                .map(|((links, reads), rows)| (links, reads, rows))
-            else {
-                return false;
-            };
-            rows.iter()
-                .filter(|row| {
-                    row.index == engine_research::research_modifiers::grants::INVENTORY_INDEX
-                        && crate::metadata::link_slot(links, row.country) == Some(slot)
-                })
-                .all(|row| {
-                    replay_data::sliced::read_hour(reads, TableId::ResearchModifiers, row.country)
-                        == read
-                })
-        });
-        if !owner_reads_match {
-            admitted = false;
-        }
-        if read.is_none_or(|read| {
-            read > frame.hour
-                || frame.hour.saturating_sub(read) >= replay_data::cadence::STAGGER_PERIOD
-        }) || frame.complete::<tables::ResearchModifiers>().is_err()
-        {
-            admitted = false;
-        }
-    }
-    Ok(
-        match frames.last().filter(|frame| frame.hour == hour && admitted) {
-            Some(frame) => inventory(frame, tag, localise),
-            None => GrantInventory::unavailable(
-                "Research grants lack a continuous supplying read at this hour",
-            ),
-        },
-    )
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{CAMPAIGN, file_source, records, source};
-    use replay::container::Replay;
+    use crate::test_fixtures::source;
     use replay_data::rows::*;
     use replay_frame::frame::TableView;
+
     #[test]
-    fn gap_research_grants_grant_inventory_preserves_repeated_ids_and_requires_its_supplying_read()
-    {
+    fn grant_inventory_preserves_repeated_ids_in_row_order() {
         let mut frame = source(1, 24, None);
         let values = vec![
             R {
@@ -311,29 +274,9 @@ mod tests {
         .collect();
         *frame.tables[TableId::ResearchModifiers.index()] =
             TableView::Complete(TableRows::ResearchModifiers(values));
-        *frame.tables[TableId::SliceReads.index()] =
-            TableView::Complete(TableRows::SliceReads(vec![
-                SliceReadRow {
-                    table: TableId::ResearchModifiers.index() as u32,
-                    owner: 9001,
-                    sample_hour: 24,
-                },
-                SliceReadRow {
-                    table: TableId::ResearchModifiers.index() as u32,
-                    owner: 11,
-                    sample_hour: 24,
-                },
-            ]));
-        if let TableView::Complete(TableRows::SliceReads(reads)) =
-            &mut *frame.tables[TableId::SliceReads.index()]
-        {
-            reads.sort_by_key(|row| (row.table, row.owner));
-        }
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(Vec::new()));
-        let (source, root) =
-            file_source(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
-        let result = at_hour(&source, 1, 24, "GER", &AtomicBool::new(false), |_| None).unwrap();
+        let result = inventory(&frame, "GER", |token| Some(format!("<{token}>")));
         assert_eq!(result.next_id, Some(-7));
         assert!(result.unavailable.is_none(), "{:?}", result.unavailable);
         assert_eq!(
@@ -345,13 +288,13 @@ mod tests {
             [3, 1]
         );
         assert_eq!(result.grants[1].token, "mod_b");
-        assert!(
-            at_hour(&source, 1, 25, "GER", &AtomicBool::new(false), |_| None)
-                .unwrap()
-                .unavailable
-                .is_some()
+        assert_eq!(result.grants[1].name.as_deref(), Some("<mod_b>"));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+            reason: "synthetic".into(),
+        };
+        assert_eq!(
+            inventory(&frame, "GER", |_| None).unavailable.as_deref(),
+            Some("hour 24 LexicalTokens is unavailable: synthetic")
         );
-        drop(source);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

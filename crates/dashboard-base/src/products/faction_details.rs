@@ -21,9 +21,43 @@ mod manpower;
 mod pools;
 mod presentations;
 pub mod selectors;
+mod viewer;
 pub use accounts::{FactionAccountDetail, FactionUpgradeDetail};
 pub use companions::{FactionManpowerDetail, FactionProgramDetail, FactionRuleDetail};
 pub use pools::FactionResourceDetail;
+pub use viewer::ViewerText;
+/// The tables every faction detail reads at its hour; the others only when the hour needs them.
+pub const TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Clock,
+    TableId::SimulationFeatures,
+    TableId::ModifierDefinitions,
+    TableId::LocalPlayer,
+    TableId::Factions,
+    TableId::FactionGoalStatus,
+    TableId::FactionGoalEntries,
+    TableId::FactionRules,
+    TableId::FactionPrograms,
+    TableId::FactionManpower,
+    TableId::FactionUnlocks,
+    TableId::FactionVariables,
+    TableId::FactionAccounts,
+    TableId::FactionResearch,
+    TableId::FactionMinimumUpgrades,
+    TableId::FactionDoctrine,
+    TableId::FactionProjection,
+    TableId::FactionResources,
+    TableId::FactionAdvisorModifiers,
+    TableId::CountryLinks,
+    TableId::Countries,
+    TableId::CountryStabilityInputs,
+    TableId::SliceReads,
+    TableId::FactionMembers,
+    TableId::DoctrineCountries,
+    TableId::DoctrineFolders,
+    TableId::DoctrineTracks,
+    TableId::LexicalTokens,
+];
 pub struct FactionDetails;
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -197,38 +231,8 @@ impl Product for FactionDetails {
             .faction
             .parse()
             .map_err(|_| invalid("Invalid faction identity"))?;
-        let mut selected = vec![
-            TableId::Campaign,
-            TableId::Clock,
-            TableId::SimulationFeatures,
-            TableId::ModifierDefinitions,
-            TableId::LocalPlayer,
-            TableId::Factions,
-            TableId::FactionGoalStatus,
-            TableId::FactionGoalEntries,
-            TableId::FactionRules,
-            TableId::FactionPrograms,
-            TableId::FactionManpower,
-            TableId::FactionUnlocks,
-            TableId::FactionVariables,
-            TableId::FactionAccounts,
-            TableId::FactionResearch,
-            TableId::FactionMinimumUpgrades,
-            TableId::FactionDoctrine,
-            TableId::FactionProjection,
-            TableId::FactionResources,
-            TableId::FactionAdvisorModifiers,
-            TableId::CountryLinks,
-            TableId::Countries,
-            TableId::CountryStabilityInputs,
-            TableId::SliceReads,
-            TableId::FactionMembers,
-            TableId::DoctrineCountries,
-            TableId::DoctrineFolders,
-            TableId::DoctrineTracks,
-            TableId::LexicalTokens,
-        ];
-        let mut frame = crate::prepared::query::progressive::frame_at(
+        let mut selected = TABLES.to_vec();
+        let mut frame = crate::prepared::query::native::frame_at(
             source,
             branch,
             params.hour,
@@ -248,7 +252,7 @@ impl Product for FactionDetails {
             selected.extend(extra);
             selected.sort_unstable();
             selected.dedup();
-            frame = crate::prepared::query::progressive::frame_at(
+            frame = crate::prepared::query::native::frame_at(
                 source,
                 branch,
                 params.hour,
@@ -268,7 +272,7 @@ impl Product for FactionDetails {
         // Programme details keep their existing daily cadence. Bind every
         // dependent join/text to that supplying hour, independent of current refs.
         let mut programme_frame = if companions::has_programmes(&frame, faction) {
-            match crate::prepared::query::progressive::latest_read(
+            match crate::prepared::query::native::latest_read(
                 source,
                 branch,
                 params.hour,
@@ -321,7 +325,7 @@ impl Product for FactionDetails {
             selected.extend(crate::effect_description::recorded_tables());
             selected.sort_unstable();
             selected.dedup();
-            frame = crate::prepared::query::progressive::frame_at(
+            frame = crate::prepared::query::native::frame_at(
                 source,
                 branch,
                 params.hour,
@@ -334,7 +338,7 @@ impl Product for FactionDetails {
             && companions::programmes_need_environment(&frame, details, faction, cat)
         {
             let tables = selectors::programme_text_tables();
-            match crate::prepared::query::progressive::frame_at(
+            match crate::prepared::query::native::frame_at(
                 source,
                 branch,
                 details.hour,
@@ -661,10 +665,38 @@ pub struct GoalLabel {
     /// The refusal before the definition, or each text that failed.
     pub failures: Vec<String>,
 }
+/// What a goal label expands its scripted texts with.
+trait GoalText {
+    fn cat(&self) -> &catalogue::Catalogue;
+    fn expand(&self, text: &str) -> Result<String, String>;
+}
+impl GoalText for presentations::Texts<'_> {
+    fn cat(&self) -> &catalogue::Catalogue {
+        presentations::Texts::cat(self)
+    }
+    fn expand(&self, text: &str) -> Result<String, String> {
+        self.viewer()?.expand_faction(text, self.faction())
+    }
+}
+/// A faction's goal texts expanded in the hour's shared [`ViewerText`].
+struct HeldGoalText<'f, 'h> {
+    faction: u64,
+    held: &'h ViewerText<'f>,
+}
+impl GoalText for HeldGoalText<'_, '_> {
+    fn cat(&self) -> &catalogue::Catalogue {
+        self.held.cat()
+    }
+    fn expand(&self, text: &str) -> Result<String, String> {
+        let root = presentations::viewer_root(self.held.frame())?;
+        self.held
+            .with(root, |scripted| scripted.expand_faction(text, self.faction))?
+    }
+}
 fn label<'d>(
     frame: &DecodedFrame,
     token: Option<u32>,
-    texts: Option<&presentations::Texts<'_>>,
+    texts: Option<&dyn GoalText>,
     definitions: Option<&'d installed_content_core::faction_goals::Catalog>,
     lexical: &faction_names::LexicalNames,
 ) -> (
@@ -706,7 +738,7 @@ fn label<'d>(
             let text =
                 faction_names::bound_name(bound, &cat.localisation, |name| lexical.token_of(name))?;
             let text = if text.contains('[') {
-                texts.viewer()?.expand_faction(&text, texts.faction())?
+                texts.expand(&text)?
             } else {
                 text
             };
@@ -772,7 +804,13 @@ fn definition(
     definitions: Option<&installed_content_core::faction_goals::Catalog>,
     lexical: &faction_names::LexicalNames,
 ) -> FactionGoalDefinition {
-    let (label, reached) = label(frame, token, texts, definitions, lexical);
+    let (label, reached) = label(
+        frame,
+        token,
+        texts.map(|texts| texts as &dyn GoalText),
+        definitions,
+        lexical,
+    );
     let mut reply = finish_goal(&label, texts.map(presentations::Texts::cat));
     if let (Some(definition), Some(texts)) = (reached, texts) {
         presentations::attach(texts, definition, &mut reply);
@@ -798,13 +836,36 @@ pub fn goal_labels(
             label(
                 frame,
                 token,
-                texts.as_ref(),
+                texts.as_ref().map(|texts| texts as &dyn GoalText),
                 definitions.as_deref(),
                 &lexical,
             )
             .0
         })
         .collect()
+}
+/// `token`'s goal label at the frame's hour, as [`goal_labels`] labels it, its scripted texts
+/// expanded in `held`, the shared text of `frame` and `cat`.
+pub fn goal_label_in(
+    frame: &DecodedFrame,
+    faction: u64,
+    cat: Option<&catalogue::Catalogue>,
+    token: Option<u32>,
+    held: &ViewerText<'_>,
+) -> GoalLabel {
+    let definitions =
+        cat.and_then(|cat| installed_content_core::faction_goals::cached(&cat.content.layers).ok());
+    let lexical =
+        faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+    let texts = cat.map(|_| HeldGoalText { faction, held });
+    label(
+        frame,
+        token,
+        texts.as_ref().map(|texts| texts as &dyn GoalText),
+        definitions.as_deref(),
+        &lexical,
+    )
+    .0
 }
 /// The goal content's own refusals, as faction details report them.
 pub fn goal_content_warnings(cat: &catalogue::Catalogue) -> Vec<String> {

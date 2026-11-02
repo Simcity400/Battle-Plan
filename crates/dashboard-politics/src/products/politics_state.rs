@@ -2,7 +2,9 @@
 //! displayed hour alone: every government in exile with its deployed air
 //! crews, and every balance of power the game stores with its drift sources.
 //! Their histories are prepared ([`history`]); these reads supply only what
-//! the history does not keep. Nothing here reads live memory.
+//! the history does not keep. Nothing here reads live memory. Tables a
+//! recording's row frames leave to its native capture are read at the hour
+//! from the capture's change-run index ([`native::fill`]).
 //!
 //! Exiles are the exile cards' own projection ([`country_people::exiles`])
 //! for the whole world.
@@ -20,6 +22,7 @@ use dashboard_base::{
     Source,
     catalogue::{self, Catalogue},
     invalid,
+    prepared::query::native,
     products::{
         LoadContext, Product, check_reply_budget,
         country_people::{self, PeopleExile},
@@ -204,16 +207,18 @@ impl Product for PoliticsState {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("Politics request cancelled"));
         }
-        let frame = match source.replay().seek_selected(
+        let tables = tables_for(p.view);
+        let mut frame = match source.replay().seek_selected(
             p.branch_id.parse().unwrap(),
             p.hour,
-            Some(tables_for(p.view)),
+            Some(tables),
         )? {
             SeekResult::Frame(frame) => frame,
             SeekResult::Gap { reason, .. } => {
                 return Err(invalid(format!("Politics unavailable: {reason}")));
             }
         };
+        native::fill(source, &mut frame, tables, cancelled)?;
         let catalogue = match p.view {
             PoliticsView::Balances => Some(
                 context
@@ -229,13 +234,15 @@ impl Product for PoliticsState {
     }
 }
 
-const EXILE_TABLES: &[TableId] = &[
+/// The tables the exiles view reads at its hour.
+pub const EXILE_TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryStabilityInputs,
     TableId::SliceReads,
     TableId::AirWings,
 ];
+/// The tables the balances view reads at its hour.
 pub const BALANCE_TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,

@@ -10,7 +10,8 @@
 //! for all of them: the block pre-pass extract and fold ([`block`]), the
 //! carried scan with its series and catalogue ([`Scan`]), and the reads of a
 //! query ([`query`]). On a native recording a family is read a segment at a
-//! time instead ([`segment`]), and its emit publishes it on the series engine.
+//! time instead ([`segment`]), and its emit publishes it on the series engine:
+//! its own ([`segment::Reader`]), or the scan's runs as they are ([`native`]).
 //!
 //! What the pages say, for every name: a run holds the exact value the
 //! observer read from its first to its last hour; an hour inside a known
@@ -29,6 +30,7 @@ pub mod block;
 pub mod countries;
 pub mod daily;
 pub mod delta;
+pub mod native;
 pub mod query;
 pub mod regions;
 pub mod segment;
@@ -37,10 +39,10 @@ pub mod table_changes;
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_base::prepared::prepass::Family;
 use dashboard_base::prepared::{
-    frame_changes::FrameChanges,
-    prepass::{Family, HeldBytes},
-    series::Accumulator,
+    frame_changes::FrameChanges, prepass::HeldBytes, series::Accumulator,
 };
 pub use delta::Delta;
 use replay::container::TableFields;
@@ -64,33 +66,47 @@ const CHANGE_BYTES: usize = 2 * size_of::<u64>() + size_of::<i128>();
 
 /// The values one hour reads, by name. Names are the observer's own keys
 /// (`series::field_key` of their parts, for instance); a name read twice in
-/// one hour keeps its last value.
+/// one hour keeps its last value. A name the scan has numbered may be given by
+/// its key instead ([`Self::push_key`]).
 #[derive(Default)]
-pub struct Values(Vec<(String, i128)>);
+pub struct Values(Vec<(String, i128)>, Vec<(u64, i128)>);
 
 impl Values {
     pub fn push(&mut self, name: String, value: i128) {
         self.0.push((name, value));
     }
 
+    /// The value of the name the scan numbered `key` ([`delta::Names::key`]).
+    pub fn push_key(&mut self, key: u64, value: i128) {
+        self.1.push((key, value));
+    }
+
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.0.len() + self.1.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0.is_empty() && self.1.is_empty()
     }
 
     pub fn clear(&mut self) {
         self.0.clear();
+        self.1.clear();
     }
 
+    /// The values given by name.
     pub fn iter(&self) -> impl Iterator<Item = (&str, i128)> {
         self.0.iter().map(|(name, value)| (name.as_str(), *value))
     }
 
+    /// The values given by key.
+    pub fn keyed(&self) -> impl Iterator<Item = (u64, i128)> + '_ {
+        self.1.iter().copied()
+    }
+
     pub fn held(&self, bytes: &mut HeldBytes) {
         bytes.add(self.0.capacity() * size_of::<(String, i128)>());
+        bytes.add(self.1.capacity() * size_of::<(u64, i128)>());
         for (name, _) in &self.0 {
             bytes.heap(name);
         }
@@ -108,11 +124,22 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
     /// The table whose supplying read dates an observation.
     const READ: TableId;
 
-    /// The family's pre-pass entry ([`block::family`] builds it).
-    fn family() -> &'static Family;
+    /// The family's row pre-pass entry ([`block::family`] builds it).
+    #[cfg(any(test, feature = "test-support"))]
+    fn family() -> &'static Family {
+        // Feature unification turns this on for observers that keep no row entry.
+        unimplemented!("{} has no row pre-pass entry", Self::NAME)
+    }
 
     /// Operand-only retention for observers that need no reconstructed frame during the fold.
+    #[cfg(any(test, feature = "test-support"))]
     fn keeper() -> Option<Box<dyn block::Keeper<Self>>> {
+        None
+    }
+
+    /// A native segment's keeper of the observer's operands ([`native::Keeper`]); None (the
+    /// default) keeps its tables' views.
+    fn native_keeper() -> Option<Box<dyn native::Keeper<Self>>> {
         None
     }
 
@@ -184,13 +211,38 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
     fn published(&mut self) {}
 }
 
+/// Where a scan writes its runs: the walk's series accumulator, or a native emit's calls
+/// ([`native`]).
+pub trait Batch: Default + Serialize + DeserializeOwned {
+    /// The hour every call until the next is made at.
+    fn advance(&mut self, hour: i32) -> io::Result<()>;
+    /// `key`'s value from `hour` on (None ends its run), a new observation's when `starts`.
+    fn observe(&mut self, key: u64, hour: i32, value: Option<i128>, starts: bool);
+    /// The hour the batch holds every key through.
+    fn through(&mut self, hour: i32);
+}
+
+impl Batch for Accumulator {
+    fn advance(&mut self, hour: i32) -> io::Result<()> {
+        Accumulator::advance(self, hour)
+    }
+
+    fn observe(&mut self, key: u64, hour: i32, value: Option<i128>, starts: bool) {
+        Accumulator::observe(self, key, hour, value, starts);
+    }
+
+    fn through(&mut self, hour: i32) {
+        Accumulator::through(self, hour);
+    }
+}
+
 /// The carried state of one keyed family on one branch: its observer, the
 /// names numbered so far, the values of the last hour observed and the
-/// series accumulator. Its catalogue is this scan, so a branch continues
+/// series batch. Its catalogue is this scan, so a branch continues
 /// from what its last flush published.
 #[derive(Default, Serialize, Deserialize)]
-#[serde(bound = "O: Observer")]
-pub struct Scan<O> {
+#[serde(bound = "O: Observer, B: Batch")]
+pub struct Scan<O, B = Accumulator> {
     pub observer: O,
     /// Each numbered name, by key from [`FIRST`].
     names: Vec<String>,
@@ -204,7 +256,7 @@ pub struct Scan<O> {
     #[serde(default)]
     refused_read: Option<i32>,
     open: bool,
-    batch: Accumulator,
+    batch: B,
     #[serde(skip)]
     values: Values,
     #[serde(skip)]
@@ -224,7 +276,21 @@ pub struct Scan<O> {
     catalogue_pending: bool,
 }
 
-impl<O: Observer> Scan<O> {
+impl<O: Observer, B: Batch> Scan<O, B> {
+    /// A scan holding `observer` and `names` alone: what a reply reads of a publication.
+    pub(crate) fn catalogued(observer: O, names: Vec<String>) -> Self {
+        Self {
+            observer,
+            names,
+            ..Self::default()
+        }
+    }
+
+    /// The batch its calls since the last were made on.
+    pub(crate) fn batch_mut(&mut self) -> &mut B {
+        &mut self.batch
+    }
+
     /// Every numbered name, in key order.
     pub fn names(&self) -> &[String] {
         &self.names
@@ -401,6 +467,9 @@ impl<O: Observer> Scan<O> {
             let key = self.number(name);
             next.insert(key, value);
         }
+        for (key, value) in values.keyed() {
+            next.insert(key, value);
+        }
         self.values = values;
         for (&key, &value) in &next {
             let before = self.current.get(&key).copied();
@@ -482,6 +551,16 @@ impl<O: Observer> Scan<O> {
                 changed.insert(key, None);
             }
         }
+        for &(key, value) in &delta.keyed {
+            if value.is_none() {
+                changed.insert(key, None);
+            }
+        }
+        for &(key, value) in &delta.keyed {
+            if value.is_some() {
+                changed.insert(key, value);
+            }
+        }
         for (name, value) in &delta.set {
             let key = self.number(name);
             changed.insert(key, Some(*value));
@@ -528,9 +607,26 @@ impl<O: Observer> Scan<O> {
     /// An hour after the last one observed at which nothing the observer
     /// reads changed: the held values extend to it, and a supplying read
     /// there dates them again.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<()> {
         self.batch.advance(hour)?;
         self.hold(hour, read);
+        Ok(())
+    }
+
+    /// An hour at which nothing the observer reads changed, given without its frame: the held
+    /// values extend to it, and a supplying read there dates them again; after refused hours,
+    /// whose inputs it shares, or a gap, it is refused.
+    pub fn prepare_quiet(&mut self, hour: i32, read: bool) -> io::Result<()> {
+        self.batch.advance(hour)?;
+        self.catalogue_pending = true;
+        let continuous = self.continues_to(hour);
+        if self.open && continuous {
+            self.hold(hour, read);
+            return Ok(());
+        }
+        self.last_hour = Some(hour);
+        self.refused(hour, continuous);
         Ok(())
     }
 
@@ -549,12 +645,15 @@ impl<O: Observer> Scan<O> {
 
     /// A block that gave no hour ends the observation: the next hour starts
     /// a new one.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn unreadable_block(&mut self) {
         self.catalogue_pending |= self.open || self.refused_read.is_some();
         self.open = false;
         self.refused_read = None;
     }
+}
 
+impl<O: Observer> Scan<O> {
     /// Pending series records and the catalogue text their next flush can publish.
     pub fn buffered_bytes(&self) -> usize {
         self.batch

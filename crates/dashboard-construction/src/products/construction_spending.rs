@@ -413,6 +413,8 @@ pub(crate) fn all_leaves_for<'a>(
 impl Product for ConstructionSpending {
     const KEY: &'static str = "construction-spending";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&construction_log::served::PLAN);
     type Params = CountryParams;
     type Reply = ConstructionSpendingReply;
 

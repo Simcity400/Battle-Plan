@@ -1,9 +1,5 @@
 use super::*;
 use replay_data::rows::*;
-use dashboard_base::{
-    prepared::frame_changes::field_mask,
-    triggers::inputs::{TableChange, TableChanges},
-};
 use replay_frame::frame::{Metrics, TableView};
 
 pub(super) fn frame(hour: i32) -> DecodedFrame {
@@ -19,31 +15,6 @@ pub(super) fn frame(hour: i32) -> DecodedFrame {
 
 pub(super) fn set(frame: &mut DecodedFrame, id: TableId, rows: TableRows) {
     *frame.tables[id.index()] = TableView::Complete(rows);
-}
-
-/// An hour's changes since the hour before, as preparation finds them: each
-/// listed table changed in its fields only, every other not at all.
-#[derive(Default)]
-pub(super) struct Changed(Vec<(TableId, u64)>);
-
-impl Changed {
-    pub(super) fn fields(table: TableId, names: &[&str]) -> Self {
-        Self(vec![(table, field_mask(table, names))])
-    }
-
-    pub(super) fn and(mut self, table: TableId, names: &[&str]) -> Self {
-        self.0.push((table, field_mask(table, names)));
-        self
-    }
-}
-
-impl TableChanges for Changed {
-    fn table(&self, table: TableId) -> TableChange<'_> {
-        self.0
-            .iter()
-            .find(|(changed, _)| *changed == table)
-            .map_or(TableChange::Same, |&(_, fields)| TableChange::Fields(fields))
-    }
 }
 
 /// Countries `(raw id, slot, tag)`, each linked from its own id; `aliases`
@@ -270,4 +241,40 @@ fn balances_without_the_tables_refuse_by_name() {
     assert!(reply.balances.is_empty());
     assert_eq!(reply.current, None);
     assert_eq!(reply.unavailable[0].label, "balances of power");
+}
+
+#[test]
+fn a_table_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
+    use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records, source};
+    use replay::container::Replay;
+    use replay_data::scope::CaptureMode;
+    let cancelled = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let asked = PoliticsStateParams {
+        branch_id: "1".into(),
+        hour: 1,
+        view: PoliticsView::Exiles,
+    };
+    let load = |frame: DecodedFrame| {
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+        let (source, root) = file_source(replay);
+        let reply = PoliticsState::load(&source, &asked, &context, &cancelled);
+        drop(source);
+        std::fs::remove_dir_all(root).ok();
+        reply
+    };
+    // A row frame's own refusal stands, read without the index.
+    let row = load(source(1, 1, Some(1))).unwrap();
+    assert_eq!(row.unavailable[0].label, "exile status");
+    let mut cut = source(1, 1, Some(1));
+    // Full leaves DivisionModelInputs out, so a frame in its mode marks it so.
+    for table in [TableId::CountryStabilityInputs, TableId::DivisionModelInputs] {
+        *cut.tables[table.index()] = TableView::NotRecorded {
+            mode: CaptureMode::Full,
+        };
+    }
+    assert_eq!(
+        load(cut).unwrap_err().to_string(),
+        "The recording holds [CountryStabilityInputs] in its native capture, whose change-run index is not prepared yet"
+    );
 }
