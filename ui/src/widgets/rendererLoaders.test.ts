@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { widgetMetas } from './definitions.ts';
@@ -19,7 +19,9 @@ test('every installed widget registers its body and all declared lazy slots', ()
   for (const meta of widgetMetas) {
     const slots = registry.match(new RegExp(`'${meta.kind}': lazyWidget\\('${meta.kind}', \\[([^\\]]*)\\]\\)`))?.[1];
     assert.ok(slots?.includes("'render'"), `${meta.kind} must mount its body`);
-    const source = readFileSync(new URL(`./${meta.kind}/index.ts`, import.meta.url), 'utf8');
+    const entry = ['index.ts', 'index.tsx'].map(name => new URL(`./${meta.kind}/${name}`, import.meta.url)).find(existsSync);
+    assert.ok(entry, `${meta.kind} must provide an index.ts or index.tsx entry`);
+    const source = readFileSync(entry, 'utf8');
     for (const slot of ['headerControls', 'countryChip']) {
       if (new RegExp(`\\b${slot}\\s*[:,]`).test(source)) assert.ok(slots?.includes(`'${slot}'`), `${meta.kind} must retain ${slot}`);
     }
