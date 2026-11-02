@@ -44,6 +44,8 @@ use std::{
 };
 use ts_rs::TS;
 
+pub mod served;
+
 /// What a name of an hour the recording holds no frame of is missing for.
 pub const NOT_RECORDED: &str = "Not in this recording: the row hour was not recorded";
 

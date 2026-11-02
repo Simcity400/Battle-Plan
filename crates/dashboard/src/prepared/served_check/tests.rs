@@ -39,6 +39,7 @@ fn parallel_family_transcripts_with_diagnostics_match_standalone_cold_and_warm()
             source.key().revision.as_str(),
             &[owner],
             &[branch()],
+            None,
             &mut |product, params| diagnostic_serve(source, &fixture.context, product, params),
             &mut writer,
         )
@@ -114,6 +115,7 @@ fn parallel_families_match_their_standalone_transcripts_byte_for_byte() {
             "synthetic",
             &[owner],
             &[branch()],
+            None,
             &mut |product, params| store.serve(product, params),
             &mut writer,
         )
@@ -265,6 +267,7 @@ fn compare(reference: &Tiny, candidate: &Tiny) -> Report {
         "1",
         &[Owner::Plan("toy-series", &TOY)],
         &[branch()],
+        None,
         &mut |product: &str, params: &Value| reference.serve(product, params),
         &mut transcript,
     )
@@ -357,6 +360,7 @@ fn identities_a_plan_asks_for_are_recorded_and_compared() {
         "1",
         &[Owner::Plan("country-identities", &IDENTITIES)],
         &[branch()],
+        None,
         &mut |product: &str, params: &Value| reference.serve(product, params),
         &mut transcript,
     )
@@ -402,6 +406,7 @@ fn equipment_loss_plan_uses_witnessed_holders_and_reached_hours_with_1500_countr
             "1",
             &[Owner::Plan("equipment-losses", &crate::products::equipment_losses::served::PLAN)],
             &[branch],
+            None,
             &mut |product, params| {
                 if product == "country-identities" {
                     return Reply::Answered(json!({ "data": { "countries": countries } }));
@@ -491,6 +496,7 @@ fn equipment_loss_plan_preserves_1500_tags_with_three_successive_holders() {
             &crate::products::equipment_losses::served::PLAN,
         )],
         &[branch],
+        None,
         &mut |product, params| {
             if product == "country-identities" {
                 return Reply::Answered(json!({ "data": { "countries": countries } }));
@@ -550,6 +556,7 @@ fn equipment_loss_plan_samples_naval_and_combat_log_activity_separately() {
         "1",
         &[Owner::Plan("equipment-losses", &crate::products::equipment_losses::served::PLAN)],
         &[branch()],
+        None,
         &mut |product, params| {
             if product == "country-identities" {
                 return Reply::Answered(json!({ "data": { "countries": countries } }));
@@ -670,6 +677,7 @@ fn declared_request_allowances_still_reject_unbounded_plans() {
         "1",
         &[Owner::Plan("toy", &LIMITED)],
         &[branch()],
+        None,
         &mut |_, _| Reply::Answered(json!({ "data": {} })),
         &mut io::sink(),
     )
@@ -706,6 +714,7 @@ fn request_allowances_are_scoped_to_the_declaring_plan() {
             Owner::Plan("default", &DEFAULT),
         ],
         &[branch()],
+        None,
         &mut |_, _| Reply::Answered(json!({ "data": {} })),
         &mut io::sink(),
     )
@@ -878,6 +887,7 @@ fn a_plan_the_store_refuses_checks_nothing() {
         "1",
         &[Owner::Generic("unknown-product")],
         &[branch()],
+        None,
         &mut |product: &str, params: &Value| store.serve(product, params),
         &mut Vec::<u8>::new(),
     )
@@ -908,6 +918,7 @@ fn the_families_on_columnar_segments_serve_by_plans_of_their_own() {
         "politics_ledger",
         "stockpile",
         "casualties",
+        "place_names",
     ] {
         let owners = owners(family).unwrap();
         assert!(!owners.is_empty(), "{family} serves nothing");

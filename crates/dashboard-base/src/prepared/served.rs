@@ -31,6 +31,8 @@ pub struct Plan {
 pub trait Ask {
     /// The recording's branches.
     fn branches(&self) -> &[Branch];
+    /// The recording itself, for plans discovering subjects and changes in its rows.
+    fn recording(&self) -> io::Result<&replay::container::Replay>;
     /// Replaces this plan's default request allowance for `branch` with its calculated bound.
     fn request_allowance(&mut self, branch: u64, requests: usize) -> io::Result<()>;
     /// `product`'s reply data to `params`, kept to compare; None when the

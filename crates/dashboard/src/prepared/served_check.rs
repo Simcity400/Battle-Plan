@@ -276,6 +276,7 @@ impl Recorded {
 
 struct Recorder<'a, 's, 'w> {
     branches: &'a [Branch],
+    recording: Option<&'a replay::container::Replay>,
     owners: &'a [Owner],
     serve: &'a mut (dyn FnMut(&str, &Value) -> Reply + 's),
     out: &'a mut (dyn Write + 'w),
@@ -382,6 +383,11 @@ impl Ask for Recorder<'_, '_, '_> {
         self.branches
     }
 
+    fn recording(&self) -> io::Result<&replay::container::Replay> {
+        self.recording
+            .ok_or_else(|| invalid("This served plan needs the recording's rows"))
+    }
+
     fn request_allowance(&mut self, branch: u64, requests: usize) -> io::Result<()> {
         if !self.branches.iter().any(|held| held.id == branch) {
             return Err(invalid(format!(
@@ -455,6 +461,7 @@ pub fn record(
     revision: &str,
     owners: &[Owner],
     branches: &[Branch],
+    recording: Option<&replay::container::Replay>,
     serve: &mut dyn FnMut(&str, &Value) -> Reply,
     out: &mut dyn Write,
 ) -> io::Result<Vec<Recorded>> {
@@ -468,6 +475,7 @@ pub fn record(
     out.write_all(b"\n")?;
     let mut recorder = Recorder {
         branches,
+        recording,
         owners,
         serve,
         out,
@@ -1065,6 +1073,10 @@ impl Served {
     /// The recording's revision, which requests name.
     pub fn revision(&self) -> &str {
         &self.source.key().revision
+    }
+
+    pub fn recording(&self) -> &replay::container::Replay {
+        self.source.replay_ref()
     }
 
     /// The recording's branches, with each one's columnar segments' first

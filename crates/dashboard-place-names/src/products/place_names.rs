@@ -21,6 +21,7 @@ impl Product for PlaceNames {
     const KEY: &'static str = "place-names";
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = PlaceNamesParams;
     type Reply = PlaceNamesReply;
 

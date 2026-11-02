@@ -281,6 +281,7 @@ fn record_family(
             served.revision(),
             &job.owners,
             branches,
+            Some(served.recording()),
             &mut |product, params| served.serve(product, params),
             &mut transcript,
         )?;
