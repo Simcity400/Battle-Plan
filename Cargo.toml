@@ -270,6 +270,8 @@ pollster = "0.4"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay" }
 replay-data = { path = "crates/replay-data" }
+core-events = { path = "crates/core-events" }
+core-shared-owners = { path = "crates/core-shared-owners" }
 replay-identity = { path = "crates/replay-identity" }
 rfd = "0.17"
 serde = { version = "1", features = ["alloc", "derive", "rc"] }

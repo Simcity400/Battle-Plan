@@ -2311,6 +2311,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-shared-owners"
+version = "0.1.0"
+dependencies = [
+ "core-events",
+ "engine-native",
+ "replay-data",
+ "replay-identity",
+ "test-unify",
+]
+
+[[package]]
 name = "core-spool"
 version = "0.1.0"
 dependencies = [
