@@ -494,3 +494,42 @@ fn the_fixture_reads_every_kind_of_operand() {
     assert_eq!(burma.states, Some(vec![(3, None)]));
     assert_eq!(burma.effective, None);
 }
+
+#[test]
+fn politics_distinguishes_unprepared_disabled_and_scheduled_elections() {
+    use dashboard_base::products::country_people::{PeopleParams, RecruitmentDefines};
+    use dashboard_politics::products::politics_state::history::AtHour;
+
+    let at = frame(100);
+    let operands = expected(&at, "AAA").unwrap().0;
+    let params = PeopleParams { branch_id: "1".into(), tag: "AAA".into(), hour: at.hour };
+    let assemble = |politics: Option<&AtHour>| query::assemble(
+        &params,
+        &operands,
+        Ok(RecruitmentDefines { speed: 1_000, noncore_base: 2_000, noncore_max: 100_000 }),
+        politics,
+        &[],
+    );
+    let missing = assemble(None);
+    assert!(missing.politics.iter().all(|fact| fact.value.is_none()));
+    assert_eq!(missing.politics[2].unit, "date");
+    assert!(missing.warnings.iter().any(|warning| warning == query::UNPREPARED));
+
+    for (held, expected) in [
+        (0, [(Some("Not held"), "text"), (Some("36"), "months"), (Some("Not held"), "text")]),
+        (1, [(Some("Allowed"), "text"), (Some("36"), "months"), (Some("123456"), "date")]),
+    ] {
+        let reply = assemble(Some(&AtHour {
+            held: Some(held),
+            interval: Some(36),
+            next: Some(123456),
+            exiles_known: true,
+            ..Default::default()
+        }));
+        let facts: Vec<_> = reply.politics.iter().map(|fact| (fact.value.as_deref(), fact.unit.as_str())).collect();
+        assert_eq!(facts, expected);
+        assert!(!reply.warnings.iter().any(|warning| warning == query::UNPREPARED
+            || warning.contains("refused election") || warning.contains("refused exile status")));
+        assert!(reply.exiles.is_empty());
+    }
+}
