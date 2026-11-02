@@ -104,10 +104,13 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
       if (commit) fixture.commit();
       return canvas;
     };
-    const draw = () => { if (visible) task!.frame({ now: 0, dt: 16 }); };
+    let frameTime = 0;
+    const draw = (now = frameTime) => { frameTime = now; if (visible) task!.frame({ now, dt: 16 }); };
     const pointer = () => listeners.get('pointermove')!({ clientX: frame!.toX(50), clientY: frame!.plotTop + 10 });
     const key = (canvas: Canvas, name: string) => canvas.onKeyDown({ key: name, preventDefault() {} });
     let canvas = render(); draw(); pointer(); draw();
+    assert.deepEqual(seen.at(-1), ['A', null]); assert.equal(described.at(-1), 37);
+    draw(100);
     assert.deepEqual(seen.at(-1), ['A', 37]); assert.equal(described.at(-1), 37);
     assert.equal(paints, 1, 'hovering repaints only the overlay: the series paint once');
     const reads = layoutReads; draw(); draw();
@@ -168,7 +171,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     props.afterPlayhead = true; canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['B', 80]);
     key(canvas, 'Escape'); draw(); assert.deepEqual(seen.at(-1), ['B', null]);
     pointer(); draw(); listeners.get('pointerleave')!({}); draw(); assert.deepEqual(seen.at(-1), ['B', null]);
-    pointer(); draw();
+    pointer(); draw(); draw(200); assert.deepEqual(seen.at(-1), ['B', 37]);
     props.pickOwner = {}; props.onHover = observe('C'); canvas = render(false);
     const handedOffAt = seen.length; draw();
     assert.deepEqual(seen.slice(handedOffAt), [['B', null], ['C', 37]], 'a frame before cleanup clears old facts before publishing new ones');
@@ -237,7 +240,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     render(); draw(); assert.deepEqual(frame!.y, [0, 1]);
     balanceExtent = [8, 20]; render();
     let animating = true, frames = 0;
-    while (animating && frames++ < 300) animating = task!.frame({ now: frames * 16, dt: 16 }) === true;
+    while (animating && frames++ < 300) animating = task!.frame({ now: frameTime += 16, dt: 16 }) === true;
     assert.equal(animating, false, 'the animation reaches a final scheduled frame');
     const preparedY = frame!.y;
     fixture.unmount(); render(); draw();
