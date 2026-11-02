@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { drawFlags, drawnFlag, FLAG_BATCH, flagReadKey, forgetFlags, retryFlags, useFlagReads } from './countryFlags.ts';
 import type { FlagValue } from './countryFlags';
 import { FAILED_FACT, retryDelay } from './countryFacts.ts';
-import { heldStyles } from './countryTimeline.ts';
+import { heldStyles, heldTimeline } from './countryTimeline.ts';
 import type { CountryFactsReply, CountryFlagChoice, CountryFlagParams } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 
@@ -125,7 +125,7 @@ test('forgetting a recording drops its drawings and stops those being drawn, and
   assert.deepEqual(asked, ['flags', 'other', 'flags', 'flags']);
 });
 
-test('a flag is read from the held timeline at its hour and shown once drawn; an hour not held is pending', async () => {
+test('a flag is read from its dated timeline and shown once drawn; unheld hours explain final gaps or stay pending while growing', async () => {
   const reply: CountryFactsReply = { branchId: '1', known: [[10, 20]], names: ['Germany'], reasons: ['not a country at this hour'],
     flags: [choice('GER_democratic'), choice('GER_fascism')],
     countries: [{ tag: 'GER', runs: [[10, 0, 0x336699, -1, 0], [15, 0, 0x336699, -1, 1]] }, { tag: 'D01', runs: [[10, -1, -1, 0, -1]] }], warnings: [] };
@@ -145,8 +145,21 @@ test('a flag is read from the held timeline at its hour and shown once drawn; an
   assert.equal(shown.get(flagReadKey(reads[0])), undefined, 'a flag not yet drawn is pending');
   assert.equal((shown.get(flagReadKey(reads[1])) as { url?: string }).url, url(0), 'the later run draws its own flag');
   assert.deepEqual(shown.get(flagReadKey(reads[2])), { reason: 'not a country at this hour' });
-  assert.equal(shown.get(flagReadKey(reads[3])), undefined, 'an hour the timeline does not hold is pending');
+  assert.deepEqual(shown.get(flagReadKey(reads[3])), { reason: 'country facts were not recorded at this hour' },
+    'an hour a finished preparation holds no facts of says so');
   assert.equal(asked.length, 1, 'rendering asks for nothing');
+
+  const { client: growing, asked: growingAsked } = drawing();
+  Object.assign(growing, {
+    preparedQuery: async () => ({ ...reply, coverage: { firstHour: 10, lastHour: 20, complete: false }, pending: [{ firstHour: 21, lastHour: 30 }] }),
+  });
+  heldStyles(growing, source, recording, 12, ['GER']);
+  await settle();
+  assert.equal(heldTimeline(growing, source)?.final, false);
+  const GrowingProbe = () => { shown = useFlagReads(growing, recording, [reads[3]], true, 'panel'); return null; };
+  renderToStaticMarkup(createElement(GrowingProbe));
+  assert.equal(shown.get(flagReadKey(reads[3])), undefined, 'an hour a growing preparation does not hold yet is pending');
+  assert.equal(growingAsked.length, 0, 'rendering asks for nothing');
 });
 
 test('lane looks show each country as the timeline names it and its flag once drawn: drawn, refused, failed or pending, and none for sorting-only names', async () => {
