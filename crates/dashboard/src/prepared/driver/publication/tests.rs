@@ -507,16 +507,98 @@ fn an_interruption_around_adoption_or_root_publication_leaves_a_whole_root() {
                 .last_hour,
             1009
         );
-        assert!(
-            stage
-                .processed(segment(1), Made::Prepared, None, None)
-                .is_err()
-        );
+        let error = stage
+            .processed(segment(1), Made::Prepared, None, None)
+            .unwrap_err();
+        assert!(halted(&error));
     }
     assert_eq!(commits.load(Atomic::SeqCst), 1);
     let (_, resume) = fixture.open(&[steady]);
     assert_eq!(resume.families[&steady.id][&BRANCH].last_hour, 1009);
     assert_eq!(fixture.count("steady-test"), Some(1));
+}
+
+#[test]
+fn every_stop_refuses_processed_hours_before_the_next_cut() {
+    for stopped in [
+        Stopped::Cancelled,
+        Stopped::Cleared,
+        Stopped::Uncertain("An uncertain commit".into()),
+        Stopped::Failed("A failed publication".into()),
+    ] {
+        for pages in [false, true] {
+            let fixture = Fixture::new();
+            let steady = family("steady");
+            let (publisher, _) = fixture.open(&[steady]);
+            let mut stage = publisher.stage(steady.id).unwrap();
+            assert_eq!(prepare(&mut stage, "steady-test", 0..2), [1, 2]);
+            if pages {
+                stage
+                    .pages()
+                    .unwrap()
+                    .write("steady-test", &b"uncommitted"[..])
+                    .unwrap();
+            }
+            let progress = publisher.progress();
+            std::thread::scope(|scope| {
+                let stopping = scope.spawn(|| publisher.stop(stopped.clone()));
+                let mut inner = publisher.lock();
+                while inner.stopped.is_none() {
+                    inner = publisher.wait_changed(inner);
+                }
+                drop(inner);
+                let error = stage
+                    .processed(segment(2), Made::Prepared, None, None)
+                    .unwrap_err();
+                assert!(halted(&error));
+                assert_eq!(error.kind(), stopped.error().kind());
+                assert_eq!(error.to_string(), stopped.error().to_string());
+                assert!(stage.steps.is_empty());
+                assert!(!stage.ends());
+                assert_eq!(publisher.progress(), progress);
+                drop(stage);
+                stopping.join().unwrap();
+            });
+            assert_eq!(fixture.count("steady-test"), Some(2));
+            assert_eq!(
+                publisher
+                    .committed(steady.id, BRANCH)
+                    .unwrap()
+                    .frontier
+                    .last_hour,
+                1019
+            );
+        }
+    }
+}
+
+#[test]
+fn processing_a_segment_leaves_the_previous_batch_with_its_sealer() {
+    let fixture = Fixture::new();
+    let steady = family("steady");
+    let (publisher, _) = fixture.open(&[steady]);
+    let mut stage = publisher.stage(steady.id).unwrap();
+    assert!(
+        stage
+            .processed(segment(0), Made::Prepared, None, None)
+            .unwrap()
+    );
+    // Keep the job pending regardless of pressure on the shared series budget.
+    stage.handed = Some(publisher.hand(stage.cut().unwrap()));
+    let handed = stage.handed;
+    assert!(handed.is_some());
+    assert!(
+        stage
+            .processed(segment(1), Made::Prepared, None, None)
+            .unwrap()
+    );
+    assert_eq!(stage.handed, handed);
+    assert!(stage.writer.is_none());
+    assert_eq!(publisher.lock().jobs.len(), 1);
+    assert!(publisher.committed(steady.id, BRANCH).is_none());
+    stage.submit().unwrap();
+    assert_eq!(publisher.progress()[&steady.id].processed, 2);
+    assert_eq!(publisher.progress()[&steady.id].available, 20);
 }
 
 #[test]

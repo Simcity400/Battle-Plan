@@ -1296,6 +1296,9 @@ impl Stage<'_, '_> {
         state: Option<Vec<u8>>,
         carry: Option<Vec<u8>>,
     ) -> io::Result<bool> {
+        if let Some(stopped) = &self.publisher.lock().stopped {
+            return Err(stopped.error());
+        }
         if hours.first > hours.last || hours.first_hour > hours.last_hour {
             return Err(refused("Hours that run backwards"));
         }
