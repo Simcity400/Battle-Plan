@@ -606,7 +606,7 @@ mod tests {
                 (
                     TableId::ConstructionLineOutput,
                     if version == 100 { 14 } else { 13 },
-                    if version == 100 { 1 } else { 2 },
+                    if version == 100 { 9 } else { 10 },
                 ),
             ] {
                 assert!(

@@ -2416,13 +2416,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             alias?;
             return Ok(None);
         }
-        if read::<u64>(self.memory, pointer) != Some(self.vtable as u64) {
-            return Err("country vtable mismatch");
-        }
-        let id = pointer
-            .checked_add(ID)
-            .and_then(|p| read::<u32>(self.memory, p))
-            .ok_or("country id unreadable")?;
+        let id = identity(self.memory, pointer, self.vtable)?;
         if physical
             && id == 0
             && let Some(alias) = self.reserved_observation().physical_alias(pointer)
@@ -2446,6 +2440,22 @@ impl<'a, M: Memory> Reader<'a, M> {
             id,
         }))
     }
+}
+
+pub fn identity(memory: &impl Memory, pointer: usize, vtable: usize) -> Result<u32, &'static str> {
+    let mut actual = [0; 8];
+    let mut id = [0; 4];
+    let copied = memory.copy_scattered(
+        [pointer, pointer.checked_add(ID).unwrap_or(0)],
+        &mut [&mut actual, &mut id],
+    );
+    if copied == 0 || u64::from_le_bytes(actual) != vtable as u64 {
+        return Err("country vtable mismatch");
+    }
+    if copied != 2 {
+        return Err("country id unreadable");
+    }
+    Ok(u32::from_le_bytes(id))
 }
 
 fn movement_field<T: crate::memory::Raw>(

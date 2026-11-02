@@ -15,7 +15,7 @@
 
 use super::{
     ConstructionOutputRead, ConstructionProject, Counts, LevelsBuilt, ProjectEnd, ProjectKind,
-    ProjectRun, Scan, SpendingGap, observed,
+    ProjectRun, ProjectSource, Scan, SpendingGap, observed,
 };
 use crate::products::construction_spending::{
     self as spending, LeafProject, SpendingLeaf, SpendingUnknown,
@@ -34,7 +34,7 @@ use std::{
 /// The family's name.
 pub const NAME: &str = "construction";
 /// The family's keys are spelled under it.
-pub const SCHEMA: u64 = 1;
+pub const SCHEMA: u64 = 2;
 /// Project keys are spelled under it, so the family's directory never holds them.
 pub const PROJECTS: u64 = 2;
 /// The actor of the family's own keys.
@@ -77,6 +77,7 @@ pub mod kind {
     pub const LIVE: u64 = 9;
     /// `[Text entries]` (JSON [`super::LeafMetadata`]): a final project's entries.
     pub const FINAL: u64 = 10;
+    pub const CENSUS: u64 = 11;
 }
 
 /// Every reason output can be unknown for, by code.
@@ -456,6 +457,7 @@ impl Runs {
 #[derive(Default, Serialize, Deserialize)]
 struct Slot {
     key: KeyHandle,
+    source: Option<ProjectSource>,
     last_run: Option<i32>,
     last_end: Option<ProjectEnd>,
     first_repair: Option<i32>,
@@ -498,7 +500,13 @@ pub struct Emit {
 }
 
 /// Writes an event of `key` at `hour`.
-fn event(writer: &mut Writer<'_>, key: KeyHandle, hour: i32, kind: u64, fields: Blob) -> io::Result<()> {
+fn event(
+    writer: &mut Writer<'_>,
+    key: KeyHandle,
+    hour: i32,
+    kind: u64,
+    fields: Blob,
+) -> io::Result<()> {
     let sequence = writer.sequence()?;
     writer.event(Event {
         key,
@@ -725,6 +733,16 @@ impl Emit {
                 .cloned()
                 .collect();
             for read in &mut output {
+                let id = self.scan.log.projects[index]
+                    .id
+                    .parse::<u64>()
+                    .expect("native construction handle");
+                let baseline = self
+                    .scan
+                    .log
+                    .output_baselines
+                    .get(&id)
+                    .is_some_and(|reads| reads.contains(&hour));
                 let slot = &mut self.state.slots[index];
                 // A read without a row cannot say whether earlier work went unobserved.
                 if read.since_hour.is_some()
@@ -746,12 +764,17 @@ impl Emit {
                     ),
                 ] {
                     if let Some(value) = raw {
-                        let step = amount(value)? - previous.map_or(Ok(0), amount)?;
+                        let step = if baseline {
+                            0
+                        } else {
+                            amount(value)? - previous.map_or(Ok(0), amount)?
+                        };
                         *value = step.to_string();
                     }
                 }
-                read.repair_ticks =
-                    i32::from(read.repair_ticks > before.map_or(0, |read| read.repair_ticks));
+                read.repair_ticks = i32::from(
+                    !baseline && read.repair_ticks > before.map_or(0, |read| read.repair_ticks),
+                );
             }
             steps.insert(index, output);
         }
@@ -771,12 +794,9 @@ impl Emit {
                         measure: LEAF,
                         dimension: Some(self.state.leaves.len() as u64),
                     };
-                    let key = self.actors.key(
-                        writer,
-                        place,
-                        (RunMode::Exact, DECIMALS),
-                        Some(DOMAIN),
-                    )?;
+                    let key =
+                        self.actors
+                            .key(writer, place, (RunMode::Exact, DECIMALS), Some(DOMAIN))?;
                     self.state.leaves.insert(
                         id.clone(),
                         Leaf {
@@ -838,7 +858,7 @@ impl Emit {
             let key = slot.key;
             let mut dates = Vec::new();
             let mut windowed = BTreeSet::new();
-            if slot.last_run.is_none() {
+            if slot.source != Some(project.source) {
                 let mut start = project.clone();
                 start.built.clear();
                 start.unaccounted.clear();
@@ -847,14 +867,30 @@ impl Emit {
                 start.runs.clear();
                 start.end = None;
                 start.first_repair_tick = None;
-                json_event(writer, key, hour, kind::START, &start)?;
-                dates.extend([project.first_read, project.created_hour]);
+                json_event(
+                    writer,
+                    key,
+                    hour,
+                    if slot.source.is_none() {
+                        kind::START
+                    } else {
+                        kind::CENSUS
+                    },
+                    &start,
+                )?;
+                slot.source = Some(project.source);
+                dates.extend([
+                    project.first_read,
+                    project.created_hour.unwrap_or(project.first_read),
+                ]);
                 // A line created after the read that first lists it shows from that read
                 // dated later: every window between holds it.
-                if project.created_hour > project.first_read {
+                if let Some(created) = project
+                    .created_hour
+                    .filter(|&created| created > project.first_read)
+                {
                     windowed.extend(
-                        window_of(windows, project.first_read)
-                            ..=window_of(windows, project.created_hour),
+                        window_of(windows, project.first_read)..=window_of(windows, created),
                     );
                 }
             }
@@ -947,13 +983,7 @@ impl Emit {
                 project.runs.drain(..project.runs.len() - 2);
             }
         }
-        if self
-            .scan
-            .log
-            .output_reads
-            .iter()
-            .any(|&(at, _)| at == hour)
-        {
+        if self.scan.log.output_reads.iter().any(|&(at, _)| at == hour) {
             let reads = family_key(&mut self.actors, writer, READS, None)?;
             for &(at, reason) in self
                 .scan
@@ -1144,7 +1174,8 @@ pub(crate) struct ReadCounts {
 
 /// A run as its progress event holds it.
 pub(crate) fn run_of(values: [i128; 5]) -> io::Result<ProjectRun> {
-    let at = |value: i128| i32::try_from(value).map_err(|_| invalid("A construction run is not valid"));
+    let at =
+        |value: i128| i32::try_from(value).map_err(|_| invalid("A construction run is not valid"));
     Ok(ProjectRun {
         first_hour: at(values[0])?,
         last_hour: at(values[1])?,

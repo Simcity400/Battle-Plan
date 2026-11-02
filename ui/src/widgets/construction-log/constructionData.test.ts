@@ -13,7 +13,7 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import type { StateNameAt } from '../../dashboard/construction';
 
 const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({
-  id: '1', kind: 'building', tag: 'GER', building: 0, repair: false, state: 5, toState: null, province: null, routeProvinces: null, baseLevel: null,
+  id: '1', kind: 'building', source: 'census', queueOrdinal: 0, censusRead: patch.firstRead ?? 100, outputOrigin: null, tag: 'GER', building: 0, repair: false, state: 5, toState: null, province: null, routeProvinces: null, baseLevel: null,
   targetLevel: null, costRaw: '1080000000', createdHour: 90, firstRead: 100, runs: [{ firstHour: 100, lastHour: 147, factories: 10, remaining: 1, repairLevels: 0 }],
   earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null, ...patch,
 });
@@ -88,6 +88,48 @@ const fixtureNames: StateNameAt = (_hour, state) => ({ state, name: STATES.find(
 const placeLabel = (_log: ConstructionLog, item: ConstructionProject) => datedPlaceLabel(item, 148, fixtureNames);
 const describeRow = (log: ConstructionLog, row: LogRow<ProjectAt>, country: string) => datedDescribeRow(log, row, country, 148, fixtureNames);
 const projectTooltip = (log: ConstructionLog, at: ProjectAt, hour: number, country: string) => datedProjectTooltip(log, at, hour, country, fixtureNames);
+
+test('output-only projects show their evidence without inventing census fields', () => {
+  const output = project({ source: 'outputAlone', queueOrdinal: null, censusRead: null,
+    outputOrigin: { tag: 'GER', building: 0, state: 5, toState: null, province: null },
+    repair: null, costRaw: null, createdHour: null, firstRead: 124, runs: [], earlierUnknown: true,
+    end: { kind: 'finished', hour: 120, knownAt: 124, unknown: null } });
+  validateConstructionLogWindow(windowOf([output]), MANIFEST.types.length);
+  const at = projectAt(output, 124)!;
+  assert.equal(at.project.source, 'outputAlone');
+  assert.equal(statusLabel(at), 'Finished');
+  assert.equal(factoriesShown(at), null);
+  assert.equal(levelsLabel(at), null);
+  const rows = projectTooltip(logOf([output]), at, 124, 'Germany')[0].rows ?? [];
+  assert.ok(rows.some(row => row.label === 'Source' && row.value === 'Known from output'));
+  assert.ok(!rows.some(row => /Started|Factories|Cost/.test(row.label)));
+  assert.equal(projectAt(output, 123), null);
+  for (const projects of ['new', 'repair'] as const)
+    assert.equal(logRows(logOf([output]), 124, { ...every, projects }, 'change').length, 0);
+});
+
+test('a later census changes the source without backfilling earlier playback', () => {
+  const enriched = project({ source: 'census', queueOrdinal: 0, censusRead: 148, firstRead: 124, createdHour: 110,
+    outputOrigin: { tag: 'GER', building: 0, state: 5, toState: null, province: null },
+    runs: [{ firstHour: 148, lastHour: 180, factories: 7, remaining: 1, repairLevels: 0 }] });
+  validateConstructionLogWindow(windowOf([enriched]), MANIFEST.types.length);
+  const before = projectAt(enriched, 147)!;
+  assert.equal(before.project.source, 'outputAlone');
+  assert.equal(before.project.createdHour, null);
+  assert.equal(before.project.costRaw, null);
+  assert.equal(before.project.queueOrdinal, null);
+  assert.equal(before.run, null);
+  assert.equal(before.last, null);
+  assert.equal(before.changed, 124);
+  const after = projectAt(enriched, 148)!;
+  assert.equal(after.project.source, 'census');
+  assert.equal(after.project.firstRead, 124);
+  assert.equal(after.project.createdHour, 110);
+  assert.equal(after.run?.factories, 7);
+  const log = logOf([enriched]);
+  assert.equal(logRows(log, 147, every, 'start')[0].hour, 124);
+  assert.equal(logRows(log, 148, every, 'start')[0].hour, 110);
+});
 
 test('log state labels follow shown-hour renames, stored owners and named refusals without authored backfill', () => {
   const data = logOf([PROJECTS[0]]);

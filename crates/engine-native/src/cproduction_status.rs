@@ -107,13 +107,30 @@ pub fn manager(
     base: usize,
     country: ccountry::Country,
 ) -> Result<usize, &'static str> {
-    let pointer = country
-        .pointer
+    let pointer = pointer(memory, country.pointer)?;
+    if country_pointer(memory, base, pointer)? != country.pointer {
+        return Err("production status country mismatch");
+    }
+    Ok(pointer)
+}
+
+pub fn pointer(memory: &impl Memory, country: usize) -> Result<usize, &'static str> {
+    country
         .checked_add(ccountry::PRODUCTION_STATUS)
         .and_then(|address| read::<u64>(memory, address))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
-        .ok_or("production status pointer unreadable or null")?;
+        .ok_or("production status pointer unreadable or null")
+}
+
+pub fn country_pointer(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<usize, &'static str> {
+    if pointer == 0 {
+        return Err("production status vtable mismatch");
+    }
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("module address overflow")?;
@@ -126,10 +143,10 @@ pub fn manager(
     if copied == 0 || u64::from_le_bytes(vtable) != expected as u64 {
         return Err("production status vtable mismatch");
     }
-    if copied < 2 || u64::from_le_bytes(owner) != country.pointer as u64 {
+    if copied < 2 {
         return Err("production status country mismatch");
     }
-    Ok(pointer)
+    usize::try_from(u64::from_le_bytes(owner)).map_err(|_| "production status country unreadable")
 }
 
 /// Null production status is native absence for the appended policy roster.
@@ -1244,7 +1261,10 @@ mod tests {
         let mut bytes = fixture();
         // Past the image, clear of the type's fields; the reader takes 16 bytes of optionals.
         let archetype = BASE + bytes.len();
-        bytes.resize(bytes.len() + crate::cequipment_type::MAX_MIL_FACTORIES + 16, 0);
+        bytes.resize(
+            bytes.len() + crate::cequipment_type::MAX_MIL_FACTORIES + 16,
+            0,
+        );
         put(
             &mut bytes,
             EQUIPMENT + crate::cequipment_type::ARCHETYPE,

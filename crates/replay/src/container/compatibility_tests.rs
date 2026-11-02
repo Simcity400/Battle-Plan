@@ -1680,9 +1680,33 @@ fn compatibility_oracle_witnesses_keep_integrated_recordings_readable() {
     assert_eq!(construction.len(), 1);
     assert_eq!(construction[0].completion, rows::Recorded::Value(None));
     assert_eq!(construction[0].count_reset, rows::Recorded::NotRecorded);
+    assert_eq!(construction[0].country, rows::Recorded::NotRecorded);
+    assert_eq!(construction[0].target_state, rows::Recorded::NotRecorded);
+    assert_eq!(construction[0].route_last, rows::Recorded::NotRecorded);
     let naval = frame.complete::<rows::tables::NavalBases>().unwrap();
     assert_eq!(naval.len(), 1);
     assert_eq!(naval[0].country_tags, rows::Recorded::NotRecorded);
+}
+
+#[test]
+fn construction_owner_suffix_is_absent_in_the_previous_recording_format() {
+    let format = crate::rows::compatibility::CONSTRUCTION_OUTPUT_OWNER_FORMAT - 1;
+    let (_, frame) = historical_snapshot(format);
+    let row = &frame
+        .complete::<rows::tables::ConstructionLineOutput>()
+        .unwrap()[0];
+    for field in [
+        row.country,
+        row.building_type,
+        row.target_flags,
+        row.target_location,
+        row.target_state,
+        row.target_country,
+        row.route_first,
+        row.route_last,
+    ] {
+        assert_eq!(field, rows::Recorded::NotRecorded);
+    }
 }
 
 #[test]

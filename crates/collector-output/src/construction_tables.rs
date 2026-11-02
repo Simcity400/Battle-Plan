@@ -15,13 +15,23 @@ pub use super::output_continuity::{Receipt, holds_publication};
 use crate::construction_ic::{Drained, Entry};
 use crate::table_conversion::unavailable;
 use engine_allocation::{collect_vec, mul, owned_vec, reserve_map};
+use engine_production::construction_ic_sites::Identity;
 use replay_data::{
     BranchId, rows::BuildingConstructionRow, rows::ConstructionCompletion,
     rows::ConstructionLineOutputRow, rows::RailwayConstructionRow, rows::Recorded, rows::TableId,
     rows::TableRows,
 };
 use replay_frame::{frame::TableInput, frame::TableView};
-use std::io;
+use std::{
+    io,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static IDENTITY_CONFLICTS: AtomicU64 = AtomicU64::new(0);
+
+pub fn identity_conflicts() -> u64 {
+    IDENTITY_CONFLICTS.load(Ordering::Relaxed)
+}
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ConstructionLineOutput];
@@ -48,6 +58,8 @@ struct Line {
     /// The first hour whose drain or census showed the line.
     first_hour: i32,
     railway: bool,
+    identity: Option<Identity>,
+    identity_conflicted: bool,
     construction: i64,
     bank: i64,
     carry: i64,
@@ -63,6 +75,30 @@ struct Line {
     ended: Option<u64>,
     completion: Option<ConstructionCompletion>,
     count_reset: i64,
+}
+
+impl Line {
+    fn observe_identity(&mut self, identity: Identity) {
+        if self.identity_conflicted {
+            return;
+        }
+        if self
+            .identity
+            .is_some_and(|held| held.country != identity.country)
+        {
+            self.identity = None;
+            self.identity_conflicted = true;
+            IDENTITY_CONFLICTS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.identity = Some(identity);
+        }
+    }
+
+    fn census_identity(&mut self, identity: Identity) {
+        if !self.identity_conflicted {
+            self.identity.get_or_insert(identity);
+        }
+    }
 }
 
 /// The branch's per-line totals, owned by the spool for one campaign.
@@ -234,6 +270,33 @@ impl Totals {
                 ..Line::default()
             });
         }
+        for row in buildings {
+            self.shared
+                .lines
+                .get_mut(&row.id)
+                .unwrap()
+                .census_identity(Identity {
+                    country: row.country,
+                    building_type: row.building_type,
+                    target_flags: row.target_flags,
+                    target_location: row.target_location,
+                    target_state: row.target_state,
+                    target_country: row.target_country,
+                    ..Identity::default()
+                });
+        }
+        for row in railways {
+            self.shared
+                .lines
+                .get_mut(&row.id)
+                .unwrap()
+                .census_identity(Identity {
+                    country: row.country,
+                    route_first: row.route.first().copied(),
+                    route_last: row.route.last().copied(),
+                    ..Identity::default()
+                });
+        }
         let mut rows = collect_vec(self.shared.lines.iter_mut().map(|(&handle, line)| {
             line.ended = if live.contains_key(&handle) {
                 None
@@ -260,6 +323,42 @@ impl Totals {
                 ended: line.ended.is_some(),
                 completion: Recorded::Value(line.completion),
                 count_reset: Recorded::Value(line.count_reset),
+                country: Recorded::Value(line.identity.map(|identity| identity.country)),
+                building_type: Recorded::Value(
+                    line.identity
+                        .filter(|_| !line.railway)
+                        .map(|identity| identity.building_type),
+                ),
+                target_flags: Recorded::Value(
+                    line.identity
+                        .filter(|_| !line.railway)
+                        .map(|identity| identity.target_flags),
+                ),
+                target_location: Recorded::Value(
+                    line.identity
+                        .filter(|_| !line.railway)
+                        .map(|identity| identity.target_location),
+                ),
+                target_state: Recorded::Value(
+                    line.identity
+                        .filter(|_| !line.railway)
+                        .map(|identity| identity.target_state),
+                ),
+                target_country: Recorded::Value(
+                    line.identity
+                        .filter(|_| !line.railway)
+                        .map(|identity| identity.target_country),
+                ),
+                route_first: Recorded::Value(
+                    line.identity
+                        .filter(|_| line.railway)
+                        .and_then(|identity| identity.route_first),
+                ),
+                route_last: Recorded::Value(
+                    line.identity
+                        .filter(|_| line.railway)
+                        .and_then(|identity| identity.route_last),
+                ),
             }
         }))?;
         rows.sort_unstable_by_key(|row| row.line);
@@ -276,6 +375,9 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
     });
     if line.railway != entry.railway {
         return Err("construction output line changed kind");
+    }
+    if let Some(identity) = entry.identity {
+        line.observe_identity(identity);
     }
     // New output is in no publication yet.
     line.ended = None;
@@ -348,6 +450,147 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
 mod tests {
     use super::*;
 
+    fn test_entry() -> Entry {
+        Entry {
+            identity: Some(Identity {
+                country: 5001,
+                ..Identity::default()
+            }),
+            ..Entry::default()
+        }
+    }
+
+    #[test]
+    fn output_entries_publish_the_latest_target_and_void_conflicting_owners() {
+        let conflicts = identity_conflicts();
+        let mut totals = Totals::default();
+        published(&mut totals, 100, &captured(0, &[]), census_of(&[], &[]));
+        let mut entry = entry(LINE_A, 37);
+        entry.identity = Some(Identity {
+            country: 5001,
+            building_type: 9,
+            target_flags: 5,
+            target_location: 2003,
+            target_state: 1501,
+            target_country: 0,
+            ..Identity::default()
+        });
+        let mut latest = entry;
+        latest.identity.as_mut().unwrap().target_state = 1502;
+        let row = rows(published(
+            &mut totals,
+            124,
+            &captured(0, &[entry, latest]),
+            census_of(&[], &[]),
+        ))
+        .remove(0);
+        assert_eq!(row.country, Recorded::Value(Some(5001)));
+        assert_eq!(row.building_type, Recorded::Value(Some(9)));
+        assert_eq!(row.target_flags, Recorded::Value(Some(5)));
+        assert_eq!(row.target_location, Recorded::Value(Some(2003)));
+        assert_eq!(row.target_state, Recorded::Value(Some(1502)));
+        assert_eq!(row.target_country, Recorded::Value(Some(0)));
+        assert_eq!(row.route_first, Recorded::Value(None));
+        let mut changed = latest;
+        changed.identity.as_mut().unwrap().country = 5002;
+        let view = published(
+            &mut totals,
+            148,
+            &captured(2, &[changed]),
+            census_of(&[], &[]),
+        );
+        let row = rows(view).remove(0);
+        assert_eq!(row.country, Recorded::Value(None));
+        assert_eq!(row.target_state, Recorded::Value(None));
+        assert_eq!(row.construction_raw, 111);
+        assert!(row.exact);
+        let row = rows(published(
+            &mut totals,
+            172,
+            &captured(3, &[entry]),
+            census_of(&[LINE_A], &[]),
+        ))
+        .remove(0);
+        assert_eq!(row.country, Recorded::Value(None));
+        assert_eq!(row.target_state, Recorded::Value(None));
+        assert_eq!(row.construction_raw, 148);
+        assert!(row.exact);
+        assert!(identity_conflicts() > conflicts);
+    }
+
+    #[test]
+    fn unread_identity_preserves_output_and_recovers_from_an_entry_or_census() {
+        let mut totals = Totals::default();
+        published(&mut totals, 100, &captured(0, &[]), census_of(&[], &[]));
+        let unread = Entry {
+            identity: None,
+            ..entry(LINE_A, 37)
+        };
+        let row = rows(published(
+            &mut totals,
+            124,
+            &captured(0, &[unread]),
+            census_of(&[], &[]),
+        ))
+        .remove(0);
+        for field in [
+            row.country,
+            row.building_type,
+            row.target_flags,
+            row.target_location,
+            row.target_state,
+            row.target_country,
+            row.route_first,
+            row.route_last,
+        ] {
+            assert_eq!(field, Recorded::Value(None));
+        }
+        assert_eq!(row.construction_raw, 37);
+        assert!(row.exact);
+        let second = Entry {
+            line: LINE_B,
+            ..unread
+        };
+        let output = rows(published(
+            &mut totals,
+            148,
+            &captured(1, &[entry(LINE_A, 11), second]),
+            census_of(&[LINE_B], &[]),
+        ));
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0].construction_raw, 48);
+        assert_eq!(output[1].construction_raw, 37);
+        assert!(
+            output
+                .iter()
+                .all(|row| row.exact && row.country == Recorded::Value(Some(5001)))
+        );
+        let row = rows(published(
+            &mut totals,
+            172,
+            &captured(3, &[unread]),
+            census_of(&[LINE_A, LINE_B], &[]),
+        ))
+        .remove(0);
+        assert_eq!(row.country, Recorded::Value(Some(5001)));
+        assert_eq!(row.construction_raw, 85);
+    }
+
+    #[test]
+    fn railway_output_publishes_its_own_route_endpoints() {
+        let mut totals = Totals::default();
+        let mut entry = test_entry();
+        entry.line = RAIL;
+        entry.railway = true;
+        entry.identity.as_mut().unwrap().route_first = Some(120001);
+        entry.identity.as_mut().unwrap().route_last = Some(120099);
+        add(&mut totals.shared.lines, &entry, 100).unwrap();
+        let row = totals.rows(124, 100, &[], &[]).unwrap().remove(0);
+        assert_eq!(row.route_first, Recorded::Value(Some(120001)));
+        assert_eq!(row.route_last, Recorded::Value(Some(120099)));
+        assert_eq!(row.building_type, Recorded::Value(None));
+    }
+
     #[test]
     fn native_count_resets_are_separate_from_completed_cost_debits() {
         let mut lines = OutputMap::default();
@@ -397,7 +640,7 @@ mod tests {
             &Entry {
                 line: LINE_A,
                 completion: Some(outcome),
-                ..Entry::default()
+                ..test_entry()
             },
             124,
         )
@@ -440,7 +683,7 @@ mod tests {
                     line,
                     completion: Some(outcome),
                     linked_completion: line == LINE_B,
-                    ..Entry::default()
+                    ..test_entry()
                 },
                 124,
             )
@@ -464,7 +707,7 @@ mod tests {
                 line: LINE_B,
                 completion: Some(outcome),
                 linked_completion: true,
-                ..Entry::default()
+                ..test_entry()
             },
             124,
         )
@@ -558,7 +801,7 @@ mod tests {
         Entry {
             line,
             amount,
-            ..Entry::default()
+            ..test_entry()
         }
     }
 

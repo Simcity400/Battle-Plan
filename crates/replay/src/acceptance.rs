@@ -2317,7 +2317,11 @@ fn packs_to_the_sequential_bytes_on_any_worker_count(campaign: &Campaign) -> (Re
             let appended = first
                 .append_recovered(&campaign.segments[2..])
                 .unwrap_or_else(failed);
-            assert_eq!(first.bytes(), old_bytes, "{workers} workers: appending changed the file");
+            assert_eq!(
+                first.bytes(),
+                old_bytes,
+                "{workers} workers: appending changed the file"
+            );
             (workers, first, appended)
         })
         .collect();
@@ -2521,6 +2525,36 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
             *update = TableUpdate::Truncated { rows, missing: 1 };
         }
         check(&truncated, "truncated", tick);
+    }
+}
+
+#[test]
+fn construction_output_targets_survive_snapshots_and_operand_only_deltas() {
+    use crate::rows::{ConstructionLineOutputRow, Recorded};
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for hour in 0..4 {
+        let mut source = source_with_faults(0, 1, hour, 0, false);
+        let row = ConstructionLineOutputRow {
+            line: 59,
+            country: Recorded::Value(Some(1501)),
+            building_type: Recorded::Value(Some(20013)),
+            target_flags: Recorded::Value(Some(5)),
+            target_location: Recorded::Value(Some(120001)),
+            target_state: Recorded::Value(Some(1501 + hour as u32)),
+            target_country: Recorded::Value(Some(0)),
+            ..Default::default()
+        };
+        *source.tables[TableId::ConstructionLineOutput.index()] =
+            TableView::Complete(TableRows::ConstructionLineOutput(vec![row.clone()]));
+        let encoded = encoder.encode(source, hour == 0).unwrap();
+        let decoded = decoder.apply(&encoded).unwrap();
+        assert_eq!(
+            decoded
+                .complete::<tables::ConstructionLineOutput>()
+                .unwrap(),
+            &[row]
+        );
     }
 }
 

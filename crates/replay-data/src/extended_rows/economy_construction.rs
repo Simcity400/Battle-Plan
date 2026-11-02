@@ -278,7 +278,7 @@ typed_codec!(RocketProductionOutputRow, 96, |row| (row.country as u128) << 64 | 
 #[path = "rocket_output/tests.rs"]
 mod rocket_output_tests;
 
-/// ConstructionLineOutput: key line (64 bits), 15 payload mask bits.
+/// ConstructionLineOutput: key line (64 bits), 23 payload mask bits.
 /// Branch totals from the observed daily advances, fixed5 since `since_hour`.
 /// `construction_raw` and `repair_raw` are factory output, excluding `bank_raw`.
 /// `instant_raw` is progress on the instant path; it has no factory
@@ -288,9 +288,6 @@ mod rocket_output_tests;
 /// advances; carry calls add no ticks. Linked primary output includes the
 /// partner's factories, whose split is unknown. Its partner row is also linked,
 /// with `exact` false: its amount is an unknown share, never an exact zero.
-/// Join `line` to the construction census for ownership; a line created and
-/// ended between reads has no known owner. `observed_since_creation` excludes
-/// lines in the first complete census.
 /// An ended line is published until a written frame held its final totals.
 /// Lost observation withholds the table until a new branch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -316,9 +313,19 @@ pub struct ConstructionLineOutputRow {
     /// Sum of the signed counts cleared on completion, independent of
     /// completed levels. Older publications retain their readable prefix.
     pub count_reset: Recorded<i64>,
+    /// None when only a linked partner's unknown share was observed.
+    pub country: Recorded<Option<u32>>,
+    pub building_type: Recorded<Option<u32>>,
+    pub target_flags: Recorded<Option<u32>>,
+    pub target_location: Recorded<Option<u32>>,
+    pub target_state: Recorded<Option<u32>>,
+    pub target_country: Recorded<Option<u32>>,
+    pub route_first: Recorded<Option<u32>>,
+    pub route_last: Recorded<Option<u32>>,
 }
 typed_codec!(ConstructionLineOutputRow, 64, |row| row.line as u128, |key| Self { line: key as u64, ..Default::default() },
- { 0 => (railway): Bool, 1 => (construction_raw): I64, 2 => (repair_raw): I64, 3 => (bank_raw): I64, 4 => (instant_raw): I64, 5 => (carry_raw): I64, 6 => (ticks): I32, 7 => (since_hour): I32, 8 => (observed_since_creation): Bool, 9 => (linked): Bool, 10 => (ended): Bool, 11 => (exact): Bool, 12 => (repair_ticks): I32, 13 => (completion): Opaque, 14 => (count_reset): I64 }, |row| {
+ { 0 => (railway): Bool, 1 => (construction_raw): I64, 2 => (repair_raw): I64, 3 => (bank_raw): I64, 4 => (instant_raw): I64, 5 => (carry_raw): I64, 6 => (ticks): I32, 7 => (since_hour): I32, 8 => (observed_since_creation): Bool, 9 => (linked): Bool, 10 => (ended): Bool, 11 => (exact): Bool, 12 => (repair_ticks): I32, 13 => (completion): Opaque, 14 => (count_reset): I64,
+ 15 => (country): OptionalU32, 16 => (building_type): OptionalU32, 17 => (target_flags): OptionalU32, 18 => (target_location): OptionalU32, 19 => (target_state): OptionalU32, 20 => (target_country): OptionalU32, 21 => (route_first): OptionalU32, 22 => (route_last): OptionalU32 }, |row| {
     if row.railway && matches!(row.count_reset, Recorded::Value(count) if count != 0) {
         return Err(invalid("railway output cannot contain a building count reset"));
     }

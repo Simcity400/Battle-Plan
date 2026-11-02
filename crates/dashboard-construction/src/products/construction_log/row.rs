@@ -4,14 +4,14 @@
 
 use super::{
     Scan, ScannedLog, SpendingGap,
-    observed::{self, Building, BuildingLine, Buildings, Output, Queue, RailwayLine},
+    observed::{self, Building, BuildingLine, Buildings, Output, OutputLine, Queue, RailwayLine},
 };
 use dashboard_text::metadata::{
     branch_bounds, link_slot, mapped_slot, slot_read, validate_campaign,
 };
 use engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
 use replay::container::Replay;
-use replay_data::rows::{BuildingRow, TableId, TableSchema, tables};
+use replay_data::rows::{BuildingRow, Recorded, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, FrameDecoder, SharedView, TableView};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -138,7 +138,24 @@ impl Rows {
         };
         let output = match (reads[2], frame.complete::<tables::ConstructionLineOutput>()) {
             (false, _) => Output::NotRead,
-            (true, Ok(rows)) => Output::Read(rows.to_vec()),
+            (true, Ok(rows)) => Output::Read(
+                rows.iter()
+                    .map(|row| {
+                        let value = |field| match field {
+                            Recorded::Value(value) => value,
+                            Recorded::NotRecorded => None,
+                        };
+                        OutputLine {
+                            owner: value(row.country).and_then(|country| owner_tag(frame, country)),
+                            from: value(row.route_first)
+                                .and_then(|province| province_state(frame, province)),
+                            to: value(row.route_last)
+                                .and_then(|province| province_state(frame, province)),
+                            row: row.clone(),
+                        }
+                    })
+                    .collect(),
+            ),
             (true, Err(_)) => Output::Unavailable(
                 match &*frame.tables[TableId::ConstructionLineOutput.index()] {
                     TableView::Unavailable { reason } if reason.contains("not recorded") => {
@@ -154,6 +171,15 @@ impl Rows {
         };
         if matches!(&railways, Queue::Read(lines) if !lines.is_empty()) {
             named.push(RAILWAY_TEMPLATE_TOKEN);
+        }
+        if let Output::Read(lines) = &output {
+            for line in lines {
+                if line.row.railway {
+                    named.push(RAILWAY_TEMPLATE_TOKEN);
+                } else if let Recorded::Value(Some(kind)) = line.row.building_type {
+                    named.push(kind);
+                }
+            }
         }
         for id in named {
             if let Entry::Vacant(entry) = self.spelled.entry(id) {

@@ -35,18 +35,25 @@ const isOutputRun = (run: ConstructionOutputRun) => typeof run === 'object' && r
   && !(run.absent && (run.reason != null || run.beforeObservation));
 const isProject = (project: ConstructionProject, types: number) => typeof project === 'object' && project != null && typeof project.id === 'string'
   && (project.kind === 'building' || project.kind === 'railway') && typeof project.tag === 'string'
-  && int(project.building) && project.building >= 0 && project.building < types && typeof project.repair === 'boolean'
+  && (project.source === 'census' || project.source === 'outputAlone') && optionalInt(project.censusRead) && optionalInt(project.queueOrdinal)
+  && int(project.building) && project.building >= 0 && project.building < types && (project.repair == null || typeof project.repair === 'boolean')
   && [project.state, project.toState, project.province, project.routeProvinces, project.baseLevel, project.targetLevel].every(optionalInt)
-  && RAW.test(project.costRaw) && int(project.createdHour) && int(project.firstRead)
+  && (project.costRaw == null || RAW.test(project.costRaw)) && optionalInt(project.createdHour) && int(project.firstRead)
+  && (project.source === 'census' ? project.censusRead != null && project.censusRead >= project.firstRead && project.createdHour != null && project.costRaw != null && project.repair != null && project.queueOrdinal != null
+    : project.censusRead == null && project.createdHour == null && project.costRaw == null && project.repair == null && project.queueOrdinal == null)
+  && (project.outputOrigin == null ? project.source === 'census' : typeof project.outputOrigin.tag === 'string'
+    && int(project.outputOrigin.building) && project.outputOrigin.building >= 0 && project.outputOrigin.building < types
+    && [project.outputOrigin.state, project.outputOrigin.toState, project.outputOrigin.province].every(optionalInt))
   && typeof project.earlierUnknown === 'boolean'
   && (project.firstRepairTick == null || (int(project.firstRepairTick) && project.firstRepairTick >= project.firstRead))
-  && Array.isArray(project.runs) && project.runs.length > 0 && project.runs.every(isRun) && project.runs[0].firstHour === project.firstRead
+  && Array.isArray(project.runs) && project.runs.every(isRun)
+  && (project.source === 'census' ? project.runs.length > 0 && project.runs[0].firstHour === project.censusRead : project.runs.length === 0)
   && project.runs.every((run, index) => index === 0 || project.runs[index - 1].lastHour < run.firstHour)
   && [project.built, project.unaccounted, project.possible, project.added].every(list => Array.isArray(list) && list.every(levels => typeof levels === 'object' && levels != null
     && optionalInt(levels.hour) && int(levels.knownAt) && int(levels.count) && levels.count > 0 && levels.knownAt >= project.firstRead
     && typeof levels.repair === 'boolean'))
   && (project.end == null || (typeof project.end === 'object' && END_KINDS.includes(project.end.kind) && optionalInt(project.end.hour)
-    && int(project.end.knownAt) && project.end.knownAt > project.firstRead
+    && int(project.end.knownAt) && project.end.knownAt >= project.firstRead
     && (project.end.unknown == null || UNKNOWN_ENDS.includes(project.end.unknown))));
 
 /** Checks the manifest's shape: its windows in hour order and the types its projects name. */
@@ -123,7 +130,8 @@ export function mergeWindows(manifest: ConstructionLogManifestReply, windows: Re
     });
     for (const project of reply.projects) {
       if ((projects.get(project.id)?.through ?? -Infinity) <= through)
-        projects.set(project.id, { project: remap ? { ...project, building: remap[project.building] } : project, through });
+        projects.set(project.id, { project: remap ? { ...project, building: remap[project.building],
+          outputOrigin: project.outputOrigin ? { ...project.outputOrigin, building: remap[project.outputOrigin.building] } : null } : project, through });
     }
     for (const { id, runs } of reply.outputs) {
       const known = output.get(id) ?? new Map<number, { run: ConstructionOutputRun; through: number }>();
@@ -162,11 +170,11 @@ export function constructionWindows(count: number, current: number, live: boolea
 }
 
 /** Where a project stands at an hour, as far as the reads by then show. */
-export type Status = 'building' | 'unread' | 'finished' | 'removed' | 'ended';
+export type Status = 'building' | 'unread' | 'observed' | 'finished' | 'removed' | 'ended';
 
 /** What a project has done by an hour, per stretch: built new levels, repaired, or
  * repaired and then built the new levels queued behind the repair. */
-export type ProjectKind = 'new' | 'repair' | 'repairThenNew';
+export type ProjectKind = 'new' | 'repair' | 'repairThenNew' | 'unknown';
 
 export interface ProjectAt {
   project: ConstructionProject;
@@ -191,7 +199,7 @@ export interface ProjectAt {
   /** The read whose values hold at the hour; null between a gap and the next read, or once it ended. */
   run: ProjectRun | null;
   /** Its last read at or before the hour. */
-  last: ProjectRun;
+  last: ProjectRun | null;
   /** Its latest change by then: when it ended, a level was built, or it started. */
   changed: number;
   /** That hour is an upper bound: only the read shows it. */
@@ -204,22 +212,26 @@ export interface ProjectAt {
  * that establishes it (`knownAt`). */
 export function projectAt(project: ConstructionProject, hour: number): ProjectAt | null {
   if (hour < project.firstRead) return null;
+  if (project.outputOrigin && (project.censusRead == null || hour < project.censusRead)) {
+    project = { ...project, ...project.outputOrigin, source: 'outputAlone', censusRead: null,
+      repair: null, costRaw: null, createdHour: null, queueOrdinal: null, routeProvinces: null, baseLevel: null, targetLevel: null, earlierUnknown: true };
+  }
   const sum = (list: readonly LevelsBuilt[], until: number) => list.reduce((total, levels) => total + (levels.knownAt <= until ? levels.count : 0), 0);
   const runs = project.runs.filter(run => run.firstHour <= hour);
-  const last = runs[runs.length - 1];
+  const last = runs.at(-1) ?? null;
   const end = project.end && project.end.knownAt <= hour ? project.end : null;
-  const run = !end && last.lastHour >= hour ? last : null;
-  const status: Status = !end ? run ? 'building' : 'unread' : end.kind === 'finished' ? 'finished' : end.kind === 'removed' ? 'removed' : 'ended';
+  const run = !end && last && last.lastHour >= hour ? last : null;
+  const status: Status = !end ? run ? 'building' : project.source === 'outputAlone' ? 'observed' : 'unread' : end.kind === 'finished' ? 'finished' : end.kind === 'removed' ? 'removed' : 'ended';
   const count = sum(project.built, hour);
   const unknown = sum(project.unaccounted, hour);
   const possible = sum(project.possible, hour);
   // Its last read's levels still to build and to repair, with what it had built or
   // lost by that read. Levels known after it (at its ending) came out of those, so
   // they are not counted twice, except what the ending shows added.
-  const readHour = Math.min(hour, last.lastHour);
+  const readHour = Math.min(hour, last?.lastHour ?? project.firstRead);
   const before = sum(project.built, readHour) + sum(project.unaccounted, readHour);
   const addedLater = sum(project.added, hour) - sum(project.added, readHour);
-  const levels = before + Math.max(0, last.remaining) + Math.max(0, last.repairLevels) + addedLater;
+  const levels = before + Math.max(0, last?.remaining ?? 0) + Math.max(0, last?.repairLevels ?? 0) + addedLater;
   const events = [...project.built, ...project.unaccounted, ...project.possible].filter(levels => levels.knownAt <= hour);
   // A stretch repairs while it has levels to repair (the engine's repair branch),
   // else builds its remaining new levels.
@@ -227,7 +239,7 @@ export function projectAt(project: ConstructionProject, hour: number): ProjectAt
     || (project.firstRepairTick != null && project.firstRepairTick <= hour);
   // New levels queued behind a repair make it a repair, then new, from the start.
   const builtNew = runs.some(item => item.remaining > 0) || events.some(levels => !levels.repair);
-  const kind: ProjectKind = repaired && builtNew ? 'repairThenNew' : repaired ? 'repair' : 'new';
+  const kind: ProjectKind = project.source === 'outputAlone' ? 'unknown' : repaired && builtNew ? 'repairThenNew' : repaired ? 'repair' : 'new';
   const repairing = run != null && run.repairLevels > 0;
   // The latest change: the latest read to confirm one, and of the changes one read
   // confirms (several levels, say, after a read that failed), the latest dated.
@@ -235,9 +247,9 @@ export function projectAt(project: ConstructionProject, hour: number): ProjectAt
   const latest = events.reduce<LevelsBuilt | null>((found, levels) => !found || levels.knownAt > found.knownAt
     || (levels.knownAt === found.knownAt && dated(levels) > dated(found)) ? levels : found, null);
   const [changed, changedBy] = end ? [end.hour ?? end.knownAt, end.hour == null]
-    : latest ? [latest.hour ?? latest.knownAt, latest.hour == null] : [project.createdHour, false];
+    : latest ? [latest.hour ?? latest.knownAt, latest.hour == null] : [project.createdHour ?? project.firstRead, project.createdHour == null];
   return { project, status, earlierUnknown: project.earlierUnknown, built: count, unknown, possible, levels, added: sum(project.added, hour), kind, repairing, run, last, changed, changedBy,
-    stage: events.length + (end ? 1 : 0) };
+    stage: events.length + (end ? 1 : 0) + (project.outputOrigin && project.source === 'census' ? 1 : 0) };
 }
 
 /** A project's building type in the manifest. */
@@ -275,15 +287,16 @@ export function logRows(log: ConstructionLog, hour: number, filter: LogFilter, o
   const from = Math.max(filter.from ?? -Infinity, log.held > 0 ? log.manifest.windows[log.held].firstHour : -Infinity);
   const rows: LogRow<ProjectAt>[] = [];
   for (const project of log.projects) {
-    if (types.size && !types.has(projectType(log, project)?.token ?? '')) continue;
-    if (!filter.country(project.tag, project.firstRead)) continue;
     const at = projectAt(project, hour);
     if (!at) continue;
+    if (types.size && !types.has(projectType(log, at.project)?.token ?? '')) continue;
+    if (!filter.country(at.project.tag, project.firstRead)) continue;
+    if (filter.projects !== 'all' && at.kind === 'unknown') continue;
     // By what it did by then: a repair that went on to build new levels is both.
     if (filter.projects === 'new' && at.kind === 'repair') continue;
     if (filter.projects === 'repair' && at.kind === 'new') continue;
     if (filter.queue && !inQueue(at)) continue;
-    const date = order === 'start' ? project.createdHour : at.changed;
+    const date = order === 'start' ? at.project.createdHour ?? project.firstRead : at.changed;
     if (date < from) continue;
     rows.push({ key: order === 'start' ? project.id : `${project.id}:${at.stage}`, id: project.id, hour: date, by: order === 'change' && at.changedBy, item: at });
   }
@@ -292,19 +305,21 @@ export function logRows(log: ConstructionLog, hour: number, filter: LogFilter, o
 
 export function constructionPlayback(log: ConstructionLog, filter: LogFilter, order: 'change' | 'start') {
   const types = new Set(filter.types);
-  const selected = { ...log, projects: log.projects.filter(project => (!types.size || types.has(projectType(log, project)?.token ?? ''))
-    && filter.country(project.tag, project.firstRead)) };
-  const preparedFilter = { ...filter, types: [], country: () => true };
+  const selected = { ...log, projects: log.projects.filter(project => {
+    const matches = (tag: string, building: number) => (!types.size || types.has(log.manifest.types[building]?.token ?? '')) && filter.country(tag, project.firstRead);
+    return matches(project.tag, project.building) || (project.outputOrigin != null && matches(project.outputOrigin.tag, project.outputOrigin.building));
+  }) };
   function* changes() {
     for (const project of selected.projects) {
       yield project.firstRead;
+      if (project.censusRead != null) yield project.censusRead;
       if (project.firstRepairTick != null) yield project.firstRepairTick;
       if (project.end) yield project.end.knownAt;
       yield* spanChanges(project.runs);
       for (const levels of [project.built, project.unaccounted, project.possible, project.added]) for (const level of levels) yield level.knownAt;
     }
   }
-  return playbackRows(changes(), hour => logRows(selected, hour, preparedFilter, order));
+  return playbackRows(changes(), hour => logRows(selected, hour, filter, order));
 }
 
 /** The countries the drawn rows name, each at its project's first read, and as many
@@ -319,7 +334,8 @@ export function statusLabel(at: ProjectAt): string {
   switch (at.status) {
     case 'building': return at.repairing ? 'Repairing' : at.kind === 'repairThenNew' ? 'Building, after repair' : 'Building';
     case 'unread': return 'Not recorded';
-    case 'finished': return at.kind === 'repair' ? 'Repaired' : at.kind === 'repairThenNew' ? 'Repaired and built' : 'Built';
+    case 'observed': return 'Observed';
+    case 'finished': return at.kind === 'unknown' ? 'Finished' : at.kind === 'repair' ? 'Repaired' : at.kind === 'repairThenNew' ? 'Repaired and built' : 'Built';
     case 'removed': return 'Removed';
     case 'ended': return 'Left the queue';
   }
@@ -333,6 +349,7 @@ export function statusTone(at: ProjectAt): 'accent' | 'positive' | 'neutral' {
 
 /** What a project did, as the log's repair marking says it. */
 export function kindLabel(kind: ProjectKind): string {
+  if (kind === 'unknown') return 'Not recorded';
   return kind === 'repair' ? 'Repair' : kind === 'repairThenNew' ? 'Repair, then new' : 'New';
 }
 
@@ -340,6 +357,7 @@ export function kindLabel(kind: ProjectKind): string {
  * for one. Levels the recording cannot tell built from dropped keep the count a range
  * ("1–2 of 2") at every status, as the tooltip gives it: an ending never settles them. */
 export function levelsLabel(at: ProjectAt): string | null {
+  if (at.project.source === 'outputAlone') return null;
   if (at.earlierUnknown || at.unknown > 0 || at.possible > 0) return builtLabel(at);
   if (at.levels <= 1) return null;
   return (at.status === 'building' || at.status === 'unread') && at.built > 0 ? builtLabel(at) : `×${at.levels}`;
@@ -360,12 +378,13 @@ export function placeTitle(project: ConstructionProject, hour: number, stateAt: 
 export function describeRow(log: ConstructionLog, row: LogRow<ProjectAt>, country: string, hour: number, stateAt: StateNameAt): string {
   const at = row.item;
   const levels = levelsLabel(at);
-  return `${country}, ${typeName(projectType(log, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, hour, stateAt)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${dayLabel(row.hour)}${at.earlierUnknown ? ', earlier progress unknown' : ''}`;
+  return `${country}, ${typeName(projectType(log, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, hour, stateAt)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${dayLabel(row.hour)}${at.project.source === 'outputAlone' ? ', known from output' : ''}${at.earlierUnknown ? ', earlier progress unknown' : ''}`;
 }
 
 /** Levels built as then known, with ranges for work built or dropped unseen and
  * extra levels it may have both built and had added ("1–2 of 2–3"). */
 export function builtLabel(at: ProjectAt): string {
+  if (at.project.source === 'outputAlone') return 'Not recorded';
   const more = at.earlierUnknown ? '+' : '';
   const extra = at.unknown + at.possible;
   const built = extra ? `${at.built}–${at.built + extra}` : at.built;
@@ -379,13 +398,13 @@ export function builtLabel(at: ProjectAt): string {
 export function jumpHours(at: ProjectAt, hour: number): number[] {
   const { end } = at.project;
   const ended = end && end.knownAt <= hour ? [end.hour ?? end.knownAt] : [];
-  return [...new Set([at.project.createdHour, at.changed, ...ended])].sort((a, b) => a - b);
+  return [...new Set([at.project.createdHour ?? at.project.firstRead, at.changed, ...ended])].sort((a, b) => a - b);
 }
 
 /** The factories on a project as the row shows them: at the read in view, or at its
  * last read once it ended; null between a gap and the next read. */
 export function factoriesShown(at: ProjectAt): number | null {
-  return at.run ? at.run.factories : at.status === 'unread' ? null : at.last.factories;
+  return at.run ? at.run.factories : at.status === 'unread' ? null : at.last?.factories ?? null;
 }
 
 /** The factories column of a row: only while the project is in the queue, its
@@ -416,14 +435,16 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   const type = projectType(log, project);
   const end = project.end && project.end.knownAt <= hour ? project.end : null;
   const pending = at.status === 'unread' ? 'Not recorded' : 'Not yet';
-  const rows: TooltipRow[] = [{ label: 'Started', value: dayLabel(project.createdHour) }];
+  const rows: TooltipRow[] = project.createdHour == null
+    ? [{ label: 'Source', value: 'Known from output' }, { label: 'First evidence', value: dayLabel(project.firstRead) }]
+    : [{ label: 'Started', value: dayLabel(project.createdHour) }];
   // Completions follow what it did per stretch: a repair, then new levels, each
   // with its own date.
   const dated = (risen: number | null, knownAt: number) => risen != null ? dayLabel(risen) : `by ${dayLabel(knownAt)}`;
   if (at.kind === 'repairThenNew') {
     const latest = project.built.filter(levels => levels.repair && levels.knownAt <= hour)
       .reduce<LevelsBuilt | null>((found, levels) => !found || (levels.hour ?? levels.knownAt) > (found.hour ?? found.knownAt) ? levels : found, null);
-    const repaired = end?.kind === 'finished' || (at.run ? at.run.repairLevels <= 0 : end != null && at.last.repairLevels <= 0);
+    const repaired = end?.kind === 'finished' || (at.run ? at.run.repairLevels <= 0 : end != null && at.last != null && at.last.repairLevels <= 0);
     if (repaired) rows.push(latest ? { label: 'Repaired', value: dated(latest.hour, latest.knownAt), tone: 'positive' } : { label: 'Repaired', value: 'Not recorded', tone: 'muted' });
     else if (!end) rows.push({ label: 'Repaired', value: pending, tone: 'muted' });
   }
@@ -443,19 +464,21 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   if (at.unknown) rows.push({ label: 'Built or dropped, not recorded', value: `${at.unknown} ${unit}${at.unknown === 1 ? '' : 's'}`, tone: 'muted' });
   // In the queue: the factories at the read in view; once ended, those of its last read.
   const factories = factoriesShown(at);
-  rows.push(inQueue(at) ? { label: 'Factories', value: factories == null ? 'Not recorded' : String(factories) }
-    : { label: 'Factories at its last read', value: String(at.last.factories) });
+  if (project.source === 'census') rows.push(inQueue(at) ? { label: 'Factories', value: factories == null ? 'Not recorded' : String(factories) }
+    : { label: 'Factories at its last read', value: at.last == null ? 'Not recorded' : String(at.last.factories) });
   // Factory IC is written in whole numbers; the recorded amounts stay exact.
   const scale = Math.round(Math.log10(log.manifest.costScale));
-  const cost = formatAmount(project.costRaw, scale, 0);
-  rows.push(project.kind === 'railway' ? { label: 'Route cost', value: cost } : { label: `Cost per ${unit}`, value: cost });
+  if (project.costRaw != null) {
+    const cost = formatAmount(project.costRaw, scale, 0);
+    rows.push(project.kind === 'railway' ? { label: 'Route cost', value: cost } : { label: `Cost per ${unit}`, value: cost });
+  }
   const output = outputAt(log, project, hour);
   if (output) {
     rows.push({ label: 'Construction output', value: output.constructionRaw == null ? 'Not recorded' : formatAmount(output.constructionRaw, scale, 0) });
     rows.push({ label: 'Repair output', value: output.repairRaw == null ? 'Not recorded' : formatAmount(output.repairRaw, scale, 0) });
   }
   const detail: TooltipRow[] = [];
-  if (project.kind === 'railway') {
+  if (project.kind === 'railway' && project.source === 'census') {
     detail.push({ label: 'Railway level', value: `${project.baseLevel ?? '?'} → ${project.targetLevel ?? '?'}`, divider: true });
     if (project.routeProvinces != null) detail.push({ label: 'Provinces on the route', value: String(project.routeProvinces) });
   }
@@ -463,6 +486,6 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   const notes = [...new Set([place.missing ?? null, output?.reason ? 'Output unavailable.' : null, output?.beforeObservation ? 'Earlier progress unknown.' : null, end?.unknown ? 'Completion unknown.' : null, end?.kind === 'removed' ? 'Removed from the queue.' : null,
     at.earlierUnknown ? 'Earlier progress unknown.' : null,
     at.possible ? 'Completion count uncertain.' : null].filter(Boolean))].join(' ');
-  const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${place.label}${at.kind === 'new' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };
+  const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${place.label}${at.kind === 'new' || at.kind === 'unknown' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };
   return [{ ...base, rows: [...rows, ...detail] }, { ...base, rows }];
 }

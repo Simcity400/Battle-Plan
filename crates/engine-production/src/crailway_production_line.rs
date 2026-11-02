@@ -54,6 +54,17 @@ pub(crate) fn route(memory: &impl Memory, pointer: usize) -> Result<Array, &'sta
         .ok_or("railway construction route unreadable or invalid")
 }
 
+pub(crate) fn route_province(
+    memory: &impl Memory,
+    route: Array,
+    index: u32,
+) -> Result<u32, &'static str> {
+    route
+        .element(index, ROUTE_PROVINCE_STRIDE)
+        .and_then(|p| read::<u32>(memory, p))
+        .ok_or("railway route province unreadable")
+}
+
 pub(crate) fn fields(
     memory: &impl Memory,
     pointer: usize,

@@ -48,17 +48,18 @@ use std::{
     ptr,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 #[derive(Default)]
 struct Slot {
     line: AtomicU64,
+    identity: [AtomicU64; 4],
     partner: AtomicU64,
     amount: AtomicU64,
     bank: AtomicU64,
-    flags: AtomicU8,
+    flags: AtomicU16,
 }
 
 struct Storage {
@@ -104,8 +105,8 @@ static REFUSAL_PENDING: AtomicBool = AtomicBool::new(false);
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[building spends, other speed reads, railway advances, railway spends,
 /// railway carries, entries, inexact entries, drains, entries handed over,
-/// overflowed logs, unobserved drains, refused operand reads]`.
-static COUNTERS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+/// overflowed logs, unobserved drains, refused operand reads, unread identities]`.
+static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 
 pub fn capacity() -> usize {
     OBSERVATION.capacity.load(Ordering::Acquire)
@@ -179,20 +180,24 @@ fn log() -> Option<&'static Storage> {
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 
-const RAILWAY: u8 = 1;
-const REPAIR: u8 = 2;
-const INSTANT: u8 = 4;
-const LINKED: u8 = 8;
-const CARRY: u8 = 16;
-const COMPLETE: u8 = 32;
-const CANCELLED: u8 = 64;
-const RESET: u8 = 128;
+const RAILWAY: u16 = 1;
+const REPAIR: u16 = 2;
+const INSTANT: u16 = 4;
+const LINKED: u16 = 8;
+const CARRY: u16 = 16;
+const COMPLETE: u16 = 32;
+const CANCELLED: u16 = 64;
+const RESET: u16 = 128;
+const ROUTE_FIRST: u16 = 256;
+const ROUTE_LAST: u16 = 512;
+const HAS_IDENTITY: u16 = 1024;
 
 /// One construction spend, railway carry or native completion decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     /// The line's CID, the construction tables' `id`.
     pub line: u64,
+    pub identity: Option<engine_production::construction_ic_sites::Identity>,
     /// Later segment call in the same advance; never new factory spending.
     pub carry: bool,
     /// The progress the day added (fixed5): the factories' output plus `bank`.
@@ -243,7 +248,15 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     let amount = if railway { amount } else { operands.speed };
     // An ordinary railway speed can equal the instant amount: read the path's own gate.
     let cheat = if railway {
-        match engine_production::construction_ic_sites::railway_instant(&memory, base, line) {
+        let instant = match operands.identity {
+            Some(identity) => engine_production::construction_ic_sites::railway_instant_owned(
+                &memory,
+                base,
+                identity.country,
+            ),
+            None => engine_production::construction_ic_sites::railway_instant(&memory, base, line),
+        };
+        match instant {
             Ok(cheat) => cheat,
             Err(reason) => {
                 refuse(reason);
@@ -286,6 +299,7 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     };
     append(Entry {
         line: operands.line,
+        identity: operands.identity,
         amount,
         bank: if carry || instant || unwithdrawn {
             0
@@ -354,6 +368,23 @@ fn observe_linked_completion(status: usize, line: usize, caller: usize) {
     }
 }
 
+fn observe_count_reset(line: usize) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    match engine_production::construction_ic_sites::count_reset(
+        &memory,
+        BASE.load(Ordering::Relaxed),
+        line,
+    ) {
+        Ok((line, count, identity)) => append(Entry {
+            line,
+            identity,
+            count_reset: Some(count),
+            ..Entry::default()
+        }),
+        Err(reason) => refuse(reason),
+    }
+}
+
 fn append_completion(
     event: engine_production::construction_ic_sites::Completion,
     railway: bool,
@@ -361,6 +392,7 @@ fn append_completion(
 ) {
     append(Entry {
         line: event.line,
+        identity: event.identity,
         railway,
         completion: Some(replay_data::rows::ConstructionCompletion {
             hour: event.hour,
@@ -394,6 +426,9 @@ fn observe_segment(amount: i64) {
 /// it ends the observation (a new epoch) before it leaves.
 fn append(entry: Entry) {
     COUNTERS[5].fetch_add(1, Ordering::Relaxed);
+    if entry.identity.is_none() {
+        COUNTERS[12].fetch_add(1, Ordering::Relaxed);
+    }
     if entry.instant {
         COUNTERS[6].fetch_add(1, Ordering::Relaxed);
     }
@@ -403,15 +438,31 @@ fn append(entry: Entry) {
         invalidate();
         return;
     };
-    let flags = (u8::from(entry.railway) * RAILWAY)
-        | (u8::from(entry.repair) * REPAIR)
-        | (u8::from(entry.instant) * INSTANT)
-        | (u8::from(entry.partner.is_some() || entry.linked_completion) * LINKED)
-        | (u8::from(entry.carry) * CARRY)
-        | (u8::from(entry.completion.is_some()) * COMPLETE)
-        | (u8::from(entry.completion.is_some_and(|event| event.cancelled)) * CANCELLED)
-        | (u8::from(entry.count_reset.is_some()) * RESET);
+    let identity = entry.identity.unwrap_or_default();
+    let flags = (u16::from(entry.railway) * RAILWAY)
+        | (u16::from(entry.repair) * REPAIR)
+        | (u16::from(entry.instant) * INSTANT)
+        | (u16::from(entry.partner.is_some() || entry.linked_completion) * LINKED)
+        | (u16::from(entry.carry) * CARRY)
+        | (u16::from(entry.completion.is_some()) * COMPLETE)
+        | (u16::from(entry.completion.is_some_and(|event| event.cancelled)) * CANCELLED)
+        | (u16::from(entry.count_reset.is_some()) * RESET)
+        | (u16::from(identity.route_first.is_some()) * ROUTE_FIRST)
+        | (u16::from(identity.route_last.is_some()) * ROUTE_LAST)
+        | (u16::from(entry.identity.is_some()) * HAS_IDENTITY);
     slot.line.store(entry.line, Ordering::SeqCst);
+    let pair = |first: u32, second: u32| u64::from(first) | (u64::from(second) << 32);
+    for (slot, value) in slot.identity.iter().zip([
+        pair(identity.country, identity.building_type),
+        pair(identity.target_flags, identity.target_location),
+        pair(identity.target_state, identity.target_country),
+        pair(
+            identity.route_first.unwrap_or(0),
+            identity.route_last.unwrap_or(0),
+        ),
+    ]) {
+        slot.store(value, Ordering::SeqCst);
+    }
     slot.partner
         .store(entry.partner.unwrap_or(0), Ordering::SeqCst);
     // Completion entries use this slot for the native hour, never IC.
@@ -430,8 +481,25 @@ fn append(entry: Entry) {
 fn entry(slot: &Slot) -> Entry {
     let flags = slot.flags.load(Ordering::SeqCst);
     let amount = slot.amount.load(Ordering::SeqCst) as i64;
+    let identity = (flags & HAS_IDENTITY != 0).then(|| {
+        let [owner_type, location, target, route] = slot
+            .identity
+            .each_ref()
+            .map(|value| value.load(Ordering::SeqCst));
+        engine_production::construction_ic_sites::Identity {
+            country: owner_type as u32,
+            building_type: (owner_type >> 32) as u32,
+            target_flags: location as u32,
+            target_location: (location >> 32) as u32,
+            target_state: target as u32,
+            target_country: (target >> 32) as u32,
+            route_first: (flags & ROUTE_FIRST != 0).then_some(route as u32),
+            route_last: (flags & ROUTE_LAST != 0).then_some((route >> 32) as u32),
+        }
+    });
     Entry {
         line: slot.line.load(Ordering::SeqCst),
+        identity,
         carry: flags & CARRY != 0,
         amount: if flags & (COMPLETE | RESET) == 0 {
             amount
@@ -535,6 +603,8 @@ pub fn status() -> impl serde::Serialize {
         "overflowed_logs": counters[9],
         "unobserved_drains": counters[10],
         "refused_entries": counters[11],
+        "identity_unread": counters[12],
+        "identity_conflicts": crate::construction_tables::identity_conflicts(),
         "refused": REFUSED.get(),
         "scope": "cumulative since attach; building_spends count the speed reads at the advance's spend site (other_speed_reads every other caller, such as the repair rate and the production screen); entries include spends, railway carries, zero-IC building advances and native daily/linked completion decisions"
     }))
@@ -634,19 +704,7 @@ fn original(site: usize) -> usize {
 unsafe extern "system-unwind" fn building_reset(line: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    match engine_production::construction_ic_sites::count_reset(
-        &memory,
-        BASE.load(Ordering::Relaxed),
-        line,
-    ) {
-        Ok((line, count)) => append(Entry {
-            line,
-            count_reset: Some(count),
-            ..Entry::default()
-        }),
-        Err(reason) => refuse(reason),
-    }
+    observe_count_reset(line);
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(original(6)) };
     timing.original(|| unsafe { original(line) });
@@ -839,6 +897,7 @@ mod tests {
         append_completion(
             engine_production::construction_ic_sites::Completion {
                 line: 10,
+                identity: Default::default(),
                 hour: -1,
                 cancelled: false,
             },
@@ -867,13 +926,16 @@ mod tests {
     /// from `base`; vtables are only compared as values.
     struct Image {
         bytes: Vec<u64>,
+        owner: Option<Owner>,
     }
     impl Image {
         const INVALID: u64 = 0xffff_ffff_0000_0000;
         fn new() -> Self {
             let mut bytes = vec![0_u64; (INVALID_REFERENCE - SINGLETON_RVA) / 8 + 1];
             bytes[(INVALID_REFERENCE - SINGLETON_RVA) / 8] = Self::INVALID;
-            Self { bytes }
+            let mut image = Self { bytes, owner: None };
+            image.owner = Some(Owner::new(&mut image, 7, 0));
+            image
         }
         fn base(&self) -> usize {
             (self.bytes.as_ptr() as usize) - SINGLETON_RVA
@@ -893,6 +955,9 @@ mod tests {
         country: Vec<u64>,
         state: Vec<u64>,
         links: Vec<u32>,
+        map_state: Vec<u64>,
+        map: Vec<u64>,
+        building: Vec<u64>,
     }
     impl Owner {
         fn new(image: &mut Image, id: u32, playing: u32) -> Self {
@@ -902,6 +967,9 @@ mod tests {
                 country: vec![0; ccountry::PRODUCTION_STATUS / 8 + 1],
                 state: vec![0; cgame_state::LOCAL_PLAYER_COUNTRY / 8 + 1],
                 links: vec![0, 1, 2, 3, 4, 5, 6, 5],
+                map_state: vec![0; 0x200 / 8],
+                map: vec![0; 2],
+                building: vec![0; 0x200 / 8],
             };
             let status = owner.status.as_ptr() as u64;
             let country = owner.country.as_ptr() as u64;
@@ -913,6 +981,21 @@ mod tests {
             owner.state[cgame_state::COUNTRY_LINKS / 8] = owner.links.as_ptr() as u64;
             owner.state[cgame_state::COUNTRY_LINKS / 8 + 1] = 8 | 8 << 32;
             owner.state[cgame_state::LOCAL_PLAYER_COUNTRY / 8] = u64::from(playing);
+            use engine_native::{cbuilding, cbuilding_status, cstate};
+            owner.map[1] = owner.map_state.as_ptr() as u64;
+            for field in [cgame_state::STATES, cgame_state::PROVINCES] {
+                owner.state[field / 8] = owner.map.as_ptr() as u64;
+                owner.state[field / 8 + 1] = 2 | 2 << 32;
+            }
+            owner.map_state[0] = (base + cstate::VTABLE_RVA) as u64;
+            owner.map_state[cstate::ID / 8] = 1;
+            let status = cstate::BUILDING_STATUS;
+            owner.map_state[status / 8] = (base + cbuilding_status::VTABLE_RVA) as u64;
+            owner.map_state[(status + cbuilding_status::FLAGS) / 8] = 2 | 1 << 32;
+            owner.building[0] = (base + cbuilding::VTABLE_RVA) as u64;
+            owner.building[cbuilding::TYPE_ID / 8] = 9;
+            owner.building[cbuilding::BUILDING_STATUS / 8] =
+                owner.map_state.as_ptr() as u64 + status as u64;
             image.set_state(owner.state.as_ptr() as usize);
             owner
         }
@@ -921,6 +1004,7 @@ mod tests {
     /// A live line image; owner pointers are absent unless [`Line::owned_by`] sets them.
     struct Line {
         line: Vec<u64>,
+        _route: Vec<u32>,
     }
     impl Line {
         fn new(
@@ -944,7 +1028,21 @@ mod tests {
             } else {
                 Image::INVALID
             };
-            Self { line }
+            let owner = image.owner.as_ref().unwrap();
+            line[cproduction_line::PRODUCTION_STATUS / 8] = owner.status.as_ptr() as u64;
+            let route = vec![3_u32, 4];
+            if railway {
+                line[engine_production::crailway_production_line::ROUTE / 8] =
+                    route.as_ptr() as u64;
+                line[engine_production::crailway_production_line::ROUTE / 8 + 1] = 2 | 2 << 32;
+            } else {
+                line[engine_production::cbuilding_production_line::BUILDING / 8] =
+                    owner.building.as_ptr() as u64;
+            }
+            Self {
+                line,
+                _route: route,
+            }
         }
         fn owned_by(mut self, owner: &Owner) -> Self {
             self.line[cproduction_line::PRODUCTION_STATUS / 8] = owner.status.as_ptr() as u64;
@@ -966,6 +1064,25 @@ mod tests {
         let copied = result.map_or(0, |drained| drained.copied);
         output.truncate(copied);
         (result, output)
+    }
+
+    fn building_identity() -> engine_production::construction_ic_sites::Identity {
+        engine_production::construction_ic_sites::Identity {
+            country: 7,
+            building_type: 9,
+            target_flags: 2,
+            target_location: 1,
+            target_state: 1,
+            ..Default::default()
+        }
+    }
+    fn railway_identity() -> engine_production::construction_ic_sites::Identity {
+        engine_production::construction_ic_sites::Identity {
+            country: 7,
+            route_first: Some(3),
+            route_last: Some(4),
+            ..Default::default()
+        }
     }
 
     fn spend_site(image: &Image) -> usize {
@@ -997,12 +1114,14 @@ mod tests {
             [
                 Entry {
                     line: 0x11_0000_003b,
+                    identity: Some(building_identity()),
                     amount: 1_850_000,
                     bank: 50_000,
                     ..Entry::default()
                 },
                 Entry {
                     line: 0x12_0000_003b,
+                    identity: Some(building_identity()),
                     amount: 900_000,
                     repair: true,
                     partner: Some(0x7_0000_003b),
@@ -1010,6 +1129,7 @@ mod tests {
                 },
                 Entry {
                     line: 0x13_0000_003b,
+                    identity: Some(building_identity()),
                     ..Entry::default()
                 },
             ]
@@ -1036,12 +1156,14 @@ mod tests {
             [
                 Entry {
                     line: 0x21_0000_1269,
+                    identity: Some(railway_identity()),
                     amount: 1_800_000,
                     railway: true,
                     ..Entry::default()
                 },
                 Entry {
                     line: 0x21_0000_1269,
+                    identity: Some(railway_identity()),
                     amount: 300_000,
                     railway: true,
                     carry: true,
@@ -1084,6 +1206,7 @@ mod tests {
             entries,
             [Entry {
                 line: 0x36_0000_003b,
+                identity: Some(building_identity()),
                 amount: 80_000,
                 repair: true,
                 ..Entry::default()
@@ -1108,6 +1231,75 @@ mod tests {
             (entries[0].partner, entries[0].amount, entries[0].repair,),
             (Some(0x7_0000_003b), 0, true)
         );
+        observe_for_test(false, 0);
+    }
+
+    #[test]
+    fn unread_identities_keep_spends_resets_and_completions_without_invalidating() {
+        let _lock = test_lock();
+        let image = Image::new();
+        observe_for_test(true, image.base());
+        let epoch = drained(0).0.unwrap().epoch;
+        let refused = COUNTERS[11].load(Ordering::Relaxed);
+        let unread = COUNTERS[12].load(Ordering::Relaxed);
+        let mut building = Line::new(&image, false, 0x34_0000_003b, 0, 0, false);
+        building.line[engine_production::cbuilding_production_line::BUILDING / 8] = 0;
+        observe_speed(&mut building, 99, spend_site(&image));
+        building.line[cproduction_line::AMOUNT / 8] = 3;
+        observe_count_reset(building.address());
+        observe_completion(building.address(), image.base() + COMPLETE_RETURN, 1, false);
+        let mut known = Line::new(&image, false, 0x35_0000_003b, 0, 0, false);
+        observe_speed(&mut known, 55, spend_site(&image));
+        let (result, entries) = drained(4);
+        let result = result.unwrap();
+        assert!(result.complete());
+        assert_eq!(result.epoch, epoch);
+        assert_eq!(COUNTERS[11].load(Ordering::Relaxed), refused);
+        assert_eq!(COUNTERS[12].load(Ordering::Relaxed), unread + 3);
+        assert_eq!(entries.len(), 4);
+        assert!(entries[..3].iter().all(|entry| entry.identity.is_none()));
+        assert_eq!((entries[0].amount, entries[1].count_reset), (99, Some(3)));
+        assert!(entries[2].completion.is_some());
+        assert_eq!(
+            (entries[3].amount, entries[3].identity),
+            (55, Some(building_identity()))
+        );
+        let diagnostics = serde_json::to_value(status()).unwrap();
+        assert_eq!(diagnostics["identity_unread"].as_u64(), Some(unread + 3));
+        assert!(diagnostics["identity_conflicts"].is_u64());
+        observe_for_test(false, 0);
+    }
+
+    #[test]
+    fn unread_railway_route_keeps_spend_and_carry_in_the_same_observation() {
+        let _lock = test_lock();
+        let mut image = Image::new();
+        observe_for_test(true, image.base());
+        let epoch = drained(0).0.unwrap().epoch;
+        let refused = COUNTERS[11].load(Ordering::Relaxed);
+        let mut rail = Line::new(&image, true, 0x36_0000_1269, 0, 0, false);
+        rail.line[engine_production::crailway_production_line::ROUTE / 8] = 0;
+        RAILWAY_LINE.set((rail.address(), 0));
+        observe_segment(80);
+        observe_segment(20);
+        let (result, entries) = drained(2);
+        assert_eq!(result.unwrap().epoch, epoch);
+        assert_eq!(COUNTERS[11].load(Ordering::Relaxed), refused);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| entry.identity.is_none()));
+        assert_eq!((entries[0].amount, entries[0].carry), (80, false));
+        assert_eq!((entries[1].amount, entries[1].carry), (20, true));
+        image.set_instant(true);
+        let owner = Owner::new(&mut image, 7, 7);
+        let rail = rail.owned_by(&owner);
+        RAILWAY_LINE.set((rail.address(), 0));
+        observe_segment(RAILWAY_INSTANT_AMOUNT);
+        let (result, entries) = drained(1);
+        assert_eq!(result.unwrap().epoch, epoch);
+        assert_eq!(COUNTERS[11].load(Ordering::Relaxed), refused);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].identity.is_none() && entries[0].instant);
+        assert_eq!(entries[0].amount, RAILWAY_INSTANT_AMOUNT);
         observe_for_test(false, 0);
     }
 

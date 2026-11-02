@@ -110,9 +110,7 @@
 //! known only by the read that shows it. Building/route changes never establish
 //! its ending; the native completion adapter owns that decision for both types.
 //!
-//! A project started and finished between two reads is never listed, and lines
-//! of a country the links cannot resolve are left out (both counted in the
-//! warnings).
+//! An output read can identify a project absent from both census reads.
 //!
 //! # Dating
 //!
@@ -147,8 +145,6 @@ pub mod query;
 #[cfg(any(test, feature = "test-support"))]
 pub mod row;
 pub mod served;
-#[cfg(test)]
-pub(crate) use row::{scan, scan_with_reads};
 use dashboard_base::{catalogue, source::Source};
 use dashboard_text::catalogue::Catalogue;
 use engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
@@ -159,6 +155,8 @@ pub use output::{ConstructionOutputRead, SpendingGap};
 use output::{OutputScan, OutputUnknown};
 use replay::container::Replay;
 use replay_data::rows::{BuildingConstructionRow, TableId};
+#[cfg(test)]
+pub(crate) use row::{scan, scan_with_reads};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -222,6 +220,23 @@ impl ConstructionLogParams {
 pub enum ProjectKind {
     Building,
     Railway,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectSource {
+    Census,
+    OutputAlone,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputOrigin {
+    pub tag: String,
+    pub building: u32,
+    pub state: Option<u32>,
+    pub to_state: Option<u32>,
+    pub province: Option<u32>,
 }
 
 /// How a project left the queue.
@@ -299,6 +314,11 @@ pub struct ConstructionProject {
     /// The line's native handle, as a decimal string.
     pub id: String,
     pub kind: ProjectKind,
+    pub source: ProjectSource,
+    /// Census-only fields are known from this read, never before it.
+    pub census_read: Option<i32>,
+    pub output_origin: Option<OutputOrigin>,
+    pub queue_ordinal: Option<u32>,
     /// The queue owner's tag at the project's first read.
     pub tag: String,
     /// Index into [`ConstructionLogManifestReply::types`].
@@ -306,7 +326,7 @@ pub struct ConstructionProject {
     /// It had levels to repair at its first read. What it does over time is per
     /// stretch: a run with `repair_levels` above zero repairs, one without builds
     /// its remaining new levels (a line can repair, then build).
-    pub repair: bool,
+    pub repair: Option<bool>,
     /// The target state (a railway: the state of its route's first province).
     pub state: Option<u32>,
     /// A railway: the state of its route's last province.
@@ -318,9 +338,9 @@ pub struct ConstructionProject {
     pub base_level: Option<i32>,
     pub target_level: Option<i32>,
     /// Fixed5 cost per level (railway: the whole route), as at the first read.
-    pub cost_raw: String,
+    pub cost_raw: Option<String>,
     /// When the game created the line.
-    pub created_hour: i32,
+    pub created_hour: Option<i32>,
     /// The first read that lists it: nothing about it shows before.
     pub first_read: i32,
     /// Work before its first read was not recorded; its counts are lower bounds.
@@ -507,11 +527,13 @@ mod mirror {
     }
 
     pub fn deserialize<'d, D: Deserializer<'d>>(input: D) -> Result<Option<Mirror>, D::Error> {
-        Ok(Option::<Vec<(u64, i16, i16)>>::deserialize(input)?.map(|rows| {
-            rows.into_iter()
-                .map(|(at, level, healthy)| (at, (level, healthy)))
-                .collect()
-        }))
+        Ok(
+            Option::<Vec<(u64, i16, i16)>>::deserialize(input)?.map(|rows| {
+                rows.into_iter()
+                    .map(|(at, level, healthy)| (at, (level, healthy)))
+                    .collect()
+            }),
+        )
     }
 }
 
@@ -838,12 +860,7 @@ fn level_changes(
 /// A building's levels in a complete table; a building the table does not hold has none.
 /// None when the table is not complete.
 fn levels(held: Option<&Mirror>, key: Key) -> Option<Levels> {
-    Some(
-        held?
-            .get(&placed(key.1, key.2))
-            .copied()
-            .unwrap_or((0, 0)),
-    )
+    Some(held?.get(&placed(key.1, key.2)).copied().unwrap_or((0, 0)))
 }
 
 /// A line open since its last read.
@@ -886,6 +903,8 @@ pub struct ScannedLog {
     pub(crate) output_reads: Vec<(i32, Option<SpendingGap>)>,
     /// Lost output or output whose line never had a census owner.
     pub(crate) output_unknown: Vec<OutputUnknown>,
+    /// Reads that establish an ownership baseline, without attributing earlier output.
+    pub(crate) output_baselines: BTreeMap<u64, BTreeSet<i32>>,
     pub unowned_lines: usize,
     pub reads: Vec<i32>,
     pub railway_reads: Vec<i32>,
@@ -1274,6 +1293,8 @@ fn settle(
 
 /// One read of the building queue at `hour`: its lines, by id.
 fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
+    // Only a census whose owner resolves owns the line's output.
+    scan.output.listed(lines.iter().filter(|line| line.owner.is_some()).map(|line| line.row.id));
     let present: BTreeMap<u64, &BuildingConstructionRow> =
         lines.iter().map(|line| (line.row.id, &line.row)).collect();
     // Lines per building, open since the last read: a rise two of them could have
@@ -1343,6 +1364,9 @@ fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
             scan.unresolved.insert(row.id);
             continue;
         };
+        scan.log.unowned_lines = scan
+            .output
+            .claim(row.id, hour, &mut scan.log.output_unknown);
         if row.created_hour > hour {
             scan.log.late_created += 1;
         }
@@ -1358,17 +1382,21 @@ fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
         let mut project = ConstructionProject {
             id: row.id.to_string(),
             kind: ProjectKind::Building,
+            source: ProjectSource::Census,
+            census_read: Some(hour),
+            output_origin: None,
+            queue_ordinal: Some(row.queue_ordinal),
             tag: tag.to_string(),
             building,
-            repair: row.repair_levels > 0,
+            repair: Some(row.repair_levels > 0),
             state: (row.target_state != 0).then_some(row.target_state),
             to_state: None,
             province,
             route_provinces: None,
             base_level: None,
             target_level: None,
-            cost_raw: row.cost.to_string(),
-            created_hour: row.created_hour,
+            cost_raw: Some(row.cost.to_string()),
+            created_hour: Some(row.created_hour),
             first_read: hour,
             earlier_unknown,
             runs: Vec::new(),
@@ -1379,8 +1407,18 @@ fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
             end: None,
             first_repair_tick: None,
         };
+        let index = scan
+            .output
+            .project(row.id)
+            .filter(|&index| scan.log.projects[index].source == ProjectSource::OutputAlone);
+        if let Some(index) = index {
+            let previous = &scan.log.projects[index];
+            project.first_read = previous.first_read;
+            project.output_origin.clone_from(&previous.output_origin);
+            project.first_repair_tick = previous.first_repair_tick;
+        }
         let mut line = Open {
-            project: scan.log.projects.len(),
+            project: index.unwrap_or(scan.log.projects.len()),
             carried: false,
             remaining: row.amount,
             repair_levels: row.repair_levels,
@@ -1397,9 +1435,13 @@ fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
         scan.log
             .states
             .extend([project.state, project.to_state].into_iter().flatten());
-        scan.dirty.insert(scan.log.projects.len());
-        scan.log.projects.push(project);
-        scan.log.outputs.push(Vec::new());
+        scan.dirty.insert(line.project);
+        if let Some(index) = index {
+            scan.log.projects[index] = project;
+        } else {
+            scan.log.projects.push(project);
+            scan.log.outputs.push(Vec::new());
+        }
         scan.buildings.watch.watch(key, scan.changes.held());
         scan.buildings.open.insert(row.id, line);
     }
@@ -1411,7 +1453,10 @@ fn read_buildings(scan: &mut Scan, hour: i32, lines: &[BuildingLine]) {
 
 /// One read of the railway queue at `hour`: its lines, by id.
 fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
-    let present: BTreeMap<u64, &RailwayLine> = lines.iter().map(|line| (line.row.id, line)).collect();
+    // Only a census whose owner resolves owns the line's output.
+    scan.output.listed(lines.iter().filter(|line| line.owner.is_some()).map(|line| line.row.id));
+    let present: BTreeMap<u64, &RailwayLine> =
+        lines.iter().map(|line| (line.row.id, line)).collect();
     let ids: Vec<u64> = scan.railways.open.keys().copied().collect();
     for id in ids {
         let Some(line) = scan.railways.open.get_mut(&id) else {
@@ -1455,6 +1500,9 @@ fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
             scan.unresolved.insert(row.id);
             continue;
         };
+        scan.log.unowned_lines = scan
+            .output
+            .claim(row.id, hour, &mut scan.log.output_unknown);
         if row.created_hour > hour {
             scan.log.late_created += 1;
         }
@@ -1469,17 +1517,21 @@ fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
         let mut project = ConstructionProject {
             id: row.id.to_string(),
             kind: ProjectKind::Railway,
+            source: ProjectSource::Census,
+            census_read: Some(hour),
+            output_origin: None,
+            queue_ordinal: Some(row.queue_ordinal),
             tag: tag.to_string(),
             building: scan.type_of(RAILWAY_TEMPLATE_TOKEN),
-            repair: false,
+            repair: Some(false),
             state: *from,
             to_state: *to,
             province: None,
             route_provinces: Some(row.route.len() as u32),
             base_level: Some(row.base_level),
             target_level: Some(row.target_level),
-            cost_raw: row.cost.to_string(),
-            created_hour: row.created_hour,
+            cost_raw: Some(row.cost.to_string()),
+            created_hour: Some(row.created_hour),
             first_read: hour,
             earlier_unknown: scan.changes.earlier_unknown(
                 &keys,
@@ -1495,8 +1547,18 @@ fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
             end: None,
             first_repair_tick: None,
         };
+        let index = scan
+            .output
+            .project(row.id)
+            .filter(|&index| scan.log.projects[index].source == ProjectSource::OutputAlone);
+        if let Some(index) = index {
+            let previous = &scan.log.projects[index];
+            project.first_read = previous.first_read;
+            project.output_origin.clone_from(&previous.output_origin);
+            project.first_repair_tick = previous.first_repair_tick;
+        }
         let mut line = Open {
-            project: scan.log.projects.len(),
+            project: index.unwrap_or(scan.log.projects.len()),
             carried: false,
             remaining: row.amount,
             repair_levels: 0,
@@ -1513,9 +1575,13 @@ fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
         scan.log
             .states
             .extend([project.state, project.to_state].into_iter().flatten());
-        scan.dirty.insert(scan.log.projects.len());
-        scan.log.projects.push(project);
-        scan.log.outputs.push(Vec::new());
+        scan.dirty.insert(line.project);
+        if let Some(index) = index {
+            scan.log.projects[index] = project;
+        } else {
+            scan.log.projects.push(project);
+            scan.log.outputs.push(Vec::new());
+        }
         for key in keys {
             scan.railways.watch.watch(key, scan.changes.held());
         }
@@ -1528,6 +1594,95 @@ fn read_railways(scan: &mut Scan, hour: i32, lines: &[RailwayLine]) {
 }
 
 impl Scan {
+    fn output_projects(&mut self, hour: i32, output: &observed::Output) {
+        let observed::Output::Read(lines) = output else {
+            return;
+        };
+        for line in lines {
+            let row = &line.row;
+            if self.output.knows(row.line) || self.output.has_census(row.line) {
+                continue;
+            }
+            let Some(owner) = &line.owner else {
+                continue;
+            };
+            let value = |field| match field {
+                replay_data::rows::Recorded::Value(value) => value,
+                replay_data::rows::Recorded::NotRecorded => None,
+            };
+            let (kind, state, to_state, province) = if row.railway {
+                if !matches!(row.route_first, replay_data::rows::Recorded::Value(_))
+                    || !matches!(row.route_last, replay_data::rows::Recorded::Value(_))
+                {
+                    continue;
+                }
+                (RAILWAY_TEMPLATE_TOKEN, line.from, line.to, None)
+            } else {
+                let Some((kind, flags, location, state, _country)) = (|| {
+                    Some((
+                        value(row.building_type)?,
+                        value(row.target_flags)?,
+                        value(row.target_location)?,
+                        value(row.target_state)?,
+                        value(row.target_country)?,
+                    ))
+                })() else {
+                    continue;
+                };
+                (
+                    kind,
+                    (state != 0).then_some(state),
+                    None,
+                    (flags & engine_native::cbuilding_status::PROVINCE_FLAG != 0)
+                        .then_some(location),
+                )
+            };
+            let origin = OutputOrigin {
+                tag: owner.to_string(),
+                building: self.type_of(kind),
+                state,
+                to_state,
+                province,
+            };
+            let project = ConstructionProject {
+                id: row.line.to_string(),
+                kind: if row.railway {
+                    ProjectKind::Railway
+                } else {
+                    ProjectKind::Building
+                },
+                source: ProjectSource::OutputAlone,
+                census_read: None,
+                tag: origin.tag.clone(),
+                building: origin.building,
+                state,
+                to_state,
+                province,
+                output_origin: Some(origin),
+                queue_ordinal: None,
+                repair: None,
+                cost_raw: None,
+                created_hour: None,
+                route_provinces: None,
+                base_level: None,
+                target_level: None,
+                first_read: hour,
+                earlier_unknown: true,
+                runs: Vec::new(),
+                built: Vec::new(),
+                unaccounted: Vec::new(),
+                possible: Vec::new(),
+                added: Vec::new(),
+                end: None,
+                first_repair_tick: None,
+            };
+            self.log
+                .states
+                .extend([state, to_state].into_iter().flatten());
+            self.log.projects.push(project);
+            self.log.outputs.push(Vec::new());
+        }
+    }
     /// One hour as the segment emit observes it: open runs carry only to the hour before a
     /// read or a break ([`Self::seal`]).
     pub(crate) fn observe_changed(&mut self, hour: &observed::Hour) {
@@ -1602,6 +1757,9 @@ impl Scan {
             }
         }
         self.output.compact(&remap);
+        self.log
+            .output_baselines
+            .retain(|id, _| self.output.project(*id).is_some());
         self.dirty = std::mem::take(&mut self.dirty)
             .into_iter()
             .filter_map(|index| remap.get(&index).copied())
@@ -1653,9 +1811,7 @@ impl Scan {
                     self.dirty.insert(line.project);
                 }
             }
-            Queue::NotRead if carry_runs => {
-                carry(&mut self.log.projects, &self.buildings.open, at)
-            }
+            Queue::NotRead if carry_runs => carry(&mut self.log.projects, &self.buildings.open, at),
             Queue::NotRead => {}
         }
         if hour.queue.read()
@@ -1678,12 +1834,11 @@ impl Scan {
                     self.dirty.insert(line.project);
                 }
             }
-            Queue::NotRead if carry_runs => {
-                carry(&mut self.log.projects, &self.railways.open, at)
-            }
+            Queue::NotRead if carry_runs => carry(&mut self.log.projects, &self.railways.open, at),
             Queue::NotRead => {}
         }
         if hour.output.read() {
+            self.output_projects(at, &hour.output);
             self.dirty.extend(self.output.retained());
             self.dirty
                 .extend(self.output.indexed()..self.log.projects.len());
@@ -2011,7 +2166,12 @@ impl Naming {
         // Kept reads replay what they fell back on, as `catalogue::Drawn` does.
         installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
         let mut warnings = Vec::new();
-        warnings.extend(self.buildings.as_ref().err().map(|why| (Refused, why.clone())));
+        warnings.extend(
+            self.buildings
+                .as_ref()
+                .err()
+                .map(|why| (Refused, why.clone())),
+        );
         warnings.extend(self.strip.as_ref().err().map(|why| (Refused, why.clone())));
         let mut listed = LISTINGS.map(|_| Vec::new());
         let mut named_types = BTreeMap::new();
@@ -2083,21 +2243,19 @@ impl Naming {
                 listed.push((Listing::Undictionaried, id.to_string()));
                 return (None, None);
             };
-            let declaration =
-                self.buildings
-                    .as_ref()
-                    .ok()
-                    .and_then(|buildings| match buildings.by_token(token) {
-                        Ok(Some(building)) => Some(building),
-                        Ok(None) => {
-                            listed.push((Listing::Undeclared, token.to_owned()));
-                            None
-                        }
-                        Err(_) => {
-                            listed.push((Listing::Ambiguous, token.to_owned()));
-                            None
-                        }
-                    });
+            let declaration = self.buildings.as_ref().ok().and_then(|buildings| {
+                match buildings.by_token(token) {
+                    Ok(Some(building)) => Some(building),
+                    Ok(None) => {
+                        listed.push((Listing::Undeclared, token.to_owned()));
+                        None
+                    }
+                    Err(_) => {
+                        listed.push((Listing::Ambiguous, token.to_owned()));
+                        None
+                    }
+                }
+            });
             // A building's name is its own key in the localisation.
             let key = declaration.map_or(token, |building| building.name.as_str());
             let name = (content.localise)(key);
@@ -2222,7 +2380,9 @@ pub fn present_stored(
             .get(
                 token.clone(),
                 || format!("building {token} icon"),
-                |catalogue| building_icon(catalogue, buildings.as_ref().map_err(Clone::clone)?, &token),
+                |catalogue| {
+                    building_icon(catalogue, buildings.as_ref().map_err(Clone::clone)?, &token)
+                },
             )
             .as_ref()
             .ok()
@@ -2272,8 +2432,14 @@ fn building_icon(
         .and_then(|frame| frame.checked_sub(1))
         .ok_or_else(|| format!("{token} has no positive icon_frame"))?;
     let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-    catalogue::sprite_frame_png(&catalogue.content.layers, &strip.sprite, decode, frame, ICON_EDGE)
-        .map_err(|e| e.to_string())
+    catalogue::sprite_frame_png(
+        &catalogue.content.layers,
+        &strip.sprite,
+        decode,
+        frame,
+        ICON_EDGE,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// The queue's repair marker drawn through `catalogue`, at its authored frame.
@@ -2439,9 +2605,7 @@ impl NameSource {
             cache: source.state::<Cache>(),
             catalogue: context
                 .content()
-                .and_then(|content| {
-                    catalogue::recorded_catalogue(source, content)
-                })
+                .and_then(|content| catalogue::recorded_catalogue(source, content))
                 .map_err(|error| error.to_string()),
         }
     }
@@ -2617,12 +2781,10 @@ pub(crate) fn count_warnings(counts: &Counts, warnings: &mut Vec<String>) {
             counts.late_created
         ));
     }
-    warnings.push(
-        "A line created and removed between daily queue reads has no recorded owner or target; its output cannot be attributed.".to_owned(),
-    );
+    warnings.push("Output without a recorded owner or target cannot be attributed.".to_owned());
     if counts.unowned_lines > 0 {
         warnings.push(format!(
-            "{} construction output lines have no recorded census owner or target; their projects cannot be attributed.",
+            "{} construction output lines have no recorded owner or target; that output cannot be attributed.",
             counts.unowned_lines
         ));
     }
@@ -2671,7 +2833,7 @@ fn row_dates(project: &ConstructionProject) -> impl Iterator<Item = i32> + '_ {
                 .as_ref()
                 .map(|end| end.hour.unwrap_or(end.known_at)),
         )
-        .chain([project.created_hour])
+        .chain([project.created_hour.unwrap_or(project.first_read)])
 }
 
 /// A project's output reads as runs its tooltip shows alike.
@@ -2728,7 +2890,9 @@ impl Cut {
                 let mut dated: BTreeSet<usize> = row_dates(project).map(at).collect();
                 // A line created after the read that first lists it shows from that
                 // read dated later: every window between holds it.
-                dated.extend(at(project.first_read)..=at(project.created_hour));
+                dated.extend(
+                    at(project.first_read)..=at(project.created_hour.unwrap_or(project.first_read)),
+                );
                 for window in dated {
                     members[window].push(index);
                 }
@@ -2885,6 +3049,8 @@ impl Product for ConstructionLog {
         vec![
             ConstructionLogParams::decl(),
             ProjectKind::decl(),
+            ProjectSource::decl(),
+            OutputOrigin::decl(),
             EndKind::decl(),
             UnknownEnd::decl(),
             ProjectEnd::decl(),

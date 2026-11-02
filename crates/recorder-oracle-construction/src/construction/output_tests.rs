@@ -1,6 +1,7 @@
 use super::*;
 use replay_data::{
-    rows::BuildingConstructionRow, rows::BuildingRow, rows::RailwayConstructionRow, rows::TableRows,
+    rows::BuildingConstructionRow, rows::BuildingRow, rows::RailwayConstructionRow, rows::Recorded,
+    rows::TableRows,
 };
 use replay_frame::frame::TableView;
 fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> DecodedFrame {
@@ -20,6 +21,14 @@ fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> De
                 railway,
                 since_hour: 100,
                 exact: true,
+                country: Recorded::Value(Some(0)),
+                building_type: Recorded::Value((!railway).then_some(9)),
+                target_flags: Recorded::Value((!railway).then_some(0)),
+                target_location: Recorded::Value((!railway).then_some(0)),
+                target_state: Recorded::Value((!railway).then_some(7)),
+                target_country: Recorded::Value((!railway).then_some(0)),
+                route_first: Recorded::Value(railway.then_some(7)),
+                route_last: Recorded::Value(railway.then_some(9)),
                 ..Default::default()
             },
         ]));
@@ -184,7 +193,10 @@ fn a_branch_whose_last_line_retired_still_checks_its_earlier_publications() {
     };
     rows[0].amount = 2;
     // The line completed and its final publication retired: the compared hour has no rows.
-    for table in [TableId::ConstructionLineOutput, TableId::BuildingConstruction] {
+    for table in [
+        TableId::ConstructionLineOutput,
+        TableId::BuildingConstruction,
+    ] {
         *frames[2].tables[table.index()] = TableView::Complete(TableRows::empty(table));
     }
     let report = checked(&frames);
@@ -497,6 +509,8 @@ fn a_linked_secondary_mirrors_progress_without_a_spend() {
         };
         rows.push(ConstructionLineOutputRow {
             line: 2,
+            country: Recorded::Value(Some(9)),
+            target_location: Recorded::Value(Some(44)),
             construction_raw: 0,
             linked: true,
             exact: false,
@@ -510,6 +524,7 @@ fn a_linked_secondary_mirrors_progress_without_a_spend() {
     assert!(report.limitations.keys().any(|r| r.contains("linked")));
 }
 fn add_railway(frame: &mut DecodedFrame, route: Vec<u32>) {
+    let endpoints = route.first().copied().zip(route.last().copied());
     let TableView::Complete(TableRows::RailwayConstruction(lines)) =
         &mut *frame.tables[TableId::RailwayConstruction.index()]
     else {
@@ -529,6 +544,9 @@ fn add_railway(frame: &mut DecodedFrame, route: Vec<u32>) {
     rows.push(ConstructionLineOutputRow {
         line: 2,
         railway: true,
+        country: Recorded::Value(Some(9)),
+        route_first: Recorded::Value(endpoints.map(|(first, _)| first)),
+        route_last: Recorded::Value(endpoints.map(|(_, last)| last)),
         since_hour: 100,
         exact: true,
         ..Default::default()

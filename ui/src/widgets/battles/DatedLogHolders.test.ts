@@ -41,7 +41,7 @@ const host = globalThis as typeof globalThis & { __datedLogHolder?: Fixture };
 const rows = (): Fixture['rows'] => host.__datedLogHolder?.rows;
 function fixture(tag: string, hour: number): Fixture {
   const interval = { firstHour: 90, lastHour: 159 };
-  const project = { id: '1', kind: 'building', tag, building: 0, repair: false, state: 1, toState: null,
+  const project = { id: '1', kind: 'building', source: 'census', queueOrdinal: 0, censusRead: hour, outputOrigin: null, tag, building: 0, repair: false, state: 1, toState: null,
     province: null, routeProvinces: null, baseLevel: null, targetLevel: null, costRaw: '100', createdHour: hour - 1, firstRead: hour,
     runs: [{ firstHour: hour, lastHour: 159, factories: 1, remaining: 1, repairLevels: 0 }], earlierUnknown: false,
     built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null };

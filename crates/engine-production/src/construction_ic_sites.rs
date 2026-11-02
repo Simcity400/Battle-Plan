@@ -28,9 +28,96 @@
 //! construction table.
 
 use crate::{
-    Memory, cbuilding_production_line, cgame_state, cgeneral_production_line, cpdx_array::Array,
-    cproduction_line, crailway_production_line, read,
+    Memory, cbuilding_production_line, cbuilding_status, cgame_state, cgeneral_production_line,
+    cpdx_array::Array, cproduction_line, crailway_production_line, read,
 };
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Identity {
+    pub country: u32,
+    pub building_type: u32,
+    pub target_flags: u32,
+    pub target_location: u32,
+    pub target_state: u32,
+    pub target_country: u32,
+    pub route_first: Option<u32>,
+    pub route_last: Option<u32>,
+}
+
+fn identity(
+    memory: &impl Memory,
+    base: usize,
+    line: usize,
+    railway: bool,
+    status: u64,
+    building: u64,
+    game_state: Option<usize>,
+) -> Result<Identity, &'static str> {
+    let country = cbuilding_production_line::owning_country(memory, base, status)?;
+    let mut result = Identity {
+        country,
+        ..Identity::default()
+    };
+    if railway {
+        let route = crailway_production_line::route(memory, line)?;
+        let endpoint = |index| crailway_production_line::route_province(memory, route, index);
+        if route.count != 0 {
+            result.route_first = Some(endpoint(0)?);
+            result.route_last = if route.count == 1 {
+                result.route_first
+            } else {
+                Some(endpoint(route.count - 1)?)
+            };
+        }
+    } else {
+        let state = game_state
+            .or_else(|| {
+                base.checked_add(cgame_state::SINGLETON_RVA)
+                    .and_then(|p| read::<u64>(memory, p))
+                    .and_then(|p| usize::try_from(p).ok())
+                    .filter(|&p| p != 0)
+            })
+            .ok_or("construction output game state unreadable or null")?;
+        let locations = cbuilding_status::Locations::new(memory, state)?;
+        let target = cbuilding_production_line::target_fields(memory, base, building, &locations)?;
+        result.building_type = target.building_type;
+        result.target_flags = target.identity.flags;
+        result.target_location = target.identity.location;
+        result.target_state = target.state;
+        result.target_country = target.identity.country;
+    }
+    Ok(result)
+}
+
+fn building_identity(
+    memory: &impl Memory,
+    base: usize,
+    line: usize,
+    game_state: Option<usize>,
+) -> Option<Identity> {
+    let mut status = [0; 8];
+    let mut building = [0; 8];
+    if memory.copy_scattered(
+        [
+            line.checked_add(cproduction_line::PRODUCTION_STATUS)?,
+            line.checked_add(cbuilding_production_line::BUILDING)?,
+        ],
+        &mut [&mut status, &mut building],
+    ) != 2
+    {
+        return None;
+    }
+    identity(
+        memory,
+        base,
+        line,
+        false,
+        u64::from_le_bytes(status),
+        u64::from_le_bytes(building),
+        game_state,
+    )
+    .ok()
+}
 
 /// Storage demand for one daily construction pass, never captured data.
 /// Every construction occurrence is visited. Building advancement has one spend,
@@ -145,7 +232,7 @@ pub fn count_reset(
     memory: &impl Memory,
     base: usize,
     line: usize,
-) -> Result<(u64, i32), &'static str> {
+) -> Result<(u64, i32, Option<Identity>), &'static str> {
     if line == 0 || read::<u64>(memory, line) != base.checked_add(LINE_VTABLES[0]).map(|p| p as u64)
     {
         return Err("construction count reset line vtable unreadable or unsupported");
@@ -158,7 +245,7 @@ pub fn count_reset(
         .checked_add(cproduction_line::AMOUNT)
         .and_then(|p| read::<i32>(memory, p))
         .ok_or("construction count reset amount unreadable")?;
-    Ok((handle, count))
+    Ok((handle, count, building_identity(memory, base, line, None)))
 }
 
 /// Railway completion query: RCX is the line and AL is the result.
@@ -195,12 +282,12 @@ pub const LINKED_COMPLETE_RETURN: usize = 0x00fe_f27c;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Completion {
     pub line: u64,
+    pub identity: Option<Identity>,
     pub hour: i32,
     pub cancelled: bool,
 }
 
-/// The receiver remains alive until its native caller deletes it. Read only its
-/// identity, railway cancel byte and native date, never spend operands.
+/// The receiver remains alive until its native caller deletes it.
 pub fn completion(
     memory: &impl Memory,
     base: usize,
@@ -238,6 +325,20 @@ pub fn completion(
     // and the next sample's boundary.
     Ok(Completion {
         line: handle,
+        identity: if railway {
+            identity(
+                memory,
+                base,
+                line,
+                true,
+                word(cproduction_line::PRODUCTION_STATUS),
+                0,
+                Some(state),
+            )
+            .ok()
+        } else {
+            building_identity(memory, base, line, Some(state))
+        },
         hour,
         // Cancellation byte, serialized as `cancel`.
         cancelled: railway && bytes[crailway_production_line::COMPLETION_FLAG] != 0,
@@ -349,6 +450,29 @@ pub fn railway_instant(
         line,
         &[crailway_production_line::VTABLE_RVA],
     )?;
+    railway_instant_country(memory, base, country)
+}
+
+pub fn railway_instant_owned(
+    memory: &impl Memory,
+    base: usize,
+    country: u32,
+) -> Result<bool, &'static str> {
+    let flag = base
+        .checked_add(INSTANT_CONSTRUCTION)
+        .and_then(|address| read::<u8>(memory, address))
+        .ok_or("construction output instant flag unreadable")?;
+    if flag == 0 {
+        return Ok(false);
+    }
+    railway_instant_country(memory, base, country)
+}
+
+fn railway_instant_country(
+    memory: &impl Memory,
+    base: usize,
+    country: u32,
+) -> Result<bool, &'static str> {
     let state = base
         .checked_add(cgame_state::SINGLETON_RVA)
         .and_then(|address| read::<u64>(memory, address))
@@ -403,12 +527,11 @@ pub const LINE_VTABLES: [usize; 2] = [
     crailway_production_line::VTABLE_RVA,
 ];
 
-/// Only the detour's live line and the two named globals are copied. No owner,
-/// building, route or definition pointer is followed. The native advance keeps
-/// its receiver alive through both observation sites.
+/// The native advance keeps its receiver alive through both observation sites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Operands {
     pub line: u64,
+    pub identity: Option<Identity>,
     pub bank: i64,
     pub cost: i64,
     /// At BUILDING_SPEND_RETURN the getter returns this object's own value.
@@ -456,6 +579,20 @@ pub fn operands(
     };
     Ok(Operands {
         line: handle,
+        identity: identity(
+            memory,
+            base,
+            line,
+            railway,
+            word(cproduction_line::PRODUCTION_STATUS),
+            if railway {
+                0
+            } else {
+                word(cbuilding_production_line::BUILDING)
+            },
+            None,
+        )
+        .ok(),
         bank: word(CIC_BANK_DRAW) as i64,
         cost: word(cproduction_line::COST) as i64,
         speed: word(cproduction_line::SPEED) as i64,
@@ -469,24 +606,141 @@ pub fn operands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use crate::{cbuilding, memory::SliceMemory};
 
     const BASE: usize = 0x140000000;
     const LINE: usize = 0x1000;
+    const TARGET: usize = 0x20000;
+    const TARGET_STATE: usize = 0x30000;
+    const TARGET_COUNTRY: usize = 0x40000;
+
+    fn captured_identity(railway: bool) -> Identity {
+        if railway {
+            Identity {
+                country: 7,
+                route_first: Some(3),
+                route_last: Some(4),
+                ..Identity::default()
+            }
+        } else {
+            Identity {
+                country: 7,
+                building_type: 9,
+                target_flags: 2,
+                target_location: 1,
+                target_state: 1,
+                ..Identity::default()
+            }
+        }
+    }
+
+    fn target_regions(status: usize) -> Regions {
+        let mut regions = Regions(Vec::new());
+        let mut add = |at: usize, bytes: &[u8]| regions.0.push((at, bytes.to_vec()));
+        add(BASE + cgame_state::SINGLETON_RVA, &0x2000_u64.to_le_bytes());
+        add(
+            status,
+            &((BASE + crate::cproduction_status::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        add(
+            status + crate::cproduction_status::COUNTRY,
+            &(TARGET_COUNTRY as u64).to_le_bytes(),
+        );
+        let mut country = [0; 12];
+        country[..8].copy_from_slice(&((BASE + crate::ccountry::VTABLE_RVA) as u64).to_le_bytes());
+        country[8..].copy_from_slice(&7_u32.to_le_bytes());
+        add(TARGET_COUNTRY, &country);
+        add(
+            TARGET_COUNTRY + crate::ccountry::PRODUCTION_STATUS,
+            &(status as u64).to_le_bytes(),
+        );
+        add(
+            TARGET,
+            &((BASE + cbuilding::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        add(TARGET + cbuilding::TYPE_ID, &9_u32.to_le_bytes());
+        let building_status = TARGET_STATE + crate::cstate::BUILDING_STATUS;
+        add(
+            TARGET + cbuilding::BUILDING_STATUS,
+            &(building_status as u64).to_le_bytes(),
+        );
+        add(
+            building_status,
+            &((BASE + cbuilding_status::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        let fields = [
+            2_u32.to_le_bytes(),
+            1_u32.to_le_bytes(),
+            0_u32.to_le_bytes(),
+        ]
+        .concat();
+        add(building_status + cbuilding_status::FLAGS, &fields);
+        add(
+            TARGET_STATE,
+            &((BASE + crate::cstate::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        add(TARGET_STATE + crate::cstate::ID, &1_u32.to_le_bytes());
+        let header = [
+            0x50000_u64.to_le_bytes().to_vec(),
+            2_u32.to_le_bytes().repeat(2),
+        ]
+        .concat();
+        add(0x2000 + cgame_state::STATES, &header);
+        add(0x2000 + cgame_state::PROVINCES, &header);
+        add(0x50008, &(TARGET_STATE as u64).to_le_bytes());
+        let route = [
+            0x60000_u64.to_le_bytes().to_vec(),
+            2_u32.to_le_bytes().repeat(2),
+        ]
+        .concat();
+        add(LINE + crailway_production_line::ROUTE, &route);
+        add(0x60000, &3_u32.to_le_bytes());
+        add(0x60004, &4_u32.to_le_bytes());
+        regions
+    }
+
+    struct WithTarget<M>(M);
+    impl<M: Memory> Memory for WithTarget<M> {
+        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+            self.0.copy(address, out) || target_regions(STATUS).copy(address, out)
+        }
+    }
+
+    struct WithoutIdentity<'a, M>(&'a M);
+    impl<M: Memory> Memory for WithoutIdentity<'_, M> {
+        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+            address != STATUS
+                && address != LINE + cproduction_line::PRODUCTION_STATUS
+                && self.0.copy(address, out)
+        }
+    }
 
     #[test]
     fn count_reset_observes_the_native_signed_count_before_it_is_cleared() {
-        let mut bytes = vec![0; LINE + cproduction_line::AMOUNT + 4];
+        let mut bytes = vec![0; LINE + cbuilding_production_line::BUILDING + 8];
         bytes[LINE..LINE + 8].copy_from_slice(&((BASE + LINE_VTABLES[0]) as u64).to_le_bytes());
         bytes[LINE + LINE_HANDLE..LINE + LINE_HANDLE + 8].copy_from_slice(&19_u64.to_le_bytes());
+        bytes[LINE + cproduction_line::PRODUCTION_STATUS
+            ..LINE + cproduction_line::PRODUCTION_STATUS + 8]
+            .copy_from_slice(&(STATUS as u64).to_le_bytes());
+        bytes[LINE + cbuilding_production_line::BUILDING
+            ..LINE + cbuilding_production_line::BUILDING + 8]
+            .copy_from_slice(&(TARGET as u64).to_le_bytes());
         for count in [0, 1, i32::MAX, i32::MIN] {
             bytes[LINE + cproduction_line::AMOUNT..LINE + cproduction_line::AMOUNT + 4]
                 .copy_from_slice(&count.to_le_bytes());
-            let memory = SliceMemory {
+            let memory = WithTarget(SliceMemory {
                 base: 0,
                 bytes: &bytes,
-            };
-            assert_eq!(count_reset(&memory, BASE, LINE), Ok((19, count)));
+            });
+            assert_eq!(
+                count_reset(&memory, BASE, LINE),
+                Ok((19, count, Some(captured_identity(false))))
+            );
+            assert_eq!(
+                count_reset(&WithoutIdentity(&memory), BASE, LINE),
+                Ok((19, count, None))
+            );
             assert!(count_reset(&memory, BASE, 0).is_err());
             assert!(count_reset(&memory, BASE + 1, LINE).is_err());
         }
@@ -496,15 +750,19 @@ mod tests {
     fn linked_completion_authenticates_the_native_removed_receiver_and_owner() {
         const STATUS: usize = 0x3000;
         struct LinkedMemory {
-            line: [u8; cproduction_line::AMOUNT + 4],
+            line: [u8; cbuilding_production_line::BUILDING + 8],
             owner: [u8; crate::cproduction_status::CONSTRUCTION_LINES_COUNT + 4],
             slot: usize,
             date: bool,
         }
         impl Memory for LinkedMemory {
             fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-                let source: &[u8] = if address == LINE {
-                    &self.line
+                let source: &[u8] = if (LINE..LINE + self.line.len()).contains(&address) {
+                    return SliceMemory {
+                        base: LINE,
+                        bytes: &self.line,
+                    }
+                    .copy(address, out);
                 } else if address == STATUS {
                     &self.owner
                 } else if address == 0x4000 {
@@ -520,7 +778,7 @@ mod tests {
                     out.copy_from_slice(&120_i32.to_le_bytes());
                     return true;
                 } else {
-                    panic!("unexpected linked completion address: {address:#x}")
+                    return target_regions(STATUS).copy(address, out);
                 };
                 let Some(source) = source.get(..out.len()) else {
                     return false;
@@ -530,7 +788,7 @@ mod tests {
             }
         }
         let mut memory = LinkedMemory {
-            line: [0; cproduction_line::AMOUNT + 4],
+            line: [0; cbuilding_production_line::BUILDING + 8],
             owner: [0; crate::cproduction_status::CONSTRUCTION_LINES_COUNT + 4],
             slot: LINE,
             date: true,
@@ -539,6 +797,7 @@ mod tests {
             (0, (BASE + LINE_VTABLES[0]) as u64),
             (LINE_HANDLE, 7),
             (cproduction_line::PRODUCTION_STATUS, STATUS as u64),
+            (cbuilding_production_line::BUILDING, TARGET as u64),
         ] {
             memory.line[offset..offset + 8].copy_from_slice(&word.to_le_bytes());
         }
@@ -558,10 +817,21 @@ mod tests {
             linked_completion(&memory, BASE, STATUS, LINE).unwrap(),
             Completion {
                 line: 7,
+                identity: Some(captured_identity(false)),
                 hour: 120,
                 cancelled: false,
             }
         );
+        memory.line[cbuilding_production_line::BUILDING..cbuilding_production_line::BUILDING + 8]
+            .fill(0);
+        assert_eq!(
+            linked_completion(&memory, BASE, STATUS, LINE)
+                .unwrap()
+                .identity,
+            None
+        );
+        memory.line[cbuilding_production_line::BUILDING..cbuilding_production_line::BUILDING + 8]
+            .copy_from_slice(&(TARGET as u64).to_le_bytes());
         assert_eq!(
             linked_completion(&memory, BASE, STATUS + 1, LINE),
             Err("linked construction completion owner mismatch")
@@ -594,7 +864,7 @@ mod tests {
         }
         impl Memory for CompletionMemory {
             fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-                if address == LINE {
+                if (LINE..LINE + crailway_production_line::COMPLETION_FLAG + 1).contains(&address) {
                     if self.short {
                         return false;
                     }
@@ -603,9 +873,20 @@ mod tests {
                         &((BASE + LINE_VTABLES[usize::from(self.railway)]) as u64).to_le_bytes(),
                     );
                     bytes[LINE_HANDLE..LINE_HANDLE + 8].copy_from_slice(&7_u64.to_le_bytes());
+                    bytes[cproduction_line::PRODUCTION_STATUS
+                        ..cproduction_line::PRODUCTION_STATUS + 8]
+                        .copy_from_slice(&(STATUS as u64).to_le_bytes());
+                    if !self.railway {
+                        bytes[cbuilding_production_line::BUILDING
+                            ..cbuilding_production_line::BUILDING + 8]
+                            .copy_from_slice(&(TARGET as u64).to_le_bytes());
+                    }
                     bytes[crailway_production_line::COMPLETION_FLAG] = self.cancel;
-                    out.copy_from_slice(&bytes[..out.len()]);
-                    return true;
+                    return SliceMemory {
+                        base: LINE,
+                        bytes: &bytes,
+                    }
+                    .copy(address, out);
                 }
                 if address == BASE + crate::cgame_state::SINGLETON_RVA {
                     out.copy_from_slice(&0x2000_usize.to_le_bytes());
@@ -615,7 +896,7 @@ mod tests {
                     out.copy_from_slice(&120_i32.to_le_bytes());
                     return true;
                 }
-                panic!("completion followed a spend operand: {address:#x}");
+                target_regions(STATUS).copy(address, out)
             }
         }
         for (railway, cancel) in [(false, 1), (true, 0), (true, 1)] {
@@ -628,8 +909,18 @@ mod tests {
                 completion(&memory, BASE, LINE, railway).unwrap(),
                 Completion {
                     line: 7,
+                    identity: Some(captured_identity(railway)),
                     hour: 120,
                     cancelled: railway && cancel != 0,
+                }
+            );
+            assert_eq!(
+                completion(&WithoutIdentity(&memory), BASE, LINE, railway).unwrap(),
+                Completion {
+                    line: 7,
+                    identity: None,
+                    hour: 120,
+                    cancelled: railway && cancel != 0
                 }
             );
         }
@@ -672,7 +963,7 @@ mod tests {
                 }
                 return false;
             }
-            panic!("hook followed another address: {address:#x}");
+            target_regions(STATUS).copy(address, out)
         }
     }
     fn fixture(railway: bool) -> Fixture {
@@ -685,6 +976,8 @@ mod tests {
         for (offset, value) in [
             (0, (BASE + LINE_VTABLES[usize::from(railway)]) as u64),
             (LINE_HANDLE, 23),
+            (cproduction_line::PRODUCTION_STATUS, STATUS as u64),
+            (cbuilding_production_line::BUILDING, TARGET as u64),
             (cproduction_line::COST, 2_000_000),
             (cproduction_line::SPEED, 1_850_000),
             (CIC_BANK_DRAW, 50_000),
@@ -695,11 +988,18 @@ mod tests {
         fixture
     }
     #[test]
-    fn entry_operands_only_read_the_line_and_named_globals() {
+    fn entry_operands_copy_the_owner_and_target_with_the_spend() {
         let mut f = fixture(false);
         for levels in [-1_i32, 0, 2] {
             f.line[REPAIR_LEVELS..REPAIR_LEVELS + 4].copy_from_slice(&levels.to_le_bytes());
             let o = operands(&f, BASE, LINE, false).unwrap();
+            assert_eq!(o.identity, Some(captured_identity(false)));
+            let unread = operands(&WithoutIdentity(&f), BASE, LINE, false).unwrap();
+            assert_eq!(unread.identity, None);
+            assert_eq!(
+                (unread.line, unread.bank, unread.cost, unread.speed),
+                (o.line, o.bank, o.cost, o.speed)
+            );
             assert_eq!(
                 (o.line, o.bank, o.cost, o.speed),
                 (23, 50_000, 2_000_000, 1_850_000)
@@ -717,7 +1017,43 @@ mod tests {
         rail.invalid = None;
         rail.instant = None;
         let o = operands(&rail, BASE, LINE, true).unwrap();
+        assert_eq!(o.identity, Some(captured_identity(true)));
         assert!(o.partner.is_none() && !o.repair);
+    }
+
+    #[test]
+    fn native_empty_routes_have_no_endpoints_and_failed_target_reads_are_refused() {
+        let mut memory = target_regions(STATUS);
+        for (at, bytes) in &mut memory.0 {
+            if *at == LINE + crailway_production_line::ROUTE {
+                bytes[8..16].fill(0);
+            }
+        }
+        let empty = identity(&memory, BASE, LINE, true, STATUS as u64, 0, None).unwrap();
+        assert_eq!(
+            (empty.country, empty.route_first, empty.route_last),
+            (7, None, None)
+        );
+        for missing in [
+            TARGET + cbuilding::TYPE_ID,
+            TARGET_COUNTRY + crate::ccountry::PRODUCTION_STATUS,
+            TARGET_STATE + crate::cstate::ID,
+        ] {
+            let mut memory = target_regions(STATUS);
+            memory.0.retain(|(at, _)| *at != missing);
+            assert!(
+                identity(
+                    &memory,
+                    BASE,
+                    LINE,
+                    false,
+                    STATUS as u64,
+                    TARGET as u64,
+                    None
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn short_or_unsupported_operands_are_refused_by_name() {

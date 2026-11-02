@@ -10,7 +10,7 @@ import { mergeWindows } from './constructionData.ts';
 import { BRANCH, humansBy, mountModule, PENDING_HOUR, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 const interval = { firstHour: 100, lastHour: 120 };
-const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({ id: 'building', kind: 'building', tag: 'mod country', building: 0, repair: false,
+const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({ id: 'building', kind: 'building', source: 'census', queueOrdinal: 0, censusRead: patch.firstRead ?? 100, outputOrigin: null, tag: 'mod country', building: 0, repair: false,
   state: 1, toState: null, province: null, routeProvinces: null, baseLevel: null, targetLevel: null, costRaw: '100000',
   createdHour: 100, firstRead: 100, runs: [{ ...interval, factories: 5, remaining: 1, repairLevels: 0 }],
   earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null, ...patch });

@@ -16,7 +16,7 @@ import type { ProjectAt } from './constructionData';
 
 test('parity list models complete without sweeping offscreen dated labels or ship titles', async () => {
   const interval = { firstHour: 100, lastHour: 6000 };
-  const project: ConstructionProject = { id: 'project', kind: 'building', tag: 'mod country', building: 0, repair: false,
+  const project: ConstructionProject = { id: 'project', kind: 'building', source: 'census', queueOrdinal: 0, censusRead: 100, outputOrigin: null, tag: 'mod country', building: 0, repair: false,
     state: 1, toState: null, province: null, routeProvinces: null, baseLevel: null, targetLevel: null, costRaw: '12345678901234567890',
     createdHour: 100, firstRead: 100, runs: [{ ...interval, factories: 7, remaining: 3, repairLevels: 0 }],
     earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null };

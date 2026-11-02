@@ -111,7 +111,8 @@ fn hour_tables(walk: &mut Synthetic, hour: i32) {
     ];
     countries.sort_unstable_by_key(|row| row.id);
     write(walk, TableId::Countries, hour, Some(&countries[..]));
-    let links = [(11, 1), (12, 2)].map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot });
+    let links =
+        [(11, 1), (12, 2)].map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot });
     write(walk, TableId::CountryLinks, hour, Some(&links[..]));
     let provinces = [(1001, 40), (1002, 41)].map(|(id, state)| ProvinceRow {
         id,
@@ -156,6 +157,14 @@ fn hour_tables(walk: &mut Synthetic, hour: i32) {
             ..building_line(902, 41, 1, 0, 2)
         });
     }
+    if queued >= 3 {
+        for id in [903, 904] {
+            lines.push(replay_data::rows::BuildingConstructionRow {
+                country: 12,
+                ..building_line(id, 41, 1, 0, 2)
+            });
+        }
+    }
     lines.sort_unstable_by_key(|line| line.id);
     write(walk, TableId::BuildingConstruction, hour, Some(&lines[..]));
     let railways = if reads(TableId::RailwayConstruction, hour) < 3 {
@@ -163,7 +172,12 @@ fn hour_tables(walk: &mut Synthetic, hour: i32) {
     } else {
         Vec::new()
     };
-    write(walk, TableId::RailwayConstruction, hour, Some(&railways[..]));
+    write(
+        walk,
+        TableId::RailwayConstruction,
+        hour,
+        Some(&railways[..]),
+    );
     let read = reads(TableId::ConstructionLineOutput, hour) as i64;
     let mut output = vec![ConstructionLineOutputRow {
         line: 900,
@@ -177,6 +191,12 @@ fn hour_tables(walk: &mut Synthetic, hour: i32) {
     if read < 3 {
         output.push(ConstructionLineOutputRow {
             line: 777,
+            country: Recorded::Value(Some(11)),
+            building_type: Recorded::Value(Some(CIVILIAN)),
+            target_flags: Recorded::Value(Some(2)),
+            target_location: Recorded::Value(Some(41)),
+            target_state: Recorded::Value(Some(41)),
+            target_country: Recorded::Value(Some(0)),
             since_hour: FIRST,
             construction_raw: 50_000 * read,
             exact: true,
@@ -184,9 +204,48 @@ fn hour_tables(walk: &mut Synthetic, hour: i32) {
             completion: Recorded::Value(None),
             ..Default::default()
         });
+        output.push(ConstructionLineOutputRow {
+            line: 778,
+            ..output.last().unwrap().clone()
+        });
+        output.last_mut().unwrap().country = Recorded::Value(None);
+    }
+    output.push(ConstructionLineOutputRow {
+        line: 902,
+        country: Recorded::Value(Some(12)),
+        building_type: Recorded::Value(Some(CIVILIAN)),
+        target_flags: Recorded::Value(Some(2)),
+        target_location: Recorded::Value(Some(41)),
+        target_state: Recorded::Value(Some(41)),
+        target_country: Recorded::Value(Some(0)),
+        since_hour: FIRST,
+        exact: true,
+        construction_raw: 7_000 * read,
+        ..Default::default()
+    });
+    for id in [903, 904] {
+        let known = id == 903 && read < 2;
+        output.push(ConstructionLineOutputRow {
+            line: id,
+            country: Recorded::Value(known.then_some(11)),
+            building_type: Recorded::Value(known.then_some(CIVILIAN)),
+            target_flags: Recorded::Value(known.then_some(2)),
+            target_location: Recorded::Value(known.then_some(40)),
+            target_state: Recorded::Value(known.then_some(40)),
+            target_country: Recorded::Value(known.then_some(0)),
+            since_hour: FIRST,
+            exact: true,
+            construction_raw: 11_000 * read,
+            ..Default::default()
+        });
     }
     output.sort_unstable_by_key(|row| row.line);
-    write(walk, TableId::ConstructionLineOutput, hour, Some(&output[..]));
+    write(
+        walk,
+        TableId::ConstructionLineOutput,
+        hour,
+        Some(&output[..]),
+    );
     let mut tokens = vec![
         LexicalTokenRow {
             token: CIVILIAN,
@@ -284,24 +343,44 @@ fn the_projector_s_hours_scan_as_the_row_oracle_s_across_cold_starts_and_a_gap()
     let (projector, oracle) = projected();
     assert_eq!(projector.len(), oracle.len());
     // A segment's first hour holds each building table whole, every later hour only changes.
-    assert!(projector.iter().any(|hour| matches!(
-        hour.buildings[0],
-        observed::Buildings::Changed(_)
-    )));
+    assert!(
+        projector
+            .iter()
+            .any(|hour| matches!(hour.buildings[0], observed::Buildings::Changed(_)))
+    );
     assert!(
         projector
             .iter()
             .filter(|hour| STARTS.contains(&hour.hour))
             .all(|hour| matches!(hour.buildings[1], observed::Buildings::Whole(_)))
     );
-    assert!(projector.iter().any(|hour| matches!(
-        hour.buildings[1],
-        observed::Buildings::Unchanged
-    )));
+    assert!(
+        projector
+            .iter()
+            .any(|hour| matches!(hour.buildings[1], observed::Buildings::Unchanged))
+    );
     let (actual, expected) = (scanned(&projector), scanned(&oracle));
     assert!(!expected.projects.is_empty());
     assert!(expected.unresolved > 0);
     assert!(expected.unowned_lines > 0);
+    let output_only = expected
+        .projects
+        .iter()
+        .find(|project| project.id == "777")
+        .unwrap();
+    assert_eq!(output_only.source, super::super::ProjectSource::OutputAlone);
+    assert!(output_only.runs.is_empty());
+    let enriched = expected
+        .projects
+        .iter()
+        .find(|project| project.id == "902")
+        .unwrap();
+    assert_eq!(enriched.source, super::super::ProjectSource::Census);
+    assert!(
+        enriched
+            .census_read
+            .is_some_and(|read| read > enriched.first_read)
+    );
     assert_eq!(
         serde_json::to_value(&actual).unwrap(),
         serde_json::to_value(&expected).unwrap()

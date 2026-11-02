@@ -15,7 +15,10 @@ use super::construction_log::{
 };
 use dashboard_base::products::{CountryParams, Product};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 #[cfg(test)]
 use dashboard_base::source::Source;
@@ -240,6 +243,86 @@ pub(crate) fn all_leaves(log: &ScannedLog) -> BTreeMap<String, (Vec<SpendingLeaf
     )
 }
 
+type AttributedProject<'a> = (
+    Cow<'a, ConstructionProject>,
+    Cow<'a, [construction_log::ConstructionOutputRead]>,
+    bool,
+);
+
+fn attributed_project<'a>(
+    project: &'a ConstructionProject,
+    output: &'a [construction_log::ConstructionOutputRead],
+) -> [Option<AttributedProject<'a>>; 2] {
+    let Some((origin, census)) = project
+        .output_origin
+        .as_ref()
+        .zip(project.census_read)
+        .filter(|(origin, _)| {
+            origin.tag != project.tag
+                || origin.building != project.building
+                || origin.state != project.state
+                || origin.to_state != project.to_state
+        })
+    else {
+        return [
+            Some((Cow::Borrowed(project), Cow::Borrowed(output), true)),
+            None,
+        ];
+    };
+    let split = output.partition_point(|read| read.known_at < census);
+    let mut earlier = project.clone();
+    earlier.tag.clone_from(&origin.tag);
+    earlier.building = origin.building;
+    earlier.state = origin.state;
+    earlier.to_state = origin.to_state;
+    earlier.province = origin.province;
+    earlier.runs.clear();
+    earlier.built.clear();
+    earlier.unaccounted.clear();
+    earlier.possible.clear();
+    earlier.added.clear();
+    earlier.end = None;
+    let baseline = |repair| {
+        output[..split]
+            .iter()
+            .rev()
+            .find_map(|read| {
+                if repair {
+                    &read.repair_raw
+                } else {
+                    &read.construction_raw
+                }
+                .as_ref()
+            })
+            .map_or(0, |raw| {
+                raw.parse::<i128>().expect("attributed construction output")
+            })
+    };
+    let ticks = output[..split]
+        .iter()
+        .rev()
+        .find(|read| read.construction_raw.is_some())
+        .map_or(0, |read| read.repair_ticks);
+    let baseline = [baseline(false), baseline(true)];
+    let mut later = output[split..].to_vec();
+    for read in &mut later {
+        for (raw, before) in [
+            (&mut read.construction_raw, baseline[0]),
+            (&mut read.repair_raw, baseline[1]),
+        ] {
+            if let Some(raw) = raw {
+                *raw = (raw.parse::<i128>().expect("attributed construction output") - before)
+                    .to_string();
+            }
+        }
+        read.repair_ticks = read.repair_ticks.wrapping_sub(ticks);
+    }
+    [
+        Some((Cow::Owned(earlier), Cow::Borrowed(&output[..split]), true)),
+        Some((Cow::Borrowed(project), Cow::Owned(later), false)),
+    ]
+}
+
 pub(crate) fn all_leaves_for<'a>(
     log: &ScannedLog,
     projects: impl IntoIterator<
@@ -251,13 +334,25 @@ pub(crate) fn all_leaves_for<'a>(
 ) -> BTreeMap<String, (Vec<SpendingLeaf>, u32)> {
     let mut countries: BTreeMap<String, BTreeMap<LeafKey, LeafParts>> = BTreeMap::new();
     let mut before: BTreeMap<String, u32> = BTreeMap::new();
-    for (project, output) in projects {
+    for (project, output, first) in projects
+        .into_iter()
+        .flat_map(|(project, output)| attributed_project(project, output).into_iter().flatten())
+    {
+        let project = &*project;
+        let output = &*output;
+        let baselines = log.output_baselines.get(
+            &project
+                .id
+                .parse::<u64>()
+                .expect("native construction handle"),
+        );
         let grouped = countries.entry(project.tag.clone()).or_default();
         *before.entry(project.tag.clone()).or_default() += u32::from(
-            output
-                .iter()
-                .find(|read| read.since_hour.is_some())
-                .is_some_and(|read| !read.observed_since_creation),
+            first
+                && output
+                    .iter()
+                    .find(|read| read.since_hour.is_some())
+                    .is_some_and(|read| !read.observed_since_creation),
         );
         let railway = project.kind == ProjectKind::Railway;
         for repair in [false, true] {
@@ -270,6 +365,9 @@ pub(crate) fn all_leaves_for<'a>(
             let mut last = 0_i128;
             let mut repair_ticks = 0;
             for read in output {
+                if read.reason == Some(SpendingGap::OwnerUnknown) {
+                    continue;
+                }
                 let raw = if repair {
                     &read.repair_raw
                 } else {
@@ -277,7 +375,9 @@ pub(crate) fn all_leaves_for<'a>(
                 };
                 if let Some(raw) = raw {
                     let total = raw.parse::<i128>().expect("captured i64 output");
-                    let amount = total - last;
+                    let baseline =
+                        baselines.is_some_and(|baselines| baselines.contains(&read.known_at));
+                    let amount = if baseline { 0 } else { total - last };
                     spent.push((read.known_at, amount));
                     last = total;
                     if let Some(gap) = unknown.last_mut()
@@ -285,7 +385,8 @@ pub(crate) fn all_leaves_for<'a>(
                     {
                         gap.until = Some(read.known_at);
                     }
-                    if (amount != 0 || (repair && read.repair_ticks > repair_ticks))
+                    if !baseline
+                        && (amount != 0 || (repair && read.repair_ticks > repair_ticks))
                         && projects.iter().all(|span| {
                             span.first_read > read.known_at
                                 || span.until.is_some_and(|until| until <= read.known_at)

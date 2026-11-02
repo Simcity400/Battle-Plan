@@ -2106,6 +2106,14 @@ impl Fixture for ConstructionLineOutputRow {
                 cancelled: railway,
             })),
             count_reset: Recorded::Value(if railway { 0 } else { i64::sample(tick) }),
+            country: Recorded::Value(Some(u32::sample(tick))),
+            building_type: Recorded::Value((!railway).then(|| u32::sample(tick + 1))),
+            target_flags: Recorded::Value((!railway).then(|| u32::sample(tick + 2))),
+            target_location: Recorded::Value((!railway).then(|| u32::sample(tick + 3))),
+            target_state: Recorded::Value((!railway).then(|| u32::sample(tick + 4))),
+            target_country: Recorded::Value((!railway).then(|| u32::sample(tick + 5))),
+            route_first: Recorded::Value(railway.then(|| u32::sample(tick + 6))),
+            route_last: Recorded::Value(railway.then(|| u32::sample(tick + 7))),
         }
     }
 }
@@ -4822,6 +4830,63 @@ fn construction_completion_appends_without_changing_old_output_prefixes() {
         assert_eq!(delta.apply(Some(row.clone())).unwrap(), next);
         round_trip(&next);
     }
+}
+
+#[test]
+fn construction_output_owner_and_targets_round_trip_and_preserve_older_absence() {
+    let format = crate::rows::compatibility::CONSTRUCTION_OUTPUT_OWNER_FORMAT;
+    for railway in [false, true] {
+        let row = ConstructionLineOutputRow {
+            line: 59,
+            railway,
+            country: Recorded::Value(Some(1507)),
+            building_type: Recorded::Value((!railway).then_some(17001)),
+            target_flags: Recorded::Value((!railway).then_some(5)),
+            target_location: Recorded::Value((!railway).then_some(120003)),
+            target_state: Recorded::Value((!railway).then_some(9001)),
+            target_country: Recorded::Value((!railway).then_some(0)),
+            route_first: Recorded::Value(railway.then_some(120003)),
+            route_last: Recorded::Value(railway.then_some(120009)),
+            ..Default::default()
+        };
+        round_trip(&row);
+        let mut bytes = Vec::new();
+        row.encode_fields(&mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        for kind in &ConstructionLineOutputRow::SCHEMA[..15] {
+            kind.decode(&mut input).unwrap();
+        }
+        let length = bytes.len() - input.remaining();
+        let mut input = Decoder::new(&bytes[..length]);
+        input.format = format - 1;
+        input.recorded_fields = FormatVersion::read(input.format)
+            .unwrap()
+            .fields(TableId::ConstructionLineOutput);
+        let historical = ConstructionLineOutputRow::decode_fields(row.key(), &mut input).unwrap();
+        input.finish().unwrap();
+        for field in [
+            historical.country,
+            historical.building_type,
+            historical.target_flags,
+            historical.target_location,
+            historical.target_state,
+            historical.target_country,
+            historical.route_first,
+            historical.route_last,
+        ] {
+            assert_eq!(field, Recorded::NotRecorded);
+        }
+    }
+    let previous = FormatVersion::read(format - 1).unwrap();
+    assert_eq!(previous.fields(TableId::ConstructionLineOutput), 15);
+    assert_eq!(
+        previous.field_gaps(TableId::ConstructionLineOutput).count(),
+        8
+    );
+    assert_eq!(
+        FormatVersion::CURRENT.fields(TableId::ConstructionLineOutput),
+        23
+    );
 }
 
 #[test]

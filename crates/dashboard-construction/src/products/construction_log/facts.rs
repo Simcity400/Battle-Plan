@@ -7,7 +7,7 @@
 
 use super::{
     SpendingGap,
-    observed::{Building, BuildingLine, Buildings, Hour, Output, Queue, RailwayLine},
+    observed::{Building, BuildingLine, Buildings, Hour, Output, OutputLine, Queue, RailwayLine},
 };
 use dashboard_world::{Needs, Roster, World};
 use engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
@@ -20,7 +20,7 @@ use replay_data::{
     format::FormatVersion,
     rows::{
         BuildingConstructionRow, BuildingRow, ConstructionLineOutputRow, LexicalTokenRow,
-        ProvinceRow, RailwayConstructionRow, TableId,
+        ProvinceRow, RailwayConstructionRow, Recorded, TableId,
     },
 };
 use std::{
@@ -54,7 +54,7 @@ pub fn needs() -> Needs {
 const BUILDINGS: [TableId; 2] = [TableId::StateBuildings, TableId::ProvinceBuildings];
 
 /// BuildingConstruction's fields the scan reads, in [`Fields::queue`]'s order.
-const QUEUE: [&str; 10] = [
+const QUEUE: [&str; 11] = [
     "country",
     "active_factories",
     "cost",
@@ -65,6 +65,7 @@ const QUEUE: [&str; 10] = [
     "target_location",
     "target_state",
     "repair_levels",
+    "queue_ordinal",
 ];
 
 /// ConstructionLineOutput's fields the scan reads of a line still observed, in
@@ -81,15 +82,27 @@ const OUTPUT: [&str; 9] = [
     "exact",
 ];
 
+const OUTPUT_IDENTITY: [&str; 8] = [
+    "country",
+    "building_type",
+    "target_flags",
+    "target_location",
+    "target_state",
+    "target_country",
+    "route_first",
+    "route_last",
+];
+
 /// The columns a projection reads.
 struct Fields {
     /// A building's level and healthy level, and their bits in a change mask.
     level: usize,
     healthy: usize,
     levels: u64,
-    queue: [usize; 10],
+    queue: [usize; 11],
     province_state: usize,
     output: [usize; 9],
+    output_identity: [usize; 8],
     literal: usize,
 }
 
@@ -105,12 +118,16 @@ impl Fields {
                 "The building tables do not share their columns",
             ));
         }
-        let mut queue = [0; 10];
+        let mut queue = [0; 11];
         for (at, name) in queue.iter_mut().zip(QUEUE) {
             *at = columns::field(TableId::BuildingConstruction, name)?;
         }
         let mut output = [0; 9];
         for (at, name) in output.iter_mut().zip(OUTPUT) {
+            *at = columns::field(TableId::ConstructionLineOutput, name)?;
+        }
+        let mut output_identity = [0; 8];
+        for (at, name) in output_identity.iter_mut().zip(OUTPUT_IDENTITY) {
             *at = columns::field(TableId::ConstructionLineOutput, name)?;
         }
         Ok(Self {
@@ -120,6 +137,7 @@ impl Fields {
             queue,
             province_state: columns::field(TableId::Provinces, "state")?,
             output,
+            output_identity,
             literal: columns::field(TableId::LexicalTokens, "literal")?,
         })
     }
@@ -135,21 +153,24 @@ fn bit(column: usize) -> u64 {
 
 /// Why the row decoder finds the output table unavailable.
 fn gap(state: &State) -> io::Result<SpendingGap> {
-    Ok(match columns::status(state, TableId::ConstructionLineOutput) {
-        columns::Status::Unavailable { reason } => {
-            let reason = state
-                .dictionary()
-                .get(reason)
-                .ok_or_else(|| io::Error::other("An output reason names no dictionary entry"))?;
-            if String::from_utf8_lossy(reason).contains("not recorded") {
-                SpendingGap::NotRecorded
-            } else {
+    Ok(
+        match columns::status(state, TableId::ConstructionLineOutput) {
+            columns::Status::Unavailable { reason } => {
+                let reason = state.dictionary().get(reason).ok_or_else(|| {
+                    io::Error::other("An output reason names no dictionary entry")
+                })?;
+                if String::from_utf8_lossy(reason).contains("not recorded") {
+                    SpendingGap::NotRecorded
+                } else {
+                    SpendingGap::ReadFailed
+                }
+            }
+            columns::Status::NotRecorded => SpendingGap::NotRecorded,
+            columns::Status::Truncated { .. } | columns::Status::Complete => {
                 SpendingGap::ReadFailed
             }
-        }
-        columns::Status::NotRecorded => SpendingGap::NotRecorded,
-        columns::Status::Truncated { .. } | columns::Status::Complete => SpendingGap::ReadFailed,
-    })
+        },
+    )
 }
 
 /// A slot's key, as a row id.
@@ -286,7 +307,11 @@ impl Projector {
 
     /// The tag of the country raw link `raw` names, when the links resolve it: its slot's first
     /// country by id whose own id the links resolve to that slot.
-    fn owner(owners: &mut HashMap<u32, Option<Arc<str>>>, roster: &Roster, raw: u32) -> Option<Arc<str>> {
+    fn owner(
+        owners: &mut HashMap<u32, Option<Arc<str>>>,
+        roster: &Roster,
+        raw: u32,
+    ) -> Option<Arc<str>> {
         if !roster.complete() {
             return None;
         }
@@ -310,8 +335,20 @@ impl Projector {
         }
         let held = columns::table(state, table)?;
         let fields = self.fields.queue;
-        let [country, factories, cost, amount, created, kind, flags, location, target, repair] =
-            fields;
+        let [
+            country,
+            factories,
+            cost,
+            amount,
+            created,
+            kind,
+            flags,
+            location,
+            target,
+            repair,
+            ordinal,
+        ] = fields;
+        let ordinal = columns::plain::<u32>(held, ordinal)?;
         let (country, factories, cost, amount, created) = (
             columns::plain::<u32>(held, country)?,
             columns::plain::<i32>(held, factories)?,
@@ -338,6 +375,7 @@ impl Projector {
                     Some(BuildingConstructionRow {
                         id,
                         country: *country.get(at)?,
+                        queue_ordinal: *ordinal.get(at)?,
                         active_factories: *factories.get(at)?,
                         cost: *cost.get(at)?,
                         amount: *amount.get(at)?,
@@ -419,14 +457,41 @@ impl Projector {
 
     /// The output table at its read: every row, by line; an ended line's is read whole, its
     /// completion with it.
-    fn output(&self, state: &State) -> io::Result<Output> {
+    fn output(&mut self, state: &State, roster: &Roster) -> io::Result<Output> {
         let table = TableId::ConstructionLineOutput;
         if !columns::complete(state, table) {
             return Ok(Output::Unavailable(gap(state)?));
         }
         let held = columns::table(state, table)?;
+        let identity_fields = self.fields.output_identity;
+        let identity = if self.format.version()
+            >= replay_data::rows::compatibility::CONSTRUCTION_OUTPUT_OWNER_FORMAT
+        {
+            Some([
+                columns::optional::<u32>(held, identity_fields[0])?,
+                columns::optional::<u32>(held, identity_fields[1])?,
+                columns::optional::<u32>(held, identity_fields[2])?,
+                columns::optional::<u32>(held, identity_fields[3])?,
+                columns::optional::<u32>(held, identity_fields[4])?,
+                columns::optional::<u32>(held, identity_fields[5])?,
+                columns::optional::<u32>(held, identity_fields[6])?,
+                columns::optional::<u32>(held, identity_fields[7])?,
+            ])
+        } else {
+            None
+        };
         let fields = self.fields.output;
-        let [railway, construction, repair, ticks, since, observed, linked, ended, exact] = fields;
+        let [
+            railway,
+            construction,
+            repair,
+            ticks,
+            since,
+            observed,
+            linked,
+            ended,
+            exact,
+        ] = fields;
         let (railway, construction, repair, ticks, since) = (
             columns::plain::<bool>(held, railway)?,
             columns::plain::<i64>(held, construction)?,
@@ -468,12 +533,53 @@ impl Projector {
                     })
                 })
                 .flatten();
-            rows.push(match cells {
+            let mut row = match cells {
                 Some(row) => row,
                 None => columns::row(state, table, slot, version)?,
+            };
+            for ((index, field), destination) in identity_fields.iter().enumerate().zip([
+                &mut row.country,
+                &mut row.building_type,
+                &mut row.target_flags,
+                &mut row.target_location,
+                &mut row.target_state,
+                &mut row.target_country,
+                &mut row.route_first,
+                &mut row.route_last,
+            ]) {
+                *destination = if let Some(identity) = &identity
+                    && held.recorded(*field, slot)
+                {
+                    let (values, present) = identity[index];
+                    Recorded::Value(if present.get(slot) {
+                        Some(*values.get(at).ok_or_else(|| {
+                            io::Error::other("An output identity slot holds no cell")
+                        })?)
+                    } else {
+                        None
+                    })
+                } else {
+                    Recorded::NotRecorded
+                };
+            }
+            let owner = match row.country {
+                Recorded::Value(Some(country)) => Self::owner(&mut self.owners, roster, country),
+                _ => None,
+            };
+            let province_state = |province| match province {
+                Recorded::Value(Some(province)) => self.province_state(state, province),
+                _ => Ok(None),
+            };
+            let from = province_state(row.route_first)?;
+            let to = province_state(row.route_last)?;
+            rows.push(OutputLine {
+                row,
+                owner,
+                from,
+                to,
             });
         }
-        rows.sort_unstable_by_key(|row| row.line);
+        rows.sort_unstable_by_key(|line| line.row.line);
         Ok(Output::Read(rows))
     }
 
@@ -539,6 +645,15 @@ impl Projector {
         };
         if matches!(&hour.railways, Queue::Read(lines) if !lines.is_empty()) {
             named.push(RAILWAY_TEMPLATE_TOKEN);
+        }
+        if let Output::Read(lines) = &hour.output {
+            for line in lines {
+                if line.row.railway {
+                    named.push(RAILWAY_TEMPLATE_TOKEN);
+                } else if let Recorded::Value(Some(kind)) = line.row.building_type {
+                    named.push(kind);
+                }
+            }
         }
         named.extend(
             self.present
@@ -612,7 +727,7 @@ impl Operator<World> for Projector {
             observed.railways = self.railways(state, roster)?;
         }
         if read(TableId::ConstructionLineOutput) {
-            observed.output = self.output(state)?;
+            observed.output = self.output(state, roster)?;
         }
         observed.types = self.types(state, hour.world, opens, &observed)?;
         out.push(observed)

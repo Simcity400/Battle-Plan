@@ -65,7 +65,7 @@ test('both construction renderers release dated-name demand outside their branch
   new Map([['short', source('short', 100, 200)], ['long', source('long', 0, 1000)]]));
   const clock = new PlaybackController();
   clock.setBounds(clockBounds(tracks), true);
-  const project: ConstructionProject = { id: '1', kind: 'building', tag: 'synthetic-country', building: 0, repair: false, state: 7,
+  const project: ConstructionProject = { id: '1', kind: 'building', source: 'census', queueOrdinal: 0, censusRead: 100, outputOrigin: null, tag: 'synthetic-country', building: 0, repair: false, state: 7,
     toState: null, province: null, routeProvinces: null, baseLevel: null, targetLevel: null, costRaw: '100', createdHour: 90, firstRead: 100,
     runs: [{ firstHour: 100, lastHour: 200, factories: 1, remaining: 1, repairLevels: 0 }],
     earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null };

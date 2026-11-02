@@ -134,7 +134,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
       </span>
       <span className="construction-title">
         <span className="construction-building"><span className="construction-name">{typeName(type)}</span>
-          {levels && <span className="construction-levels">{levels}</span>}</span>
+          {levels && <span className="construction-levels">{levels}</span>}
+          {at.project.source === 'outputAlone' && <span className="construction-levels">Known from output</span>}</span>
         <span className="construction-place">
           {!oneCountry && <span className="construction-place-country">{flag}{named('construction-name-pending is-short')}<span aria-hidden="true">·</span></span>}
           <span className="construction-ellipsis">{placeTitle(at.project, hour, stateAt)}</span>

@@ -84,6 +84,7 @@ pub const PLAYER_COMMANDS_FORMAT: u16 = 131;
 /// formats hold an order-dependent checksum in the same eight bytes. Those decode as no witness
 /// ([`super::TemperatureWitness`]): their derived temperatures are refused by name.
 pub const PROVINCE_WITNESS_FORMAT: u16 = 132;
+pub const CONSTRUCTION_OUTPUT_OWNER_FORMAT: u16 = 133;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -3698,8 +3699,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::ConstructionLineOutput.index()] = appended_at(
         TableId::ConstructionLineOutput,
-        POLITICAL_FORMAT,
-        "construction completion and count-reset witnesses (provisional)",
+        CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+        "construction output owner and target",
         &[
             AppendedField {
                 index: 13,
@@ -3710,6 +3711,46 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 14,
                 name: "count_reset",
                 introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 15,
+                name: "country",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 16,
+                name: "building_type",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 17,
+                name: "target_flags",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 18,
+                name: "target_location",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 19,
+                name: "target_state",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 20,
+                name: "target_country",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 21,
+                name: "route_first",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
+            },
+            AppendedField {
+                index: 22,
+                name: "route_last",
+                introduced: CONSTRUCTION_OUTPUT_OWNER_FORMAT,
             },
         ],
     );
@@ -4819,7 +4860,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, PROVINCE_WITNESS_FORMAT);
+        assert_eq!(FORMAT_VERSION, CONSTRUCTION_OUTPUT_OWNER_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);
@@ -4887,12 +4928,7 @@ mod tests {
                 PRIVATE_COPY_ALIASES_FORMAT
             };
             assert_eq!(table.last_change().format, format);
-            assert!(
-                table
-                    .last_change()
-                    .table_gap(table, format)
-                    .is_none()
-            );
+            assert!(table.last_change().table_gap(table, format).is_none());
             assert!(table.last_change().table_gap(table, format - 1).is_some());
             assert_eq!(table.field_name(fields), None);
         }

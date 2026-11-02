@@ -4,7 +4,9 @@
 //! builds it from a segment's walk; the row oracle builds it from decoded frames.
 
 use super::SpendingGap;
-use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, RailwayConstructionRow};
+use replay_data::rows::{
+    BuildingConstructionRow, ConstructionLineOutputRow, RailwayConstructionRow,
+};
 use std::{mem::size_of, sync::Arc};
 
 /// A building's levels as its table holds it.
@@ -56,6 +58,14 @@ pub struct RailwayLine {
     pub row: RailwayConstructionRow,
 }
 
+#[derive(Clone, Debug)]
+pub struct OutputLine {
+    pub row: ConstructionLineOutputRow,
+    pub owner: Option<Arc<str>>,
+    pub from: Option<u32>,
+    pub to: Option<u32>,
+}
+
 /// A queue at its slot's read.
 #[derive(Debug, Default)]
 pub enum Queue<T> {
@@ -89,7 +99,7 @@ pub enum Output {
     /// Read while not complete, and why.
     Unavailable(SpendingGap),
     /// Every row, by line; a row's completion is read only where it ended.
-    Read(Vec<ConstructionLineOutputRow>),
+    Read(Vec<OutputLine>),
 }
 
 impl Output {
@@ -133,13 +143,18 @@ impl replay::segments::Item for Hour {
                 })
                 .sum::<usize>()
             + match &self.output {
-                Output::Read(rows) => rows.capacity() * size_of::<ConstructionLineOutputRow>(),
+                Output::Read(rows) => {
+                    rows.capacity() * size_of::<OutputLine>()
+                        + rows.iter().map(|line| tag(&line.owner)).sum::<usize>()
+                }
                 Output::NotRead | Output::Unavailable(_) => 0,
             }
             + self
                 .types
                 .iter()
-                .map(|(_, token)| size_of::<(u32, Option<String>)>() + token.as_ref().map_or(0, String::capacity))
+                .map(|(_, token)| {
+                    size_of::<(u32, Option<String>)>() + token.as_ref().map_or(0, String::capacity)
+                })
                 .sum::<usize>()
     }
 }

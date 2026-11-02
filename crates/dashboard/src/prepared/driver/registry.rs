@@ -445,8 +445,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "construction-log-manifest",
             "construction-spending",
         ],
-        // 2: projects and spending on the segment driver, published as a series root.
-        version: 2,
+        // 3: output-only projects and dated census metadata.
+        version: 3,
         ..family("construction")
     },
     Descriptor {
@@ -1109,4 +1109,3 @@ pub(crate) const COORDINATOR: &[&str] = &[
 fn digits(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
 }
-

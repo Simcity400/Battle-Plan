@@ -24,9 +24,7 @@ use dashboard_base::{
 use dashboard_core::config::{ContentOptions, LoadContext};
 use dashboard_series::{
     Cell, Event, EventOrder, EventQuery, Observation, PageRead, Selection, Snapshot, Span,
-    codec::Binary,
-    family::Directory,
-    query::EventView,
+    codec::Binary, family::Directory, query::EventView,
 };
 use serde::de::DeserializeOwned;
 use std::{
@@ -106,7 +104,8 @@ fn json<T: DeserializeOwned, P: PageRead>(
     let Cell::Text(blob) = field(snapshot, event, 0)? else {
         return Err(invalid("A construction event holds no text"));
     };
-    let length = usize::try_from(blob.len).map_err(|_| invalid("A construction text is too long"))?;
+    let length =
+        usize::try_from(blob.len).map_err(|_| invalid("A construction text is too long"))?;
     let mut text = vec![0_u8; length];
     snapshot.cell_bytes(blob, 0, &mut text)?;
     Ok(serde_json::from_slice(&text)?)
@@ -176,7 +175,10 @@ fn shared<P: PageRead>(
 
 /// The projects `keys` name, in key order (the order the scan first read them), each with its
 /// runs, counts, ending, first repair advance and output reads.
-fn project_log<P: PageRead>(snapshot: &mut Snapshot<'_, P>, keys: &[u64]) -> io::Result<ScannedLog> {
+fn project_log<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    keys: &[u64],
+) -> io::Result<ScannedLog> {
     let accepted = snapshot.publication().accepted;
     let mut log = ScannedLog::default();
     for &key in keys {
@@ -195,6 +197,17 @@ fn project_log<P: PageRead>(snapshot: &mut Snapshot<'_, P>, keys: &[u64]) -> io:
                 .as_mut()
                 .ok_or_else(|| invalid("Construction start fact missing"))?;
             match event.kind {
+                kind::CENSUS => {
+                    let mut census: ConstructionProject = json(snapshot, &event)?;
+                    census.runs = std::mem::take(&mut held.runs);
+                    census.built = std::mem::take(&mut held.built);
+                    census.unaccounted = std::mem::take(&mut held.unaccounted);
+                    census.possible = std::mem::take(&mut held.possible);
+                    census.added = std::mem::take(&mut held.added);
+                    census.end = held.end.take();
+                    census.first_repair_tick = held.first_repair_tick;
+                    *held = census;
+                }
                 kind::PROGRESS => {
                     let mut values = [0; 5];
                     for (at, value) in values.iter_mut().enumerate() {
@@ -496,9 +509,9 @@ pub fn query(
     match product {
         "construction-log-manifest" => {
             let shared = match &opened {
-                Some(opened) => opened.read(cancelled, |snapshot, directory| {
-                    shared(snapshot, directory)
-                })?,
+                Some(opened) => {
+                    opened.read(cancelled, |snapshot, directory| shared(snapshot, directory))?
+                }
                 None => None,
             };
             let mut manifest = manifest(source, content, branch, shared.as_ref(), cancelled)?;

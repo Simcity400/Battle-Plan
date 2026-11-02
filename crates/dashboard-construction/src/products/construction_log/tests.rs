@@ -245,7 +245,7 @@ fn construction_projects_keep_runs_and_bound_departures_without_native_outcomes(
             one.created_hour,
             one.first_read
         ),
-        ("GER", Some(5), 90, 100)
+        ("GER", Some(5), Some(90), 100)
     );
     assert_eq!(one.runs, [run(100, 147, 10, 1, 0)]);
     assert!(one.built.is_empty());
@@ -258,7 +258,7 @@ fn construction_projects_keep_runs_and_bound_departures_without_native_outcomes(
             Some(UnknownEnd::CompletionNotRecorded)
         ))
     );
-    assert!(project("2").repair);
+    assert_eq!(project("2").repair, Some(true));
     assert!(project("2").built.is_empty());
     assert_eq!(
         ending("2"),
@@ -492,7 +492,7 @@ fn the_construction_log_lists_projects_by_token_without_content() {
     );
     let projects = window("1", 0).unwrap().projects;
     assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].cost_raw, "1080000000");
+    assert_eq!(projects[0].cost_raw.as_deref(), Some("1080000000"));
     assert!(window("1", 1).is_err());
     let other = manifest("2");
     assert!(!other.recorded && other.windows.is_empty());
@@ -1158,12 +1158,19 @@ fn stored_building_icons_follow_the_selection_at_query_time() {
             "spriteTypes = {{ spriteType = {{ name = GFX_line_picture textureFile = {picture} }}              spriteType = {{ name = GFX_line_repair textureFile = gfx/repair.png }} }}"
         )
     };
-    machine.write("interface/fixture.gfx", sprites("gfx/picture.png").as_bytes());
+    machine.write(
+        "interface/fixture.gfx",
+        sprites("gfx/picture.png").as_bytes(),
+    );
     machine.write("gfx/picture.png", &png(RED));
     machine.write("gfx/repair.png", &png(RED));
     machine.write_mod("art", "gfx/picture.png", &png(BLUE));
     machine.write_mod("art", "gfx/repair.png", &png(BLUE));
-    machine.write_mod("broken", "interface/fixture.gfx", sprites("gfx/broken.png").as_bytes());
+    machine.write_mod(
+        "broken",
+        "interface/fixture.gfx",
+        sprites("gfx/broken.png").as_bytes(),
+    );
     machine.write_mod("broken", "gfx/broken.png", b"not a png");
     let (source, mut options) = machine.open();
     let stored = vec![BuildingInfo {
@@ -1204,7 +1211,8 @@ fn stored_building_icons_follow_the_selection_at_query_time() {
         // The mod does not redeclare the marker: the recording's own, drawn normally.
         assert_eq!(first_pixel(repair.as_deref().unwrap()), RED);
         assert!(
-            line.as_ref().is_some_and(|line| line.contains("GFX_line_picture")),
+            line.as_ref()
+                .is_some_and(|line| line.contains("GFX_line_picture")),
             "{line:?}"
         );
     }
@@ -1261,8 +1269,14 @@ fn a_building_icon_selector_failure_is_named_on_every_reply() {
     for _ in 0..2 {
         let mut types = fixture_types();
         let ((), line) = fallback_line(|| {
-            present_stored(&source, Some(&options), &mut types, None, &AtomicBool::new(false))
-                .unwrap()
+            present_stored(
+                &source,
+                Some(&options),
+                &mut types,
+                None,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
         });
         assert_eq!(first_pixel(types[0].icon.as_deref().unwrap()), RED);
         let line = line.unwrap();
@@ -1288,7 +1302,14 @@ fn only_a_reply_with_a_repair_marker_names_its_fallback() {
     select(&source, &mut options, &["broken"]);
     let mut types = fixture_types();
     let ((), line) = fallback_line(|| {
-        present_stored(&source, Some(&options), &mut types, None, &AtomicBool::new(false)).unwrap()
+        present_stored(
+            &source,
+            Some(&options),
+            &mut types,
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
     });
     assert_eq!(line, None, "a building-only reply names no repair fallback");
     let mut repair = Some("stored".to_owned());
@@ -1304,7 +1325,8 @@ fn only_a_reply_with_a_repair_marker_names_its_fallback() {
     });
     assert_eq!(first_pixel(repair.as_deref().unwrap()), RED);
     assert!(
-        line.as_ref().is_some_and(|line| line.contains("GFX_line_repair")),
+        line.as_ref()
+            .is_some_and(|line| line.contains("GFX_line_repair")),
         "{line:?}"
     );
 }
@@ -1317,7 +1339,10 @@ fn a_refused_building_database_keeps_the_reply_and_its_marker() {
     use dashboard_base::test_fixtures::visual_mods::{BLUE, first_pixel, png, select};
     let machine = construction_machine("refused_buildings");
     // The building reader refuses a resource registry with diagnostics.
-    machine.write("common/resources/00.txt", b"resources = { ore = { modifier = { x = 1 } } }");
+    machine.write(
+        "common/resources/00.txt",
+        b"resources = { ore = { modifier = { x = 1 } } }",
+    );
     machine.write_mod("art", "gfx/repair.png", &png(BLUE));
     let (source, mut options) = machine.open();
     select(&source, &mut options, &["art"]);
@@ -1500,8 +1525,14 @@ fn a_kept_naming_names_each_grown_scan_as_a_fresh_read_does() {
             "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
         ),
         ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
-        ("history/states/1-named.txt", "state={id=1 name=STATE_NAMED}"),
-        ("history/states/2-unnamed.txt", "state={id=2 name=STATE_UNNAMED}"),
+        (
+            "history/states/1-named.txt",
+            "state={id=1 name=STATE_NAMED}",
+        ),
+        (
+            "history/states/2-unnamed.txt",
+            "state={id=2 name=STATE_UNNAMED}",
+        ),
         (
             "localisation/english/construction_l_english.yml",
             "\u{feff}l_english:\n mod_named:0 \"Named works\"\n mod_frameless:0 \"Frameless works\"\n STATE_NAMED:0 \"Named state\"\n",
@@ -1552,7 +1583,9 @@ fn a_kept_naming_names_each_grown_scan_as_a_fresh_read_does() {
         );
         assert_eq!(kept.types.len(), types.len());
     }
-    let last = kept.named(&view, &scans[2].0, &scans[2].1, &cancelled).unwrap();
+    let last = kept
+        .named(&view, &scans[2].0, &scans[2].1, &cancelled)
+        .unwrap();
     for listed in [
         "2 building types have no name",
         "1 building types have icon_frame 0",
@@ -1560,7 +1593,9 @@ fn a_kept_naming_names_each_grown_scan_as_a_fresh_read_does() {
         "3 states have no name",
     ] {
         assert!(
-            last.warnings.iter().any(|(_, message)| message.starts_with(listed)),
+            last.warnings
+                .iter()
+                .any(|(_, message)| message.starts_with(listed)),
             "{listed}: {:?}",
             last.warnings
         );
@@ -1995,7 +2030,7 @@ fn a_line_that_repairs_then_builds_is_classified_per_stretch() {
     });
     let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     let project = &log.projects[0];
-    assert!(project.repair);
+    assert_eq!(project.repair, Some(true));
     assert_eq!(
         project
             .runs
@@ -2184,7 +2219,7 @@ fn a_line_s_opening_work_is_zero_only_when_its_opening_stretch_shows_no_daily_ri
     };
     let first = project("1");
     assert!(first.earlier_unknown);
-    assert_eq!((first.created_hour, first.first_read), (110, 124));
+    assert_eq!((first.created_hour, first.first_read), (Some(110), 124));
     // Neither a pre-read rise nor a final between-read rise proves its own work.
     assert!(first.built.is_empty());
     assert_eq!(first.end.as_ref().unwrap().kind, EndKind::Unknown);
@@ -2658,17 +2693,21 @@ fn periodic_log(periods: i32) -> (super::ScannedLog, Vec<super::BattleWindow>) {
             log.projects.push(ConstructionProject {
                 id: (100 + 10 * period + index as i32).to_string(),
                 kind: ProjectKind::Building,
+                source: super::ProjectSource::Census,
+                queue_ordinal: Some(0),
+                census_read: Some(first_read),
+                output_origin: None,
                 tag: "GER".into(),
                 building: 0,
-                repair: false,
+                repair: Some(false),
                 state: None,
                 to_state: None,
                 province: None,
                 route_provinces: None,
                 base_level: None,
                 target_level: None,
-                cost_raw: "100".into(),
-                created_hour,
+                cost_raw: Some("100".into()),
+                created_hour: Some(created_hour),
                 first_read,
                 earlier_unknown: false,
                 runs: vec![ProjectRun {
@@ -2718,9 +2757,10 @@ fn windows_hold_every_dated_project_and_the_output_its_tooltip_reads() {
             .flatten()
             .filter(|levels| levels.known_at <= hour)
             .max_by_key(|levels| (levels.known_at, levels.hour.unwrap_or(levels.known_at)))
-            .map_or(project.created_hour, |levels| {
-                levels.hour.unwrap_or(levels.known_at)
-            }),
+            .map_or(
+                project.created_hour.unwrap_or(project.first_read),
+                |levels| levels.hour.unwrap_or(levels.known_at),
+            ),
     };
     // Its tooltip showed the latest read by then, from every read.
     let was = |reads: &[ConstructionOutputRead], hour| {

@@ -266,10 +266,8 @@ pub fn walk_buffer(
                         };
                         crailway_production_line::fields(memory, pointer, &mut row)?;
                         for index in 0..route.count {
-                            buffers.route_provinces[route_len + index as usize] = route
-                                .element(index, 4)
-                                .and_then(|p| read::<u32>(memory, p))
-                                .ok_or("railway route province unreadable")?;
+                            buffers.route_provinces[route_len + index as usize] =
+                                crailway_production_line::route_province(memory, route, index)?;
                         }
                         Ok(row)
                     })();
@@ -316,6 +314,31 @@ struct Common {
     created_hour: i32,
 }
 
+pub(crate) fn check_status(status: u64, manager: usize) -> Result<(), &'static str> {
+    if status != manager as u64 {
+        return Err("construction line production status backlink mismatch");
+    }
+    Ok(())
+}
+
+pub(crate) fn owning_country(
+    memory: &impl Memory,
+    base: usize,
+    status: u64,
+) -> Result<u32, &'static str> {
+    let pointer = usize::try_from(status).map_err(|_| "construction production status overflow")?;
+    let country = cproduction_status::country_pointer(memory, base, pointer)?;
+    let vtable = base
+        .checked_add(ccountry::VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    let id = ccountry::identity(memory, country, vtable)?;
+    if id == 0 {
+        return Err("production country id is zero");
+    }
+    check_status(status, cproduction_status::pointer(memory, country)?)?;
+    Ok(id)
+}
+
 fn common(memory: &impl Memory, pointer: usize, manager: usize) -> Result<Common, &'static str> {
     let at = |offset| {
         pointer
@@ -349,9 +372,7 @@ fn common(memory: &impl Memory, pointer: usize, manager: usize) -> Result<Common
     {
         return Err("construction line common fields unreadable");
     }
-    if u64::from_le_bytes(owner) != manager as u64 {
-        return Err("construction line production status backlink mismatch");
-    }
+    check_status(u64::from_le_bytes(owner), manager)?;
     let id = u64::from_le_bytes(id);
     if id == 0 {
         return Err("construction line handle is zero");
@@ -381,7 +402,46 @@ fn building_row(
     let target = pointer
         .checked_add(BUILDING)
         .and_then(|p| read::<u64>(memory, p))
-        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("construction building target unreadable or null")?;
+    let target = target_fields(memory, base, target, locations)?;
+    let repair_levels = pointer
+        .checked_add(REPAIR_LEVELS_REMAINING)
+        .and_then(|p| read::<i32>(memory, p))
+        .ok_or("construction repair level count unreadable")?;
+    Ok(Row {
+        id: common.id,
+        country,
+        queue_ordinal,
+        active_factories: common.active_factories,
+        cost: common.cost,
+        speed: common.speed,
+        produced: common.produced,
+        priority: common.priority,
+        amount: common.amount,
+        created_hour: common.created_hour,
+        building_type: target.building_type,
+        target_flags: target.identity.flags,
+        target_location: target.identity.location,
+        target_state: target.state,
+        target_country: target.identity.country,
+        repair_levels,
+    })
+}
+
+pub(crate) struct Target {
+    pub building_type: u32,
+    pub identity: cbuilding_status::Identity,
+    pub state: u32,
+}
+
+pub(crate) fn target_fields(
+    memory: &impl Memory,
+    base: usize,
+    target: u64,
+    locations: &cbuilding_status::Locations,
+) -> Result<Target, &'static str> {
+    let target = usize::try_from(target)
+        .ok()
         .filter(|&p| p != 0)
         .ok_or("construction building target unreadable or null")?;
     let expected = base
@@ -401,27 +461,10 @@ fn building_row(
         .checked_add(cbuilding::TYPE_ID)
         .and_then(|p| read::<u32>(memory, p))
         .ok_or("construction building type unreadable")?;
-    let repair_levels = pointer
-        .checked_add(REPAIR_LEVELS_REMAINING)
-        .and_then(|p| read::<i32>(memory, p))
-        .ok_or("construction repair level count unreadable")?;
-    Ok(Row {
-        id: common.id,
-        country,
-        queue_ordinal,
-        active_factories: common.active_factories,
-        cost: common.cost,
-        speed: common.speed,
-        produced: common.produced,
-        priority: common.priority,
-        amount: common.amount,
-        created_hour: common.created_hour,
+    Ok(Target {
         building_type,
-        target_flags: identity.flags,
-        target_location: identity.location,
-        target_state: state,
-        target_country: identity.country,
-        repair_levels,
+        identity,
+        state,
     })
 }
 

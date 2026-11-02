@@ -4832,6 +4832,8 @@ export type ConstructionLogParams = { branchId: string,
  */
 window: number, };
 export type ProjectKind = "building" | "railway";
+export type ProjectSource = "census" | "outputAlone";
+export type OutputOrigin = { tag: string, building: number, state: number | null, toState: number | null, province: number | null, };
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
 export type ProjectEnd = { kind: EndKind,
@@ -4876,7 +4878,11 @@ export type ConstructionProject = {
 /**
  * The line's native handle, as a decimal string.
  */
-id: string, kind: ProjectKind,
+id: string, kind: ProjectKind, source: ProjectSource,
+/**
+ * Census-only fields are known from this read, never before it.
+ */
+censusRead: number | null, outputOrigin: OutputOrigin | null, queueOrdinal: number | null,
 /**
  * The queue owner's tag at the project's first read.
  */
@@ -4890,7 +4896,7 @@ building: number,
  * stretch: a run with `repair_levels` above zero repairs, one without builds
  * its remaining new levels (a line can repair, then build).
  */
-repair: boolean,
+repair: boolean | null,
 /**
  * The target state (a railway: the state of its route's first province).
  */
@@ -4910,11 +4916,11 @@ routeProvinces: number | null, baseLevel: number | null, targetLevel: number | n
 /**
  * Fixed5 cost per level (railway: the whole route), as at the first read.
  */
-costRaw: string,
+costRaw: string | null,
 /**
  * When the game created the line.
  */
-createdHour: number,
+createdHour: number | null,
 /**
  * The first read that lists it: nothing about it shows before.
  */
