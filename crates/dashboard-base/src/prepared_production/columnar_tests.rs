@@ -785,6 +785,15 @@ fn naming_mutations_only_date_changed_selected_operands() {
                 census
             };
             for (&variant, kind) in &page.classifications {
+                if variant == 7 {
+                    // No read defines the Rocket design: unknown, never empty.
+                    assert!(
+                        !kind.names.is_empty() && kind.names.iter().all(|name| name.raw.is_none()),
+                        "selected={selected}, page={}",
+                        page.first_hour
+                    );
+                    continue;
+                }
                 let expected =
                     if selected && variant == 1 && (edit..next).contains(&page.first_hour) {
                         edit
@@ -863,6 +872,117 @@ fn combined_absence_survives_unrelated_cuts_flushes_and_resume() {
             if from.is_some_and(|from| from > absent) {
                 assert_eq!(presence.len(), 1);
                 assert_eq!(presence[0]["firstHour"], absent);
+            }
+        }
+    }
+}
+
+/// Design 3 is defined from the census on and first selected by CCC at the next output read,
+/// outside any census: with no ledger, with an unrelated scalar entry there, after its rename
+/// between the two, or with names forgotten by a gap first and restored by a later ledger.
+#[test]
+fn a_newly_selected_design_takes_the_held_catalogue_names_at_any_hour() {
+    let census = crate::test_fixtures::slot_hour(TableId::VariantDefinitions);
+    let read = crate::test_fixtures::slot_hour(TableId::ProductionLineOutput) % 24;
+    let selected = start() + 24 + read;
+    let rename = census + 3;
+    let restore = selected + 2;
+    assert!(census < rename && rename + 3 < selected && selected < census + 24);
+    let scalar = |hour: i32| VariantChangeRow {
+        sequence: 1,
+        hour,
+        variant: 1,
+        ..Default::default()
+    };
+    for case in ["quiet", "ledger", "renamed", "forgotten"] {
+        let mut hours: Vec<_> = scenario()
+            .into_iter()
+            .filter(|tables| (census..=restore + 1).contains(&tables.hour))
+            .filter(|tables| case != "forgotten" || tables.hour != selected - 2)
+            .collect();
+        for tables in &mut hours {
+            let hour = tables.hour;
+            let renamed = case == "renamed" && hour >= rename;
+            tables.definitions.push(VariantDefinitionRow {
+                id: 3,
+                equipment_token: 1,
+                creator_link: 1,
+                display_name: if renamed {
+                    b"renamed third".to_vec()
+                } else {
+                    b"third design".to_vec()
+                },
+                ..Default::default()
+            });
+            tables.changes = match case {
+                "ledger" if hour == selected => vec![scalar(hour)],
+                "renamed" if hour == rename => vec![VariantChangeRow {
+                    variant: 3,
+                    flags: Some([1, 1, 1]),
+                    ..scalar(hour)
+                }],
+                "forgotten" if hour == restore => vec![scalar(hour)],
+                _ => Vec::new(),
+            };
+            if hour >= selected {
+                tables.lines.push(ProductionLineRow {
+                    handle: 9,
+                    country: 3,
+                    variant: 3,
+                    ..Default::default()
+                });
+                if let Some(output) = &mut tables.output {
+                    output.push(output_row(9, 3, 3, 1, start()));
+                }
+            }
+        }
+        let resume = if case == "forgotten" {
+            selected
+        } else {
+            selected - 1
+        };
+        let names = |fixture: &Fixture, hour: i32| {
+            let index = read::read_index(&fixture.store, &fixture.key, 1)
+                .unwrap()
+                .unwrap();
+            let mut classes = read::Classes::new(&index, Named::default());
+            // No language context: name each raw by its stored display name.
+            classes.raw_names = index
+                .raws
+                .iter()
+                .map(|raw| Some(raw.display_name.clone()))
+                .collect();
+            let variant = index.variant_id(3).unwrap();
+            let ordinal = index.endpoint_at(hour).unwrap();
+            index
+                .names_at(&classes, variant, ordinal)
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .map(|name| (name.first_hour, name.known, name.name))
+                .collect::<Vec<_>>()
+        };
+        let known = |hour: i32, name: &str| vec![(hour, true, Some(name.to_owned()))];
+        for resumes in [&[][..], &[resume][..]] {
+            let (_, fixture) = prepare_resumes(&hours, &[], resumes, resumes);
+            let (first, last) = (names(&fixture, selected), names(&fixture, restore + 1));
+            let label = format!("{case}, resumes {resumes:?}: {first:?} then {last:?}");
+            match case {
+                // Dated by the census that read the name, whether or not a ledger is there.
+                "quiet" | "ledger" => {
+                    assert_eq!(first, known(census, "third design"), "{label}");
+                    assert_eq!(first, last, "{label}");
+                }
+                // Dated by its rename between the census and the selection.
+                "renamed" => {
+                    assert_eq!(first, known(rename, "renamed third"), "{label}");
+                    assert_eq!(first, last, "{label}");
+                }
+                // Unknown, never empty, until the read that restores names.
+                _ => {
+                    assert_eq!(first, [(selected, false, None)], "{label}");
+                    assert_eq!(last, known(restore, "third design"), "{label}");
+                }
             }
         }
     }

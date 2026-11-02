@@ -471,8 +471,12 @@ impl Operator<World> for Projector {
                 )
             })
             .any(|table| changed[table.index()]);
-        let observed =
-            whole || identity || reads.any() || WATCHED.iter().any(|table| changed[table.index()]);
+        // A non-empty ledger is a naming read, failed or complete: it can forget or restore names.
+        let observed = whole
+            || identity
+            || reads.any()
+            || design_changed
+            || WATCHED.iter().any(|table| changed[table.index()]);
         let variants = {
             let read = self.naming.read(
                 state,

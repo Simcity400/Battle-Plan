@@ -272,7 +272,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
         ],
-        version: 7,
+        version: 8,
         ..family("production")
     },
     Descriptor {

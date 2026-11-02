@@ -201,7 +201,7 @@ impl Current {
 }
 
 /// Prepared state's layout; another is refused rather than read.
-pub const SCHEMA: u32 = 7;
+pub const SCHEMA: u32 = 8;
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct ProductionAccumulator {
@@ -734,6 +734,9 @@ struct ProductionVariants {
     catalogue: VariantCatalogue,
     classified: BTreeSet<u64>,
     invalidated: BTreeSet<u64>,
+    /// The first complete naming read since names were last forgotten, from which the held
+    /// catalogue names every design; none while forgotten.
+    known: Option<i32>,
     #[serde(skip)]
     changed: Vec<u64>,
     inventory: [BTreeMap<String, VariantInventory>; 2],
@@ -1477,6 +1480,7 @@ impl ProductionAccumulator {
     }
     fn forget_names(&mut self, hour: i32) {
         self.variants.classified.clear();
+        self.variants.known = None;
         for (&variant, kind) in &mut self.classifications {
             self.variants.invalidated.insert(variant);
             if kind.names.last().is_some_and(|name| name.raw.is_none()) {
@@ -2891,12 +2895,20 @@ struct ClassEdits<'a> {
     changed: &'a mut Vec<u64>,
     /// The last definitions census, which read every held name.
     census: Option<i32>,
+    /// [`ProductionVariants::known`].
+    known: Option<i32>,
 }
 
 impl ClassEdits<'_> {
     fn mark(&mut self, variant: u64) {
         *self.moved = true;
         self.changed.push(variant);
+    }
+
+    /// The read a held catalogue name changed at `changed` came from: that change, or the
+    /// census or restoring read after it.
+    fn read_at(&self, changed: i32) -> i32 {
+        changed.max(self.census.max(self.known).unwrap_or(changed))
     }
 
     /// Dates every name of `variant` at the read it came from by `at`: its own date or the
@@ -2992,12 +3004,18 @@ fn classify(
     let mut names: Vec<VariantName> = Vec::new();
     for version in catalogue.versions.get(&variant).into_iter().flatten() {
         let name = VariantName {
-            first_hour: at,
+            first_hour: classes.read_at(version.first_hour),
             raw: version.raw.as_ref().map(|raw| tables.raw(raw)),
         };
         if names.last().is_none_or(|last| last.raw != name.raw) {
             names.push(name);
         }
+    }
+    if names.is_empty() {
+        names.push(VariantName {
+            first_hour: at,
+            raw: None,
+        });
     }
     let seen = match classes.held.get(&variant) {
         Some(kind) => kind.seen,
@@ -3330,6 +3348,7 @@ impl ProductionAccumulator {
         if complete_names {
             self.variants
                 .read(at, hour.variants, &mut self.variant_refusals);
+            self.variants.known.get_or_insert(at);
             if hour.reads.variants {
                 self.names_hour = Some(at);
             }
@@ -3538,19 +3557,23 @@ impl ProductionAccumulator {
         let ProductionVariants {
             catalogue: read,
             classified,
+            invalidated,
+            known,
             members,
             changed: naming_changed,
             #[cfg(test)]
                 classifications: built,
             ..
         } = variants;
+        // The held catalogue names a design at any hour, unless names were forgotten since.
         let empty = VariantCatalogue::default();
-        let catalogue = if complete_names { &*read } else { &empty };
+        let catalogue = if known.is_some() { &*read } else { &empty };
         let mut classes = ClassEdits {
             held: classifications,
             moved: classes_moved,
             changed: class_changed,
             census: *names_hour,
+            known: *known,
         };
         created.clear();
         let mut builds = 0usize;
@@ -3628,6 +3651,10 @@ impl ProductionAccumulator {
             if let Some(count) = members.get(&variant) {
                 classes.see(variant, &count.seen);
             }
+        }
+        if known.is_none() {
+            // Named unknown while forgotten: the read that restores names names them too.
+            invalidated.extend(created.iter().copied());
         }
         if complete_names && !census {
             for &variant in naming_changed.iter() {
@@ -4080,7 +4107,7 @@ pub(crate) fn spent_section(branch: u64) -> String {
 }
 
 /// The section a test's saved accumulator is kept in, as `{STATE}/{branch}`.
-pub const STATE: &str = "production-state-v7";
+pub const STATE: &str = "production-state-v8";
 
 /// One holder's leaf events in a batch (P3), in groups that each begin with
 /// its whole state.

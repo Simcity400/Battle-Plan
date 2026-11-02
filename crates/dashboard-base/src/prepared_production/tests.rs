@@ -378,6 +378,7 @@ fn a_selection_change_dates_names_at_the_read_they_came_from() {
             moved: &mut moved,
             changed: &mut changed,
             census,
+            known: census,
         };
         classes.redate(1, at);
         (held[&1].names[0].first_hour, moved, changed)
