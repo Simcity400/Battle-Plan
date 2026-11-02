@@ -357,8 +357,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     Descriptor {
         status: &["supply-health"],
         queries: &["supply-health"],
-        // 2: facts on the segment driver, published as a series root.
-        version: 2,
+        // 3: supply ratio and remaining grace restored from display-step units.
+        version: 3,
         ..family("supply")
     },
     Descriptor {

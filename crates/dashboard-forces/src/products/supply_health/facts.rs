@@ -14,6 +14,7 @@ use replay::{
     segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::{
+    display::{Step, stepped_format},
     format::FormatVersion,
     rows::{TableId, compatibility::RECORDER_INPUTS_FORMAT},
 };
@@ -226,7 +227,10 @@ impl Projector {
 
     /// Each division's count from its status and land rows, the hour's columns read once:
     /// [`UNKNOWN`] when either row is not held this hour or its grace is not recorded.
-    fn counter<'s>(&self, state: &'s State) -> io::Result<impl Fn(u64) -> u8 + use<'s>> {
+    fn counter<'s>(
+        &self,
+        state: &'s State,
+    ) -> io::Result<impl Fn(u64) -> io::Result<u8> + use<'s>> {
         // An unavailable table holds no rows this hour, whatever cells the walker kept.
         let usable = !columns::unavailable(state, TableId::DivisionLandInputs)
             && !columns::unavailable(state, TableId::DivisionStatus)
@@ -235,6 +239,14 @@ impl Projector {
         let land = columns::table(state, TableId::DivisionLandInputs)?;
         let status = columns::table(state, TableId::DivisionStatus)?;
         let [received, maximum, remaining] = self.fields.supply;
+        let step = |field| {
+            TableId::DivisionStatus
+                .display_step(field)
+                .filter(|_| stepped_format(self.format.version()))
+        };
+        let received_step = step(received);
+        let remaining_step = step(remaining);
+        let native = |units, step: Option<Step>| step.map_or(Ok(units), |step| step.value(units));
         let transfer = columns::plain::<bool>(land, self.fields.transfer)?;
         let received = columns::plain::<i64>(status, received)?;
         let maximum = columns::plain::<i64>(status, maximum)?;
@@ -246,7 +258,7 @@ impl Projector {
         };
         Ok(move |division: u64| {
             let Some(defines) = defines else {
-                return UNKNOWN;
+                return Ok(UNKNOWN);
             };
             let (Some(land_slot), Some(status_slot)) = (
                 land.slot(u128::from(division))
@@ -255,18 +267,21 @@ impl Projector {
                     .slot(u128::from(division))
                     .filter(|&slot| read(slot, status_read)),
             ) else {
-                return UNKNOWN;
+                return Ok(UNKNOWN);
             };
             let at = status_slot as usize;
-            defines.bucket(&Supply {
-                received: received.get(at).copied().unwrap_or_default(),
+            Ok(defines.bucket(&Supply {
+                received: native(received.get(at).copied().unwrap_or_default(), received_step)?,
                 maximum_grace: maximum.get(at).copied().unwrap_or_default(),
-                remaining_grace: remaining.get(at).copied().unwrap_or_default(),
+                remaining_grace: native(
+                    remaining.get(at).copied().unwrap_or_default(),
+                    remaining_step,
+                )?,
                 naval_transfer: transfer
                     .get(land_slot as usize)
                     .copied()
                     .unwrap_or_default(),
-            })
+            }))
         })
     }
 
@@ -317,7 +332,12 @@ impl Projector {
     }
 
     /// Every division placed anew; false, with nothing placed, when an owner names no link.
-    fn recount(&mut self, state: &State, countries: &Roster) -> io::Result<bool> {
+    fn recount(
+        &mut self,
+        state: &State,
+        countries: &Roster,
+        count: &impl Fn(u64) -> io::Result<u8>,
+    ) -> io::Result<bool> {
         self.divisions.clear();
         for country in &mut self.named {
             country.counts = [0; 3];
@@ -328,7 +348,6 @@ impl Projector {
             columns::plain::<u32>(table, self.fields.owners[0])?,
             columns::plain::<u32>(table, self.fields.owners[1])?,
         );
-        let count = self.counter(state)?;
         let mut owned = Vec::new();
         for slot in table.live().ones() {
             let Some(owner) = self.owner(countries, owners, slot) else {
@@ -340,7 +359,7 @@ impl Projector {
                     division,
                     Division {
                         owner,
-                        count: count(division),
+                        count: count(division)?,
                     },
                 ));
             }
@@ -353,7 +372,12 @@ impl Projector {
 
     /// The hour's added, removed and re-owned divisions placed; false when an owner names no
     /// link, which only a recount resolves.
-    fn move_divisions(&mut self, state: &State, countries: &Roster) -> io::Result<bool> {
+    fn move_divisions(
+        &mut self,
+        state: &State,
+        countries: &Roster,
+        count: &impl Fn(u64) -> io::Result<u8>,
+    ) -> io::Result<bool> {
         let table = columns::table(state, TableId::Divisions)?;
         let changes = columns::changes(state, TableId::Divisions)?;
         for &key in &changes.deleted_keys {
@@ -373,7 +397,6 @@ impl Projector {
             .map(|(&slot, _)| slot)
             .chain(changes.inserted.iter().copied())
             .collect();
-        let count = self.counter(state)?;
         let mut placed = Vec::with_capacity(moved.len());
         for slot in moved {
             let Some(owner) = self.owner(countries, owners, slot) else {
@@ -384,7 +407,7 @@ impl Projector {
                     division,
                     Division {
                         owner,
-                        count: count(division),
+                        count: count(division)?,
                     },
                 ));
             }
@@ -397,7 +420,11 @@ impl Projector {
 
     /// Counted divisions whose transfer or supply the hour changed, added or removed, counted
     /// again.
-    fn resupply(&mut self, state: &State) -> io::Result<()> {
+    fn resupply(
+        &mut self,
+        state: &State,
+        count: &impl Fn(u64) -> io::Result<u8>,
+    ) -> io::Result<()> {
         let mut dirty = Vec::new();
         for (table, fields) in [
             (TableId::DivisionLandInputs, &[self.fields.transfer][..]),
@@ -422,15 +449,16 @@ impl Projector {
         }
         dirty.sort_unstable();
         dirty.dedup();
-        let count = self.counter(state)?;
-        let recounted: Vec<_> = dirty
-            .into_iter()
-            .filter_map(|division| {
-                let held = self.divisions.get(&division).copied()?;
-                let count = count(division);
-                (count != held.count).then_some((division, Division { count, ..held }))
-            })
-            .collect();
+        let mut recounted = Vec::new();
+        for division in dirty {
+            let Some(held) = self.divisions.get(&division).copied() else {
+                continue;
+            };
+            let count = count(division)?;
+            if count != held.count {
+                recounted.push((division, Division { count, ..held }));
+            }
+        }
         for (division, next) in recounted {
             self.place(division, Some(next));
         }
@@ -504,16 +532,17 @@ impl Operator<World> for Projector {
             let resolvable =
                 all || reshaped || touched(state, TableId::Divisions, &self.fields.owners)?;
             if known || resolvable {
+                let count = self.counter(state)?;
                 if all
                     || reshaped
                     || truncated
                     || !known
-                    || !self.move_divisions(state, countries)?
+                    || !self.move_divisions(state, countries, &count)?
                 {
-                    self.owners_known = self.recount(state, countries)?;
+                    self.owners_known = self.recount(state, countries, &count)?;
                     all = true;
                 } else {
-                    self.resupply(state)?;
+                    self.resupply(state, &count)?;
                 }
             }
             all |= known != self.owners_known;
