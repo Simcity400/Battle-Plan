@@ -25,7 +25,7 @@ test('country comparison headers retain neutral missing flags and request only m
   try {
     const { default: CountryComparisons } = await vite.ssrLoadModule('/ui/src/dashboard/CountryComparisons.tsx');
     const html = renderToStaticMarkup(CountryComparisons({ component: () => null, active: true, onDiagnostics() {},
-      widget: { time: { mode: 'campaign' } }, runtime: {} }));
+      widget: { time: { mode: 'campaign' } }, runtime: { clock: { getHour: () => 0 } } }));
     assert.ok(state.wanted.length > 0 && state.wanted.length < 10);
     assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, state.wanted.length);
     assert.match(html, /Flag unavailable/);
