@@ -471,8 +471,11 @@ pub fn resolve(family: &Family, shared: &[Selection]) -> io::Result<Option<ReadS
             }
             Some(field)
         };
+        let target_bits = tables[to].selected.table.key_bits();
+        // A keyless (single-row) target takes no projection: only shift 0 addresses it.
         if reference.shift >= 128
-            || reference.target_shift >= tables[to].selected.table.key_bits()
+            || (target_bits == 0 && reference.target_shift != 0)
+            || (target_bits > 0 && reference.target_shift >= target_bits)
             || reference
                 .bits
                 .is_some_and(|n| n == 0 || n > 128 - reference.shift)

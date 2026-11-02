@@ -1741,7 +1741,7 @@ source = "crates/dashboard-base/src/products/country_history.rs:900"
 
 [[families.readset]]
 name = "CountryExperienceGains"
-fields = ["instance"]
+fields = []
 spool = "stream"
 read_rule = "acquired"
 source = "crates/dashboard-base/src/products/country_history/native.rs:314"
@@ -2401,7 +2401,7 @@ source = "crates/dashboard-base/src/products/country_history.rs:900"
 
 [[families.readset]]
 name = "CountryExperienceGains"
-fields = ["instance"]
+fields = []
 spool = "stream"
 read_rule = "acquired"
 source = "crates/dashboard-base/src/products/country_history/native.rs:314"
@@ -7092,7 +7092,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "air-wings"
+name = "table-air-wings"
 origin = "code"
 ordered = false
 
@@ -7103,7 +7103,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "autonomy"
+name = "table-autonomy"
 origin = "code"
 ordered = false
 
@@ -7114,7 +7114,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "campaign"
+name = "table-campaign"
 origin = "code"
 ordered = false
 
@@ -7125,7 +7125,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "character-portraits"
+name = "table-character-portraits"
 origin = "code"
 ordered = false
 
@@ -7136,7 +7136,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "characters"
+name = "table-characters"
 origin = "code"
 ordered = false
 
@@ -7147,7 +7147,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "country-civil-wars"
+name = "table-country-civil-wars"
 origin = "code"
 ordered = false
 
@@ -7158,7 +7158,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "country-counter-inputs"
+name = "table-country-counter-inputs"
 origin = "code"
 ordered = false
 
@@ -7169,7 +7169,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "country-experience-gains"
+name = "table-country-experience-gains"
 origin = "code"
 ordered = false
 
@@ -7180,7 +7180,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "country-factories"
+name = "table-country-factories"
 origin = "code"
 ordered = false
 
@@ -7191,7 +7191,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "country-stability-inputs"
+name = "table-country-stability-inputs"
 origin = "code"
 ordered = false
 
@@ -7202,7 +7202,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "country-wars"
+name = "table-country-wars"
 origin = "code"
 ordered = false
 
@@ -7213,7 +7213,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "division-land-inputs"
+name = "table-division-land-inputs"
 origin = "code"
 ordered = false
 
@@ -7224,7 +7224,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "division-status"
+name = "table-division-status"
 origin = "code"
 ordered = false
 
@@ -7235,7 +7235,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "division-template-icons"
+name = "table-division-template-icons"
 origin = "code"
 ordered = false
 
@@ -7246,7 +7246,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "divisions"
+name = "table-divisions"
 origin = "code"
 ordered = false
 
@@ -7257,7 +7257,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "faction-members"
+name = "table-faction-members"
 origin = "code"
 ordered = false
 
@@ -7268,7 +7268,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "factions"
+name = "table-factions"
 origin = "code"
 ordered = false
 
@@ -7279,7 +7279,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "fleets"
+name = "table-fleets"
 origin = "code"
 ordered = false
 
@@ -7290,7 +7290,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "industrial-organisations"
+name = "table-industrial-organisations"
 origin = "code"
 ordered = false
 
@@ -7301,7 +7301,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "modifier-definitions"
+name = "table-modifier-definitions"
 origin = "code"
 ordered = false
 
@@ -7312,7 +7312,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "naval-bases"
+name = "table-naval-bases"
 origin = "code"
 ordered = false
 
@@ -7323,7 +7323,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "naval-repair-bases"
+name = "table-naval-repair-bases"
 origin = "code"
 ordered = false
 
@@ -7334,7 +7334,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "naval-repair-countries"
+name = "table-naval-repair-countries"
 origin = "code"
 ordered = false
 
@@ -7345,7 +7345,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "naval-repair-queue"
+name = "table-naval-repair-queue"
 origin = "code"
 ordered = false
 
@@ -7356,7 +7356,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "political-parties"
+name = "table-political-parties"
 origin = "code"
 ordered = false
 
@@ -7367,7 +7367,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "politics"
+name = "table-politics"
 origin = "code"
 ordered = false
 
@@ -7378,7 +7378,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "production-lines"
+name = "table-production-lines"
 origin = "code"
 ordered = false
 
@@ -7389,7 +7389,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "province-names"
+name = "table-province-names"
 origin = "code"
 ordered = false
 
@@ -7400,7 +7400,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "provinces"
+name = "table-provinces"
 origin = "code"
 ordered = false
 
@@ -7411,7 +7411,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "relation-tuples"
+name = "table-relation-tuples"
 origin = "code"
 ordered = false
 
@@ -7422,7 +7422,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "resource-definitions"
+name = "table-resource-definitions"
 origin = "code"
 ordered = false
 
@@ -7433,7 +7433,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "resource-exchanges"
+name = "table-resource-exchanges"
 origin = "code"
 ordered = false
 
@@ -7444,7 +7444,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "ship-models"
+name = "table-ship-models"
 origin = "code"
 ordered = false
 
@@ -7455,7 +7455,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "ships"
+name = "table-ships"
 origin = "code"
 ordered = false
 
@@ -7466,7 +7466,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "simulation-features"
+name = "table-simulation-features"
 origin = "code"
 ordered = false
 
@@ -7477,7 +7477,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "slice-reads"
+name = "table-slice-reads"
 origin = "code"
 ordered = false
 
@@ -7488,7 +7488,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "states"
+name = "table-states"
 origin = "code"
 ordered = false
 
@@ -7499,7 +7499,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "subjects"
+name = "table-subjects"
 origin = "code"
 ordered = false
 
@@ -7510,7 +7510,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "task-forces"
+name = "table-task-forces"
 origin = "code"
 ordered = false
 
@@ -7521,7 +7521,7 @@ subscription = "lookup"
 source = "crates/core-gate-memory/src/manifest.rs:203"
 
 [[shared]]
-name = "war-relations"
+name = "table-war-relations"
 origin = "code"
 ordered = false
 

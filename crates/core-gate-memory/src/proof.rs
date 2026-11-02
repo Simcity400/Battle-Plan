@@ -1132,7 +1132,7 @@ pub const READS: &[Proof] = &[
         table: "CountryExperienceGains",
         access: "snapshot",
         source: "crates/dashboard-base/src/products/country_history/native.rs:314",
-        fields: &["instance"],
+        fields: &[],
         all_fields: false,
     },
     Proof {
@@ -1220,7 +1220,7 @@ pub const READS: &[Proof] = &[
         table: "CountryExperienceGains",
         access: "snapshot",
         source: "crates/dashboard-base/src/products/country_history/native.rs:314",
-        fields: &["instance"],
+        fields: &[],
         all_fields: false,
     },
     Proof {
