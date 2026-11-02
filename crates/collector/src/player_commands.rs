@@ -105,6 +105,15 @@ struct Descriptor {
     remove_player: bool,
 }
 
+impl Descriptor {
+    fn captured(&self) -> bool {
+        !matches!(
+            self.category,
+            Category::System | Category::Session | Category::Automatic
+        )
+    }
+}
+
 struct Producer {
     world: u64,
     session: usize,
@@ -135,6 +144,7 @@ struct Live {
     closed_order: AtomicU64,
     closed_world: AtomicU64,
     failed: AtomicU64,
+    refusal_reasons: Reasons<32>,
     failed_qpc: AtomicU64,
     capacity_demand: AtomicUsize,
     name_demand: AtomicUsize,
@@ -154,6 +164,88 @@ static UNHOOKED: OnceLock<Cow<'static, str>> = OnceLock::new();
 static CAPTURED: AtomicU64 = AtomicU64::new(0);
 static AUTOMATIC: AtomicU64 = AtomicU64::new(0);
 static UNRESOLVED_FIELDS: AtomicU64 = AtomicU64::new(0);
+static UNRESOLVED_REASONS: Reasons<32> = Reasons::new();
+
+struct Reasons<const N: usize> {
+    slots: [(AtomicPtr<u8>, AtomicUsize, AtomicU64); N],
+    overflow: AtomicU64,
+}
+
+impl<const N: usize> Reasons<N> {
+    const fn new() -> Self {
+        Self {
+            slots: [const {
+                (
+                    AtomicPtr::new(std::ptr::null_mut()),
+                    AtomicUsize::new(0),
+                    AtomicU64::new(0),
+                )
+            }; N],
+            overflow: AtomicU64::new(0),
+        }
+    }
+
+    fn note(&self, reason: &'static str) {
+        let pointer = reason.as_ptr().cast_mut();
+        for (slot, length, count) in &self.slots {
+            let mut current = slot.load(Ordering::Acquire);
+            if current.is_null() {
+                match slot.compare_exchange(
+                    std::ptr::null_mut(),
+                    pointer,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        length.store(reason.len() + 1, Ordering::Release);
+                        count.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(owner) => current = owner,
+                }
+            }
+            // An unfinished claim is skipped so a callback never waits for another observer.
+            if current == pointer && length.load(Ordering::Acquire) == reason.len() + 1 {
+                count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        self.overflow.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn counts(&self) -> BTreeMap<&'static str, u64> {
+        let mut counts = BTreeMap::new();
+        for (pointer, length, count) in &self.slots {
+            let length = length.load(Ordering::Acquire);
+            let count = count.load(Ordering::Relaxed);
+            if length == 0 || count == 0 {
+                continue;
+            }
+            // The length publishes an immutable static string; concurrent claims may duplicate it.
+            let reason = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    pointer.load(Ordering::Relaxed),
+                    length - 1,
+                ))
+            };
+            *counts.entry(reason).or_default() += count;
+        }
+        let overflow = self.overflow.load(Ordering::Relaxed);
+        if overflow != 0 {
+            *counts.entry("command reason table overflow").or_default() += overflow;
+        }
+        counts
+    }
+
+    fn status(&self) -> impl serde::Serialize + use<N> {
+        crate::status::owned_sequence(
+            self.counts()
+                .into_iter()
+                .map(|(reason, count)| crate::status::status!({ "reason": reason, "count": count }))
+                .collect(),
+        )
+    }
+}
 
 impl Live {
     fn new(memory: &impl Memory, base: usize) -> io::Result<Self> {
@@ -300,6 +392,7 @@ impl Live {
             closed_order: AtomicU64::new(0),
             closed_world: AtomicU64::new(0),
             failed: AtomicU64::new(0),
+            refusal_reasons: Reasons::new(),
             failed_qpc: AtomicU64::new(0),
             capacity_demand: AtomicUsize::new(slots),
             name_demand: AtomicUsize::new(names),
@@ -401,7 +494,8 @@ impl Live {
         Ok(changed)
     }
 
-    fn fail(&self) {
+    fn fail(&self, reason: &'static str) {
+        self.refusal_reasons.note(reason);
         self.failed_qpc
             .fetch_max(qpc().max(0) as u64, Ordering::Relaxed);
         self.failed.fetch_add(1, Ordering::Release);
@@ -589,14 +683,21 @@ impl Live {
         time: u64,
         order: u64,
     ) -> Result<(), &'static str> {
-        let state = read::<i32>(
-            memory,
-            session
-                .checked_add(native::SESSION_STATE)
-                .ok_or("command session overflow")?,
-        )
-        .ok_or("command session state unreadable")?;
-        let active = world != 0 && matches!(state, 2 | 11 | 12);
+        let paused = if world == 0 {
+            None
+        } else if let Some(paused) = native::paused(memory, self.base)? {
+            let state = read::<i32>(
+                memory,
+                session
+                    .checked_add(native::SESSION_STATE)
+                    .ok_or("command session overflow")?,
+            )
+            .ok_or("command session state unreadable")?;
+            matches!(state, 2 | 11 | 12).then_some(paused)
+        } else {
+            None
+        };
+        let active = paused.is_some();
         if producer.active && (!active || producer.world != world || producer.session != session) {
             let departures = producer
                 .players
@@ -630,48 +731,82 @@ impl Live {
                 ..Entry::default()
             })?;
         }
-        if active && !producer.active {
-            producer.players.fill(CachedPlayer::default());
-            producer.previous_players.fill(CachedPlayer::default());
-            producer.dirty = true;
-            producer.world = world;
-            producer.session = session;
-            producer.state = read::<u64>(memory, self.base + cgame_state::SINGLETON_RVA)
+        if let Some(paused) = paused {
+            if producer.active {
+                let hour = read(memory, producer.state + cgame_state::CURRENT_HOUR)
+                    .ok_or("command hour unreadable")?;
+                if hour != producer.hour || paused != producer.paused {
+                    self.publish(Entry {
+                        order,
+                        world,
+                        qpc: time,
+                        hour,
+                        paused,
+                        code: 5,
+                        ..Entry::default()
+                    })?;
+                    producer.hour = hour;
+                    producer.paused = paused;
+                }
+                return Ok(());
+            }
+            let state = read::<u64>(memory, self.base + cgame_state::SINGLETON_RVA)
                 .filter(|&pointer| pointer != 0)
                 .ok_or("command world unreadable")? as usize;
             let campaign = engine_native::msvc_string::read_text::<36>(
                 memory,
-                producer.state + cgame_state::CAMPAIGN_ID,
+                state + cgame_state::CAMPAIGN_ID,
             )
             .filter(|text| text.len == 36)
             .ok_or("command campaign identity unreadable")?;
             let context = WorldContext {
                 campaign: campaign.bytes,
-                hour: read(memory, producer.state + cgame_state::CURRENT_HOUR)
+                hour: read(memory, state + cgame_state::CURRENT_HOUR)
                     .ok_or("command phase hour unreadable")?,
                 load_signal: read(memory, self.base + cgame_state::PLAY_SESSION_STARTED_AT_RVA)
                     .ok_or("command phase load signal unreadable")?,
                 qpc: time,
             };
-            self.metadata()
+            let metadata_pending = self.metadata().pending();
+            let event_pending = self.events().pending();
+            if self.metadata().len().saturating_sub(metadata_pending) < 1 {
+                self.metadata()
+                    .require_entries(metadata_pending.saturating_add(1));
+                return Err("command world context buffer full");
+            }
+            if self.events().len().saturating_sub(event_pending) < 1 {
+                self.events()
+                    .require_entries(event_pending.saturating_add(1));
+                return Err("command event buffer full");
+            }
+            // Admission excludes other producers, so preflighted reservations cannot lose capacity.
+            let metadata = self
+                .metadata()
                 .reserve()
-                .ok_or("command world context buffer full")?
-                .publish(Metadata::World {
-                    order,
-                    world,
-                    context,
-                });
-            producer.hour = context.hour;
-            producer.paused = native::paused(memory, self.base)?;
-            self.publish(Entry {
+                .ok_or("command world context buffer full")?;
+            let event = self.events().reserve().ok_or("command event buffer full")?;
+            metadata.publish(Metadata::World {
+                order,
+                world,
+                context,
+            });
+            event.publish(Entry {
                 order,
                 world,
                 qpc: time,
                 code: 1,
-                hour: producer.hour,
-                paused: producer.paused,
+                hour: context.hour,
+                paused,
                 ..Entry::default()
-            })?;
+            });
+            producer.players.fill(CachedPlayer::default());
+            producer.previous_players.fill(CachedPlayer::default());
+            producer.dirty = true;
+            producer.world = world;
+            producer.session = session;
+            producer.state = state;
+            producer.hour = context.hour;
+            producer.paused = paused;
             producer.active = true;
         }
         Ok(())
@@ -680,6 +815,25 @@ impl Live {
     fn observe(&self, registers: &Registers, site: usize) -> Result<(), &'static str> {
         let memory = unsafe { LiveMemory::new() };
         let time = u64::try_from(qpc()).map_err(|_| "command clock negative")?;
+        let world = crate::world_lifetime::observed_generation().unwrap_or(0);
+        self.observe_at(&memory, registers, site, world, time)
+    }
+
+    fn kind(&self, vtable: usize) -> Option<&Descriptor> {
+        self.kinds
+            .binary_search_by_key(&vtable, |kind| kind.vtable)
+            .ok()
+            .map(|index| &self.kinds[index])
+    }
+
+    fn observe_at(
+        &self,
+        memory: &impl Memory,
+        registers: &Registers,
+        site: usize,
+        world: u64,
+        time: u64,
+    ) -> Result<(), &'static str> {
         let producer = unsafe { &mut *self.producer.get() };
         let order = producer.next_order;
         producer.next_order = order
@@ -693,53 +847,43 @@ impl Live {
             _ => return Ok(()),
         };
         // Accepted commands are live before the first hourly snapshot, including while paused.
-        let world = crate::world_lifetime::observed_generation().unwrap_or(0);
-        self.mode(&memory, producer, world, session, time, order)?;
-        if producer.active {
-            let hour = read(&memory, producer.state + cgame_state::CURRENT_HOUR)
-                .ok_or("command hour unreadable")?;
-            let paused = native::paused(&memory, self.base)?;
-            if hour != producer.hour || paused != producer.paused {
-                self.publish(Entry {
-                    order,
-                    world,
-                    qpc: time,
-                    hour,
-                    paused,
-                    code: 5,
-                    ..Entry::default()
-                })?;
-                producer.hour = hour;
-                producer.paused = paused;
+        self.mode(memory, producer, world, session, time, order)?;
+        let command = match site {
+            1 => Some(
+                read::<u64>(memory, registers.rsi).ok_or("accepted command pointer unreadable")?
+                    as usize,
+            ),
+            2 => Some(registers.rdi),
+            _ => None,
+        };
+        if !producer.active
+            && let Some(command) = command
+        {
+            let vtable = read::<u64>(memory, command).ok_or("command envelope unreadable")?;
+            let vtable = usize::try_from(vtable).map_err(|_| "command vtable overflow")?;
+            if self.kind(vtable).is_none_or(Descriptor::captured) {
+                return Err("command accepted before the game is in play");
             }
+        }
+        if producer.active {
             let shared = crate::sampling::SHARED.load(Ordering::Acquire);
             if !shared.is_null() {
                 let shared = unsafe { &*shared };
                 if !shared.roster_ready.load(Ordering::Acquire) {
-                    let hour = read(&memory, producer.state + cgame_state::CURRENT_HOUR);
-                    shared.sample_content_roster(&memory, hour);
+                    let hour = read(memory, producer.state + cgame_state::CURRENT_HOUR);
+                    shared.sample_content_roster(memory, hour);
                 }
             }
             if site == 0 {
-                self.roster(&memory, producer, order, time)?;
-            } else if site < 3 {
-                let command = if site == 1 {
-                    read::<u64>(&memory, registers.rsi)
-                        .ok_or("accepted command pointer unreadable")? as usize
-                } else {
-                    registers.rdi
-                };
-                let header = native::header(&memory, command)?;
-                let kind = self
-                    .kinds
-                    .binary_search_by_key(&header.vtable, |kind| kind.vtable)
-                    .ok()
-                    .map(|index| &self.kinds[index]);
+                self.roster(memory, producer, order, time)?;
+            } else if let Some(command) = command {
+                let header = native::header(memory, command)?;
+                let kind = self.kind(header.vtable);
                 if kind.is_some_and(|kind| kind.roster) {
                     producer.dirty = true;
                 }
                 if kind.is_some_and(|kind| kind.remove_player) {
-                    let removed = read::<i32>(&memory, command + native::REMOVED_PLAYER_KEY)
+                    let removed = read::<i32>(memory, command + native::REMOVED_PLAYER_KEY)
                         .ok_or("removed player key unreadable")?;
                     for player in &mut producer.players {
                         if player.actor != 0 && player.key == removed && player.seen {
@@ -756,16 +900,14 @@ impl Live {
                         }
                     }
                 }
-                if !kind.is_some_and(|kind| {
-                    matches!(
-                        kind.category,
-                        Category::System | Category::Session | Category::Automatic
-                    )
-                }) {
-                    let roster_ready = self.roster(&memory, producer, order, time).is_ok();
-                    if !roster_ready {
-                        self.fail();
-                    }
+                if kind.is_none_or(Descriptor::captured) {
+                    let roster_ready = match self.roster(memory, producer, order, time) {
+                        Ok(()) => true,
+                        Err(reason) => {
+                            self.fail(reason);
+                            false
+                        }
+                    };
                     let mut found = CachedPlayer::default();
                     let mut index = hash(header.player as u32 as u64, producer.players.len());
                     for _ in 0..producer.players.len() {
@@ -782,7 +924,7 @@ impl Live {
                         index = (index + 1) & (producer.players.len() - 1);
                     }
                     let resolution = native::target(
-                        &memory,
+                        memory,
                         self.base,
                         producer.state,
                         &self.inputs,
@@ -791,7 +933,8 @@ impl Live {
                         header.player,
                         found.country,
                     )
-                    .unwrap_or_else(|_| {
+                    .unwrap_or_else(|reason| {
+                        UNRESOLVED_REASONS.note(reason);
                         UNRESOLVED_FIELDS.fetch_add(1, Ordering::Relaxed);
                         native::Resolution::Unknown
                     });
@@ -802,12 +945,12 @@ impl Live {
                     };
                     let origin = match resolution {
                         native::Resolution::Country(country) => {
-                            match native::autonomous(&memory, self.base, producer.state, country) {
+                            match native::autonomous(memory, self.base, producer.state, country) {
                                 Ok(true) => Origin::AutonomousCountry,
                                 Ok(false)
                                     if found.actor != 0
                                         && native::manual_country(
-                                            &memory,
+                                            memory,
                                             self.base,
                                             producer.state,
                                             country,
@@ -883,7 +1026,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        live.fail();
+        live.fail("command observer busy");
         return;
     }
     struct Writer<'a>(&'a Live);
@@ -895,8 +1038,8 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     }
     live.version.fetch_add(1, Ordering::AcqRel);
     let _writer = Writer(live);
-    if live.observe(registers, site).is_err() {
-        live.fail();
+    if let Err(reason) = live.observe(registers, site) {
+        live.fail(reason);
         let producer = unsafe { &mut *live.producer.get() };
         live.closed_qpc
             .store(qpc().max(0) as u64, Ordering::Relaxed);
@@ -927,7 +1070,7 @@ pub(crate) fn status() -> impl serde::Serialize {
     use crate::status::status;
     let pointer = LIVE.load(Ordering::Acquire);
     let live = (!pointer.is_null()).then(|| unsafe { &*pointer });
-    status!({ "enabled": ENABLED.load(Ordering::Acquire), "unhooked": UNHOOKED.get().map(|reason| reason.as_ref()), "commands": CAPTURED.load(Ordering::Relaxed), "autonomous_excluded": AUTOMATIC.load(Ordering::Relaxed), "unresolved_fields": UNRESOLVED_FIELDS.load(Ordering::Relaxed), "refusals": live.map_or(0, |live| live.failed.load(Ordering::Relaxed)), "buffer_bytes": live.map_or(0, |live| live.buffer_bytes.load(Ordering::Relaxed)), "scope": "player-issued synchronized orders; individual session keys; automatic execution excluded; ambiguous provenance retained" })
+    status!({ "enabled": ENABLED.load(Ordering::Acquire), "unhooked": UNHOOKED.get().map(|reason| reason.as_ref()), "commands": CAPTURED.load(Ordering::Relaxed), "autonomous_excluded": AUTOMATIC.load(Ordering::Relaxed), "unresolved_fields": UNRESOLVED_FIELDS.load(Ordering::Relaxed), "unresolved_field_reasons": UNRESOLVED_REASONS.status(), "refusals": live.map_or(0, |live| live.failed.load(Ordering::Relaxed)), "refusal_reasons": live.map(|live| live.refusal_reasons.status()), "buffer_bytes": live.map_or(0, |live| live.buffer_bytes.load(Ordering::Relaxed)), "scope": "player-issued synchronized orders; individual session keys; automatic execution excluded; ambiguous provenance retained" })
 }
 
 pub(crate) struct Drained {
@@ -950,6 +1093,7 @@ pub(crate) struct Drain {
     event_refused: u64,
     actor_refused: u64,
     last_qpc: u64,
+    last_world: u64,
     known_actors: BTreeMap<(u64, u64), Actor>,
     retired: BTreeSet<(u64, u64)>,
     contexts: BTreeMap<u64, WorldContext>,
@@ -1024,7 +1168,7 @@ impl Drain {
                         let (entry, _) = live.events().record(index);
                         entry.order == order && entry.world == world && entry.code == 1
                     }) {
-                        self.contexts.insert(world, context);
+                        self.contexts.entry(world).or_insert(context);
                     }
                     live.metadata().release(index);
                     continue;
@@ -1147,6 +1291,11 @@ impl Drain {
         let event_refused = live.events().rejected();
         let actor_refused = live.metadata().rejected();
         let lost = failed.saturating_sub(self.failure);
+        let world = if world == 0 && groups.is_empty() && lost != 0 {
+            self.last_world
+        } else {
+            world
+        };
         if world != 0 {
             groups.entry(world).or_insert_with(|| Drained {
                 capture: live.capture,
@@ -1158,9 +1307,9 @@ impl Drain {
                 batch: Batch::default(),
             });
         }
+        // Without an emitted world no packet claims coverage; status still names the refusal.
         for group in groups.values_mut() {
             group.context = self.contexts.get(&group.world).copied();
-            group.lost = lost;
             if let Some(Some(window)) = self.windows.get_mut(&group.world) {
                 group.batch.spans.push(Span {
                     from_qpc: window.from_qpc.max(group.from),
@@ -1176,10 +1325,11 @@ impl Drain {
                 }
             }
         }
-        if !groups.is_empty() {
+        // Charge refusals once to the latest world while invalidating every possibly affected span.
+        if let Some(mut latest) = groups.last_entry() {
+            latest.get_mut().lost = lost;
+            self.last_world = *latest.key();
             self.last_qpc = time;
-        }
-        if !groups.is_empty() {
             self.failure = failed;
         }
         self.event_refused = event_refused;
@@ -1310,7 +1460,7 @@ impl Drop for Hooks {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn live() -> Live {
         Live {
@@ -1341,12 +1491,863 @@ mod tests {
             closed_order: AtomicU64::new(1),
             closed_world: AtomicU64::new(1),
             failed: AtomicU64::new(0),
+            refusal_reasons: Reasons::new(),
             failed_qpc: AtomicU64::new(0),
             capacity_demand: AtomicUsize::new(2),
             name_demand: AtomicUsize::new(0),
             player_capacity: AtomicUsize::new(2),
             buffer_bytes: AtomicUsize::new(0),
         }
+    }
+
+    struct Fixture(BTreeMap<usize, Vec<u8>>);
+    impl Memory for Fixture {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let Some((&start, bytes)) = self.0.range(..=address).next_back() else {
+                return false;
+            };
+            let offset = address - start;
+            let Some(source) = bytes.get(offset..offset + output.len()) else {
+                return false;
+            };
+            output.copy_from_slice(source);
+            true
+        }
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let mut state = vec![0; 0x800];
+            let campaign = *b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
+            state[cgame_state::CAMPAIGN_ID..cgame_state::CAMPAIGN_ID + 8]
+                .copy_from_slice(&0x4000_u64.to_le_bytes());
+            state[cgame_state::CAMPAIGN_ID + 16..cgame_state::CAMPAIGN_ID + 24]
+                .copy_from_slice(&36_u64.to_le_bytes());
+            state[cgame_state::CAMPAIGN_ID + 24..cgame_state::CAMPAIGN_ID + 32]
+                .copy_from_slice(&47_u64.to_le_bytes());
+            state[cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
+                .copy_from_slice(&10_i32.to_le_bytes());
+            let mut text = campaign.to_vec();
+            text.push(0);
+            Self(BTreeMap::from([
+                (native::IDLER_RVA, 0x5000_u64.to_le_bytes().to_vec()),
+                (
+                    0x5000,
+                    (native::IN_GAME_IDLER_VTABLE_RVA as u64)
+                        .to_le_bytes()
+                        .to_vec(),
+                ),
+                (0x5000 + native::IDLER_PAUSED, vec![1]),
+                (0x1000 + native::SESSION_STATE, 2_i32.to_le_bytes().to_vec()),
+                (0x2000, state),
+                (0x4000, text),
+                (
+                    cgame_state::SINGLETON_RVA,
+                    0x2000_u64.to_le_bytes().to_vec(),
+                ),
+                (
+                    cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+                    5_i64.to_le_bytes().to_vec(),
+                ),
+            ]))
+        }
+    }
+
+    fn attempt_mode(
+        live: &Live,
+        memory: &Fixture,
+        world: u64,
+        time: u64,
+        order: u64,
+    ) -> Result<(), &'static str> {
+        let producer = unsafe { &mut *live.producer.get() };
+        let result = live.mode(memory, producer, world, 0x1000, time, order);
+        if let Err(reason) = result {
+            live.fail(reason);
+        }
+        live.closed_qpc.store(time, Ordering::Relaxed);
+        live.closed_order.store(order, Ordering::Relaxed);
+        live.closed_world.store(
+            if producer.active { producer.world } else { 0 },
+            Ordering::Relaxed,
+        );
+        result
+    }
+
+    fn accepted_fixture(category: Option<Category>) -> (Live, Fixture) {
+        let mut live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        if let Some(category) = category {
+            live.kinds.push(Descriptor {
+                vtable: 0x8000,
+                id: 1,
+                category,
+                target: Target::Unknown,
+                roster: false,
+                remove_player: false,
+            });
+        }
+        let mut memory = Fixture::new();
+        memory.0.insert(0x6000, 0x7000_u64.to_le_bytes().to_vec());
+        memory.0.insert(0x7000, 0x8000_u64.to_le_bytes().to_vec());
+        (live, memory)
+    }
+
+    struct LoadingMemory<'a> {
+        fixture: &'a Fixture,
+        headers: std::cell::Cell<usize>,
+    }
+
+    impl Memory for LoadingMemory<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            assert!(matches!(
+                address,
+                native::IDLER_RVA | 0x5000 | 0x6000 | 0x7000
+            ));
+            assert_eq!(output.len(), 8);
+            if address == 0x7000 {
+                self.headers.set(self.headers.get() + 1);
+            }
+            self.fixture.copy(address, output)
+        }
+    }
+
+    fn attempt_observe(
+        live: &Live,
+        memory: &impl Memory,
+        site: usize,
+        world: u64,
+        time: u64,
+    ) -> Result<(), &'static str> {
+        let mut registers: Registers = unsafe { std::mem::zeroed() };
+        registers.rcx = 0x1000;
+        registers.r14 = 0x1000;
+        registers.rsi = if site == 1 { 0x6000 } else { 0x1000 };
+        registers.rdi = 0x7000;
+        let result = live.observe_at(memory, &registers, site, world, time);
+        if let Err(reason) = result {
+            live.fail(reason);
+            live.failed_qpc.store(time, Ordering::Relaxed);
+            let producer = unsafe { &*live.producer.get() };
+            live.closed_qpc.store(time, Ordering::Relaxed);
+            live.closed_order
+                .store(producer.next_order - 1, Ordering::Relaxed);
+            live.closed_world.store(
+                if producer.active { producer.world } else { 0 },
+                Ordering::Relaxed,
+            );
+        }
+        result
+    }
+
+    #[test]
+    fn accepted_captured_or_unknown_commands_before_play_report_one_named_loss() {
+        for site in [1, 2] {
+            for category in [Some(Category::Army), None] {
+                for world in [0, 1] {
+                    let (live, mut memory) = accepted_fixture(category);
+                    memory.0.remove(&native::IDLER_RVA);
+                    let loading = LoadingMemory {
+                        fixture: &memory,
+                        headers: std::cell::Cell::new(0),
+                    };
+                    let reason = "command accepted before the game is in play";
+                    assert_eq!(
+                        attempt_observe(&live, &loading, site, world, 90),
+                        Err(reason)
+                    );
+                    assert_eq!(loading.headers.get(), 1);
+                    assert_eq!(live.failed.load(Ordering::Acquire), 1);
+                    assert_eq!(live.refusal_reasons.counts(), BTreeMap::from([(reason, 1)]));
+                    assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
+                    let mut drain = Drain::default();
+                    assert!(drain.take_live(&live, false).unwrap().is_empty());
+                    attempt_mode(&live, &Fixture::new(), 1, 100, 3).unwrap();
+                    live.closed_qpc.store(110, Ordering::Relaxed);
+                    let groups = drain.take_live(&live, false).unwrap();
+                    assert_eq!(groups.len(), 1);
+                    assert_eq!(groups[0].lost, 1);
+                    assert!(groups[0].batch.spans.iter().all(|span| !span.complete));
+                    live.closed_qpc.store(120, Ordering::Relaxed);
+                    let groups = drain.take_live(&live, true).unwrap();
+                    assert_eq!(groups[0].lost, 0);
+                    assert!(groups[0].batch.spans.iter().all(|span| span.complete));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loading_nonaccepted_sites_and_excluded_categories_remain_quiet() {
+        for category in [Category::System, Category::Session, Category::Automatic] {
+            for absent in [false, true] {
+                let (live, mut memory) = accepted_fixture(Some(category));
+                if absent {
+                    memory.0.remove(&native::IDLER_RVA);
+                } else {
+                    memory.0.insert(0x5000, 1_u64.to_le_bytes().to_vec());
+                }
+                let loading = LoadingMemory {
+                    fixture: &memory,
+                    headers: std::cell::Cell::new(0),
+                };
+                for site in 0..native::SITES.len() {
+                    attempt_observe(&live, &loading, site, 1, 90 + site as u64).unwrap();
+                }
+                assert_eq!(loading.headers.get(), 2);
+                assert_eq!(live.failed.load(Ordering::Acquire), 0);
+                assert!(live.refusal_reasons.counts().is_empty());
+                assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_command_after_idler_disappears_invalidates_coverage_across_reactivation() {
+        for drain_between in [false, true] {
+            let (live, mut memory) = accepted_fixture(Some(Category::Army));
+            attempt_mode(&live, &memory, 1, 100, 1).unwrap();
+            memory.0.remove(&native::IDLER_RVA);
+            assert_eq!(
+                attempt_observe(&live, &memory, 2, 1, 105),
+                Err("command accepted before the game is in play")
+            );
+            assert!(!unsafe { (*live.producer.get()).active });
+            let mut drain = Drain::default();
+            let mut groups = if drain_between {
+                drain.take_live(&live, false).unwrap()
+            } else {
+                Vec::new()
+            };
+            attempt_mode(&live, &Fixture::new(), 1, 110, 3).unwrap();
+            live.closed_qpc.store(115, Ordering::Relaxed);
+            groups.extend(drain.take_live(&live, false).unwrap());
+            assert_eq!(groups.iter().map(|group| group.lost).sum::<u64>(), 1);
+            let spans: Vec<_> = groups.iter().flat_map(|group| &group.batch.spans).collect();
+            assert_eq!(spans.len(), 2);
+            assert_eq!((spans[0].from_qpc, spans[0].to_qpc), (100, 105));
+            assert_eq!((spans[1].from_qpc, spans[1].to_qpc), (110, 115));
+            assert!(spans.iter().all(|span| !span.complete));
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let groups = drain.take_live(&live, true).unwrap();
+            assert_eq!(groups[0].lost, 0);
+            assert!(groups[0].batch.spans.iter().all(|span| span.complete));
+        }
+    }
+
+    fn command_session() -> replay_data::identity::SessionStart {
+        use replay_data::identity::*;
+        SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 1,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: Vec::new(),
+                mods: Vec::new(),
+                coverage_policy: 1,
+                language: "synthetic".into(),
+                recorder_version: "synthetic".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Verified {
+                    launcher: Default::default(),
+                    memory: Default::default(),
+                },
+            },
+        }
+    }
+
+    fn command_control(mut group: Drained, ordinal: u64) -> replay::spool::ControlRecord {
+        use replay::commands::{Packet, Phase};
+        use replay::spool::{ControlRecord, Record, decode_record, encode_record};
+        use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+        if ordinal == 0 {
+            group.batch.kinds = vec![Kind {
+                id: 1,
+                token: 1,
+                name: "synthetic command".into(),
+                category: Category::Army,
+            }];
+        }
+        let mut packet = Packet::pack(
+            1,
+            group.capture,
+            group.world,
+            ordinal,
+            group.from,
+            group.to,
+            group.lost,
+            &group.batch,
+        )
+        .unwrap();
+        if ordinal == 0 {
+            let context = group.context.unwrap();
+            packet.phase = Some(Phase {
+                start: BranchStart {
+                    id: 1,
+                    session: 1,
+                    loaded_hour: None,
+                    first_hour: context.hour,
+                    parent: Parentage::Unknown,
+                    reason: BranchReason::SessionStart,
+                },
+                campaign: context.campaign,
+                qpc: context.qpc,
+                hour: context.hour,
+                load_signal: context.load_signal,
+            });
+            packet.phase.as_ref().unwrap().validate().unwrap();
+        }
+        let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
+        let Record::Control(control) = decode_record(&encode_record(&record).unwrap()).unwrap()
+        else {
+            panic!("command control changed record kind");
+        };
+        control
+    }
+
+    #[test]
+    fn refusal_after_draining_phase_closure_reaches_a_loss_only_packet() {
+        for site in [1, 2] {
+            let (live, mut memory) = accepted_fixture(Some(Category::Army));
+            memory.0.insert(0x5000 + native::IDLER_PAUSED, vec![0]);
+            attempt_mode(&live, &memory, 7, 100, 1).unwrap();
+            live.metadata()
+                .reserve()
+                .unwrap()
+                .publish(Metadata::Actor(ActorEntry {
+                    order: 1,
+                    world: 7,
+                    actor: 1,
+                    player: 4,
+                    country: 3,
+                    since_qpc: 100,
+                    at_qpc: 100,
+                    ..Default::default()
+                }));
+            for entry in [
+                Entry {
+                    order: 1,
+                    world: 7,
+                    qpc: 100,
+                    code: 4,
+                    ..Default::default()
+                },
+                Entry {
+                    order: 1,
+                    world: 7,
+                    qpc: 102,
+                    hour: 10,
+                    actor: 1,
+                    player: 4,
+                    country: 3,
+                    target_present: true,
+                    kind: 1,
+                    origin: 1,
+                    ..Default::default()
+                },
+            ] {
+                live.publish(entry).unwrap();
+            }
+            let producer = unsafe { &mut *live.producer.get() };
+            producer.players[0] = CachedPlayer {
+                actor: 1,
+                seen: true,
+                ..Default::default()
+            };
+            memory.0.remove(&native::IDLER_RVA);
+            attempt_mode(&live, &memory, 7, 105, 2).unwrap();
+            let mut drain = Drain::default();
+            let mut groups = drain.take_live(&live, false).unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].batch.departures, vec![(1, 105)]);
+            assert!(drain.windows[&7].is_none());
+            let mut controls = vec![command_control(groups.remove(0), 0)];
+            let session = command_session();
+            let before =
+                replay::commands::analyze(std::slice::from_ref(&session), &controls, 1).unwrap();
+            assert_eq!(before.lost_observations, 0);
+            assert_eq!(before.players.len(), 1);
+            assert!(before.players[0].coverage_complete);
+            assert!(before.players[0].apm.is_some());
+            live.closed_qpc.store(108, Ordering::Relaxed);
+            assert!(drain.take_live(&live, false).unwrap().is_empty());
+            assert_eq!(
+                attempt_observe(&live, &memory, site, 0, 110),
+                Err("command accepted before the game is in play")
+            );
+            assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
+            assert_eq!(live.closed_world.load(Ordering::Relaxed), 0);
+            let mut groups = drain.take_live(&live, true).unwrap();
+            assert_eq!(groups.len(), 1);
+            let group = groups.remove(0);
+            assert_eq!(
+                (group.world, group.from, group.to, group.lost),
+                (7, 105, 110, 1)
+            );
+            let context = group.context.unwrap();
+            assert_eq!(
+                (context.qpc, context.hour, context.load_signal),
+                (100, 10, 5)
+            );
+            assert_eq!(group.batch, Batch::default());
+            let control = command_control(group, 1);
+            let replay::spool::ControlRecord::PlayerCommands { packet, .. } = &control else {
+                unreachable!();
+            };
+            assert!(packet.phase.is_none());
+            assert_eq!(packet.unpack().unwrap(), Batch::default());
+            controls.push(control);
+            let after =
+                replay::commands::index(std::slice::from_ref(&session), &controls, 1).unwrap();
+            assert_eq!(after.analysis.lost_observations, 1);
+            assert_eq!(after.analysis.players[0].confirmed_orders, 1);
+            assert!(!after.analysis.players[0].coverage_complete);
+            assert!(after.analysis.players[0].observed_minutes.is_none());
+            assert!(after.analysis.players[0].apm.is_none());
+            assert_eq!(after.timelines.len(), 1);
+            assert!(!after.timelines[0].complete);
+            assert_eq!(after.timelines[0].spans.len(), 1);
+            assert!(drain.take_live(&live, true).unwrap().is_empty());
+            assert_eq!(drain.failure, 1);
+        }
+    }
+
+    #[test]
+    fn refusals_without_an_emitted_world_stay_pending_until_activation() {
+        for watermark in [false, true] {
+            let (live, mut memory) = accepted_fixture(Some(Category::Army));
+            live.closed_qpc.store(0, Ordering::Relaxed);
+            live.closed_world.store(0, Ordering::Relaxed);
+            let mut drain = Drain::default();
+            assert!(drain.take_live(&live, true).unwrap().is_empty());
+            memory.0.remove(&native::IDLER_RVA);
+            assert_eq!(
+                attempt_observe(&live, &memory, 2, 0, 90),
+                Err("command accepted before the game is in play")
+            );
+            if !watermark {
+                live.closed_qpc.store(0, Ordering::Relaxed);
+            }
+            assert!(drain.take_live(&live, false).unwrap().is_empty());
+            assert!(drain.take_live(&live, true).unwrap().is_empty());
+            assert_eq!(drain.failure, 0);
+            assert_eq!(drain.last_world, 0);
+            attempt_mode(&live, &Fixture::new(), 1, 100, 3).unwrap();
+            live.closed_qpc.store(110, Ordering::Relaxed);
+            let mut groups = drain.take_live(&live, false).unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].lost, 1);
+            assert!(groups[0].batch.spans.iter().all(|span| !span.complete));
+            let mut controls = vec![command_control(groups.remove(0), 0)];
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let mut groups = drain.take_live(&live, true).unwrap();
+            assert_eq!(groups[0].lost, 0);
+            controls.push(command_control(groups.remove(0), 1));
+            let index = replay::commands::index(&[command_session()], &controls, 1).unwrap();
+            assert_eq!(index.analysis.lost_observations, 1);
+            assert!(!index.timelines[0].complete);
+            assert_eq!(drain.failure, 1);
+        }
+    }
+
+    pub(crate) fn reactivated_world() -> Vec<Drained> {
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        let mut memory = Fixture::new();
+        attempt_mode(&live, &memory, 1, 100, 1).unwrap();
+        live.publish(Entry {
+            order: 1,
+            world: 1,
+            qpc: 102,
+            hour: 10,
+            paused: true,
+            ..Default::default()
+        })
+        .unwrap();
+        memory.0.remove(&native::IDLER_RVA);
+        attempt_mode(&live, &memory, 1, 105, 2).unwrap();
+        memory
+            .0
+            .insert(native::IDLER_RVA, 0x5000_u64.to_le_bytes().to_vec());
+        memory.0.get_mut(&0x2000).unwrap()
+            [cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
+            .copy_from_slice(&12_i32.to_le_bytes());
+        memory.0.insert(
+            cgame_state::PLAY_SESSION_STARTED_AT_RVA,
+            6_i64.to_le_bytes().to_vec(),
+        );
+        attempt_mode(&live, &memory, 1, 110, 3).unwrap();
+        live.publish(Entry {
+            order: 3,
+            world: 1,
+            qpc: 112,
+            hour: 12,
+            paused: true,
+            ..Default::default()
+        })
+        .unwrap();
+        live.closed_qpc.store(115, Ordering::Relaxed);
+        let mut drain = Drain::default();
+        let groups = drain.take_live(&live, false).unwrap();
+        live.closed_qpc.store(120, Ordering::Relaxed);
+        let continued = drain.take_live(&live, false).unwrap();
+        let context = continued[0].context.unwrap();
+        assert_eq!(
+            (context.qpc, context.hour, context.load_signal),
+            (100, 10, 5)
+        );
+        attempt_mode(&live, &memory, 2, 125, 4).unwrap();
+        let next = drain.take_live(&live, true).unwrap();
+        let context = next
+            .iter()
+            .find(|group| group.world == 2)
+            .unwrap()
+            .context
+            .unwrap();
+        assert_eq!(
+            (context.qpc, context.hour, context.load_signal),
+            (125, 12, 6)
+        );
+        groups
+    }
+
+    #[test]
+    fn same_world_reactivation_preserves_the_first_context() {
+        let groups = reactivated_world();
+        assert_eq!(groups.len(), 1);
+        let context = groups[0].context.unwrap();
+        assert_eq!(
+            (context.qpc, context.hour, context.load_signal),
+            (100, 10, 5)
+        );
+        assert_eq!(groups[0].lost, 0);
+        assert_eq!(
+            groups[0]
+                .batch
+                .events
+                .iter()
+                .map(|event| event.hour)
+                .collect::<Vec<_>>(),
+            vec![10, 12]
+        );
+        assert_eq!(
+            groups[0]
+                .batch
+                .spans
+                .iter()
+                .map(|span| span.hour)
+                .collect::<Vec<_>>(),
+            vec![10, 12]
+        );
+        assert!(groups[0].batch.spans.iter().all(|span| span.complete));
+    }
+
+    #[test]
+    fn loading_idlers_leave_activation_lanes_and_coverage_untouched() {
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        for variant in 0..4 {
+            let mut memory = Fixture::new();
+            if variant == 0 {
+                memory.0.remove(&(0x1000 + native::SESSION_STATE));
+            }
+            match variant {
+                0 => {
+                    memory.0.remove(&native::IDLER_RVA);
+                }
+                1 => {
+                    memory
+                        .0
+                        .insert(native::IDLER_RVA, 0_u64.to_le_bytes().to_vec());
+                }
+                2 => {
+                    memory.0.insert(0x5000, 1_u64.to_le_bytes().to_vec());
+                }
+                _ => {
+                    memory.0.remove(&0x5000);
+                }
+            }
+            for order in 1..=8 {
+                attempt_mode(&live, &memory, 1, 90, order).unwrap();
+                assert!(!unsafe { (*live.producer.get()).active });
+                assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
+                assert_eq!(
+                    (live.metadata().rejected(), live.events().rejected()),
+                    (0, 0)
+                );
+                assert_eq!(
+                    (
+                        live.metadata().required_entries(),
+                        live.events().required_entries()
+                    ),
+                    (0, 0)
+                );
+                assert_eq!(live.failed.load(Ordering::Acquire), 0);
+                assert!(live.refusal_reasons.counts().is_empty());
+            }
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 9).unwrap();
+        assert!(unsafe { (*live.producer.get()).active });
+        assert_eq!((live.metadata().pending(), live.events().pending()), (1, 1));
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let groups = Drain::default().take_live(&live, true).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lost, 0);
+        assert!(groups[0].context.is_some());
+        assert_eq!(groups[0].batch.spans.len(), 1);
+        assert_eq!(
+            (
+                groups[0].batch.spans[0].from_qpc,
+                groups[0].batch.spans[0].to_qpc
+            ),
+            (100, 110)
+        );
+        assert!(groups[0].batch.spans[0].complete);
+    }
+
+    #[test]
+    fn invalid_in_game_pause_state_refuses_once_without_publishing_activation() {
+        for pause in [Some(2), None] {
+            let live = live();
+            unsafe {
+                (*live.producer.get()).active = false;
+            }
+            let mut memory = Fixture::new();
+            if let Some(pause) = pause {
+                memory.0.insert(0x5000 + native::IDLER_PAUSED, vec![pause]);
+            } else {
+                memory.0.remove(&(0x5000 + native::IDLER_PAUSED));
+            }
+            assert_eq!(
+                attempt_mode(&live, &memory, 1, 100, 1),
+                Err("command pause state unreadable")
+            );
+            assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
+            assert!(
+                live.metadata()
+                    .published(Metadata::order)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                live.events()
+                    .published(|entry| entry.order)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(!unsafe { (*live.producer.get()).active });
+            assert_eq!(live.failed.load(Ordering::Acquire), 1);
+            assert_eq!(
+                live.refusal_reasons.counts(),
+                BTreeMap::from([("command pause state unreadable", 1)])
+            );
+        }
+    }
+
+    #[test]
+    fn activation_preflights_both_lanes_before_reserving_either() {
+        for metadata_full in [false, true] {
+            let live = live();
+            unsafe {
+                (*live.producer.get()).active = false;
+            }
+            if metadata_full {
+                for _ in 0..live.metadata().len() {
+                    live.metadata()
+                        .reserve()
+                        .unwrap()
+                        .publish(Metadata::default());
+                }
+            } else {
+                for _ in 0..live.events().len() {
+                    live.publish(Entry::default()).unwrap();
+                }
+            }
+            let pending = (live.metadata().pending(), live.events().pending());
+            let metadata = live.metadata().published(Metadata::order).unwrap();
+            let events = live.events().published(|entry| entry.order).unwrap();
+            let reason = if metadata_full {
+                "command world context buffer full"
+            } else {
+                "command event buffer full"
+            };
+            assert_eq!(attempt_mode(&live, &Fixture::new(), 1, 100, 1), Err(reason));
+            assert_eq!(
+                (live.metadata().pending(), live.events().pending()),
+                pending
+            );
+            assert_eq!(
+                live.metadata().published(Metadata::order).unwrap(),
+                metadata
+            );
+            assert_eq!(
+                live.events().published(|entry| entry.order).unwrap(),
+                events
+            );
+            assert_eq!(
+                (live.metadata().rejected(), live.events().rejected()),
+                (0, 0)
+            );
+            assert!(!unsafe { (*live.producer.get()).active });
+            assert_eq!(live.failed.load(Ordering::Acquire), 1);
+            assert_eq!(live.refusal_reasons.counts(), BTreeMap::from([(reason, 1)]));
+            if metadata_full {
+                assert!(live.metadata().required_entries() > live.metadata().len());
+            } else {
+                assert!(live.events().required_entries() > live.events().len());
+            }
+        }
+    }
+
+    #[test]
+    fn losing_the_in_game_idler_closes_the_phase_and_retires_players() {
+        for absent in [false, true] {
+            let live = live();
+            unsafe {
+                (*live.producer.get()).active = false;
+            }
+            let mut memory = Fixture::new();
+            attempt_mode(&live, &memory, 1, 100, 1).unwrap();
+            {
+                let producer = unsafe { &mut *live.producer.get() };
+                producer.players[0] = CachedPlayer {
+                    actor: 7,
+                    seen: true,
+                    ..Default::default()
+                };
+            }
+            if absent {
+                memory.0.remove(&native::IDLER_RVA);
+            } else {
+                memory.0.insert(0x5000, 1_u64.to_le_bytes().to_vec());
+            }
+            memory.0.remove(&(0x1000 + native::SESSION_STATE));
+            attempt_mode(&live, &memory, 1, 105, 2).unwrap();
+            attempt_mode(&live, &memory, 1, 110, 3).unwrap();
+            assert!(!unsafe { (*live.producer.get()).active });
+            let groups = Drain::default().take_live(&live, true).unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].lost, 0);
+            assert_eq!(groups[0].batch.departures, vec![(7, 105)]);
+            assert_eq!(groups[0].batch.spans.len(), 1);
+            assert_eq!(groups[0].batch.spans[0].to_qpc, 105);
+            assert!(groups[0].batch.spans[0].complete);
+            assert!(groups[0].batch.events.is_empty());
+            assert_eq!(live.failed.load(Ordering::Acquire), 0);
+        }
+    }
+
+    #[test]
+    fn two_worlds_charge_refusals_once_and_both_lose_complete_coverage() {
+        for leave in [false, true] {
+            let live = live();
+            unsafe {
+                (*live.producer.get()).active = false;
+            }
+            let memory = Fixture::new();
+            attempt_mode(&live, &memory, 1, 100, 1).unwrap();
+            attempt_mode(&live, &memory, 2, 105, 2).unwrap();
+            for _ in 0..3 {
+                live.fail("synthetic command refusal");
+            }
+            live.failed_qpc.store(107, Ordering::Relaxed);
+            if leave {
+                attempt_mode(&live, &memory, 0, 108, 3).unwrap();
+            }
+            live.closed_qpc.store(110, Ordering::Relaxed);
+            let mut drain = Drain::default();
+            let groups = drain.take_live(&live, false).unwrap();
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups.iter().map(|group| group.lost).sum::<u64>(), 3);
+            assert_eq!(
+                (
+                    groups[0].world,
+                    groups[0].lost,
+                    groups[1].world,
+                    groups[1].lost
+                ),
+                (1, 0, 2, 3)
+            );
+            for group in &groups {
+                assert!(group.context.is_some());
+                assert!(!group.batch.spans.is_empty());
+                assert!(group.batch.spans.iter().all(|span| !span.complete));
+            }
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let groups = drain.take_live(&live, true).unwrap();
+            assert_eq!(groups.iter().map(|group| group.lost).sum::<u64>(), 0);
+            assert!(
+                groups
+                    .iter()
+                    .flat_map(|group| &group.batch.spans)
+                    .all(|span| span.complete)
+            );
+        }
+    }
+
+    #[test]
+    fn named_reasons_distinguish_lengths_and_count_overflow() {
+        let reasons = Reasons::<2>::new();
+        let reason = "synthetic reason";
+        let prefix = &reason[..9];
+        assert_eq!(reason.as_ptr(), prefix.as_ptr());
+        reasons.note(reason);
+        reasons.note(prefix);
+        reasons.note(reason);
+        reasons.note("another reason");
+        reasons.note("another reason");
+        assert_eq!(
+            reasons.counts(),
+            BTreeMap::from([
+                (reason, 2),
+                (prefix, 1),
+                ("command reason table overflow", 2)
+            ])
+        );
+        let status = serde_json::to_value(reasons.status()).unwrap();
+        assert_eq!(status.as_array().unwrap().len(), 3);
+        assert_eq!(
+            status
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["count"].as_u64().unwrap())
+                .sum::<u64>(),
+            5
+        );
+        let empty = Reasons::<1>::new();
+        empty.note("");
+        empty.note("");
+        assert_eq!(empty.counts(), BTreeMap::from([("", 2)]));
+    }
+
+    #[test]
+    fn unfinished_reason_claim_never_blocks_and_duplicate_names_are_combined() {
+        let reasons = Reasons::<2>::new();
+        let reason = "synthetic reason";
+        reasons.slots[0]
+            .0
+            .store(reason.as_ptr().cast_mut(), Ordering::Relaxed);
+        reasons.note(reason);
+        assert_eq!(reasons.counts(), BTreeMap::from([(reason, 1)]));
+        reasons.slots[0]
+            .1
+            .store(reason.len() + 1, Ordering::Release);
+        reasons.slots[0].2.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(reasons.counts(), BTreeMap::from([(reason, 2)]));
+        assert_eq!(reasons.overflow.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1379,56 +2380,10 @@ mod tests {
 
     #[test]
     fn paused_phase_context_and_commands_drain_before_any_hourly_snapshot() {
-        struct Fixture(BTreeMap<usize, Vec<u8>>);
-        impl Memory for Fixture {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                let Some((&start, bytes)) = self.0.range(..=address).next_back() else {
-                    return false;
-                };
-                let offset = address - start;
-                let Some(source) = bytes.get(offset..offset + output.len()) else {
-                    return false;
-                };
-                output.copy_from_slice(source);
-                true
-            }
-        }
         let live = live();
         let producer = unsafe { &mut *live.producer.get() };
         producer.active = false;
-        let mut state = vec![0; 0x800];
-        let campaign = *b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
-        state[cgame_state::CAMPAIGN_ID..cgame_state::CAMPAIGN_ID + 8]
-            .copy_from_slice(&0x4000_u64.to_le_bytes());
-        state[cgame_state::CAMPAIGN_ID + 16..cgame_state::CAMPAIGN_ID + 24]
-            .copy_from_slice(&36_u64.to_le_bytes());
-        state[cgame_state::CAMPAIGN_ID + 24..cgame_state::CAMPAIGN_ID + 32]
-            .copy_from_slice(&47_u64.to_le_bytes());
-        state[cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
-            .copy_from_slice(&10_i32.to_le_bytes());
-        let mut text = campaign.to_vec();
-        text.push(0);
-        let memory = Fixture(BTreeMap::from([
-            (native::IDLER_RVA, 0x5000_u64.to_le_bytes().to_vec()),
-            (
-                0x5000,
-                (native::IN_GAME_IDLER_VTABLE_RVA as u64)
-                    .to_le_bytes()
-                    .to_vec(),
-            ),
-            (0x5000 + native::IDLER_PAUSED, vec![1]),
-            (0x1000 + native::SESSION_STATE, 2_i32.to_le_bytes().to_vec()),
-            (0x2000, state),
-            (0x4000, text),
-            (
-                cgame_state::SINGLETON_RVA,
-                0x2000_u64.to_le_bytes().to_vec(),
-            ),
-            (
-                cgame_state::PLAY_SESSION_STARTED_AT_RVA,
-                5_i64.to_le_bytes().to_vec(),
-            ),
-        ]));
+        let memory = Fixture::new();
         live.mode(&memory, producer, 1, 0x1000, 100, 1).unwrap();
         assert!(producer.active);
         live.publish(Entry {
@@ -1443,7 +2398,7 @@ mod tests {
         let mut drain = Drain::default();
         let groups = drain.take_live(&live, true).unwrap();
         let context = groups[0].context.unwrap();
-        assert_eq!(context.campaign, campaign);
+        assert_eq!(context.campaign, *b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6");
         assert_eq!((context.hour, context.load_signal), (10, 5));
         assert_eq!(groups[0].batch.events.len(), 1);
         assert_eq!(groups[0].batch.events[0].qpc, 105);

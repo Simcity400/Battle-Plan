@@ -6108,6 +6108,83 @@ mod tests {
     }
 
     #[test]
+    fn same_world_reactivation_keeps_the_earliest_phase_in_both_formats() {
+        use replay::commands::Recording;
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-command-reactivated-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut verified = session();
+        verified.identity.verification = replay_data::identity::Verification::Verified {
+            launcher: Default::default(),
+            memory: Default::default(),
+        };
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        processor.set_verified_session(verified).unwrap();
+        processor.command_pending = crate::player_commands::tests::reactivated_world();
+        processor.flush_commands(true).unwrap();
+        let branch = processor.command_contexts[&1].1;
+        assert_eq!(processor.command_anchors[&(1, branch)], (100, 10, 5));
+        processor.detach().unwrap();
+        drop(processor);
+        let campaign = directory.join(std::str::from_utf8(ID).unwrap());
+        let mut files: Vec<_> = fs::read_dir(&campaign)
+            .unwrap()
+            .flatten()
+            .filter(|file| file.file_name().to_string_lossy().starts_with("spool."))
+            .collect();
+        files.sort_by_key(|file| file.file_name());
+        let segments: Vec<_> = files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| {
+                (
+                    index as u32,
+                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                )
+            })
+            .collect();
+        let replay = replay::container::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+        let row_path = directory.join("reactivated.battleplan");
+        replay.write_atomic(&row_path).unwrap();
+        for path in [row_path, campaign.join("columnar.0.h4col")] {
+            let recording = Recording::open_path(&path).unwrap();
+            assert_eq!(recording.branches.len(), 1);
+            let packets: Vec<_> = recording
+                .controls
+                .iter()
+                .filter_map(|control| match control {
+                    ControlRecord::PlayerCommands { packet, .. } => Some(packet),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(packets.len(), 1);
+            let phase = packets[0].phase.as_ref().unwrap();
+            phase.validate().unwrap();
+            assert_eq!((phase.qpc, phase.hour, phase.load_signal), (100, 10, 5));
+            assert_eq!(phase.start.first_hour, 10);
+            let batch = packets[0].unpack().unwrap();
+            assert_eq!(
+                batch
+                    .events
+                    .iter()
+                    .map(|event| (event.qpc, event.hour))
+                    .collect::<Vec<_>>(),
+                vec![(102, 10), (112, 12)]
+            );
+            assert_eq!(
+                batch
+                    .spans
+                    .iter()
+                    .map(|span| (span.from_qpc, span.to_qpc, span.hour))
+                    .collect::<Vec<_>>(),
+                vec![(100, 105, 10), (110, 115, 12)]
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn delayed_command_world_declares_its_branch_without_interrupting_hourly_frames() {
         use replay::commands::{Batch, Span};
         for later in [false, true] {

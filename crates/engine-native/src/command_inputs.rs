@@ -70,16 +70,17 @@ pub const IDLER_RVA: usize = 0x033d_db08;
 pub const IN_GAME_IDLER_VTABLE_RVA: usize = 0x029e_5838;
 pub const IDLER_PAUSED: usize = 0x6c1;
 
-pub fn paused(memory: &impl Memory, base: usize) -> Result<bool, &'static str> {
-    let idler = read::<u64>(memory, base + IDLER_RVA)
-        .filter(|&pointer| pointer != 0)
-        .ok_or("command pause state absent")? as usize;
+pub fn paused(memory: &impl Memory, base: usize) -> Result<Option<bool>, &'static str> {
+    let Some(idler) = read::<u64>(memory, base + IDLER_RVA).filter(|&pointer| pointer != 0) else {
+        return Ok(None);
+    };
+    let idler = idler as usize;
     if read::<u64>(memory, idler) != Some((base + IN_GAME_IDLER_VTABLE_RVA) as u64) {
-        return Err("command pause state unsupported");
+        return Ok(None);
     }
     match read::<u8>(memory, idler + IDLER_PAUSED) {
-        Some(0) => Ok(false),
-        Some(1) => Ok(true),
+        Some(0) => Ok(Some(false)),
+        Some(1) => Ok(Some(true)),
         _ => Err("command pause state unreadable"),
     }
 }
