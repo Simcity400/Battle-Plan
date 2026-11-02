@@ -156,6 +156,9 @@ impl Operator<World> for Projector {
         hour: &segments::Hour<'_, World>,
         out: &mut dyn Sink<Hour>,
     ) -> io::Result<()> {
+        if hour.starts {
+            self.numbers.clear();
+        }
         let state = hour.state;
         let roster = hour.world.countries()?;
         let complete = roster.complete();

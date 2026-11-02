@@ -141,9 +141,9 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   }, [identity, playheadWindow, parity?.requested]);
   const warnings = useMemo(() => [...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS),
     ...[...history.data.values()].flatMap(reply => [...reply.contentWarnings, ...reply.warnings.filter(w => w.hour >= first && w.hour <= (hour ?? first)).map(w => `${w.reason} (${w.count})`)]),
-    ...[...history.errors].filter(([index]) => index <= playheadWindow).map(([, reason]) => `Division log window: ${reason}`),
+    ...[...history.errors].filter(([index]) => index <= playheadWindow).map(([, reason]) => `Division log window: ${reason.message}`),
     ...(options.totals === true ? totals.data?.warnings ?? NO_WARNINGS : NO_WARNINGS), ...(placeData.data?.warnings ?? NO_WARNINGS),
-    ...(placeData.error ? [`Place names: ${placeData.error}`] : [])])], [manifest.data, history.data, history.errors, playheadWindow, first, hour, options.totals, totals.data, placeData.data, placeData.error]);
+    ...(placeData.error ? [`Place names: ${placeData.error.message}`] : [])])], [manifest.data, history.data, history.errors, playheadWindow, first, hour, options.totals, totals.data, placeData.data, placeData.error]);
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its divisions." />;

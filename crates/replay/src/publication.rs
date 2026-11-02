@@ -5,7 +5,7 @@ use std::{
     fs::{File, OpenOptions},
     io,
     os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
-    path::Path,
+    path::{Component, Path, Prefix},
 };
 use windows_sys::Win32::{
     Foundation::GENERIC_WRITE,
@@ -51,7 +51,7 @@ pub fn unsaved_path(folder: &Path, campaign: &str) -> std::path::PathBuf {
 pub fn create_unsaved_folder(folder: &Path) -> io::Result<std::path::PathBuf> {
     let unsaved = unsaved_folder(folder);
     std::fs::create_dir_all(&unsaved)?;
-    let wide: Vec<u16> = unsaved.as_os_str().encode_wide().chain([0]).collect();
+    let wide = wide(&unsaved)?;
     // SAFETY: `wide` is a NUL-terminated path that outlives the call.
     if unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) } == 0 {
         return Err(io::Error::last_os_error());
@@ -185,7 +185,7 @@ pub(crate) fn replace_file_with(
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(source)
         .map_err(unrenamed)?;
-    if !rename(&file, &wide(&destination)).map_err(unrenamed)? {
+    if !rename(&file, &wide(&destination).map_err(unrenamed)?).map_err(unrenamed)? {
         drop(file);
         drop(directory);
         return classic_replace(source, &destination).map_err(unrenamed);
@@ -213,7 +213,7 @@ pub fn sync_file(destination: &Path) -> io::Result<()> {
 
 /// Durably rename within a volume, never replacing `target`; refused while `source` is held unshared.
 pub fn rename_new(source: &Path, target: &Path) -> io::Result<()> {
-    let (from, to) = (wide(source), wide(target));
+    let (from, to) = (wide(source)?, wide(target)?);
     // Both paths stay alive and NUL-terminated for the call.
     if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
         Err(io::Error::last_os_error())
@@ -233,13 +233,38 @@ fn publication_directory(destination: &Path) -> io::Result<File> {
         .open(parent)
 }
 
-fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
+fn wide(path: &Path) -> io::Result<Vec<u16>> {
+    let path = std::path::absolute(path)?;
+    let (prefix, skip) = match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => (r"\\?\", 0),
+            Prefix::UNC(..) => (r"\\?\UNC\", 2),
+            _ => ("", 0),
+        },
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing path prefix",
+            ));
+        }
+    };
+    let mut wide: Vec<u16> = prefix
+        .encode_utf16()
+        .chain(path.as_os_str().encode_wide().skip(skip))
+        .collect();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains NUL",
+        ));
+    }
+    wide.push(0);
+    Ok(wide)
 }
 
 fn classic_replace(source: &Path, destination: &Path) -> io::Result<()> {
-    let source = wide(source);
-    let destination = wide(destination);
+    let source = wide(source)?;
+    let destination = wide(destination)?;
     // The source is a closed, fully synced sibling file on the same volume.
     if unsafe {
         MoveFileExW(
@@ -252,5 +277,48 @@ fn classic_replace(source: &Path, destination: &Path) -> io::Result<()> {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+    #[test]
+    fn win32_paths_are_absolute_and_verbatim_without_resolving_the_file() {
+        for (input, expected) in [
+            (
+                r"C:\recordings\old\..\new.battleplan",
+                r"\\?\C:\recordings\new.battleplan",
+            ),
+            (
+                r"\\server\share\new.battleplan",
+                r"\\?\UNC\server\share\new.battleplan",
+            ),
+            (
+                r"\\?\C:\recordings\new.battleplan",
+                r"\\?\C:\recordings\new.battleplan",
+            ),
+            (
+                r"\\?\UNC\server\share\new.battleplan",
+                r"\\?\UNC\server\share\new.battleplan",
+            ),
+        ] {
+            assert_eq!(
+                wide(Path::new(input)).unwrap(),
+                expected.encode_utf16().chain([0]).collect::<Vec<_>>()
+            );
+        }
+        let relative = Path::new("new.battleplan");
+        assert_eq!(
+            wide(relative).unwrap(),
+            wide(&std::env::current_dir().unwrap().join(relative)).unwrap()
+        );
+        let invalid = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0, 65]);
+        assert_eq!(
+            wide(Path::new(&invalid)).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

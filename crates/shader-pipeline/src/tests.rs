@@ -9,6 +9,70 @@ pub(crate) fn initialize_runtime_tables() {
 
 pub(crate) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[test]
+fn compiler_precedence_and_missing_files() {
+    for (environment, beside, user, present, expected) in [
+        (
+            true,
+            true,
+            true,
+            vec!["environment", "beside", "user"],
+            Some(("env", "environment")),
+        ),
+        (
+            true,
+            true,
+            true,
+            vec!["beside", "user"],
+            Some(("env", "environment")),
+        ),
+        (
+            false,
+            true,
+            true,
+            vec!["beside", "user"],
+            Some(("beside", "beside")),
+        ),
+        (
+            false,
+            true,
+            true,
+            vec!["user"],
+            Some(("user install", "user")),
+        ),
+        (
+            false,
+            false,
+            true,
+            vec!["user"],
+            Some(("user install", "user")),
+        ),
+        (
+            false,
+            true,
+            false,
+            vec!["beside"],
+            Some(("beside", "beside")),
+        ),
+        (false, true, true, vec![], None),
+        (false, false, false, vec![], None),
+    ] {
+        let chosen = compiler_location(
+            environment.then(|| PathBuf::from("environment")),
+            beside.then(|| PathBuf::from("beside")),
+            user.then(|| PathBuf::from("user")),
+            |path| {
+                assert!(!environment, "an explicit override must not fall back");
+                present.iter().any(|candidate| path == Path::new(candidate))
+            },
+        );
+        assert_eq!(
+            chosen,
+            expected.map(|(source, path)| (source, PathBuf::from(path)))
+        );
+    }
+}
+
 /// Compiler output names its scratch folder, which differs every run, as `.`: the same
 /// refusal reads the same on every load.
 #[test]

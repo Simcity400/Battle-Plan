@@ -207,7 +207,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
   useEffect(() => {
     const warnings = [...(data?.warnings ?? metadata.data?.warnings ?? []), ...(groupWarnings ?? []),
-      ...(!grouped && !pinned && view !== 'race' && incomingGroups.error ? [`Capitulation markers are unavailable: ${incomingGroups.error}`] : []), ...drillWarnings];
+      ...(!grouped && !pinned && view !== 'race' && incomingGroups.error ? [`Capitulation markers are unavailable: ${incomingGroups.error.message}`] : []), ...drillWarnings];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, metadata.data, groupWarnings, incomingGroups.error, grouped, pinned, view, drillWarnings, onDiagnostics]);

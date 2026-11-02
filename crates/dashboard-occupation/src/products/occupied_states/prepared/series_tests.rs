@@ -3,6 +3,7 @@
 //! means and ranks, and the trend's warnings, across segment starts and restarts, cuts, a gap
 //! and resumes; and the cases the projection and the row scan meet alike.
 use super::*;
+use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 use dashboard_series::{
     Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
     family::Directory,
@@ -1109,9 +1110,13 @@ fn a_law_declared_on_too_few_reads_is_caught_on_both_paths() {
         clear_flag(input, 0);
     }
     let row = || {
-        let mut oracle = Oracle::new(Some(Arc::clone(&catalogue)));
+        let format = replay_data::format::FormatVersion::CURRENT;
+        let mut scan = scan::Scan::new(Some(&catalogue));
+        scan.format = format;
+        let mut tracker = FrameChangeTracker::new();
         for input in &hours {
-            oracle.push(input).unwrap();
+            let changes = tracker.observe(input, format);
+            scan.push(input, input.hour, Some(&changes)).unwrap();
         }
     };
     let projected = || walk_both(&hours, Some(Arc::clone(&catalogue)), |_, _, _, _| {});

@@ -552,6 +552,7 @@ impl Captured {
         // Carried and read templates.
         let templates: [u64; 2];
         let speed_refusals: u64;
+        let country_refusals: u32;
         // The counter/model inputs, each composition grid's entries and the
         // demanded display-name inputs every hour.
         let mut country_ticks = 0_u64;
@@ -622,6 +623,7 @@ impl Captured {
             self.globals.required = walk.required_database;
             self.locals.required = walk.required_locals;
             speed_refusals = self.capture_speed_keys(memory, base, changes);
+            country_refusals = self.model_failures.rows;
             if let Some(rows) = self.icon_rows.rows.get(..walk.outcome.len()) {
                 self.held.certify(changes, rows);
                 for row in rows {
@@ -683,7 +685,7 @@ impl Captured {
             && complete
             && rereads == 0
             && speed_refusals == 0
-            && self.model_failures == ModelFailures::default()
+            && self.model_failures.rows == country_refusals
             && !self.country_cache.changed
             && !self.held.reordered()
             && matches!(tokens, (Some(_), Some(_)))

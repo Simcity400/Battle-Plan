@@ -4851,7 +4851,7 @@ pub fn latest_state(
 #[cfg(test)]
 mod columnar_tests;
 #[cfg(test)]
-mod parity;
+mod parity_tests;
 #[cfg(test)]
 #[path = "prepared_production/tests.rs"]
 mod tests;

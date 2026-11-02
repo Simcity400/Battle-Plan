@@ -431,7 +431,7 @@ fn phase_declares_a_campaign_branch_without_recording_an_hour() {
 #[test]
 fn branches_share_capture_metadata_without_importing_future_updates_or_other_lifetimes() {
     use crate::{
-        branches::{BranchReason, BranchStart, Parentage},
+        branches::{BranchReason, BranchStart, Gap, Parentage},
         spool::{Record, encode_record},
     };
     use replay_data::identity::IdentityCodec;
@@ -523,6 +523,12 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
             first_hour: hour,
             parent: Parentage::Unknown,
             reason: BranchReason::HourDiscontinuity,
+        }));
+        records.push(Record::Gap(Gap {
+            branch: id,
+            first_hour: hour,
+            last_hour: hour,
+            reason: "frames omitted in this test".into(),
         }));
         records.push(Record::Control(control));
     }

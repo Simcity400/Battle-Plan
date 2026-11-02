@@ -222,7 +222,7 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
     let base = frame(3);
     let reference = original(&base, &content, 1);
     assert_eq!(
-        bits(&reference)[..10],
+        bits(&reference),
         [
             Some(1.0f64.to_bits()),
             Some(6.0f64.to_bits()),
@@ -233,7 +233,8 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
             Some(0.0f64.to_bits()),
             Some(0.12345f64.to_bits()),
             None,
-            Some(0.38783f64.to_bits())
+            Some(0.38783f64.to_bits()),
+            None,
         ]
     );
     assert!(
@@ -250,7 +251,7 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
     assert_eq!(evaluated, 10);
     assert_eq!(
         first.weights.iter().filter(|value| value.is_none()).count(),
-        1
+        3
     );
     let (warm, evaluated) = run(&memo, &base, &content, 1);
     assert_eq!(evaluated, 0, "confirmed refused outcomes are reused too");
@@ -352,7 +353,7 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
             .iter()
             .filter(|value| value.is_none())
             .count(),
-        10
+        11
     );
 }
 
@@ -532,18 +533,14 @@ fn music_inputs_recheck_has_war_end_hours_and_unresolved_unrelated_endpoints() {
                 }
                 let (actual, evaluated) = run(&memo, &next, &content, 1);
                 let active = hour == 16;
-                let weights = [
-                    if active && !unresolved {
-                        2.0f64
-                    } else {
-                        1.0f64
-                    },
-                    if active { 1.0f64 } else { 2.0f64 },
-                    3.0f64,
-                ];
+                let weights = match (active, unresolved) {
+                    (true, true) => [None, None, Some(3.0f64)],
+                    (true, false) => [Some(2.0f64), Some(1.0f64), Some(3.0f64)],
+                    (false, _) => [Some(1.0f64), Some(2.0f64), Some(3.0f64)],
+                };
                 assert_eq!(
                     bits(&actual),
-                    weights.map(|weight| Some(weight.to_bits())),
+                    weights.map(|weight| weight.map(f64::to_bits)),
                     "unresolved {unresolved}, first {first}, hour {hour}"
                 );
                 let refusals = if active && unresolved {

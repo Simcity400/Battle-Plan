@@ -419,6 +419,38 @@ mod tests {
     }
 
     #[test]
+    fn a_sweep_applies_backdated_runs_as_point_reads_do() {
+        use dashboard_base::prepared::series::Run;
+
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut amounts = Accumulator::default();
+        for (key, runs) in [
+            vec![(0, 2, 1), (5, 5, 2), (0, 10, 3)],
+            vec![(0, 10, 8), (2, 3, 4)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (first, last, value) in runs {
+                amounts.push(key as u64, Run::new(first, last, value, true));
+            }
+        }
+        let mut writer = fixture.writer();
+        amounts.flush(&mut writer, "values", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        let open = || Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+        let (mut swept, mut alone) = (open(), open());
+        let keys = [0, 1, 0, 2];
+        for hours in [(-1..=12).collect::<Vec<_>>(), vec![1, 3, 5, 10, 11]] {
+            let mut sweep = Sweep::new(&hours, keys.len());
+            for &hour in &hours {
+                ask(&mut sweep, &mut swept, &mut alone, &keys, hour);
+            }
+        }
+    }
+
+    #[test]
     fn hours_between_operand_events_share_one_read_of_them() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);

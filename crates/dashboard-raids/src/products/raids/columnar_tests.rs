@@ -487,9 +487,12 @@ fn hours_where_nothing_the_scan_reads_moves_change_nothing() {
             .as_ref()
             .map_or([false; TABLE_COUNT], |kept| kept.changes.rows_changed)
     };
-    for hour in [115, 116, 117, 120] {
+    for hour in [115, 116, 117] {
         assert!(!changed(hour).contains(&true), "{hour}");
     }
+    let mut rename = [false; TABLE_COUNT];
+    rename[TableId::Countries.index()] = true;
+    assert_eq!(changed(120), rename);
     assert!(changed(121)[TableId::Provinces.index()]);
     assert!(!changed(121)[TableId::Raids.index()]);
     assert!(changed(119)[TableId::Raids.index()]);

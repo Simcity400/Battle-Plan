@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import { readFileSync } from 'node:fs';
 import type { DecryptionPair, DecryptionReply, DecryptionRun } from '../../generated/dashboard';
 import { activeBonusDays, amountText, CIPHER_BROKEN, cipherStatus, decryptionTooltip as flaggedDecryptionTooltip, observationDate, progressLabel, progressPercent, progressText, raceRows, validateDecryptionReply, valueAt, workingStatus } from './decryptionData.ts';
@@ -29,11 +30,11 @@ function reply(runs = [run()]): DecryptionReply {
 }
 
 test('manual cipher selection follows all native holders and keeps the chosen endpoint role', () => {
-  const groups = { countryIdentities: [
+  const groups = countryGroupReply({ countryIdentities: [
     { tag: 'X', identities: [{ firstHour: 100, lastHour: 101, slot: 2, countryId: 300 }, { firstHour: 103, lastHour: 104, slot: 1, countryId: 100 }] },
     { tag: 'Y', identities: [{ firstHour: 100, lastHour: 101, slot: 1, countryId: 100 }, { firstHour: 103, lastHour: 104, slot: 3, countryId: 400 }] },
     { tag: 'B_OTHER', identities: [{ firstHour: 103, lastHour: 104, slot: 2, countryId: 300 }] },
-  ] } as CountryGroupReply;
+  ] });
   const data = reply([run(100, 104)]);
   const pair = data.pairs[0];
   data.pairs = [

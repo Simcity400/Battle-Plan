@@ -2433,6 +2433,8 @@ struct Cached {
     runs: Vec<Run>,
     /// Whether `runs` start in hour order, so every hour before the next run's is outside them.
     sorted: bool,
+    /// Whether every run starts after the previous one ends.
+    disjoint: bool,
     events: Vec<(i32, Vec<u8>)>,
     /// The summary levels as stored, from `summaries_at`; only a summary read decodes them
     /// ([`Reader::buckets`]).
@@ -2486,6 +2488,7 @@ fn decode(raw: Vec<u8>, dir: Directory, cancelled: &AtomicBool) -> io::Result<Ca
     let mut cached = Cached {
         runs: Vec::new(),
         sorted: true,
+        disjoint: true,
         events: Vec::new(),
         summaries: Vec::new(),
         summaries_at: 0,
@@ -2503,6 +2506,7 @@ fn decode(raw: Vec<u8>, dir: Directory, cancelled: &AtomicBool) -> io::Result<Ca
             return Err(invalid("invalid run flags"));
         }
         cached.sorted &= cached.runs.last().is_none_or(|run| run.first_hour <= first);
+        cached.disjoint &= cached.runs.last().is_none_or(|run| run.last_hour < first);
         cached.runs.push(Run::new(first, last, value, flags != 0));
     }
     hour = 0;
@@ -2601,10 +2605,25 @@ impl Built {
         }
     }
 
-    /// The hours `range` of `hours`, answered by a batch holding the key's `rows`.
-    fn span(&mut self, hours: &[i32], range: &std::ops::Range<usize>, rows: &[Run]) {
+    /// The hours `range` of `hours`, answered by a batch holding the key's `blob`.
+    fn span(&mut self, hours: &[i32], range: &std::ops::Range<usize>, blob: &Cached) {
         self.segment(self.settled, range.start, None);
         let span = &hours[range.clone()];
+        let rows = &blob.runs;
+        if !blob.disjoint {
+            for (at, &hour) in span.iter().enumerate() {
+                let index = rows.partition_point(|run| run.first_hour <= hour);
+                let value = index
+                    .checked_sub(1)
+                    .map(|index| rows[index])
+                    .filter(|run| run.last_hour >= hour)
+                    .map(|run| run.value);
+                let at = range.start + at;
+                self.segment(at, at + 1, value);
+            }
+            self.settled = range.end;
+            return;
+        }
         // The index of the first of the span's hours from `hour`, or after it.
         let from_hour = |hour: i32| range.start + span.partition_point(|&h| h < hour);
         let after_hour = |hour: i32| range.start + span.partition_point(|&h| h <= hour);
@@ -3122,7 +3141,7 @@ impl<'a> Reader<'a> {
                         let built = &mut built[at];
                         if built.failed.is_none() {
                             match blob {
-                                Ok(blob) => built.span(hours, range, &blob.runs),
+                                Ok(blob) => built.span(hours, range, &blob),
                                 Err(error) => built.failed = Some(error),
                             }
                         }

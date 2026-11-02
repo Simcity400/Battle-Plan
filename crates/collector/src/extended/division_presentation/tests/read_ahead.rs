@@ -286,6 +286,7 @@ fn batched_naming_carried_members_and_heap_cache_equal_serial() {
     let mut store = super::super::super::attack_stats::ArmyStatStore::new();
     let mut actual = capture(&reads(&bytes, false, None, false), &[]);
     for hour in 0..3 {
+        store.observations.finish();
         if hour == 2 {
             drop(watches.notify(seeds[20].name_member.unwrap(), 1));
         }

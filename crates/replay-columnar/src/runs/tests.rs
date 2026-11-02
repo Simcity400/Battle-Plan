@@ -1219,7 +1219,13 @@ fn rows_looked_up_by_key_are_the_walk_s() {
         keys.extend([u128::MAX, 0, 1_003, u128::from(13_u32) << 64 | 39]);
         let keyed = rows_at(&index, &memory, number, ordinal, table, &keys).unwrap();
         assert_eq!(keyed.status, expected.status);
-        assert_eq!(keyed.sampled, expected.sampled);
+        assert_eq!(
+            keyed.sampled,
+            match expected.status {
+                Status::Complete => expected.sampled,
+                _ => None,
+            }
+        );
         let mut found: Vec<(u128, u32)> = keys
             .iter()
             .filter_map(|&key| {

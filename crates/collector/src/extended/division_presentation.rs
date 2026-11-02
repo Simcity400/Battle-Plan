@@ -3326,6 +3326,7 @@ mod tests {
             ..Capacities::default()
         });
         let mut hour = |store: &mut super::super::attack_stats::ArmyStatStore| {
+            store.observations.finish();
             let memory = Reads(&live, Default::default());
             let outcome = Outcome::Rows { len: seeds.len() };
             captured.attack.certify(

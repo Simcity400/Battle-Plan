@@ -146,12 +146,12 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
 
   const diagnosticKey = JSON.stringify([...(factions ? factionProduct.data?.warnings ?? [] : territoryWarnings(data, measure)),
     ...(groupReply.data?.warnings ?? []), ...factionWarnings,
-    ...(factionColourError ? [`Faction colours are unavailable: ${factionColourError}`] : []),
+    ...(factionColourError ? [`Faction colours are unavailable: ${factionColourError.message}`] : []),
     ...(factions && (!factionProduct.data || !groupReply.data || factionLooks.loading) ? ['Territory faction names or membership decoration are loading.'] : []),
-    ...(factions && error ? [`Territory faction refresh is unavailable: ${error}`] : []),
-    ...(factions && groupReply.error ? [`Territory faction groups refresh is unavailable: ${groupReply.error}`] : []),
-    ...(!factions && view === 'lines' && groupReply.error ? [`Territory capitulation markers are unavailable: ${groupReply.error}`] : []),
-    ...(factions && countryProduct.error ? [`Territory world refresh is unavailable: ${countryProduct.error}`] : [])]);
+    ...(factions && error ? [`Territory faction refresh is unavailable: ${error.message}`] : []),
+    ...(factions && groupReply.error ? [`Territory faction groups refresh is unavailable: ${groupReply.error.message}`] : []),
+    ...(!factions && view === 'lines' && groupReply.error ? [`Territory capitulation markers are unavailable: ${groupReply.error.message}`] : []),
+    ...(factions && countryProduct.error ? [`Territory world refresh is unavailable: ${countryProduct.error.message}`] : [])]);
   const diagnostics = useMemo(() => JSON.parse(diagnosticKey) as string[], [diagnosticKey]);
   useEffect(() => {
     onDiagnostics(diagnostics.length ? diagnostics : NO_WARNINGS);

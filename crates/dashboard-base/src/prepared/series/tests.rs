@@ -2252,6 +2252,69 @@ fn changes_at_matches_values_at_for_every_window_across_batches_and_gaps() {
 }
 
 #[test]
+fn changes_at_probes_backdated_and_overlapping_runs_once_per_blob() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for first in [0, 20] {
+        values.through(first);
+        for (key, runs) in [
+            vec![(0, 2, 0), (3, 5, 0), (8, 10, 7)],
+            vec![(0, 2, 1), (5, 5, 2), (0, 10, 3)],
+            vec![(0, 10, 1), (2, 3, 2), (2, 7, 3)],
+            vec![(0, 10, 8), (2, 3, -4)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (from, to, value) in runs {
+                values.push(key as u64, Run::new(first + from, first + to, value, true));
+            }
+        }
+        values.through(first + 11);
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "values", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    }
+    let keys = [3, 1, 0, 2, 1];
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    for hours in [
+        (-1..=33).collect::<Vec<_>>(),
+        vec![1, 3, 5, 10, 11, 19, 20, 22, 25, 31, 32],
+        (3..=25).collect(),
+        Vec::new(),
+    ] {
+        let decodes = BLOB_DECODES.get();
+        let actual = reader.changes_at(&keys, &hours).unwrap();
+        if hours.first() == Some(&-1) {
+            assert_eq!(BLOB_DECODES.get() - decodes, 8, "each blob decoded once");
+        }
+        let mut expected = vec![Vec::new(); keys.len()];
+        let mut held = vec![None; keys.len()];
+        for (at, &hour) in hours.iter().enumerate() {
+            for (key, value) in reader
+                .values_at(&keys, hour)
+                .unwrap()
+                .into_iter()
+                .enumerate()
+            {
+                if held[key] != value {
+                    expected[key].push((at, value));
+                    held[key] = value;
+                }
+            }
+        }
+        assert_eq!(actual, expected, "{hours:?}");
+        assert!(
+            actual
+                .iter()
+                .all(|changes| changes.windows(2).all(|p| p[0].0 < p[1].0))
+        );
+    }
+}
+
+#[test]
 fn late_index_keeps_only_late_facts_ordered_and_bounded_by_read() {
     let mut late = LateIndex::default();
     late.insert(10, 10, 1, 0);

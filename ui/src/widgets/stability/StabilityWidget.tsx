@@ -258,7 +258,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   ] as const).flatMap(([what, state, used]) => {
     if (!used) return [];
     const product = state as { error?: Failure; data?: { warnings: string[] } };
-    return product.error ? [`Markers for ${what} could not be loaded: ${product.error}`] : product.data?.warnings ?? [];
+    return product.error ? [`Markers for ${what} could not be loaded: ${product.error.message}`] : product.data?.warnings ?? [];
   }) : [], [markerTag, kinds, markerGroups.data, markerGroups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error]); // eslint-disable-line react-hooks/exhaustive-deps
   const drillAnchor = useRef<HTMLDivElement>(null);
   const singleTag = resolved.tags.length === 1 ? resolved.tags[0] : null;
@@ -334,12 +334,12 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   useEffect(() => {
     const uncoloured = series.filter(item => !item.recordedColour).map(item => item.name);
     const warnings = [...(data?.warnings ?? []),
-      ...(error ? [`Stability values could not be refreshed: ${error}`] : []), ...(groups.data?.warnings ?? []),
-      ...(groups.error ? [`Country membership could not be loaded: ${groups.error}`] : []),
+      ...(error ? [`Stability values could not be refreshed: ${error.message}`] : []), ...(groups.data?.warnings ?? []),
+      ...(groups.error ? [`Country membership could not be loaded: ${groups.error.message}`] : []),
       ...(uncoloured.length ? [`Map colours unavailable for ${uncoloured.join(', ')}; shown in grey.`] : []),
-      ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
+      ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error.message}`] : []),
       ...markerNotes, ...focusText.warnings, ...preparedPartsNotes,
-      ...(partsRequests.length ? [...(joinedParts?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : [])];
+      ...(partsRequests.length ? [...(joinedParts?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error.message}`] : [])] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, error, series, groups.data, groups.error, breakdown.data, breakdown.error, markerNotes, focusText.warnings, partsRequests.length, joinedParts, parts.error, preparedPartsNotes, onDiagnostics]);

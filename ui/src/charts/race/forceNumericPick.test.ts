@@ -84,13 +84,13 @@ test('mounted force views keep witnessed actors through pending names and reject
               return { data: !request ? undefined : request.product === 'country-groups' ? s.groups
                 : request.params.tags.length === 1 ? s.detail : s.main, error: s.error, retry() {} }; };
             export const loadProduct = (client, request, _signal, _validate, _source, _restart, publish) => {
-              const { data, error } = useProduct(client, request); if (error) throw Error(error);
+              const { data, error } = useProduct(client, request); if (error) throw error;
               if (data !== undefined) publish?.(data); return new Promise(() => {}); };
             export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
             export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
         // The race's view read answers in the same render, as its products do here.
         if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
-          if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure.message; }
+          if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure; }
           return { data, error, retry() {} }; };`;
         const replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
@@ -226,7 +226,12 @@ test('mounted force views keep witnessed actors through pending names and reject
         track.source.id = 'other source'; assert.equal(render().chart, undefined);
         track.source.id = lastSource; assert.equal(render().chart, undefined, 'A → B → A cannot recover a previously retained plot');
         assert.equal(lastCanvas.pick(pending, 25), false);
-        state.error = new Error('Content failed'); assert.match(render().html, /Content failed/); state.error = undefined;
+        state.error = new Error('Content failed');
+        const failed = render().html;
+        assert.match(failed, /data-detail="Content failed"/);
+        assert.match(failed, />Couldn’t load\.<\/span>/);
+        assert.doesNotMatch(failed.replace(/<[^>]*>/g, ''), /Content failed/);
+        state.error = undefined;
       }
     }
   } finally {

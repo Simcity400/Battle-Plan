@@ -106,9 +106,22 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     assert.match(html, /class="leader-trait-chip">Synthetic trait/);
     assert.doesNotMatch(html, /icon unavailable|>\?</);
     const { LeaderPortrait, SkillStars } = await vite.ssrLoadModule('/ui/src/widgets/generals/LeaderIdentity.tsx');
-    const portrait = renderToStaticMarkup(createElement(LeaderPortrait, { art: { image: null, missing: 'Internal portrait reason' } }));
+    const portrait = renderToStaticMarkup(createElement(LeaderPortrait, { art: { image: null, missing: 'Portrait supplying read is not recorded' } }));
     assert.match(portrait, /art-fallback/);
-    assert.doesNotMatch(portrait, /Internal portrait reason|>\?</);
+    assert.match(portrait, /data-detail="Portrait supplying read is not recorded"/);
+    assert.match(portrait, /data-tooltip="Portrait unavailable\."/);
+    assert.match(portrait, /aria-label="Portrait unavailable\."/);
+    assert.doesNotMatch(portrait.replace(/<[^>]*>/g, ''), /supplying read/);
+    assert.doesNotMatch(portrait, /&gt;\?&lt;|>\?</);
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
+    for (const error of [new Error('Synthetic portrait decoder failure'), new RefusedError('Synthetic portrait is not supported')]) {
+      const failed = renderToStaticMarkup(createElement(LeaderPortrait, { art: error }));
+      const text = error instanceof RefusedError ? error.message : 'Couldn’t load artwork.';
+      assert.ok(failed.includes(`data-detail="${error.message}"`));
+      assert.ok(failed.includes(`data-tooltip="${text}"`));
+      assert.ok(failed.includes(`aria-label="${text}"`));
+      assert.doesNotMatch(failed.replace(/<[^>]*>/g, ''), /Synthetic portrait decoder failure|>\?</);
+    }
     const skill = renderToStaticMarkup(createElement(SkillStars, { level: 5, maximum: null }));
     assert.match(skill, />5</);
     assert.doesNotMatch(skill, /maximum unknown/);

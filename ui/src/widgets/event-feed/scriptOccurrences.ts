@@ -34,13 +34,15 @@ export function validateScriptPage(value: unknown): ScriptPage {
       && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs)))
     || !Array.isArray(reply.items) || !reply.items.every(item => object(item) && options(item))) throw malformed();
   const occurrences = reply.occurrences as unknown as ScriptOccurrence[];
+  let items: EventFeedItem[];
   try {
     // The event feed's checks: identities, dates within the reply, item references, artwork.
-    validateEventFeedReply({ branchId: reply.branchId, firstHour: reply.firstHour, lastHour: reply.lastHour, windows: [],
+    items = validateEventFeedReply({ branchId: reply.branchId, firstHour: reply.firstHour, lastHour: reply.lastHour, windows: [],
       rows: occurrences.flatMap(occurrence => occurrence.edges.map(edge => edge.row)), items: reply.items,
-      modifiers: [], texts: [], unavailable: reply.unavailable, warnings: reply.warnings });
+      modifiers: [], texts: [], unavailable: reply.unavailable, warnings: reply.warnings }).items;
   } catch { throw malformed(); }
-  return { reply: reply as unknown as ScriptOccurrenceReply, nextCursor: value.nextCursor, prefix: preparedPrefix(value) };
+  const validated = reply as unknown as ScriptOccurrenceReply;
+  return { reply: items === validated.items ? validated : { ...validated, items }, nextCursor: value.nextCursor, prefix: preparedPrefix(value) };
 }
 
 /** Missing captures, as the event feed reports them. */

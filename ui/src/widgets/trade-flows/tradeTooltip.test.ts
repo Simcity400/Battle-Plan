@@ -69,7 +69,7 @@ test('node tooltips share dated labels and bound their sorted country requests',
       const failure = new Error('Synthetic folded trade name decoder failure');
       const ribbon = diagram.links.find(link => link.flows.length > 1)!;
       const failed = ribbonTooltip(ribbon, diagram.nodes.find(node => node.id === ribbon.source)!, diagram.nodes.find(node => node.id === ribbon.target)!,
-        { ...options, labelAt: () => () => ({ name: 'Couldn’t load country name.', nameFailure: failure }) });
+        { ...options, ask() {}, labelAt: () => () => ({ name: 'Couldn’t load country name.', nameFailure: failure }) });
       const failedNames = failed.rows.filter(row => row.label.includes('Couldn’t load country name.'));
       assert.ok(failedNames.length > 0);
       assert.ok(failedNames.every(row => row.detail === failure.message));

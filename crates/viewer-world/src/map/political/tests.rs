@@ -480,6 +480,8 @@ fn subject_colour_switch_preserves_regions_and_invalidates_the_cache() {
     );
     subject.cancel = 1;
     set(&mut frame, &subject);
+    *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
+    assert_ne!(FrameKey::new(&frame).unwrap(), union);
     assert_eq!(
         super::regions(&map, &frame).unwrap().country_colors[&2],
         own

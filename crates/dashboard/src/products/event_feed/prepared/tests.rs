@@ -119,20 +119,23 @@ fn query(
         .branch_id
         .parse()
         .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
-    let nukes = country_nukes::row::feed(&source.replay(), branch, cancelled)?;
-    let subjects = subjects::row::feed(&source.replay(), branch, cancelled)?;
-    let focus = crate::prepared_focus::row::feed(&source.replay(), branch, cancelled)?;
-    let ideas = idea_history::row_feed(&source.replay(), branch, cancelled)?;
-    let projects = match PROJECTS.with_borrow(Clone::clone) {
-        Some(projects) => projects,
-        None => {
-            // The oracle's own read of the recording is no read of the feed's.
-            let scanned = crate::blocks::SCANNED_BLOCKS.with_borrow(Clone::clone);
-            let projects = special_projects::row::feed(source, branch, context, cancelled)?;
-            crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|held| *held = scanned);
-            Arc::new(projects)
-        }
-    };
+    // The oracles' scans do not belong to the prepared feed's query.
+    let scanned = crate::blocks::SCANNED_BLOCKS.with_borrow_mut(std::mem::take);
+    let oracles = (|| -> io::Result<_> {
+        let nukes = country_nukes::row::feed(&source.replay(), branch, cancelled)?;
+        let subjects = subjects::row::feed(&source.replay(), branch, cancelled)?;
+        let focus = crate::prepared_focus::row::feed(&source.replay(), branch, cancelled)?;
+        let ideas = idea_history::row_feed(&source.replay(), branch, cancelled)?;
+        let projects = match PROJECTS.with_borrow(Clone::clone) {
+            Some(projects) => projects,
+            None => Arc::new(special_projects::row::feed(
+                source, branch, context, cancelled,
+            )?),
+        };
+        Ok((nukes, subjects, focus, ideas, projects))
+    })();
+    crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|held| *held = scanned);
+    let (nukes, subjects, focus, ideas, projects) = oracles?;
     let families = query::Families {
         nukes: &nukes,
         subjects: &subjects,

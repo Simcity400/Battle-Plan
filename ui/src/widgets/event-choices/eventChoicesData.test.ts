@@ -25,9 +25,9 @@ const fire = (hour: number, receiver = 'mod | receiver', sender: string | null =
 const choose = (hour: number, option: number | null, chooser = 'mod | receiver', more: Partial<EventFeedRow> = {}) =>
   edge('eventOptionSelected', hour, [chooser, null], more, { option });
 const occurrence = (edges: ScriptEdge[], opened = true): ScriptOccurrence => ({ id: edges[0].row.id, opened, edges });
-const authored: EventFeedItem = { token: 'mod_events.1', name: 'A modded crisis', icon: null, description: 'What the modder wrote.', idea: null,
-  options: [{ ordinal: 0, name: 'Stand firm' }, { ordinal: 1, name: 'Back down' }] };
-const page = (occurrences: ScriptOccurrence[], items: EventFeedItem[] = [authored]) => validateScriptPage({
+const authored = (): EventFeedItem => ({ token: 'mod_events.1', name: 'A modded crisis', icon: null, description: 'What the modder wrote.', idea: null,
+  options: [{ ordinal: 0, name: 'Stand firm' }, { ordinal: 1, name: 'Back down' }] });
+const page = (occurrences: ScriptOccurrence[], items: EventFeedItem[] = [authored()]) => validateScriptPage({
   reply: { branchId: '1', firstHour: START, lastHour: END, occurrences, items, unavailable: [], warnings: [] }, nextCursor: null });
 const all: ChoiceFilter = { kinds: new Set(EVENT_KINDS.map(kind => kind.kind)), country: () => true, allCountries: true, firstHour: null };
 test('choice playback retains cards between visible day and edge changes, including backward seeks', () => {
@@ -36,19 +36,37 @@ test('choice playback retains cards between visible day and edge changes, includ
   const prepared = deepFreeze(prepareChoices(reply, deepFreeze({ ...all, kinds: new Set(all.kinds) })));
   const at = (hour: number) => prepared.flatMap(row => { const shown = choiceAt(row, hour, [], false); return shown ? [shown] : []; });
   const playback = playbackRows([opened, chosen], at, choicePlaybackBounds);
-  for (const hour of [opened - 1, opened, opened + 22, opened + 23, opened + 47, chosen, chosen + 50, opened + 1]) {
+  for (const hour of [opened - 1, opened, opened + 23, opened + 24, opened + 47, chosen, chosen + 50, opened + 1]) {
     const actual = playback.at(hour), expected = at(hour);
     assert.deepEqual(actual.map(row => ({ ...row, item: { ...row.item, hour } })), expected);
     assert.deepEqual(actual.filter(row => isOpen(row.item)).map(row => awaitingText(row.item)),
       expected.filter(row => isOpen(row.item)).map(row => awaitingText(row.item)));
   }
-  assert.equal(playback.at(opened), playback.at(opened + 22));
-  assert.notEqual(playback.at(opened + 22), playback.at(opened + 23));
+  assert.equal(playback.at(opened), playback.at(opened + 23));
+  assert.notEqual(playback.at(opened + 23), playback.at(opened + 24));
   assert.equal(playback.at(chosen), playback.at(chosen + 50));
 });
 const name = (tag: string) => tag.replace('mod | ', '');
 const shown = (rows: ReturnType<typeof prepareChoices>, hour: number, breaks = [] as ReturnType<typeof recordingBreaks>, awaiting = false) =>
   rows.flatMap(row => { const at = choiceAt(row, hour, breaks, awaiting); return at ? [at] : []; });
+
+test('occurrence validation sanitizes shared frozen artwork without changing raw replies or authored options', () => {
+  const raw = deepFreeze({ reply: { branchId: '1', firstHour: START, lastHour: END,
+    occurrences: [occurrence([fire(day(3, 3)), choose(day(3, 5), 1)])],
+    items: [{ ...authored(), icon: 'javascript:bad' }, authored()], unavailable: [], warnings: [] }, nextCursor: null });
+  const checked = validateScriptPage(raw);
+  assert.equal(raw.reply.items[0].icon, 'javascript:bad');
+  assert.equal(checked.reply.items[0].icon, null);
+  assert.equal(checked.reply.items[0].options, raw.reply.items[0].options);
+  assert.notEqual(checked.reply, raw.reply);
+  assert.notEqual(checked.reply.items[0], raw.reply.items[0]);
+  assert.equal(checked.reply.items[1], raw.reply.items[1]);
+  assert.equal(checked.reply.occurrences, raw.reply.occurrences);
+  assert.deepEqual(validateScriptPage(raw), checked);
+  assert.equal(validateScriptPage(deepFreeze(checked)).reply, checked.reply);
+  const [card] = shown(prepareChoices(checked.reply, all), END);
+  assert.deepEqual(optionLines(card.item).map(line => [line.text, line.chosen]), [['Stand firm', false], ['Back down', true]]);
+});
 
 test('a firing and its choice are one card with every authored option in order and the chosen one marked', () => {
   const rows = prepareChoices(page([occurrence([fire(day(3, 3)), choose(day(3, 5), 1)])]).reply, all);

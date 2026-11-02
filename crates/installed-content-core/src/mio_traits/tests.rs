@@ -422,11 +422,16 @@ fn mio_trait_content_layers_replace_templates_and_keep_unread_suffix_named() {
     }
     std::fs::write(
         base.join(directory).join("a.txt"),
-        b"custom={trait={token=old name=OLD}} removed={trait={token=old name=OLD}}",
+        b"custom={trait={token=old name=OLD}}",
     )
     .unwrap();
     std::fs::write(
-        overlay.join(directory).join("b.txt"),
+        base.join(directory).join("b.txt"),
+        b"removed={trait={token=old name=OLD}}",
+    )
+    .unwrap();
+    std::fs::write(
+        overlay.join(directory).join("a.txt"),
         b"CUSTOM={trait={token=new name=NEW}}",
     )
     .unwrap();
@@ -437,6 +442,10 @@ fn mio_trait_content_layers_replace_templates_and_keep_unread_suffix_named() {
     assert_eq!(
         db.trait_definition("custom", "new").unwrap().unwrap().name,
         "NEW"
+    );
+    assert_eq!(
+        db.trait_definition("removed", "old").unwrap().unwrap().name,
+        "OLD"
     );
     let replaced =
         ResolvedLayers::from_test_common_folders(&[(&base, &[]), (&overlay, &[directory])])
@@ -450,14 +459,14 @@ fn mio_trait_content_layers_replace_templates_and_keep_unread_suffix_named() {
     );
     std::fs::write(
         overlay.join(directory).join("c.txt"),
-        b"custom={trait={token=bad position={1 2}}}",
+        b"malformed={trait={token=bad position={1 2}}}",
     )
     .unwrap();
     let layers =
         ResolvedLayers::from_test_common_folders(&[(&base, &[]), (&overlay, &[])]).unwrap();
     let why = read(&layers)
         .unwrap()
-        .trait_definition("custom", "new")
+        .trait_definition("malformed", "bad")
         .unwrap_err();
     assert!(why.contains("c.txt") && why.contains("count: 1"), "{why}");
     let cleanup = std::fs::canonicalize(root).unwrap();

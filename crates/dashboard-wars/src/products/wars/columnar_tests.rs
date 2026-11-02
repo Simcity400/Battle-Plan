@@ -287,11 +287,37 @@ pub(super) fn assert_native_parity(
     let hours: Vec<i32> = frames.iter().map(|frame| frame.hour).collect();
     let every_other: Vec<i32> = hours.iter().copied().step_by(2).collect();
     let middle = hours[hours.len() / 2];
+    let before_middle = hours[hours.len() / 2 - 1];
     let late = hours[hours.len() * 3 / 4];
     assert_placed(replay, cat, views, (&[], &[], None));
     assert_placed(replay, cat, views, (&every_other, &every_other, None));
-    let placed = (&[middle, late][..], &[middle - 1, late][..], Some(middle - 1));
+    let placed = (
+        &[middle, late][..],
+        &[before_middle, late][..],
+        Some(before_middle),
+    );
     assert_placed(replay, cat, views, placed);
+}
+
+#[test]
+fn a_cut_past_the_last_walked_hour_is_refused_without_advancing_the_emit() {
+    let budget = Budget::new(64 << 20);
+    let mut writer = Writer::new(&budget, identity(), 100).unwrap();
+    let mut emit = Emit::new();
+    assert!(emit.cut(&mut writer, 100).is_err());
+    for hour in projected(&[recorded(100)], &[]) {
+        emit.hour(&mut writer, hour).unwrap();
+    }
+    let mut before = Vec::new();
+    emit.save(&mut before).unwrap();
+    assert_eq!(
+        emit.cut(&mut writer, 101).unwrap_err().kind(),
+        io::ErrorKind::InvalidData,
+    );
+    let mut after = Vec::new();
+    emit.save(&mut after).unwrap();
+    assert_eq!(after, before);
+    emit.cut(&mut writer, 100).unwrap();
 }
 
 #[test]

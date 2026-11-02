@@ -207,6 +207,7 @@ impl Emit {
                     .value(writer, key, hour, Some(pack(counts)), starts)?;
                 for (measure, share) in SHARES.into_iter().zip(shares(counts)) {
                     let key = self.key(writer, actor, measure)?;
+                    let starts = starts || self.carry.held(key).is_none();
                     self.carry.value(writer, key, hour, share, starts)?;
                 }
             }

@@ -1029,11 +1029,15 @@ mod tests {
                 assert!(refuse(family, "publication", "synthetic publication failure").is_err());
                 continue;
             }
-            assert!(
-                !family.tables().is_empty(),
-                "{} needs a refusal contract",
-                family.name()
-            );
+            if family == Family::PlayerCommands {
+                assert!(family.tables().is_empty());
+            } else {
+                assert!(
+                    !family.tables().is_empty(),
+                    "{} needs a refusal contract",
+                    family.name()
+                );
+            }
             let mut broken = FamilyHooks::new(family, Ok(false)).unwrap();
             assert_eq!(
                 broken.toggle(true, |_, _| Ok(false)),
@@ -1148,6 +1152,31 @@ mod tests {
                 .unwrap();
             assert_eq!(failure["stage"], "publication");
             assert!(!failure["site"].as_str().unwrap().is_empty());
+            if family == Family::PlayerCommands {
+                let memory = engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &[],
+                };
+                let mut hooks = FamilyHooks::construct(0, || {
+                    Ok(unsafe { crate::player_commands::Hooks::new(&memory, 0) })
+                })
+                .unwrap();
+                for enabled in [true, false] {
+                    assert_eq!(hooks.set_enabled(enabled), Ok(true));
+                    assert_eq!(hooks.executable_ranges().count(), 0);
+                    let status = serde_json::to_value(crate::player_commands::status()).unwrap();
+                    assert_eq!(status["enabled"], false);
+                    assert_eq!(status["unhooked"], "command observer site unreadable");
+                }
+                let mut drain = crate::player_commands::Drain::default();
+                for final_drain in [false, true] {
+                    assert!(drain.take(final_drain).unwrap().is_empty());
+                }
+                assert!(source.tables.iter().all(|table| matches!(
+                    table,
+                    replay_frame::frame::TableInput::Sampled(TableView::Complete(_))
+                )));
+            }
             // A partially published family is retained for restoration, even
             // though it supplies no recorded table. Never discard live relays.
             let mut restored = false;

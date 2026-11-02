@@ -62,7 +62,7 @@ test('drill choices retain later aliases absent from the first canonical-slot ro
   const choices = allowedCountryChoices(metadata, ['GER', 'ITA', 'GER'], { branchId: '2', hour: 150 });
   assert.deepEqual(choices.map(choice => choice.country.tag).sort(), ['GER', 'ITA']);
   const renamed = choices.find(choice => choice.country.tag === 'GER')!.country;
-  assert.equal(renamed.name, 'Loading name…');
+  assert.equal(renamed.name, 'Country name unavailable');
   assert.equal(renamed.id, undefined);
   assert.equal(renamed.observedBranchId, '2');
   assert.equal(renamed.observedHour, 150);

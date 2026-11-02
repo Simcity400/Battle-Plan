@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createServer } from 'vite';
 
 test('native query rejections use typed failures and cancellation keeps AbortError', async () => {
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, ssr: { noExternal: ['@tauri-apps/api'] },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'synthetic-native-ipc', enforce: 'pre',
       resolveId(id) { if (id === '@tauri-apps/api/core') return '\0synthetic-native'; if (id === '@tauri-apps/api/event') return '\0synthetic-events'; },

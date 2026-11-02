@@ -18,9 +18,9 @@ test('fleet and sinking details preserve names and sinking dates without supplyi
 
 test('detail failures and missing fleets hide backend reasons without claiming no losses', () => {
   assert.deepEqual(navalDetailTooltip(undefined, new Error('private backend error')), [
-    { label: 'Couldn’t load battle details.', tone: 'muted', divider: true },
+    { label: 'Couldn’t load battle details.', detail: 'private backend error', tone: 'muted', divider: true },
   ]);
-  assert.deepEqual(navalDetailTooltip(undefined), [{ label: 'Loading battle details…', tone: 'muted', divider: true }]);
+  assert.deepEqual(navalDetailTooltip(undefined), [{ label: 'Loading battle details…', detail: undefined, tone: 'muted', divider: true }]);
   const rows = navalDetailTooltip({ ...detail, fleets: [{ names: [], unknown: 'native field refused' }, { names: [], unknown: null }],
     shipRead: null, namedShips: [], unavailable: 'private table unavailable' });
   assert.ok(rows.some(row => row.label === 'Fleet details unavailable.'));

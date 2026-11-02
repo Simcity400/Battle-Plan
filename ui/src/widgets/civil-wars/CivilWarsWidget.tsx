@@ -158,7 +158,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   useEffect(() => {
     const unnamed = (view?.unnamed ?? 0) + unnamedDrawn;
     const warnings = [...new Set([...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...(looks.warnings ?? []),
-      ...(groups.error ? [`Country history unavailable: ${groups.error}`] : []),
+      ...(groups.error ? [`Country history unavailable: ${groups.error.message}`] : []),
       ...(unnamed ? [`${unnamed} civil-war ${unnamed === 1 ? 'name is' : 'names are'} not known; shown as “${NAME_NOT_KNOWN}”.`] : [])])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);

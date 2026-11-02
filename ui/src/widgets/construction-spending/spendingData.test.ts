@@ -34,13 +34,14 @@ test('spending names both railway endpoints at the shown hour while totals and i
   const known = datedSpendingItems(data, { from: null, hour: 124, end: 148 }, names)[0];
   assert.equal(known.path[2].label, 'Stored owner name to Other state');
   assert.equal(known.exact, 99n);
-  for (const [hour, reason] of [[130, 'States read failed'], [148, 'language does not match']] as const) {
+  for (const [hour, reason] of [[130, 'States read failed'], [148, 'Recorded language does not match']] as const) {
     const missing = datedSpendingItems(data, { from: null, hour, end: 148 }, names)[0];
     assert.equal(missing.path[2].label, 'State 5 to State 6');
     assert.equal(missing.path[2].id, known.path[2].id);
     assert.equal(missing.exact, known.exact);
-    assert.equal(missing.note, 'State name unavailable.');
-    assert.doesNotMatch(missing.note, new RegExp(reason));
+    const note = `State 5: ${reason} State 6: ${reason}`;
+    assert.equal(missing.note, note);
+    assert.doesNotMatch(missing.note, /State name unavailable/);
     // Keep the real shared tree/tooltip path: a missing name is not missing IC.
     const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale, 5), unit: 'IC', valueLabel: 'Spent' };
     for (const levels of [[true, true, true], [false, true, false], [false, false, false]]) {
@@ -51,8 +52,9 @@ test('spending names both railway endpoints at the shown hour while totals and i
       assert.equal(node.valueUnknown, false);
       for (const tip of sliceTooltip(node, root, text)) {
         assert.equal(tip.rows[0].value, '0.00099 IC');
-        assert.match(tooltipText(tip), /State name unavailable/);
-        assert.doesNotMatch(tooltipText(tip), new RegExp(reason));
+        assert.equal(tip.note, note);
+        assert.ok(tooltipText(tip).endsWith(`; ${note}`));
+        assert.doesNotMatch(tooltipText(tip), /State name unavailable/);
       }
     }
   }
@@ -229,7 +231,9 @@ test('folded state rows retain name failure reasons beside exact recorded output
   const text = { format: (value: number, exact: bigint | null) => formatSpent(value, exact, data.costScale, 5), unit: 'IC', valueLabel: 'Spent' };
   for (const tip of sliceTooltip(other, root, text)) {
     assert.equal(tip.rows[0].value, '0.003 IC');
-    assert.match(tooltipText(tip), /State name unavailable/);
-    assert.doesNotMatch(tooltipText(tip), /Stored state name|language differs|State [56]:/);
+    const note = 'State 6: Stored state name language differs from recorded language State 5: Stored state name language differs from recorded language';
+    assert.equal(tip.note, note);
+    assert.ok(tooltipText(tip).endsWith(`; ${note}`));
+    assert.doesNotMatch(tooltipText(tip), /State name unavailable/);
   }
 });

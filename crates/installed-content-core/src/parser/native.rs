@@ -747,14 +747,12 @@ pub struct Read {
     pub items: Vec<Item>,
     pub misreads: Vec<Misread>,
     /// Diagnostics for each top-level item, in `items` order and with the
-    /// same length. Direct persistent reads keep empty entries: their
-    /// diagnostic ownership is unavailable.
+    /// same length, for both file and persistent top-level loops.
     /// Counted reports retain the occurrences in that item, even when the
     /// file-wide `misreads` combines the same report from several items.
     pub item_misreads: Vec<Vec<Misread>>,
     /// Diagnostics from file fields that kept no item, variable definitions
-    /// at any nesting depth, or a direct persistent read. Their ownership is
-    /// file-wide or unavailable.
+    /// at any nesting depth. Their ownership is file-wide or unavailable.
     pub unattributed_misreads: Vec<Misread>,
     /// A block read by key whose reading the port cannot settle, and why:
     /// everything after it in the file is unknown and not in `items`.
@@ -857,11 +855,7 @@ fn read_scoped<S: Copy>(
     reader.effect_scope = scope;
     let items = match top {
         Top::File(node) => reader.file(node, dispatch),
-        Top::Persistent(node) => {
-            let items = reader.object(node, dispatch);
-            reader.item_misreads.resize_with(items.len(), Vec::new);
-            items
-        }
+        Top::Persistent(node) => reader.object_with_notes(node, dispatch, true),
     };
     // A refused file must still name counted warnings encountered before
     // its stopping point; callers that return only the refusal keep them.
@@ -1140,16 +1134,20 @@ impl<'n> Reader<'n> {
         let mut items = Vec::new();
         while !self.stopped && self.unsettled.is_none() && self.peek().kind != Kind::End {
             let item = self.field(top, dispatch);
-            let notes = std::mem::take(&mut self.reading_notes);
-            if let Some(item) = item {
-                items.push(item);
-                self.item_misreads.push(notes);
-            } else {
-                self.unattributed_misreads.extend(notes);
-            }
+            self.keep_item_with_notes(item, &mut items);
             self.broken = false;
         }
         items
+    }
+
+    fn keep_item_with_notes(&mut self, item: Option<Item>, items: &mut Vec<Item>) {
+        let notes = std::mem::take(&mut self.reading_notes);
+        if let Some(item) = item {
+            items.push(item);
+            self.item_misreads.push(notes);
+        } else {
+            self.unattributed_misreads.extend(notes);
+        }
     }
 
     /// Read fields until `}` or the end, consuming the closing read. Any retained `@`
@@ -1160,15 +1158,23 @@ impl<'n> Reader<'n> {
         schema: S,
         dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
     ) -> Vec<Item> {
+        self.object_with_notes(schema, dispatch, false)
+    }
+
+    fn object_with_notes<S: Copy>(
+        &mut self,
+        schema: S,
+        dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
+        attribute_items: bool,
+    ) -> Vec<Item> {
         let mut items = Vec::new();
         while self.unsettled.is_none() {
             if self.at_loop_end() {
                 break;
             }
-            if let Some(item) = self.field(schema, dispatch) {
-                items.push(item);
-            }
-            if std::mem::take(&mut self.broken) {
+            let item = self.field(schema, dispatch);
+            let broken = std::mem::take(&mut self.broken);
+            if broken {
                 let line = self.line();
                 if self.advance() {
                     let consumed = self.current();
@@ -1180,6 +1186,13 @@ impl<'n> Reader<'n> {
                         ),
                     );
                 }
+            }
+            if attribute_items {
+                self.keep_item_with_notes(item, &mut items);
+            } else if let Some(item) = item {
+                items.push(item);
+            }
+            if broken {
                 break;
             }
         }

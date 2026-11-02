@@ -945,10 +945,98 @@ fn navigation_steps_between_recorded_payments() {
             }),
         )
         .unwrap()["hour"]
-            .clone()
+            .as_f64()
     };
-    assert_eq!(step(111, "ArrowRight"), json!(125));
-    assert_eq!(step(124, "ArrowLeft"), json!(110));
+    assert_eq!(step(111, "ArrowRight"), Some(125.0));
+    assert_eq!(step(124, "ArrowLeft"), Some(110.0));
+    assert_eq!(step(110, "ArrowRight"), Some(125.0));
+    assert_eq!(step(125, "ArrowLeft"), Some(110.0));
+    assert_eq!(step(111, "Home"), Some(100.0));
+    assert_eq!(step(111, "End"), Some(125.0));
+    assert_eq!(step(125, "ArrowRight"), Some(125.0));
+    assert_eq!(step(100, "ArrowLeft"), Some(100.0));
+    assert_eq!(step(140, "ArrowLeft"), Some(125.0));
+    assert_eq!(step(90, "ArrowRight"), Some(100.0));
+}
+
+#[test]
+fn navigation_merges_values_and_events_within_country_membership() {
+    let budget = Budget::new(1 << 30);
+    let tags: Vec<String> = (0..1500).map(|index| format!("C{index:03X}")).collect();
+    let countries: Vec<(u32, &str)> = tags
+        .iter()
+        .enumerate()
+        .map(|(index, tag)| (index as u32 + 1, tag.as_str()))
+        .collect();
+    let mut first = opening(100, &countries);
+    first.daily.push(daily_row(1, 100, 1, 50_000));
+    let mut hours = vec![first];
+    for at in 101..=130 {
+        let mut hour = steady(at, &countries);
+        if at == 110 || at == 125 {
+            hour.power.push(decision(1, at as u64, at, 1_500_000));
+        }
+        if at == 112 || at == 124 {
+            hour.power.push(decision(2, at as u64, at, 1_500_000));
+        }
+        if at == 118 {
+            hour.daily.push(daily_row(1, 100, 1, 60_000));
+        }
+        if at == 122 {
+            hour.governments.push(government(1, 122, at));
+        }
+        if at == 128 {
+            hour.power.push(decision(1, 128, 116, 1_500_000));
+        }
+        hours.push(hour);
+    }
+    let built = build(hours, &[115, 130], &[115], &budget);
+    let step = |from: f64, key: &str, mut params: serde_json::Value| {
+        params["branchId"] = json!("1");
+        params["tag"] = json!("C000");
+        params["navigation"] = json!({
+            "from": from, "firstHour": 100, "lastHour": 130, "key": key,
+        });
+        ask(&built, &budget, params).unwrap()["hour"].as_f64()
+    };
+    assert_eq!(step(111.0, "ArrowRight", json!({})), Some(116.0));
+    assert_eq!(step(117.0, "ArrowRight", json!({})), Some(118.0));
+    assert_eq!(step(119.0, "ArrowRight", json!({})), Some(122.0));
+    assert_eq!(step(124.0, "ArrowLeft", json!({})), Some(122.0));
+    assert_eq!(step(118.0, "ArrowLeft", json!({})), Some(116.0));
+    assert_eq!(
+        step(115.0, "ArrowRight", json!({ "hour": 120 })),
+        Some(118.0)
+    );
+    assert_eq!(
+        step(121.0, "ArrowRight", json!({ "hour": 120 })),
+        Some(121.0)
+    );
+    assert_eq!(step(111.0, "End", json!({ "hour": 120 })), Some(118.0));
+    assert_eq!(step(110.5, "ArrowLeft", json!({})), Some(110.0));
+    assert_eq!(step(124.5, "ArrowRight", json!({})), Some(125.0));
+    let within = json!({ "within": [{ "firstHour": 120, "lastHour": 130 }] });
+    assert_eq!(step(121.0, "ArrowRight", within.clone()), Some(122.0));
+    assert_eq!(step(122.0, "ArrowLeft", within), Some(120.0));
+    let bindings = json!({ "bindings": {
+        "C000": [{ "firstHour": 120, "lastHour": 130 }],
+        "C001": [{ "firstHour": 100, "lastHour": 115 }],
+    } });
+    assert_eq!(step(111.0, "ArrowRight", bindings.clone()), Some(112.0));
+    assert_eq!(step(116.0, "ArrowRight", bindings.clone()), Some(120.0));
+    assert_eq!(step(125.0, "ArrowLeft", bindings), Some(122.0));
+    assert_eq!(
+        step(111.0, "ArrowRight", json!({ "bindings": { "C000": [] } })),
+        Some(111.0)
+    );
+    let all: BTreeMap<_, _> = tags
+        .iter()
+        .map(|tag| (tag, json!([{ "firstHour": 100, "lastHour": 130 }])))
+        .collect();
+    assert_eq!(
+        step(111.0, "ArrowRight", json!({ "bindings": all })),
+        Some(112.0)
+    );
 }
 
 fn government(country: u32, sequence: u64, hour: i32) -> facts::Government {

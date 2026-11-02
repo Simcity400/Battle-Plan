@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { FactionGoalDefinition, FactionGoalsReply } from '../../generated/dashboard';
 import { mountModule } from '../../dashboard/pendingGroups.fixture.ts';
+import { RefusedError } from '../../dashboard/queryError.ts';
 
 const definition = (token: string): FactionGoalDefinition => ({ progress: [], sections: [], bands: [], conditions: [], rewards: [], flags: [], token,
   name: `Mod ${token}`, description: null, icon: null, category: 'mod_term', categoryName: 'A mod term', reason: null });
@@ -24,7 +25,7 @@ const prepared = (pendingFrom: number): FactionGoalsReply => ({
 });
 type Part = { firstHour: number | null; lastHour: number | null; data?: FactionGoalsReply; error?: Error };
 type State = { hour: number; faction: string; parts: Record<string, Part[]>; error?: Error; details: [string, number][]; rows: unknown[];
-  retries: number; held: unknown[]; diagnostics: unknown[]; states: { kind: string; detail?: string; onRetry?: () => void }[];
+  retries: number; held: unknown[]; diagnostics: unknown[]; states: { kind: string; failure?: Error; onRetry?: () => void }[];
   detailError?: Error };
 
 async function mount() {
@@ -81,7 +82,9 @@ test('an hour before the first run, or still being prepared, asks its own detail
     state.detailError = new Error('Faction details unavailable at this hour');
     const before = render(5);
     assert.deepEqual(before.details, [['9', 5]]);
-    assert.equal(before.states.at(-1)?.detail, 'Faction details unavailable at this hour');
+    assert.equal(before.states.at(-1)?.kind, 'error');
+    assert.equal(before.states.at(-1)?.failure, state.detailError);
+    assert.equal(before.states.at(-1)?.failure?.message, 'Faction details unavailable at this hour');
     delete state.detailError;
     const pending = render(190);
     assert.deepEqual(pending.details, [['9', 190]]);
@@ -101,7 +104,9 @@ test('a proven absence is an error whose retry asks only that hour, never the wh
     const absent = render(160);
     const shown = absent.states.at(-1)!;
     assert.equal(shown.kind, 'error');
-    assert.equal(shown.detail, 'Faction is absent at this hour');
+    assert.equal(shown.failure?.name, 'RefusedError');
+    assert.equal((shown.failure as RefusedError).text, 'Faction is absent at this hour');
+    assert.equal(shown.failure?.message, 'Faction is absent at this hour');
     assert.deepEqual(absent.details, []);
     shown.onRetry!();
     assert.equal(state.retries, 0, 'the history is not asked again');
@@ -116,8 +121,9 @@ test('a failed history range falls back to each hour, names the failure and offe
     const failed = render(120);
     assert.deepEqual(failed.details, [['9', 120]]);
     assert.deepEqual(failed.rows, [[['Mod detail_goal', null]]]);
-    const [[errors, retry]] = failed.held as [[string[], () => void]];
-    assert.deepEqual(errors, ['Goal history unavailable: Background preparation is off.']);
+    const [[errors, retry]] = failed.held as [[Error[], () => void]];
+    assert.deepEqual(errors, [state.error]);
+    assert.deepEqual(errors.map(error => error.message), ['Background preparation is off.']);
     retry();
     assert.equal(state.retries, 1);
     assert.ok((failed.diagnostics.at(-1) as string[]).includes('Goal history unavailable: Background preparation is off.'));
@@ -135,5 +141,19 @@ test('switching faction never shows the last faction\'s rows', async () => {
     assert.deepEqual(switched.rows, []);
     assert.equal(switched.states.at(-1)?.kind, 'loading');
     assert.deepEqual(switched.details, []);
+  } finally { await close(); }
+});
+
+test('goal history diagnostics use failure messages without error names', async () => {
+  const { state, render, close } = await mount();
+  try {
+    for (const [failure, diagnostic] of [
+      [new Error('Background preparation failed.'), 'Goal history unavailable: Background preparation failed.'],
+      [new RefusedError('Background preparation is off.'), 'Goal history unavailable: Background preparation is off.'],
+    ] as const) {
+      state.error = failure;
+      state.parts['9'] = [{ firstHour: null, lastHour: null, error: failure }];
+      assert.deepEqual(render(120).diagnostics, [[diagnostic]]);
+    }
   } finally { await close(); }
 });

@@ -395,22 +395,24 @@ fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
             .to_string(),
         "sub-unit: token 3 is not in LexicalTokens"
     );
-    // Two authored sub-unit keys equal under the fold are refused by
-    // name; two equipment keys are one type, the later redefining it
-    let ambiguous = content_with(
+    // Case-only redeclarations reuse the first spelling in both databases.
+    let redeclared = content_with(
         br#"
         sub_units = { ARMOR = { type = armor need = { tanks = 50 } } }
         equipments = { TANKS = { is_archetype = yes type = armor } }
     "#,
     );
+    assert_eq!(redeclared.order, ["infantry", "armor", "support"]);
+    let template = redeclared
+        .template(&row((1, 0), &[(2, 0, 1)]), &folded(&[]))
+        .unwrap();
+    assert_eq!(template.groups.len(), 1);
+    assert_eq!(template.groups[0].subunit.key, "armor");
     assert_eq!(
-        ambiguous
-            .template(&row((1, 0), &[(2, 0, 1)]), &folded(&[]))
-            .unwrap_err()
-            .to_string(),
-        "token ARMOR names several content keys: ARMOR, armor"
+        template.groups[0].requirements.as_ref(),
+        &[("tanks".to_owned(), 5_000_000)]
     );
-    let redefined = ambiguous.template(&row((1, 1), &[]), &local).unwrap();
+    let redefined = redeclared.template(&row((1, 1), &[]), &local).unwrap();
     assert_eq!(
         Template::first_requirement(redefined.representative.as_ref().unwrap()),
         Some("tanks")

@@ -156,6 +156,8 @@ fn frame(day: i32, offset: i32, extra: u32) -> DecodedFrame {
         lines.push((line, link, 10));
         rows.push(output(line, link, 10, units, 10 * units, OutputPurpose::New, true));
     }
+    lines.sort_unstable_by_key(|&(handle, _, _)| handle);
+    rows.sort_unstable_by_key(|row| (row.line, row.ordinal));
     *frame.tables[TableId::ProductionLines.index()] = TableView::Complete(TableRows::ProductionLines(
         lines
             .iter()

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CountryGroupReply, OperativePlacementReply } from '../../generated/dashboard';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
+import type { OperativePlacementReply } from '../../generated/dashboard';
 import { countryNodeId, placementChord, placementChordMemo, placementTooltip, placementsAt, OTHER_ID, rankedCountries, placementTotals, selectPlacements, validatePlacementsReply } from './placementsData.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
 import { createWidget } from '../../dashboard/model.ts';
@@ -14,11 +15,11 @@ const reply = (): OperativePlacementReply => ({ branchId: '7', warnings: [],
 const labels = (tag: string) => ({ name: `Recorded ${tag}`, flag: `flag:${tag}` });
 
 test('manual placement selection keeps earlier aliases and every holder, without parsing opaque pair IDs', () => {
-  const groups = { countryIdentities: [
+  const groups = countryGroupReply({ countryIdentities: [
     { tag: 'X', identities: [{ firstHour: 10, lastHour: 11, slot: 2, countryId: 20 }, { firstHour: 13, lastHour: 14, slot: 1, countryId: 10 }] },
     { tag: 'Y', identities: [{ firstHour: 10, lastHour: 11, slot: 1, countryId: 10 }, { firstHour: 13, lastHour: 14, slot: 3, countryId: 30 }] },
     { tag: 'B_OTHER', identities: [{ firstHour: 13, lastHour: 14, slot: 2, countryId: 20 }] },
-  ] } as CountryGroupReply;
+  ] });
   const selection: import('../../dashboard/model').CountrySelection = { kind: 'tags', tags: ['X'] };
   const placement = (id: string, owner: string, target: string) => ({ id, owner, target, count: 1, operatives: [{ id, name: null, unnamed: true }] });
   const before = [placement('opaque A', 'Y', 'T'), placement('opaque B', 'X', 'T')];
@@ -30,8 +31,8 @@ test('manual placement selection keeps earlier aliases and every holder, without
 });
 
 test('native placement filtering retains the final holder in a 5000-country catalogue', () => {
-  const groups = { countryIdentities: Array.from({ length: 5000 }, (_, index) => ({ tag: `Country ${index}`,
-    identities: [{ firstHour: 10, lastHour: 17, slot: index + 1, countryId: index + 10001 }] })) } as CountryGroupReply;
+  const groups = countryGroupReply({ countryIdentities: Array.from({ length: 5000 }, (_, index) => ({ tag: `Country ${index}`,
+    identities: [{ firstHour: 10, lastHour: 17, slot: index + 1, countryId: index + 10001 }] })) });
   const placements = groups.countryIdentities.map((country, index) => ({ id: `opaque ${index}`, owner: country.tag, target: 'unrelated', count: 1,
     operatives: [{ id: String(index), name: null, unnamed: true }] }));
   assert.deepEqual(selectPlacements(placements, { kind: 'tags', tags: ['Country 4999'] }, groups, 10, 17).placements.map(pair => pair.id), ['opaque 4999']);
@@ -167,14 +168,14 @@ test('all is the new widget default; explicit choices include either endpoint', 
   assert.deepEqual(createWidget('who-spies-on-whom', 'track').countries, { kind: 'all' });
   const placements = placementsAt(reply(), 10).placements;
   assert.equal(selectPlacements(placements, { kind: 'all' }, undefined, 10, 17).placements.length, 1);
-  const groups = { countryIdentities: [{ tag: 'renamed target', identities: [{ firstHour: 10, lastHour: 17, slot: 1, countryId: 7 }] }] } as CountryGroupReply;
+  const groups = countryGroupReply({ countryIdentities: [{ tag: 'renamed target', identities: [{ firstHour: 10, lastHour: 17, slot: 1, countryId: 7 }] }] });
   assert.match(selectPlacements(placements, { kind: 'tags', tags: ['renamed target'] }, undefined, 10, 17).reason!, /Loading countries/);
   assert.equal(selectPlacements(placements, { kind: 'tags', tags: ['renamed target'] }, groups, 10, 17).placements.length, 1);
   assert.equal(selectPlacements(placements, { kind: 'tags', tags: ['absent'] }, undefined, 10, 17).placements.length, 0);
 });
 test('a smart group resolves at its chosen hour and missing membership is unavailable', () => {
   const placements = placementsAt(reply(), 10).placements;
-  const groups = { countryIdentities: [{ tag: 'renamed target', identities: [{ firstHour: 10, lastHour: 17, slot: 1, countryId: 7 }] }], humans: [{ tag: 'renamed target', firstHour: 10, lastHour: 11 }], unobserved: { humans: [{ firstHour: 12, lastHour: 12 }] } } as CountryGroupReply;
+  const groups = countryGroupReply({ countryIdentities: [{ tag: 'renamed target', identities: [{ firstHour: 10, lastHour: 17, slot: 1, countryId: 7 }] }], humans: [{ tag: 'renamed target', firstHour: 10, lastHour: 11 }], unobserved: { humans: [{ firstHour: 12, lastHour: 12 }], factions: [], wars: [] } });
   const selection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
   assert.equal(selectPlacements(placements, selection, groups, 10, 17).placements.length, 1);
   assert.match(selectPlacements(placements, selection, groups, 12, 17).reason!, /Group membership is unavailable at this time/);

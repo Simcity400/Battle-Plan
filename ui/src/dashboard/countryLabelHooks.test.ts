@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
-import type { DashboardClient, ProductReply, ProductRequest } from './client';
+import type { DashboardClient, PreparedQueryOptions, ProductReply, ProductRequest } from './client';
 import type { BoundTrack } from './model';
 
 type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
@@ -76,6 +76,10 @@ test('actual dated lane and hover hooks retain empty names without widening requ
       const calls: { input: ProductRequest; signal: AbortSignal; answer: (data: unknown) => void; fail: () => void }[] = [];
       const client = { product: (input: ProductRequest, signal: AbortSignal) => new Promise<ProductReply<unknown>>((resolve, reject) => {
         calls.push({ input, signal, answer: data => resolve({ ...input, data }), fail: () => reject(new Error('Flag content refused')) });
+      }), preparedQuery: (_source: unknown, _product: string, _params: unknown, { signal }: PreparedQueryOptions) => new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(new DOMException('Request cancelled', 'AbortError'));
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
       }) } as unknown as DashboardClient;
       return { client, calls };
     };

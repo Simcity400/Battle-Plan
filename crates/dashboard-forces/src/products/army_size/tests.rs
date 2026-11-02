@@ -698,6 +698,33 @@ fn the_projector_counts_the_army_as_the_game_does_and_hands_only_what_changed() 
         first[0].mix.as_ref().unwrap(),
         out[1].countries[0].mix.as_ref().unwrap()
     ));
+
+    let budget = Budget::new(64 << 20);
+    let built = build(out, &[101, 102, 103], Some(102), &budget);
+    let cache = Cache::new(&budget);
+    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
+    for (tag, before, after) in [
+        ("GER", ger(100_000, true), ger(120_000, true)),
+        ("ZZZ", zzz(true), zzz(true)),
+    ] {
+        for channel in 0..8 {
+            let before = before[channel].unwrap();
+            let after = after[channel].unwrap();
+            let expected = if channel >= 6 {
+                vec![raw(100, 101, true, before), raw(103, 103, true, after)]
+            } else if before != after {
+                vec![raw(100, 100, true, before), raw(101, 103, false, after)]
+            } else {
+                vec![raw(100, 103, true, before)]
+            };
+            assert_eq!(
+                runs_of(&mut snapshot, &directory, tag, channel as u64, (100, 103)),
+                expected,
+                "{tag} channel {channel}"
+            );
+        }
+    }
 }
 
 fn party(slot: u32, tag: &str) -> Party {

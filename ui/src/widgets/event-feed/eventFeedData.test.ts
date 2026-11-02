@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, EventFeedReply, EventFeedRow } from '../../generated/dashboard';
 import { countryMatch } from '../../dashboard/groups.ts';
 import { logCountryRequests } from '../../charts/log/logData.ts';
@@ -211,9 +212,17 @@ test('missing captures have one explicit adapter, and bad icons do not discard n
   data.items = [{ ...named, icon: 'javascript:bad' }];
   data.unavailable = [{ kind: 'drops', label: 'Nuclear drops', reason: 'Only stockpile amounts were captured.', count: null },
     { kind: 'mod/refused', label: 'Modded form', reason: 'Unsupported scripted artwork: mod/refused.', count: 3 }];
+  deepFreeze(data);
   const checked = validateEventFeedReply(data);
   assert.equal(checked.items[0].icon, null);
   assert.equal(checked.items[0].name, named.name);
+  assert.equal(data.items[0].icon, 'javascript:bad');
+  assert.notEqual(checked, data);
+  assert.notEqual(checked.items, data.items);
+  assert.notEqual(checked.items[0], data.items[0]);
+  assert.equal(checked.rows, data.rows);
+  assert.deepEqual(validateEventFeedReply(data), checked);
+  assert.equal(validateEventFeedReply(deepFreeze(checked)), checked);
   assert.match(notRecorded(checked)[0], /Not recorded.*Only stockpile/);
   assert.ok(notRecorded(checked)[0].includes('Not recorded — '));
   assert.match(notRecorded(checked)[1], /mod\/refused.*3 counted/);

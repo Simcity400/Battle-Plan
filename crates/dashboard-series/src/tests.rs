@@ -4228,10 +4228,10 @@ fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
     assert_eq!(canonicals.len(), 8 * 40 + 1);
     let mut snapshot = Snapshot::open(memory, &cache, root, identity()).unwrap();
     let members = [span(150, 420), span(650, 1000)];
-    for (window, membership) in [
-        (span(0, 1199), None),
-        (span(150, 1100), None),
-        (span(150, 1100), Some(&members[..])),
+    for (window, membership, count) in [
+        (span(0, 1199), None, 321),
+        (span(150, 1100), None, 220),
+        (span(150, 1100), Some(&members[..]), 181),
     ] {
         let mut expected = Vec::new();
         for &(extent, value) in &canonicals {
@@ -4252,6 +4252,7 @@ fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
         let mut actual = Vec::new();
         let mut most = 0;
         let mut cursor = None;
+        let mut pages = Vec::new();
         loop {
             let before = crate::read::DECODED_RUNS.with(|decoded| decoded.get());
             let page = snapshot
@@ -4261,13 +4262,25 @@ fn ordered_contribution_pages_seek_their_position_and_decode_bounded_rows() {
                 })
                 .unwrap();
             most = most.max(crate::read::DECODED_RUNS.with(|decoded| decoded.get()) - before);
+            pages.push((
+                page.first_ordinal,
+                page.returned,
+                page.total,
+                page.next.is_some(),
+            ));
             cursor = page.next;
             if cursor.is_none() {
                 break;
             }
         }
         assert_eq!(actual, expected, "window {window:?}");
-        assert!(actual.len() > 250);
+        assert_eq!(actual.len(), count);
+        assert_eq!(
+            pages,
+            (0..count)
+                .map(|ordinal| (ordinal as u64, 1, None, ordinal + 1 < count))
+                .collect::<Vec<_>>()
+        );
         assert!(most <= 6 * 32, "{most} rows decoded for one page");
     }
 }

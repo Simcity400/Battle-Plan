@@ -804,9 +804,9 @@ fn parity_seen(label: &str, walk: Walk<'_>, seen: &mut dyn FnMut(&columnar::Hour
     assert_payloads_equal(&published.projected.payloads(), &expected, label);
     for (branch, scan) in &mut rows {
         let walked = projected.get_mut(branch).unwrap().losses().0;
-        // A reloaded scan's losses handed what they wrote to its series before each save.
+        // A publication extends rank tails before saving its scan.
         let (row, walked) = if walk.reload {
-            (scan.losses().0.state(), walked.state())
+            (scan.losses().0.settled_state(), walked.settled_state())
         } else {
             (scan.losses().0.pending(), walked.pending())
         };

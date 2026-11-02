@@ -333,8 +333,7 @@ impl<O: Observer> Emit<O> {
                         Some(operands)
                     }
                 };
-                if !O::changed(&changes) && self.scan.continues_to(at) {
-                    // Nothing it reads moved: the hour is quiet, refused hours staying refused.
+                if self.scan.open && !O::changed(&changes) && self.scan.continues_to(at) {
                     if let Some(operands) = &operands {
                         operands.skipped(&mut self.scan.observer)?;
                     }

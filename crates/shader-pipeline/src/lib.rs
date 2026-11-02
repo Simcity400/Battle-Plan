@@ -7,7 +7,11 @@
 #[global_allocator]
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use std::{collections::BTreeMap, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use installed_content_core::pdxshader::program::{Program, Stage, Technique};
 
@@ -119,29 +123,40 @@ pub const DXC_VERSION: &str = "1.9.0.5402 (0d3ee6b55-dirty)";
 /// RenderDoc builds tested here omit SPIR-V; tools/install-shader-compiler.ps1 installs DXC.
 pub struct Compiler {
     executable: PathBuf,
+    source: &'static str,
 }
 
 impl Compiler {
-    /// `BATTLE_PLAN_SHADER_COMPILER`, else `shader-tools/dxc/dxc.exe` beside the running executable.
+    /// Environment override, bundled compiler, then the current user's installed compiler.
     pub fn discover() -> Result<Self, String> {
-        if let Some(path) = std::env::var_os("BATTLE_PLAN_SHADER_COMPILER").or_else(|| std::env::var_os("HOI4_SHADER_COMPILER")) {
-            return Self::at(PathBuf::from(path));
-        }
-        let path = std::env::current_exe()
-            .map_err(|e| format!("DXC location: {e}"))?
-            .with_file_name("shader-tools")
-            .join("dxc/dxc.exe");
-        Self::at(path)
+        let (source, path) = compiler_location(
+            std::env::var_os("BATTLE_PLAN_SHADER_COMPILER").or_else(|| std::env::var_os("HOI4_SHADER_COMPILER")).map(PathBuf::from),
+            std::env::current_exe()
+                .ok()
+                .map(|exe| exe.with_file_name("shader-tools").join("dxc/dxc.exe")),
+            std::env::var_os("LOCALAPPDATA")
+                .map(|root| PathBuf::from(root).join("HOI4Replay/shader-tools/dxc/dxc.exe")),
+            Path::is_file,
+        )
+        .ok_or_else(|| MISSING_COMPILER.to_owned())?;
+        let mut compiler = Self::at(path)?;
+        compiler.source = source;
+        Ok(compiler)
+    }
+
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    pub fn source(&self) -> &'static str {
+        self.source
     }
 
     /// Refuses a missing executable and any build other than the pinned [`DXC_VERSION`].
     pub fn at(executable: PathBuf) -> Result<Self, String> {
         if !executable.is_file() {
             // Installation paths must not enter persisted presentation refusals.
-            return Err(
-                "DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER"
-                    .into(),
-            );
+            return Err(MISSING_COMPILER.into());
         }
         let mut command = Command::new(&executable);
         command.arg("--version");
@@ -154,7 +169,10 @@ impl Compiler {
                 version.trim()
             ));
         }
-        Ok(Self { executable })
+        Ok(Self {
+            executable,
+            source: "explicit",
+        })
     }
 
     pub fn compile(
@@ -274,6 +292,26 @@ impl Compiler {
         let linkage = interface(&bytes, if stage == Stage::Vertex { 3 } else { 1 })?;
         Ok((shader, linkage))
     }
+}
+
+const MISSING_COMPILER: &str =
+    "DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER";
+
+fn compiler_location(
+    environment: Option<PathBuf>,
+    beside: Option<PathBuf>,
+    user: Option<PathBuf>,
+    mut is_file: impl FnMut(&Path) -> bool,
+) -> Option<(&'static str, PathBuf)> {
+    if let Some(path) = environment {
+        return Some(("env", path));
+    }
+    [("beside", beside), ("user install", user)]
+        .into_iter()
+        .find_map(|(source, path)| {
+            let path = path?;
+            is_file(&path).then_some((source, path))
+        })
 }
 
 /// D3D11 links a vertex output to a pixel input by register, that is by declaration order, not

@@ -35,6 +35,7 @@ pub struct Synthetic {
     branch: u64,
     hour: i32,
     first: bool,
+    written: [bool; TABLE_COUNT],
     statuses: Vec<Status>,
     read: Vec<u64>,
     samples: Vec<(usize, Option<i32>)>,
@@ -55,6 +56,7 @@ impl Synthetic {
             branch,
             hour,
             first: true,
+            written: [false; TABLE_COUNT],
             statuses: vec![Status::NotRecorded; TABLE_COUNT],
             read: vec![0; TABLE_COUNT.div_ceil(64)],
             samples: Vec::new(),
@@ -74,12 +76,18 @@ impl Synthetic {
         table: TableId,
         input: TableInput<'_, R>,
     ) -> io::Result<()> {
+        let index = table.index();
+        if self.written[index] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{table:?} was already written this hour"),
+            ));
+        }
         let writer = match self.writers.entry(table) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(TableWriter::new(&schema()?[table.index()])?),
         };
         let written = table_hour(writer, &mut self.strings, &mut self.cells, input)?;
-        let index = table.index();
         self.statuses[index] = written.evidence.status;
         if written.evidence.read {
             self.read[index / 64] |= 1 << (index % 64);
@@ -102,7 +110,9 @@ impl Synthetic {
                 bytes.clone(),
             ));
         }
-        writer.commit(written.prepared, written.evidence, self.hour)
+        writer.commit(written.prepared, written.evidence, self.hour)?;
+        self.written[index] = true;
+        Ok(())
     }
 
     /// Ends the hour under way: the walker applies it, and `visit` sees the walker's state,
@@ -119,6 +129,7 @@ impl Synthetic {
         visit: impl FnOnce(&State, &Manifest<'_>, &DecodedFrame, bool, &[(Section, Vec<u8>)]) -> T,
     ) -> io::Result<T> {
         self.sections.sort_by_key(|(section, _)| section.table);
+        self.samples.sort_unstable_by_key(|&(table, _)| table);
         let appends = self.strings.take_appended();
         let manifest = Manifest {
             branch: self.branch,
@@ -147,6 +158,7 @@ impl Synthetic {
         let sections = std::mem::take(&mut self.sections);
         self.state.apply(&manifest, |at| Ok(&sections[at].1[..]))?;
         let frame = self.views.advance(&self.state, &manifest, self.first)?;
+        self.written.fill(false);
         let starts = std::mem::replace(&mut self.first, false);
         let seen = visit(&self.state, &manifest, &frame, starts, &sections);
         self.hour += 1;

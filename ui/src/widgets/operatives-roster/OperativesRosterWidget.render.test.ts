@@ -70,7 +70,7 @@ test('a roster published before its preparation failed stays in its widget frame
     '/dashboard/products.ts': `import * as held from './heldFailures.ts'; globalThis.__heldFailures = held;
       const data = { countries: [{ tag: "GER", observed: [{ firstHour: 0, lastHour: 200 }], operatives: [] }], agencyAbsent: [], warnings: [] };
       const retry = () => {};
-      export const useProduct = () => ({ data, error: held.useHeldFailure('Preparation stopped', data !== undefined, retry), retry });
+      export const useProduct = () => ({ data, error: held.useHeldFailure(new Error('Preparation stopped'), data !== undefined, retry), retry });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
@@ -87,6 +87,9 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     const framed = renderToStaticMarkup(createElement(HeldFailuresContext.Provider, { value: new HeldFailures() }, widget));
     assert.match(framed, /No operatives in the selected roster\./, 'the published roster stays');
     assert.doesNotMatch(framed, /Preparation stopped/, 'its frame, not the body, says the failure');
-    assert.match(renderToStaticMarkup(widget), /data-detail="Preparation stopped"/, 'outside a frame the failure is never dropped');
+    const unframed = renderToStaticMarkup(widget);
+    assert.match(unframed, /data-detail="Preparation stopped"/, 'outside a frame the failure is never dropped');
+    assert.match(unframed, />Couldn’t load\.<\/span>/);
+    assert.doesNotMatch(unframed.replace(/<[^>]*>/g, ''), /Preparation stopped/);
   } finally { delete host.__operativesHeld; delete host.__heldFailures; await close(); }
 });

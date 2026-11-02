@@ -3560,7 +3560,9 @@ fn dormant_countries_waking_after_many_gaps_hold_no_copied_spans() {
         prepared.save(&mut pages, &flag).unwrap();
         // A woken country's view and the one still dormant read every gap, as copied ones did.
         let mut index = read::Index::open(Box::new(pages), prepared.directory.clone()).unwrap();
-        let expected: Vec<(i32, i32)> = (0..gaps).map(|at| (gap(at), gap(at))).collect();
+        let expected: Vec<(i32, i32)> = std::iter::once((FIRST, FIRST))
+            .chain((0..gaps).map(|at| (gap(at), gap(at))))
+            .collect();
         for slot in [1, countries / 2, countries - 1] {
             let history = index
                 .native_history(&NativeCountry {

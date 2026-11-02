@@ -573,6 +573,87 @@ pub(super) fn publication(
     Ok(serde_json::to_vec(&pages)?)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dashboard_base::prepared::series::{Run as ValueRun, tests::Fixture};
+
+    #[test]
+    fn country_scores_apply_backdated_runs_as_point_reads_do() {
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut amounts = Accumulator::default();
+        for (key, runs) in [
+            vec![(0, 2, 1), (5, 5, 2), (0, 10, 3)],
+            vec![(0, 10, 8), (2, 3, 4)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (first, last, value) in runs {
+                amounts.push(
+                    key as u64,
+                    ValueRun::new(first * DAY_HOURS, last * DAY_HOURS, value, true),
+                );
+            }
+        }
+        let mut writer = fixture.writer();
+        amounts
+            .flush(&mut writer, "air-superiority-1-values", 0, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        let reads = Reads {
+            source: None,
+            store: &fixture.store,
+            key: &fixture.key,
+            branch: 1,
+            cancelled: &flag,
+        };
+        let mut daily = Daily::empty(Default::default());
+        daily.catalogue = Catalogue::read(&[
+            (Field::Friendly("AAA".into(), 1), 0),
+            (Field::Enemy("AAA".into(), 1), 1),
+            (Field::Friendly("AAA".into(), 2), 2),
+        ]);
+        daily.runs.push(Run {
+            first: 0,
+            last: 11,
+            data: Arc::new(DayData {
+                offset: 0,
+                roster: None,
+                operands: Arc::new(DayOperands {
+                    identity_known: true,
+                    present: Arc::default(),
+                    witnessed: Arc::default(),
+                    invalid: Arc::default(),
+                    complete: true,
+                    unresolved: false,
+                }),
+                theatres: Arc::new(Theatres::read(false, &BTreeMap::new())),
+                theatre_age: None,
+                excluded: 0,
+                used: None,
+            }),
+        });
+        let scores = daily.country_scores(&reads, "AAA").unwrap();
+        let mut values = reads.reader("values").unwrap();
+        for (day, hour) in daily.sample_hours() {
+            let raw = values.values_at(&[0, 1], hour).unwrap();
+            let expected = match (raw[0], raw[1]) {
+                (None, None) => None,
+                (friendly, enemy) => Some((
+                    i64::try_from(friendly.unwrap_or(0)).unwrap(),
+                    i64::try_from(enemy.unwrap_or(0)).unwrap(),
+                )),
+            };
+            assert_eq!(scores.at(1, day), expected, "day {day}");
+            assert_eq!(scores.at(2, day), None, "day {day}");
+        }
+        assert_eq!(scores.at(1, -1), None);
+        assert_eq!(scores.at(1, 12), None);
+    }
+}
+
 impl Daily {
     fn epoch(&self, hour: i32) -> usize {
         self.epochs.partition_point(|boundary| *boundary <= hour)

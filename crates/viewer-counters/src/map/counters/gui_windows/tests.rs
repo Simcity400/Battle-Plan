@@ -961,12 +961,12 @@ fn an_incomplete_ship_census_leaves_the_counts_unknown() {
     let windows = windows();
     let window = windows.navy();
     let unknown = |update: &Update, part: &str| update.unknown.iter().any(|(at, _)| *at == part);
-    let count_text = |update: &Update| {
-        update.calls.iter().any(|(path, call)| {
-            path.ends_with(".count_txt")
-                && matches!(call, Call::Control(bound) if bound.text.is_some())
+    fn count_text(update: &Update) -> Option<&str> {
+        update.calls.iter().find_map(|(path, call)| match call {
+            Call::SetText(text) if path.ends_with(".count_txt") => Some(text.as_str()),
+            _ => None,
         })
-    };
+    }
     for coarse in [false, true] {
         let mut sea = at_sea_flotilla(coarse);
         sea.ships = None;
@@ -974,11 +974,12 @@ fn an_incomplete_ship_census_leaves_the_counts_unknown() {
         let (update, _) = production(window, &sea, CounterSettings::default(), &fixture);
         assert!(unknown(&update, COUNT), "coarse {coarse}");
         assert!(unknown(&update, CAPITALS), "coarse {coarse}");
-        assert!(!count_text(&update), "coarse {coarse}: {:?}", update.calls);
+        assert_eq!(count_text(&update), None, "coarse {coarse}");
         // A known count is written and lifts the part.
         sea.ships = Some(0);
         let (update, _) = production(window, &sea, CounterSettings::default(), &fixture);
-        assert!(update.wrote.contains(&COUNT) && count_text(&update));
+        assert!(!unknown(&update, COUNT) && update.wrote.contains(&COUNT));
+        assert_eq!(count_text(&update), Some("0"), "coarse {coarse}");
     }
     let mut item = port_flotilla();
     item.cells = None;
@@ -988,12 +989,13 @@ fn an_incomplete_ship_census_leaves_the_counts_unknown() {
     });
     let (update, _) = production(window, &item, CounterSettings::default(), &fixture);
     assert!(unknown(&update, COUNT) && unknown(&update, CAPITALS));
-    assert!(!count_text(&update), "{:?}", update.calls);
+    assert_eq!(count_text(&update), None);
     item.item = item
         .item
         .map(|intel| naval::ItemIntel { byte: 99, ..intel });
     let (update, _) = production(window, &item, CounterSettings::default(), &fixture);
     assert!(!unknown(&update, COUNT) && update.wrote.contains(&COUNT));
+    assert_eq!(count_text(&update), Some("?"));
 }
 
 #[test]

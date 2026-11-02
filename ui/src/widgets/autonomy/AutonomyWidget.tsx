@@ -202,7 +202,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []),
       ...(missingNativeSubjects ? [`Autonomy histories with unrecorded native subject identity spans: ${missingNativeSubjects}.`] : []),
       ...(missingNativeOverlords ? [`Autonomy histories with unrecorded native overlord identity spans affecting selection: ${missingNativeOverlords}.`] : []),
-      ...(groups.error ? [`Country identity changes could not be loaded: ${groups.error}`] : [])];
+      ...(groups.error ? [`Country identity changes could not be loaded: ${groups.error.message}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, missingNativeSubjects, missingNativeOverlords, subjects.length, lanesData.length, onDiagnostics]);

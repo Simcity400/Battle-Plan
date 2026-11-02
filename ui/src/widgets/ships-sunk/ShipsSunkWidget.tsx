@@ -116,7 +116,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   }), [data, campaignKey]);
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...[...history.data.values()].flatMap(page => page.reply.warnings), ...(groups.data?.warnings ?? []), ...(titles.data?.warnings ?? [])];
-    if (titles.error) warnings.push(`Ships sunk battle titles unavailable for ${titleRows.length} drawn rows: ${titles.error}`);
+    if (titles.error) warnings.push(`Ships sunk battle titles unavailable for ${titleRows.length} drawn rows: ${titles.error.message}`);
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, history.data, groups.data, titles.data, titles.error, titleRows.length, onDiagnostics]);

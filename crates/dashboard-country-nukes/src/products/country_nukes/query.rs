@@ -477,26 +477,19 @@ pub fn series<P: PageRead>(
     } else {
         identity_membership
     };
-    if let Some(top) = selection.top {
+    if let (Some(top), Some(members)) = (selection.top, &mut membership) {
         for &key in ranked(top) {
             for run in engine::runs(snapshot, key, first, through(last))? {
                 let tag = tag(directory, run.value)?;
                 if !history.countries.contains_key(&tag) {
                     return Err(invalid("Unknown nuclear rank key"));
                 }
-                membership
-                    .as_mut()
-                    .expect("ranked membership")
-                    .entry(tag)
-                    .or_insert_with(Vec::new)
-                    .push(HourSpan {
-                        first_hour: run.span.first,
-                        last_hour: run.span.last,
-                    });
+                members.entry(tag).or_default().push(HourSpan {
+                    first_hour: run.span.first,
+                    last_hour: run.span.last,
+                });
             }
         }
-    }
-    if let Some(members) = &mut membership {
         for spans in members.values_mut() {
             spans.sort_by_key(|span| span.first_hour);
             let mut merged = Vec::new();

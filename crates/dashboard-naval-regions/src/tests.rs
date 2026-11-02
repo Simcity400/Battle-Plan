@@ -1432,5 +1432,73 @@ fn swept_days_reply_exactly_as_each_day_restored_whole() {
     }
 }
 
+#[test]
+fn swept_backdated_currents_match_each_days_point_reads() {
+    use dashboard_base::prepared::series::{Accumulator, Reader, Run};
+
+    let frames: Vec<_> = (0..96)
+        .map(|hour| supremacy(hour, Some(hour / 24 * 24), &[(11, 100_000)]))
+        .collect();
+    let (fixture, scan) = publish::<NavalSupremacyObserver>(&frames);
+    let flag = AtomicBool::new(false);
+    let section = dashboard_keyed::series_section(NavalSupremacyObserver::NAME, 1);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, section.clone(), &flag).unwrap();
+    let mut values = Accumulator::default();
+    values.through(0);
+    let current = scan.key("GER@7|73|raw:11").unwrap();
+    for key in [dashboard_keyed::KNOWN, dashboard_keyed::READ]
+        .into_iter()
+        .chain(scan.keyed().map(|(_, key)| key))
+    {
+        if key == current {
+            for (first, last, value) in [(0, 30, 100_000), (48, 48, 900_000), (0, 80, 300_000)] {
+                values.push(key, Run::new(first, last, value, true));
+            }
+        } else {
+            values.push_runs(key, reader.runs(key, 0, 95).unwrap());
+        }
+    }
+    values.through(95);
+    drop(reader);
+    let mut writer = fixture.writer();
+    writer.clear(&section).unwrap();
+    values.flush(&mut writer, &section, 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let source = source_for_queries(frames);
+    let prefix = Prefix::new(
+        &source,
+        1,
+        Coverage {
+            schema: 1,
+            first_hour: 0,
+            last_hour: 95,
+            complete: true,
+        },
+        None,
+    );
+    for params in [
+        json!({"branchId":"1","tag":"GER","daily":true}),
+        json!({"branchId":"1","tag":"GER","daily":true,"firstHour":25,"lastHour":80}),
+    ] {
+        let q = Query {
+            source: &source,
+            params: &params,
+            content: None,
+            store: &fixture.store,
+            key: &fixture.key,
+            branch: 1,
+            prefix: &prefix,
+            cancelled: &flag,
+        };
+        let swept = naval_supremacy::row_query(&q).unwrap();
+        let whole = naval_supremacy::reply(&q, naval_supremacy::lookup, || {
+            q.open::<NavalSupremacyObserver>()
+        })
+        .unwrap();
+        assert_eq!(swept, whole, "{params}");
+        assert!(!swept["window"]["series"].as_array().unwrap().is_empty());
+    }
+}
+
 mod changes;
 mod reference;

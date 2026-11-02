@@ -1795,7 +1795,7 @@ fn wait_until(done: impl Fn() -> bool) {
     }
 }
 
-/// A recording of eight one-hour blocks, each a read of Germany's two lines,
+/// A native recording of eight blocks, each a read of Germany's two lines,
 /// written to a file of its own, opened through the service and prepared
 /// whole: the service, its events, the opened source's reply and source.
 fn prepared_production_source() -> (
@@ -1803,30 +1803,62 @@ fn prepared_production_source() -> (
     mpsc::Receiver<DataEvent>,
     SourceReply,
     Arc<Source>,
-    PathBuf,
+    crate::native_fixtures::Recorded,
 ) {
+    use crate::native_fixtures::{Recorded, UNIT_HOURS, streams};
     use crate::test_fixtures::{
         CAMPAIGN, PRODUCTION_HOUR as FIRST, continuation_records, production_frame, records,
     };
+    streams!(
+        Campaign,
+        ProductionLines,
+        ProductionLineOutput,
+        IndustrialOrganisations,
+        IndustrialOrganisationDetails,
+        IndustrialOrganisationPolicies,
+        VariantStats,
+        CountryProductionModifiers,
+        ProductionLineModifiers,
+        ModifierDefinitions,
+        Countries,
+        CountryLinks,
+        CountryAppearance,
+        LexicalTokens,
+        VariantDefinitions,
+        VariantModules,
+        VariantUpgrades,
+        VariantChanges,
+    );
     let frame = |hour: i32| {
         let units = i64::from(hour - FIRST);
-        production_frame(
+        let mut frame = production_frame(
             hour,
             true,
             true,
             9001,
             &[(5, 70, 8, 0), (6, 71, 2, 0)],
             Some(&[(5, 70, units, true, false), (6, 71, units, true, false)]),
-        )
+        );
+        for table in STREAMS {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+        frame
     };
-    let mut replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(FIRST)])]).unwrap();
-    for hour in FIRST + 1..FIRST + 8 {
+    let block = |first| (first..first + UNIT_HOURS / 8).map(frame).collect();
+    let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, block(FIRST))]).unwrap();
+    for index in 1..8 {
         replay = replay
-            .append(&[continuation_records(&replay, 1, vec![frame(hour)])])
+            .append(&[continuation_records(
+                &replay,
+                1,
+                block(FIRST + index * (UNIT_HOURS / 8)),
+            )])
             .unwrap();
     }
-    let (service, receive, opened, source, path) = production_source(&replay);
+    let recorded = Recorded::new();
+    recorded.record(&replay, &[(1, FIRST, 1)], STREAMS, write_hour);
+    let (service, receive, opened, source, _) =
+        open_production_source(recorded.root().join("campaign.battleplan"));
     let before = service.preparation_revision();
     crate::prepared::start(
         &service.inner.preparation,
@@ -1843,7 +1875,7 @@ fn prepared_production_source() -> (
         progress_of(&source) == (false, crate::prepared::State::Ready)
             && service.preparation_revision() > before
     });
-    (service, receive, opened, source, path)
+    (service, receive, opened, source, recorded)
 }
 
 fn production_source(
@@ -1859,6 +1891,18 @@ fn production_source(
     std::fs::create_dir(&folder).unwrap();
     let path = folder.join("campaign.battleplan");
     std::fs::write(&path, replay.bytes()).unwrap();
+    open_production_source(path)
+}
+
+fn open_production_source(
+    path: PathBuf,
+) -> (
+    Arc<Service>,
+    mpsc::Receiver<DataEvent>,
+    SourceReply,
+    Arc<Source>,
+    PathBuf,
+) {
     let (sent, receive) = mpsc::channel();
     let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
     // Tests publish only the preparation they explicitly request.
@@ -1919,7 +1963,7 @@ fn germany_kept(source: &Source) -> bool {
 /// A production request reads completed pages without registering or writing work.
 #[test]
 fn a_production_request_after_preparation_queues_no_preparation_and_writes_nothing() {
-    let (service, receive, opened, source, _path) = prepared_production_source();
+    let (service, receive, opened, source, _recorded) = prepared_production_source();
     let sections = sections_of(&source);
     let revision = service.preparation_revision();
     // A production line request has nothing to run after its reply.

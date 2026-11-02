@@ -83,8 +83,15 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
     throw new Error('The event feed reply is malformed.');
   }
   const reply = value as unknown as EventFeedReply;
-  for (const item of reply.items) item.icon = drawableIcon(item.icon);
-  return reply;
+  let sanitized: EventFeedItem[] | undefined;
+  for (let index = 0; index < reply.items.length; index++) {
+    const item = reply.items[index], icon = drawableIcon(item.icon);
+    if (icon !== item.icon) {
+      sanitized ??= reply.items.slice();
+      sanitized[index] = { ...item, icon };
+    }
+  }
+  return sanitized ? { ...reply, items: sanitized } : reply;
 }
 
 /** Feed-only cursor envelope; source IDs stay internal to this reader. */

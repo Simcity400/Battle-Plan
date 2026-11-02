@@ -1219,7 +1219,7 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
     }
 
     assert_eq!(Role::Templates.priority(), Role::Countries.priority());
-    assert!(Role::Templates.priority() < Role::IntelResidual.priority());
+    assert_eq!(Role::Templates.priority(), Role::IntelResidual.priority());
     for countries in [1, 40] {
         for fault in 0..3 {
             let mut source = large_content(countries, 1);
@@ -1577,6 +1577,46 @@ fn a_writer_that_changes_no_template_keeps_the_witness_and_one_that_does_renews_
     assert_eq!(witnesses[1], witnesses[2]);
     assert_ne!(witnesses[2], witnesses[3]);
     assert_eq!(witnesses[3], witnesses[4]);
+}
+
+#[test]
+fn country_refusal_recovery_and_loss_renew_the_template_witness() {
+    use engine_occupation::ccountry_occupation_status as occupation;
+    use replay_data::rows::TableRows;
+    let changes = CoreChanges::new();
+    let mut source = gridded_fixture();
+    let mut capture = Captured::with_capacities(&capacity());
+    let mut witnesses = Vec::new();
+    for hour in 0..7 {
+        if matches!(hour, 2 | 5) {
+            let pointer = if hour == 2 { 0x8000_u64 } else { 0 };
+            for (at, value) in [
+                (0x3000 + ccountry::OCCUPATION_STATUS, pointer),
+                (0x8000, occupation::VTABLE_RVA as u64),
+                (
+                    0x8000 + occupation::SECONDARY_BASE,
+                    occupation::SECONDARY_VTABLE_RVA as u64,
+                ),
+            ] {
+                source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            drop(changes.templates.notify(1, site("rebuild_template_caches")));
+        }
+        capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
+        let known = (2..5).contains(&hour);
+        assert_eq!(capture.model_failures.rows, u32::from(!known), "hour {hour}");
+        let TableView::Complete(TableRows::CountryTemplateState(rows)) = capture.country_state()
+        else {
+            panic!("country configuration unavailable at hour {hour}");
+        };
+        assert_eq!(rows[0].garrison_priority, Recorded::Value(known.then_some(0)));
+        assert_eq!(matches!(rows[0].garrisons, Recorded::Value(Some(_))), known);
+        assert_eq!(capture.witness.is_some(), matches!(hour, 1 | 3 | 4 | 6));
+        witnesses.push(capture.witness);
+    }
+    assert_ne!(witnesses[1], witnesses[3]);
+    assert_eq!(witnesses[3], witnesses[4]);
+    assert_ne!(witnesses[4], witnesses[6]);
 }
 
 /// Fresh-only observation reads every template under standing certificates.

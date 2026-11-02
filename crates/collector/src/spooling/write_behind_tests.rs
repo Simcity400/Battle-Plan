@@ -1252,6 +1252,7 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
         packet.phase.as_ref().unwrap().start.parent,
         Parentage::Unknown
     );
+    assert_eq!(processor.writer_error.take(), Some(io::ErrorKind::Other));
     processor.submit_commands().unwrap();
     processor.drain_writer().unwrap();
     admit(&mut processor, ID, 8, 12);

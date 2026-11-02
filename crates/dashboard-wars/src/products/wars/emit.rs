@@ -362,6 +362,9 @@ impl Emit {
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts
     /// next, and the hours since the last cut as known.
     pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
+        if self.last.is_none_or(|walked| last > walked) {
+            return Err(invalid("A wars cut is past the last walked hour"));
+        }
         self.carry.cut(writer, last)?;
         if let Some(first) = self.first.take() {
             writer.domain(

@@ -106,7 +106,12 @@ fn frame(hour: i32) -> DecodedFrame {
         },
     ]));
     set(&mut frame, TableId::CountryStabilityInputs, TableRows::CountryStabilityInputs(vec![
-        CountryStabilityInputRow { country: 33, recruitment_ratio: Recorded::Value(Some(4_000_000)), ..Default::default() },
+        CountryStabilityInputRow {
+            country: 33,
+            recruitment_ratio: Recorded::Value(Some(4_000_000)),
+            keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
+            ..Default::default()
+        },
     ]));
     set(&mut frame, TableId::SliceReads, TableRows::SliceReads(vec![SliceReadRow {
         table: TableId::CountryStabilityInputs.index() as u32,

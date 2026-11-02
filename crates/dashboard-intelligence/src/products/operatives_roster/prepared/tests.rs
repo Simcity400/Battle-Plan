@@ -659,11 +659,20 @@ fn a_local_holder_does_not_complete_a_branch_wide_tag_selection() {
     assert_eq!(reply["pending"], serde_json::json!([]));
     assert!(reply.get("preparing").is_none());
     let countries = reply["countries"].as_array().unwrap();
-    assert_eq!(countries.len(), 2, "A selects both native holders");
-    assert_eq!(countries[0]["tag"], "A");
+    assert_eq!(
+        countries
+            .iter()
+            .map(|country| country["tag"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["A", "B", "other holder"]
+    );
     assert!(countries[0]["operatives"].as_array().unwrap().is_empty());
-    assert_eq!(countries[1]["tag"], "B");
-    assert_eq!(countries[1]["operatives"][0]["id"], "1");
+    let country_b = countries
+        .iter()
+        .find(|country| country["tag"] == "B")
+        .unwrap();
+    assert_eq!(country_b["operatives"][0]["id"], "1");
+    assert!(countries[2]["operatives"].as_array().unwrap().is_empty());
     let (store, key) = dashboard_base::prepared::files(&source, None).unwrap();
     let expected = query(
         &source,
@@ -697,7 +706,7 @@ fn a_local_holder_does_not_complete_a_branch_wide_tag_selection() {
         .find(|country| country.tag == "B")
         .unwrap();
     assert_eq!(
-        reply["countries"][1]["operatives"][0]["runs"][0]["value"],
+        country_b["operatives"][0]["runs"][0]["value"],
         serde_json::to_value(&exact_country.operatives[0].runs[0].value).unwrap(),
         "the historical selection keeps the prepared hour's recorded values"
     );

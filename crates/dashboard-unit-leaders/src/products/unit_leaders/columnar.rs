@@ -341,7 +341,8 @@ impl Held {
         for &table in block::tables() {
             let index = table.index();
             let status = columns::status(hour.state, table);
-            anew[index] = fresh || self.statuses[index].replace(status) != Some(status);
+            let previous = self.statuses[index].replace(status);
+            anew[index] = fresh || previous != Some(status);
             self.samples[index] = matches!(status, columns::Status::Complete)
                 .then(|| hour.state.sampled_at(index))
                 .flatten();
@@ -2097,7 +2098,7 @@ impl Work {
 #[derive(Clone, Debug, Default)]
 pub struct Counts {
     pub hours: u64,
-    /// Rows read from the walker's columns, whole or by the fields held, by table.
+    /// Rows decoded by this projection, excluding the shared world's views, by table.
     pub decoded: Vec<u64>,
     /// Hours observed again after a held frame could not give their verdicts.
     pub fallbacks: u64,

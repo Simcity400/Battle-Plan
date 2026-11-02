@@ -2346,6 +2346,8 @@ pub mod tests {
 
     /// The same catalogue seam for fixtures with several content layers.
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
         let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
         Catalogue {

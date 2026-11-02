@@ -31,7 +31,9 @@ test('no transfers while the group hours they are matched at are still being pre
     // Country groups that fail before their first reply say so, with a Retry, never loading forever.
     state.groups = undefined; state.error = new Error('service unavailable');
     const failed = render();
-    assert.match(failed, /Country groups are unavailable: service unavailable/);
+    assert.match(failed, /data-detail="service unavailable"/);
+    assert.match(failed.replace(/<[^>]*>/g, ''), /Couldn’t load\./);
+    assert.doesNotMatch(failed.replace(/<[^>]*>/g, ''), /service unavailable/);
     assert.match(failed, /Retry/);
     assert.doesNotMatch(failed, /Loading territory transfers/);
   } finally { delete host.__transfersPending; await close(); }

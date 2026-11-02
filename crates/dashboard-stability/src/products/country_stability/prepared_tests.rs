@@ -333,7 +333,7 @@ fn fifteen_hundred_countries_keep_their_runs() {
         });
     }
     let budget = Budget::new(512 << 20);
-    let cuts: Vec<i32> = (23..120).step_by(24).chain([119]).collect();
+    let cuts: Vec<i32> = (23..120).step_by(24).collect();
     let (pages, root) = build(hours, &cuts, Some(47), &budget);
     let cache = Cache::new(&budget);
     let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();

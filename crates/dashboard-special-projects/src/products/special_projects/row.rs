@@ -145,18 +145,19 @@ pub fn feed(
     let binding = Binding::load(source, context)?;
     let bound = binding.emitted();
     let mut content = binding.content().cloned();
-    let start = replay
+    let mut blocks: Vec<_> = replay
         .index
         .iter()
         .filter(|block| block.branch == branch)
-        .map(|block| block.first_hour)
-        .min()
-        .unwrap_or(0);
-    let gaps: Vec<(i32, i32)> = replay
-        .gaps
-        .iter()
-        .filter(|gap| gap.branch == branch)
-        .map(|gap| (gap.first_hour, gap.last_hour))
+        .collect();
+    blocks.sort_unstable_by_key(|block| block.first_hour);
+    let start = blocks.first().map_or(0, |block| block.first_hour);
+    let gaps: Vec<(i32, i32)> = blocks
+        .windows(2)
+        .filter_map(|pair| {
+            let first = pair[0].last_hour.checked_add(1)?;
+            (first < pair[1].first_hour).then(|| (first, pair[1].first_hour - 1))
+        })
         .collect();
     let unrecorded = |hour: i32| emit::unrecorded(start, &gaps, hour);
     let selected = facts::tables(binding.scoped()).to_vec();
@@ -169,7 +170,7 @@ pub fn feed(
     let mut available = false;
     dashboard_core::blocks::scan_blocks(
         replay,
-        replay.index.iter().filter(|block| block.branch == branch),
+        blocks.into_iter(),
         &selected,
         cancelled,
         |blocks| {

@@ -1006,6 +1006,9 @@ impl Operator<World> for Projector {
         out: &mut dyn Sink<Hour>,
     ) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("parts.columnar", Some("parts"));
+        if hour.starts {
+            self.numbers.clear();
+        }
         let state = hour.state;
         let at = hour.hour;
         let roster = hour.world.countries()?;

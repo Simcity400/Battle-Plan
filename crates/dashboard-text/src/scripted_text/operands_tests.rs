@@ -249,7 +249,7 @@ fn recorded_variables_keep_their_value_and_order() {
     for (country, value) in [(1, "1.2"), (2, "2.7")] {
         let text = ScriptedText::new(&frame, &catalogue.localisation, content, country);
         let mut operands = Operands::new(frame.hour);
-        let raw = "[?my_var|1] of [GetModText]";
+        let raw = "[?ROOT.my_var|1] of [GetModText]";
         let hour = text.record_root(b"BOTH", raw, &mut operands);
         assert_eq!(hour, Ok(format!("{value} of German Reich")));
         drop(text);
@@ -263,7 +263,7 @@ fn recorded_variables_keep_their_value_and_order() {
             )
         };
         assert_eq!(expand(raw), hour);
-        let error = expand("[GetModText] of [?my_var|1]").unwrap_err();
+        let error = expand("[GetModText] of [?ROOT.my_var|1]").unwrap_err();
         assert!(error.contains("another order"), "{error}");
     }
 }

@@ -38,9 +38,9 @@ const BASE: i32 = 1000 * 24;
 const TAG: &str = "GER";
 
 /// GER (raw ids 11 and 9001, canonical slot 7) is read every four hours, each read carried into
-/// the hours after it, until +32; it is not read again until +62, so the read at +32 carries
-/// for a day and its carry ends inside the silence. Its first slot researches tech 1 until the
-/// read at +12, then tech 2 (completed at the read at +40); its second slot researches tech 3
+/// the hours after it, until +32; that read is held through +61, so its one-day carry ends
+/// inside the silence. Its first slot researches tech 1 until the read at +12, then tech 2
+/// (completed at the read at +32); its second slot researches tech 3
 /// from +12. Progress moves at every read. Its grant inventory, read with its slots, names a
 /// restriction token; the tokens are unavailable from +50 to +52, for another reason at +52. GER
 /// is renamed GEX from +74 to +76. Hours +24 and +25 are a gap.
@@ -54,12 +54,12 @@ fn frame_at(hour: i32) -> DecodedFrame {
     let read = BASE + read_at;
     let assignments: &[Option<u32>] = if read_at < 12 {
         &[Some(1), None]
-    } else if read_at < 40 {
+    } else if read_at < 32 {
         &[Some(2), Some(3)]
     } else {
         &[None, Some(3)]
     };
-    let completed: &[u32] = if read_at >= 40 { &[2] } else { &[] };
+    let completed: &[u32] = if read_at >= 32 { &[2] } else { &[] };
     let mut at_read = research_frame(1, read, assignments, completed);
     fixture_research_inputs(&mut at_read);
     let mut bonused = None;

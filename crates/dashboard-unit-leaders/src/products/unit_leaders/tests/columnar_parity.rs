@@ -84,6 +84,29 @@ fn flush(state: &mut Prepared, files: &Fixture, content: Option<&Content>) {
     writer.commit().unwrap();
 }
 
+fn assert_publications_and_resume(files: &[Fixture; 2], label: &str) -> Prepared {
+    let mut payloads = files.each_ref().map(Fixture::payloads);
+    let continuation = ("unit-leaders-1".to_owned(), 0);
+    let saved = payloads[1].remove(&continuation).unwrap();
+    assert!(payloads[0].remove(&continuation).is_some());
+    // Native continuations keep projection state; compare replies and resume the saved continuation.
+    assert_payloads_equal(&payloads[1], &payloads[0], label);
+    assert_eq!(
+        serde_json::to_value(reply(&files[1])).unwrap(),
+        serde_json::to_value(reply(&files[0])).unwrap(),
+        "{label}",
+    );
+    let (keys, metadata) = dashboard_base::prepared::series::read_catalogue::<prepared::Metadata>(
+        &files[1].store,
+        &files[1].key,
+        "unit-leaders",
+        1,
+    )
+    .unwrap()
+    .unwrap();
+    Prepared::read(saved.as_slice(), keys, metadata).unwrap()
+}
+
 /// Block `at` of `replay` folded into `row` through production's block path, its change
 /// tracking fresh as the block starts.
 fn row_reference(replay: &Replay, at: usize, row: &mut Prepared, content: Option<&Content>) {
@@ -203,9 +226,8 @@ fn restarted(
         row_reference(&replay, at, &mut row, content.as_deref());
         flush(&mut row, &files[0], content.as_deref());
         flush(&mut projected, &files[1], content.as_deref());
-        assert_payloads_equal(
-            &files[1].payloads(),
-            &files[0].payloads(),
+        projected = assert_publications_and_resume(
+            &files,
             &format!("leaders restarting at {restarts:?}, block {at}"),
         );
     }
@@ -406,9 +428,8 @@ fn parity_with_content(runs: &[Vec<DecodedFrame>], content: Option<Arc<Content>>
             .unwrap();
             flush(&mut row, &files[0], content.as_deref());
             flush(&mut projected, &files[1], content.as_deref());
-            assert_payloads_equal(
-                &files[1].payloads(),
-                &files[0].payloads(),
+            projected = assert_publications_and_resume(
+                &files,
                 &format!("leaders split {split}, block {at}"),
             );
         }
@@ -1323,65 +1344,35 @@ fn a_1500_country_hour_resolves_only_the_changed_leader_and_extends_other_runs()
     {
         rows[1499].experience = 123456;
     }
-    let frames = vec![first, next];
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let mut operator = Projector::new(&replay, None, false);
-    let mut hours: Vec<Hour> = Vec::new();
-    let mut walk = Synthetic::new(block::tables(), 1, 100).unwrap();
-    let mut world_held: Option<dashboard_world::World> = None;
-    for (ordinal, input) in frames.iter().enumerate() {
-        write_hour(&mut walk, input);
-        walk.end(|state, manifest, _, walk_starts| {
-            let world = dashboard_world::World::at(
-                &mut world_held,
-                walk_starts,
-                &crate::products::unit_leaders::columnar::needs(false),
-                (
-                    replay_data::format::FormatVersion::CURRENT,
-                    replay_data::scope::CaptureMode::Full,
-                ),
-                state,
-                manifest,
-            )
-            .unwrap();
-            operator
-                .hour(
-                    &segments::Hour {
-                        branch: 1,
-                        hour: input.hour,
-                        run: 0,
-                        ordinal: ordinal as u32,
-                        starts: ordinal == 0,
-                        opens: ordinal == 0,
-                        state,
-                        manifest,
-                        world,
-                    },
-                    &mut hours,
-                )
+    for recorded_reads in [false, true] {
+        let mut frames = vec![first.clone(), next.clone()];
+        if recorded_reads {
+            for input in &mut frames {
+                for &table in block::tables() {
+                    input.metrics.table_ns[table.index()] = 1;
+                }
+            }
+        }
+        let hour = segment(&frames, None);
+        assert_eq!(hour.counts.walks, [1, 1]);
+        assert_eq!(hour.work.resolved, 1501);
+        assert_eq!(hour.scan.stored_runs.len(), 1501);
+        assert_eq!(hour.scan.stored_runs[0].run.last_hour, 101);
+        assert_eq!(hour.scan.leaders[0].visible_hour, Some(101));
+        assert_eq!(
+            hour.scan
+                .stored_runs
+                .last()
                 .unwrap()
-        })
-        .unwrap();
+                .run
+                .value
+                .progress
+                .as_ref()
+                .unwrap()
+                .experience_raw,
+            "123456"
+        );
     }
-    operator.end(&mut hours).unwrap();
-    let hour = hours.pop().unwrap();
-    assert_eq!(hour.work.resolved, 1501);
-    assert_eq!(hour.scan.stored_runs.len(), 1501);
-    assert_eq!(hour.scan.stored_runs[0].run.last_hour, 101);
-    assert_eq!(hour.scan.leaders[0].visible_hour, Some(101));
-    assert_eq!(
-        hour.scan
-            .stored_runs
-            .last()
-            .unwrap()
-            .run
-            .value
-            .progress
-            .as_ref()
-            .unwrap()
-            .experience_raw,
-        "123456"
-    );
 }
 
 #[test]
@@ -1665,6 +1656,7 @@ fn war_hours_read_only_the_fields_leaders_hold() {
     let mut hours: Vec<Hour> = Vec::new();
     let mut walk = Synthetic::new(block::tables(), 1, 100).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
+    let watched = asks(&holds(false));
     for (ordinal, input) in frames.iter().enumerate() {
         write_hour(&mut walk, input);
         walk.end(|state, manifest, _, walk_starts| {
@@ -1695,23 +1687,42 @@ fn war_hours_read_only_the_fields_leaders_hold() {
                     },
                     &mut hours,
                 )
-                .unwrap()
+                .unwrap();
+            let held = world.frame_held(state, &watched).unwrap();
+            assert_eq!(
+                held.complete::<tables::Countries>().unwrap()[0].political_power_raw,
+                Some(100_000)
+            );
+            assert_eq!(
+                held.complete::<tables::TaskForces>().unwrap()[0].province,
+                100
+            );
+            assert_eq!(
+                held.complete::<tables::NavalMissionTaskForces>().unwrap()[0].fuel,
+                100
+            );
+            assert_eq!(
+                held.complete::<tables::LandCombatDetails>().unwrap()[0].sides[0].committed,
+                vec![input.hour as u64 * 3]
+            );
         })
         .unwrap();
     }
     operator.end(&mut hours).unwrap();
     let hour = hours.pop().unwrap();
-    let decoded = |table: TableId| hour.counts.decoded[table.index()];
+    let local_decoded = |table: TableId| hour.counts.decoded[table.index()];
     assert_eq!(hour.counts.hours, 11);
     assert_eq!(hour.counts.walks, [1, 0]);
+    assert_eq!(hour.counts.resolved, 6);
     assert_eq!(hour.counts.quiet, 10);
     assert_eq!(hour.counts.fallbacks, 0);
-    assert_eq!(decoded(TableId::Countries), 6);
-    assert_eq!(decoded(TableId::TaskForces), 1);
-    assert_eq!(decoded(TableId::NavalMissionTaskForces), 1);
-    assert_eq!(decoded(TableId::UnitLeaders), 6);
-    assert_eq!(decoded(TableId::LandCombatDetails), 11);
-    assert_eq!(decoded(TableId::Provinces) + decoded(TableId::States), 0);
+    assert_eq!(local_decoded(TableId::Characters), 6);
+    assert_eq!(local_decoded(TableId::CharacterPortraits), 6);
+    for &table in block::tables() {
+        if ![TableId::Characters, TableId::CharacterPortraits].contains(&table) {
+            assert_eq!(local_decoded(table), 0, "{table:?}");
+        }
+    }
 }
 
 /// Two leaders whose template visibility reads a flag: the flag cleared at 103 and set again

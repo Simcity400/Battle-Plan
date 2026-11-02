@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import test from 'node:test';
 import type { AgencyComparisonReply, AgencyValue } from '../../generated/dashboard';
 import { agencyRequestParams, agencyRows, agencyTooltip, operativesCell, upgradesCell, validateAgencyComparisonReply } from './agencyData.ts';
@@ -207,7 +208,7 @@ test('an off-read alias keeps its actual census date without a visible source-al
 });
 
 test('selected agency request is bounded to its countries; a missing selection cannot request all', () => {
-  const groups = { countryIdentities: [{ tag: 'Chosen mod country', identities: [{ firstHour: 10, lastHour: 30, slot: 1, countryId: 7 }] }] } as import('../../generated/dashboard').CountryGroupReply;
+  const groups = countryGroupReply({ countryIdentities: [{ tag: 'Chosen mod country', identities: [{ firstHour: 10, lastHour: 30, slot: 1, countryId: 7 }] }] });
   assert.equal(agencyRequestParams('1', { kind: 'tags', tags: ['Chosen mod country'] }, [], undefined, 30, false, 'defense'), null);
   assert.deepEqual(agencyRequestParams('1', { kind: 'tags', tags: ['Chosen mod country'] }, [], groups, 30, false, 'defense'),
     { branchId: '1', tags: ['Chosen mod country'], includeUncreated: false, top: null });

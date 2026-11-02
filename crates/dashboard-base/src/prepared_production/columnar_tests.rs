@@ -238,6 +238,7 @@ fn prepare_resumes(
     let fixtures = [Fixture::new(), Fixture::new()];
     let first = hours[0].hour;
     let mut row = ProductionAccumulator::new(format.version(), 1, first);
+    let mut completed = Vec::new();
     let mut native = Branch::new(format, 1, first);
     let mut tracker = FrameChangeTracker::new();
     let mut walk: Option<Synthetic> = None;
@@ -368,6 +369,7 @@ fn prepare_resumes(
                 let saved = |state: &ProductionAccumulator| -> ProductionAccumulator {
                     serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap()
                 };
+                completed.append(&mut row.completed);
                 row = saved(&row);
                 native = Branch::resumed(Box::new(saved(native.accumulator())));
                 cold = true;
@@ -375,7 +377,8 @@ fn prepare_resumes(
             }
         }
     }
-    (row.completed, fixtures.into_iter().next().unwrap())
+    completed.append(&mut row.completed);
+    (completed, fixtures.into_iter().next().unwrap())
 }
 
 #[test]

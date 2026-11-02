@@ -119,6 +119,7 @@ fn written_sections_apply_like_the_same_runs_on_the_state() {
             changed: vec![0, 2],
             // Slot 0: SET 0 and ADD 1; slot 2: ADD 1, SET 2 and the NOOP of 3.
             masks: vec![0b0011, 0b1110],
+            written: vec![0b0011, 0b0110],
             deleted: vec![1],
             deleted_keys: vec![101],
             inserted: vec![1],

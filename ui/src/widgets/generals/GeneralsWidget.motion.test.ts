@@ -74,6 +74,7 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
       const index = cursor++;
       if (changed(current.layouts.get(index)?.deps, deps)) current.pendingLayouts.set(index, { deps: [...deps], run });
     },
+    useInsertionEffect(run: Effect['run']) { current.pendingLayouts.set(cursor++, { deps: [], run }); },
   };
   const host = globalThis as typeof globalThis & { __leaderMotionHooks?: typeof fixture };
   host.__leaderMotionHooks = fixture;
@@ -108,8 +109,12 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
         const path = id.replaceAll('\\', '/');
         const replacement = Object.keys(replacements).find(key => path.endsWith(key));
         if (replacement) return replacements[replacement];
-        if (['/generals/GeneralsWidget.tsx', '/generals/portraits.ts', '/table/Table.tsx', '/charts/useRowMotion.ts'].some(key => path.endsWith(key))) {
-          return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__leaderMotionHooks;');
+        if (['/generals/GeneralsWidget.tsx', '/generals/portraits.ts', '/table/Table.tsx', '/charts/useRowMotion.ts',
+          '/charts/memoRows.tsx', '/table/useTableAppearance.ts'].some(key => path.endsWith(key))) {
+          return source.replace(/import \{ ([^}]+) \} from 'react';/, (_import, names: string) => {
+            const imports = names.split(', '), hooks = imports.filter(name => name.startsWith('use')), values = imports.filter(name => !name.startsWith('use'));
+            return `${values.length ? `import { ${values.join(', ')} } from 'react';` : ''}const { ${hooks.join(', ')} } = globalThis.__leaderMotionHooks;`;
+          });
         }
       },
     }] });
@@ -118,8 +123,14 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
     const { default: Table } = await vite.ssrLoadModule('/ui/src/charts/table/Table.tsx') as typeof import('../../charts/table/Table.tsx');
     const { nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts.ts');
     type Node = { type: unknown; props: Record<string, unknown> };
-    const descendants = (value: unknown): Node[] => Array.isArray(value) ? value.flatMap(descendants)
-      : value && typeof value === 'object' && 'props' in value ? [value as Node, ...descendants((value as Node).props.children), ...descendants((value as Node).props.main)] : [];
+    const descendants = (value: unknown): Node[] => {
+      if (Array.isArray(value)) return value.flatMap(descendants);
+      if (!value || typeof value !== 'object' || !('props' in value)) return [];
+      const node = value as Node;
+      const memo = node.type as { $$typeof?: symbol; type?: (props: Node['props']) => unknown } | null;
+      return [node, ...descendants(memo?.$$typeof === Symbol.for('react.memo') ? memo.type!(node.props) : undefined),
+        ...descendants(node.props.children), ...descendants(node.props.main)];
+    };
     let props = { widget: { id: 'generals', kind: 'generals', trackIds: ['main'], countries: { kind: 'all' },
       time: { mode: 'campaign' }, options: {} }, runtime: { tracks: [{ id: 'main', axisOffset: 0,
         source: { id: 'synthetic', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 102 } }],
@@ -156,7 +167,7 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
       assert.deepEqual(keys(), direction === 'descending' ? expected : [...expected].reverse(), `${column}/${direction}`);
       const art = { reference: '5', image: `synthetic portrait ${column}/${direction}`, missing: null, warnings: [] };
       fixture.portraits = new Map([[nameKey(100, '5'), art]]); refresh();
-      assert.equal(nodes.find(node => node.props.art === art)?.props.art, art, 'new artwork still updates the rendered identity');
+      assert.equal(nodes.find(node => node.props.name === 'Leader 0')?.props.image, art.image, 'new artwork still updates the rendered identity');
     }
     props = { ...props, widget: { ...props.widget, options: { tableSort: JSON.stringify(['skill', 'descending']) } } }; refresh();
     fixture.data = data(3);

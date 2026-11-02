@@ -790,6 +790,8 @@ impl Store {
     ) -> io::Result<()> {
         let mut path = [(NONE, 0usize); 64];
         let mut depth = 0;
+        let mut encoded = [0; INLINE + 48];
+        let (mut size, overflow) = self.encode(a, b, value, &mut encoded)?;
         if root.page == NONE {
             root.page = self.new_node(root, &Node::new(true, NONE, NONE))?;
         }
@@ -823,8 +825,6 @@ impl Store {
         } else {
             root.stats.entries += 1;
         }
-        let mut encoded = [0; INLINE + 48];
-        let (mut size, overflow) = self.encode(a, b, value, &mut encoded)?;
         root.stats.payload_bytes += a.len() + b.len() + value.len();
         root.stats.overflow_bytes += overflow;
         root.stats.record_bytes += size as u64 + 2;
@@ -1044,21 +1044,26 @@ impl Store {
         let leaf = self.node(self.active, page)?.leaf();
         let count = self.frame(self.active, page)?.node.len();
         if leaf {
+            let node = Node {
+                bytes: self.frame(self.active, page)?.node.bytes,
+            };
+            // The extent tree can reuse this leaf while its overflow records are recycled.
+            self.recycle(page, 1)?;
             for at in 0..count {
-                let entry =
-                    Self::entry(self.active, page, &self.frame(self.active, page)?.node, at);
+                let entry = Self::entry(self.active, page, &node, at);
                 let len = entry.a.len + entry.b.len + entry.value.len;
                 if len > INLINE as u64 {
                     self.recycle(entry.a.offset / PAGE as u64, len.div_ceil(PAGE as u64))?;
                 }
             }
+            Ok(())
         } else {
             for at in 0..=count {
                 let child = self.frame(self.active, page)?.node.child(at);
                 self.clear_page(child)?;
             }
+            self.recycle(page, 1)
         }
-        self.recycle(page, 1)
     }
 
     pub fn clear(&mut self, tree: Tree) -> io::Result<()> {

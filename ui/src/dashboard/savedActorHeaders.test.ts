@@ -260,13 +260,13 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       assert.match(render(pinned), /data:flag-B/, 'an authenticated flag remains independent of a pending name');
       state.nameKnown = false; assert.match(render(pinned), />Unavailable<\/span>/);
       assert.match(render(pinned), /data:flag-B/, 'an authenticated flag remains independent of the unavailable name');
-      state.nameKnown = true; state.nameFailed = true; assert.match(render(pinned), /Name unavailable/);
+      state.nameKnown = true; state.nameFailed = true; assert.match(render(pinned), />Couldn’t load country name\.<\/span>/);
       assert.match(render(pinned), /data:flag-B/, 'an authenticated flag remains independent of a failed name read');
       state.flag = undefined; state.flagReason = 'Concurrent native flag refusal'; state.nameFailed = false; state.nameKnown = false;
       const refused = render(pinned); assert.match(refused, />Unavailable<\/span>/);
       assert.match(refused, /aria-label="Flag unavailable"/);
       state.nameKnown = true; state.nameFailed = true; state.flagReason = 'Distinct native flag request failed';
-      const failed = render(pinned); assert.match(failed, /Name unavailable/);
+      const failed = render(pinned); assert.match(failed, />Couldn’t load country name\.<\/span>/);
       assert.match(failed, /aria-label="Flag unavailable"/);
       state.flagReason = undefined; state.flagPending = true;
       assert.match(render(pinned), /Flag loading/, 'pending artwork remains independent of a failed name');

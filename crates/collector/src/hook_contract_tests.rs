@@ -959,6 +959,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
     producer!(naval_details; [NavalCombatDetails,NavalCombatShips,NavalCombatAirBaseWingHandles]);
     producer!(group_counters; []);
     producer!(naval_counters; [TaskForceCounterInputs,TaskForceMapMotion,TaskForceMissions]);
+    producer!(naval_combat_sources; [NavalCombatTransfers,NavalTransferUnits]);
     producer!(line_output; []);
     producer!(map_names; []);
     producer!(logistics; []);

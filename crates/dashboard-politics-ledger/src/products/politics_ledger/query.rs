@@ -2938,6 +2938,8 @@ fn navigate<P: PageRead>(
         .map(|bindings| bindings.keys().collect())
         .unwrap_or_else(|| vec![&params.tag]);
     let mut selected = Vec::new();
+    let mut events = Vec::new();
+    let mut holds = Vec::new();
     for tag in tags {
         let keys = Keys::of(directory, tag);
         let within = match &params.bindings {
@@ -2977,18 +2979,137 @@ fn navigate<P: PageRead>(
                     .iter()
                     .filter_map(|&measure| keys.key(directory, measure)),
             );
-            found.extend(
+            events.extend(
                 POWER
                     .iter()
-                    .filter_map(|&measure| keys.key(directory, measure)),
+                    .filter_map(|&measure| keys.key(directory, measure))
+                    .map(|key| (key, within)),
             );
-            found.extend(keys.key(directory, GOVERNMENTS));
-            found.extend(keys.key(directory, HOLDS));
+            events.extend(keys.key(directory, GOVERNMENTS).map(|key| (key, within)));
+            holds.extend(keys.key(directory, HOLDS).map(|key| (key, within)));
         }
         selected.extend(found.into_iter().map(|key| (key, within)));
     }
-    let hour = engine::navigate(reader.snapshot, &selected, navigation)?;
+    if params.summary.is_some() {
+        let hour = engine::navigate(reader.snapshot, &selected, navigation)?;
+        return Ok(serde_json::json!({ "hour": hour }));
+    }
+    let origin = navigation.origin()?;
+    let forward = matches!(navigation.key, MeasureKey::ArrowRight | MeasureKey::Home);
+    let first = navigation.first_hour.ceil().max(f64::from(i32::MIN));
+    let last = navigation.last_hour.floor().min(f64::from(i32::MAX));
+    let mut hour: Option<f64> = None;
+    if first <= last {
+        let bounds = Span::new(first as i32, last as i32)?;
+        let mut include = |candidate: f64| {
+            hour = Some(hour.map_or(candidate, |previous| {
+                if forward {
+                    previous.min(candidate)
+                } else {
+                    previous.max(candidate)
+                }
+            }));
+        };
+        for (key, within) in selected {
+            let membership = within.map(engine::spans).transpose()?;
+            if let Some(candidate) = reader.snapshot.next_change(
+                Selection {
+                    key,
+                    membership: membership.as_deref(),
+                },
+                origin,
+                forward,
+                bounds,
+            )? {
+                include(f64::from(candidate));
+            }
+        }
+        let to = params.hour.unwrap_or(reader.last);
+        let bounds = Span {
+            last: bounds.last.min(to),
+            ..bounds
+        };
+        // Hold snapshots use their native hour as the read hour.
+        for (keys, as_of) in [(&events, Some(to)), (&holds, None)] {
+            if let Some(candidate) = navigation_event(reader, keys, bounds, origin, forward, as_of)?
+            {
+                include(f64::from(candidate));
+            }
+        }
+    }
+    let hour = hour.or_else(|| {
+        navigation
+            .from
+            .map(|hour| hour.clamp(navigation.first_hour, navigation.last_hour))
+    });
     Ok(serde_json::json!({ "hour": hour }))
+}
+
+fn navigation_event<P: PageRead>(
+    reader: &mut Reader<'_, '_, P>,
+    keys: &[series::NavigationKey<'_>],
+    bounds: Span,
+    origin: f64,
+    forward: bool,
+    as_of: Option<i32>,
+) -> io::Result<Option<i32>> {
+    let first = f64::from(bounds.first).max(if forward {
+        origin.floor() + 1.0
+    } else {
+        f64::from(bounds.first)
+    });
+    let last = f64::from(bounds.last).min(if forward {
+        f64::from(bounds.last)
+    } else {
+        origin.ceil() - 1.0
+    });
+    if first > last || keys.is_empty() {
+        return Ok(None);
+    }
+    let native = Span::new(first as i32, last as i32)?;
+    let memberships = keys
+        .iter()
+        .map(|(_, within)| within.map(engine::spans).transpose())
+        .collect::<io::Result<Vec<_>>>()?;
+    let selection: Vec<_> = keys
+        .iter()
+        .zip(&memberships)
+        .filter(|(_, membership)| membership.as_ref().is_none_or(|spans| !spans.is_empty()))
+        .map(|(&(key, _), membership)| Selection {
+            key,
+            membership: membership.as_deref(),
+        })
+        .collect();
+    let mut hour = None;
+    if forward {
+        reader.snapshot.event_page(
+            EventQuery {
+                selection: &selection,
+                native,
+                as_of,
+                order: EventOrder::Native,
+            },
+            None,
+            Event::SIZE + 1,
+            |event| {
+                hour = Some(event.native_hour());
+                Ok(())
+            },
+        )?;
+    } else {
+        reader
+            .snapshot
+            .latest_event_rows(&selection, native.last, as_of, |_, event| {
+                if let Some(candidate) = event
+                    .map(|event| event.native_hour())
+                    .filter(|hour| native.contains(*hour))
+                {
+                    hour = Some(hour.map_or(candidate, |previous: i32| previous.max(candidate)));
+                }
+                Ok(())
+            })?;
+    }
+    Ok(hour)
 }
 
 /// Each category part `keys`' country spent in, with its first hour.

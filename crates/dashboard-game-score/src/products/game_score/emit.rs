@@ -690,12 +690,14 @@ impl Emit {
         self.carry
             .value(writer, keys[PRESENT as usize], hour, Some(1), boundary)?;
         for (at, amount) in amounts.iter().enumerate() {
+            let key = keys[PART as usize + at];
+            let break_before = boundary || self.carry.held(key).is_none();
             self.carry.value(
                 writer,
-                keys[PART as usize + at],
+                key,
                 hour,
                 amount.raw.map(i128::from),
-                boundary,
+                break_before,
             )?;
         }
         self.state.last.insert(actor, (hour, detail));

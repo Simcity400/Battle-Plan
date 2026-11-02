@@ -5296,7 +5296,24 @@ mod tests {
         assert!(head(ANCHOR_UNCHANGED, Some(0), None).is_err());
         assert!(head(DELTA, Some(0), None).is_err());
         assert!(head(ANCHOR_DELTA, Some(1), Some(9)).is_err());
-        assert!(head(8, None, Some(9)).is_err());
+        let highest_assigned = [
+            SNAPSHOT,
+            DELTA,
+            UNCHANGED,
+            TRUNCATED,
+            UNAVAILABLE,
+            ANCHOR_DELTA,
+            ANCHOR_UNCHANGED,
+            RESIDUAL,
+            NOT_RECORDED_ENTRY,
+        ]
+        .into_iter()
+        .max()
+        .unwrap();
+        assert!(head(highest_assigned + 1, None, Some(9)).is_err());
+        for previous in [None, Some(9)] {
+            assert!(head(NOT_RECORDED_ENTRY, None, previous).unwrap().is_none());
+        }
         // A residual entry belongs to a predicted block's later entries.
         assert!(head(RESIDUAL, None, Some(9)).unwrap().is_none());
         assert!(head(RESIDUAL, None, None).is_err());

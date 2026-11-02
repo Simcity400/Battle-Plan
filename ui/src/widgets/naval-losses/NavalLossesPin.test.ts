@@ -378,13 +378,13 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       state.labels[labelKey] = { name: '', known: true, flagPending: false, flagReason: 'Displayed flag was not recorded' }; await frame();
       assert.match(header(), /Flag unavailable/);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flag: '/B112.svg', flagPending: false }; await frame();
-      assert.match(header(), /Unavailable/); assert.doesNotMatch(header(), /Unproved name/);
+      assert.match(header(), />Couldn’t load country name\.<\/span>/); assert.doesNotMatch(header(), /Unproved name/);
       assert.ok(header().includes('src="/B112.svg"'), 'the authenticated current flag remains independent of a failed name');
-      assert.match(header(), /Name unavailable/);
+      assert.match(header(), /data-tooltip="Couldn’t load country name\. · As of /);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: false,
         flagReason: 'Exact displayed flag refusal' }; await frame();
       assert.match(header(), /Flag unavailable/);
-      assert.match(header(), /Name unavailable/);
+      assert.match(header(), />Couldn’t load country name\.<\/span>/);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: true }; await frame();
       assert.match(header(), /Flag loading/); assert.doesNotMatch(header(), /Flag not available: The country name request failed/);
       state.labels[labelKey] = { name: 'Native B at 112', known: true, flag: '/B112.svg', flagPending: false };

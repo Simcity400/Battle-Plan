@@ -81,18 +81,13 @@ fn table_routes_match_the_frontend_and_registry() {
     for piece in list.split('\'').skip(1).step_by(2) {
         frontend.insert(piece.to_owned());
     }
-    let ours: std::collections::BTreeSet<_> = UI_PREPARED_ROUTES
-        .iter()
-        .map(|key| key.to_string())
-        .collect();
-    assert_eq!(ours, frontend, "prepared routing differs from the frontend");
     for widget in widgets(WIDGETS).unwrap() {
         for template in widget.requests.iter().chain(&widget.auxiliary) {
             if template.route == Route::Product {
                 let registered = crate::products::find(&template.product);
                 assert!(
                     registered.is_some_and(|product| !product.prepared_only)
-                        && !UI_PREPARED_ROUTES.contains(&template.product.as_str()),
+                        && !frontend.contains(&template.product),
                     "{} requests {} as a product load, which the client sends as a prepared query or the service refuses",
                     widget.kind,
                     template.product

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
 import { espionagePlayback } from './espionageData.ts';
@@ -430,11 +431,11 @@ test('completion holder matching uses endpoint supply while event range and Jump
   const reply = fixture();
   reply.operations = [{ definitionToken: 42, id: 'opaque completion', firstRead: 25, startHour: null, startKnownAt: null, runs: [],
     end: { ...ending(25, 25, 'completed'), completionHour: 22, completionSequence: '1', ownerTag: 'Y', targetTag: 'TARGET' } }];
-  const groups = { countryIdentities: [
+  const groups = countryGroupReply({ countryIdentities: [
     { tag: 'X', identities: [{ firstHour: 10, lastHour: 23, slot: 1, countryId: 7 }] },
     { tag: 'Y', identities: [{ firstHour: 10, lastHour: 23, slot: 3, countryId: 11 }, { firstHour: 24, lastHour: 30, slot: 1, countryId: 7 }] },
     { tag: 'TARGET', identities: [{ firstHour: 10, lastHour: 30, slot: 2, countryId: 9 }] },
-  ] } as import('../../generated/dashboard').CountryGroupReply;
+  ] });
   const owner = countryMatch({ kind: 'tags', tags: ['X'] }, [], groups, 30);
   assert.equal(owner.matches('Y', 22), false);
   assert.equal(operationRows(reply, 24, { ...filter, country: owner.matches }).length, 0);
@@ -451,10 +452,10 @@ test('held operation endpoint tags remain attached to their supplying read acros
   const reply = fixture();
   reply.readHours = [10];
   reply.operations[0].runs = [{ ...run(10, 20, 'X'), readHour: 10 }];
-  const groups = { countryIdentities: [
+  const groups = countryGroupReply({ countryIdentities: [
     { tag: 'X', identities: [{ firstHour: 10, lastHour: 12, slot: 1, countryId: 7 }, { firstHour: 13, lastHour: 20, slot: 2, countryId: 9 }] },
     { tag: 'LATER', identities: [{ firstHour: 13, lastHour: 20, slot: 1, countryId: 7 }] },
-  ] } as import('../../generated/dashboard').CountryGroupReply;
+  ] });
   const match = countryMatch({ kind: 'tags', tags: ['LATER'] }, [], groups, 20);
   assert.equal(match.matches('X', 18), false);
   const [row] = operationRows(reply, 18, { ...filter, country: match.matches });

@@ -1,12 +1,13 @@
 use super::*;
 use crate::state::Values;
 
-const KINDS: [Kind; 5] = [
+const KINDS: [Kind; 6] = [
     Kind::Bool,
     Kind::OptionalU32,
     Kind::U32List,
     Kind::Opaque,
     Kind::I16,
+    Kind::Bytes,
 ];
 
 fn table() -> Table {
@@ -30,10 +31,10 @@ fn table() -> Table {
                     items: b"abcd",
                 },
                 Values::I16(&[-1, 2, i16::MIN, 0]),
+                Values::Bytes(&[1, 3, 5, 7]),
             ],
         )
         .unwrap();
-    // A freed slot keeps stale values; a restart holds only the live rows.
     table.delete(&[1]).unwrap();
     table
 }
@@ -50,6 +51,15 @@ fn a_restart_reads_back_the_same_rows_and_acquisition() {
     let bytes = write(&written, status, &acquisition, &[0, 65]).unwrap();
     let restored = read(&bytes, &KINDS, &mut Scratch::default()).unwrap();
     assert_eq!(restored.table, written);
+    for column in 0..KINDS.len() {
+        for slot in 0..written.slots() as u32 {
+            assert_eq!(
+                restored.table.column(column).unwrap().cell(slot),
+                written.column(column).unwrap().cell(slot),
+                "column {column}, slot {slot}"
+            );
+        }
+    }
     assert_eq!(restored.status, status);
     assert_eq!(restored.acquisition, acquisition);
     assert_eq!(restored.view, [0, 65]);

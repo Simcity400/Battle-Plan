@@ -153,7 +153,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
 
   const menu = useContextMenu('Chart actions');
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...(groups.error ? [`Country identity changes could not be loaded: ${groups.error}`] : [])];
+    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...(groups.error ? [`Country identity changes could not be loaded: ${groups.error.message}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, onDiagnostics]);

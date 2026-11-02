@@ -209,9 +209,12 @@ fn frame(hour: i32) -> DecodedFrame {
         })
         .collect(),
     ));
-    *tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(Vec::new()));
+    *tables[TableId::LocalPlayer.index()] =
+        TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow::default()]));
     *tables[TableId::ReservedCountryNaming.index()] =
-        TableView::Complete(TableRows::ReservedCountryNaming(Vec::new()));
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow::default(),
+        ]));
     *tables[TableId::ProjectPrograms.index()] =
         TableView::Complete(TableRows::ProjectPrograms(Vec::new()));
     *tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(Vec::new()));

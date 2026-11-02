@@ -260,12 +260,12 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   useEffect(() => {
     const uncoloured = uncolouredWarning((data?.series ?? []).map(item => item.tag), known, !!styles.data);
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []),
-      ...(styles.error ? [`Map colours could not be loaded: ${styles.error}`] : []), ...(groups.data?.warnings ?? []),
-      ...(widget.countries.kind === 'group' && groups.error ? [`Country membership labels could not be loaded: ${groups.error}`] : []),
-      ...(ceilingRequest && ceiling.error ? [`The ${config.ceiling} could not be loaded: ${ceiling.error}`] : []),
+      ...(styles.error ? [`Map colours could not be loaded: ${styles.error.message}`] : []), ...(groups.data?.warnings ?? []),
+      ...(widget.countries.kind === 'group' && groups.error ? [`Country membership labels could not be loaded: ${groups.error.message}`] : []),
+      ...(ceilingRequest && ceiling.error ? [`The ${config.ceiling} could not be loaded: ${ceiling.error.message}`] : []),
       ...(ceilingRequest ? ceiling.data?.warnings ?? [] : []),
       ...(ledger.data ?? []).flatMap(reply => reply.warnings),
-      ...(ledger.error ? [`Income and causes could not be loaded: ${ledger.error}`] : []),
+      ...(ledger.error ? [`Income and causes could not be loaded: ${ledger.error.message}`] : []),
       ...(uncoloured ? [uncoloured] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
@@ -454,7 +454,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}:${labels.revision}:${digits}:${ledger.data ? 'details' : ledger.error ?? 'loading'}`}
+        padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}:${labels.revision}:${digits}:${ledger.data ? 'details' : ledger.error?.message ?? 'loading'}`}
         onViewChange={onViewChange}
         keyHours={prepared.enabled ? undefined : keyHours} pickOwner={pickOwner}
         onSummaryView={prepared.enabled || ceilingPrepared.enabled ? view => { if (prepared.enabled) prepared.onSummaryView(view); if (ceilingPrepared.enabled) ceilingPrepared.onSummaryView(view); } : undefined}

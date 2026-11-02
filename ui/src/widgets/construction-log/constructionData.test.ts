@@ -142,11 +142,11 @@ test('log state labels follow shown-hour renames, stored owners and named refusa
   const [row] = logRows(data, 124, every, 'change');
   assert.equal(datedPlaceLabel(row.item.project, 100, names), 'Stored owner name');
   assert.match(datedDescribeRow(data, row, 'Country', 124, names), /in Renamed state,/);
-  for (const [hour, refusal] of [[130, 'States read failed'], [148, 'language differs']] as const) {
+  for (const [hour, refusal] of [[130, 'States read failed'], [148, 'Stored state name language differs from recorded language']] as const) {
     const tip = datedProjectTooltip(data, row.item, hour, 'Country', names)[0];
     assert.match(tip.subtitle ?? '', /State 5/);
-    assert.equal(tip.note, 'State name unavailable.');
-    assert.doesNotMatch(tip.note, new RegExp(refusal));
+    assert.equal(tip.note, `State 5: ${refusal}`);
+    assert.doesNotMatch(tip.note, /State name unavailable/);
   }
   assert.deepEqual(calls, [100, 124, 130, 148]);
 });

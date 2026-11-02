@@ -121,7 +121,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["air-missions"],
         gates: &["air-missions"],
         // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: refused observations on unchanged hours are counted again.
+        version: 3,
         ..family("air-missions")
     },
     Descriptor {
@@ -129,7 +130,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["air-statistics"],
         gates: &["air-statistics"],
         // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: refused observations on unchanged hours are counted again.
+        version: 3,
         ..family("air-statistics")
     },
     Descriptor {
@@ -138,7 +140,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["regional-weather"],
         // 3: hours certify against the province temperature witness; older recordings refuse.
         // 4: the observer stores empty regions and unavailable provinces apart, so older state is rebuilt.
-        version: 4,
+        // 5: refused observations on unchanged hours are counted again.
+        version: 5,
         ..family("regional-weather")
     },
     Descriptor {
@@ -146,7 +149,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["minefields"],
         gates: &["minefields"],
         // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: refused observations on unchanged hours are counted again.
+        version: 3,
         ..family("minefields")
     },
     Descriptor {
@@ -154,7 +158,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["naval-supremacy"],
         gates: &["naval-supremacy"],
         // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: refused observations on unchanged hours are counted again.
+        version: 3,
         ..family("naval-supremacy")
     },
     Descriptor {
@@ -162,7 +167,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["doctrine-mastery"],
         gates: &["doctrine-mastery"],
         // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: refused observations on unchanged hours are counted again.
+        version: 3,
         ..family("doctrine-mastery")
     },
     Descriptor {
@@ -170,7 +176,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["occupation-reserve-manpower"],
         gates: &["occupation-reserve-manpower"],
         // 4: every reserve view requires existence at its supplying read.
-        version: 4,
+        // 5: refused observations on unchanged hours are counted again.
+        version: 5,
         ..family("occupation-reserve")
     },
     Descriptor {
@@ -178,7 +185,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["intel-network-coverage"],
         gates: &["intel-network-coverage"],
         // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: refused observations on unchanged hours are counted again.
+        version: 3,
         ..family("intel-network-coverage")
     },
     Descriptor {
@@ -213,8 +221,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["division-equipment"],
         queries: &["division-equipment-history"],
         gates: &[crate::products::division_equipment::history::QUERY],
-        // 2: per-division parts on the segment driver, published as a series root.
-        version: 2,
+        // 3: every lead hour supplies the context a resumed engine needs.
+        version: 3,
         ..family("division-equipment")
     },
     Descriptor {
@@ -279,8 +287,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["country-measure"],
         queries: &["country-measure", "scoreboard"],
         gates: &["country-measure"],
-        // 2: balances on the segment driver, published as a series root.
-        version: 2,
+        // 3: tag numbers follow the world's lifetime across starts.
+        version: 3,
         ..family(products::country_balances::NAME)
     },
     // The feed observes the identity history, and these queries read it through
@@ -311,8 +319,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["army-size", "volunteers-expeditionaries"],
         queries: &["army-size", "volunteers-expeditionaries", "scoreboard"],
         gates: &["volunteers-expeditionaries"],
-        // 2: facts on the segment driver, published as a series root.
-        version: 2,
+        // 3: each total starts a segment after its own unknown hour.
+        version: 3,
         ..family("army")
     },
     Descriptor {
@@ -357,8 +365,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     Descriptor {
         status: &["supply-health"],
         queries: &["supply-health"],
-        // 3: supply ratio and remaining grace restored from display-step units.
-        version: 3,
+        // 4: display-step supply units; tag numbers follow the world's lifetime; shares restart after an hour without divisions.
+        version: 4,
         ..family("supply")
     },
     Descriptor {
@@ -430,7 +438,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["game-score"],
         gates: &["game-score"],
         // 2: scores on the segment driver, published as a series root.
-        version: 2,
+        // 3: each score part breaks after an unknown hour.
+        version: 3,
         ..family("game_score")
     },
     Descriptor {
@@ -656,19 +665,16 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["country-stability"],
         queries: &["country-stability", "scoreboard"],
         gates: &["country-stability"],
-        // 2: its measures as facts on the segment driver, published as a series root; its parts
-        // a family of their own.
-        version: 2,
+        // 3: tag numbers follow the world's lifetime across starts.
+        version: 3,
         ..family("stability")
     },
     Descriptor {
         status: &["stability-parts"],
         queries: &["stability-parts"],
         gates: &["stability-parts"],
-        // 2: parts on the segment driver, published as a series root; a read's characters
-        // named from the names its own hour handed on.
-        // 3: each part's names published as an event of its own, where they change.
-        version: 3,
+        // 4: tag numbers follow the world's lifetime across starts.
+        version: 4,
         ..family("parts")
     },
     // Its series queries route by the family kind `country-experience`.
@@ -676,8 +682,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["country-experience"],
         queries: &["country-experience"],
         gates: &["country-experience"],
-        // 2: facts on the segment driver, published as a series root.
-        version: 2,
+        // 3: tag numbers follow the world's lifetime across starts.
+        version: 3,
         ..family("experience")
     },
     Descriptor {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { CountryGroupReply, ShipBattleTitle, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 import { definition } from './definition.ts';
 import { logCountryRequests } from '../../charts/log/logData.ts';
+import { tooltipText } from '../../charts/tooltip.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
 import { countryMatch } from '../../dashboard/groups.ts';
@@ -226,7 +227,8 @@ test('battle-title failures qualify only pending hostile titles and never expose
   const data = fixture(), error = new Error('Synthetic malformed battle title request');
   const failed = shipTooltip(data, row(), 'Victim', 'Attacker', undefined, error);
   assert.ok(failed.rows.some(row => row.label === 'Couldn’t load the battle title.'));
-  assert.ok(!JSON.stringify(failed).includes(error.message));
+  assert.equal(failed.rows.find(row => row.label === 'Couldn’t load the battle title.')?.detail, error.message);
+  assert.doesNotMatch(tooltipText(failed), /Synthetic malformed battle title request/);
   const absent: ShipBattleTitle = { index: 0, hour: 110, name: null, missing: null };
   for (const tooltip of [shipTooltip(data, row({ cause: 'cause' }), 'Victim', 'Attacker', undefined, error),
     shipTooltip(data, row(), 'Victim', 'Attacker', absent, error)])

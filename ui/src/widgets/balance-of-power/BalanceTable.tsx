@@ -142,7 +142,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const warnings = useMemo(() => [...(data?.warnings ?? []),
     ...(data ? nameWarnings(rows.map(row => row.balance), data.names) : []),
     ...(view?.untagged ? [`${view.untagged} balance member${view.untagged === 1 ? '' : 's'} with no tag at this hour`] : []),
-    ...(groups.error && needsGroups ? [`Country membership could not be loaded: ${groups.error}`] : [])], [data, rows, view, groups.error, needsGroups]);
+    ...(groups.error && needsGroups ? [`Country membership could not be loaded: ${groups.error.message}`] : [])], [data, rows, view, groups.error, needsGroups]);
   useDiagnostics(onDiagnostics, warnings);
   useEffect(() => { if (open && !openHolder && data) setOpened(null); }, [open, openHolder, data]);
 

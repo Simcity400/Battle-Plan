@@ -1052,8 +1052,7 @@ fn module_upgrade_appearance_and_tag_writes_rename_designs_at_every_restart() {
     let mut inputs: Vec<_> = (10..17).map(frame).collect();
     for (ordinal, input) in inputs.iter_mut().enumerate() {
         input.tables[TableId::VariantChanges.index()] =
-            TableView::Complete(TableRows::VariantChanges(vec![VariantChangeRow::default()]))
-                .into();
+            TableView::Complete(TableRows::VariantChanges(Vec::new())).into();
         input.tables[TableId::VariantModules.index()] =
             TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
                 variant,

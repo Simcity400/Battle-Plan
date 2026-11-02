@@ -99,9 +99,9 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
     const record = details.data && subject ? holderRecord(details.data, subject, pinnedWeekly ? saved || null : balance?.token ?? null) : null;
     return [...(data?.warnings ?? []), ...(data && subject ? nameWarnings(visibleBalances(subject, limit), data.names) : []),
       ...(choice?.missing ? ['1 saved balance not held by this country; showing the one the game shows'] : []),
-      ...(error ? [`Balance of power history could not be refreshed: ${error}`] : []),
+      ...(error ? [`Balance of power history could not be refreshed: ${error.message}`] : []),
       ...(details.data ? detailWarnings(details.data, record) : []),
-      ...(details.error ? [`Balance of power details could not be loaded: ${details.error}`] : [])];
+      ...(details.error ? [`Balance of power details could not be loaded: ${details.error.message}`] : [])];
   }, [data, subject, limit, choice?.missing, error, details.data, details.error, pinnedWeekly, saved, balance?.token]);
   useDiagnostics(onDiagnostics, warnings);
 

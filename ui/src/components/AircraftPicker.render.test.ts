@@ -87,8 +87,14 @@ test('a listing without its first page says it is reading, and a failed first pa
     const reading = new catalogue.AircraftPages('reading');
     reading.begin(0);
     assert.match(render(reading), /Reading the content&#x27;s aircraft/);
-    reading.fail(0, new Error('Choose the game and user folders in Settings first'));
-    assert.match(render(reading), /role="alert">Choose the game and user folders in Settings first.*Retry/);
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
+    reading.fail(0, new RefusedError('Choose the game and user folders in Settings first'));
+    const refused = render(reading);
+    assert.match(refused, /role="alert" data-detail="Choose the game and user folders in Settings first">Choose the game and user folders in Settings first.*Retry/);
+    reading.fail(0, new Error('Synthetic aircraft decoder failure'));
+    const failed = render(reading);
+    assert.match(failed, /role="alert" data-detail="Synthetic aircraft decoder failure">Couldn’t load aircraft\..*Retry/);
+    assert.doesNotMatch(failed.replace(/<[^>]*>/g, ''), /Synthetic aircraft decoder failure/);
     const none = new catalogue.AircraftPages('none');
     none.begin(0);
     none.accept(0, { ...reply, matching: 0, entries: [] });

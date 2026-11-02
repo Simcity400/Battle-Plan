@@ -677,13 +677,29 @@ fn written_runs(runs: &[(u64, i32, i32)], capture: &Capture) -> Vec<u8> {
 fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions() {
     let unit = envelope::UNIT_ORDINALS as i32;
     let runs = [(1, 1, 2 * unit + 5), (2, 5_000, unit + 3), (3, 9_000, 2 * unit)];
+    use crate::identity::{IdentityCodec, SampleBoundary, SessionStart};
     use crate::spool::{ControlRecord, Record, encode_record};
     use replay_frame::branches::{BranchReason, BranchStart, Gap, Parentage};
+    let [s1, s2, s3] = [1, 2, 3].map(|id| {
+        let mut bytes = Vec::new();
+        SessionStart {
+            id,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 1,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: replay_identity::test_fixtures::identity(),
+        }
+        .encode(&mut bytes)
+        .unwrap();
+        bytes
+    });
     let control = |record: Record| encode_record(&record).unwrap();
     let start = |id: u64| {
         control(Record::BranchStart(BranchStart {
             id,
-            session: 1,
+            session: id,
             loaded_hour: None,
             first_hour: 1,
             parent: Parentage::Unknown,
@@ -704,7 +720,7 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
         campaign_id: b"columnar file test".to_vec(),
         content: vec![1, 2, 3],
         capture_mode: CaptureMode::Full.byte(),
-        sessions: vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+        sessions: vec![s1.clone(), s2.clone(), s3.clone()],
         run_sessions: vec![0, 1, 2],
         stop: Some(Stop {
             branch: 2,
@@ -727,7 +743,7 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
     assert_eq!(
         rewritten.capture().unwrap(),
         Some(Capture {
-            sessions: vec![b"first".to_vec(), b"third".to_vec()],
+            sessions: vec![s1.clone(), s3],
             run_sessions: vec![0, 1],
             stop: None,
             controls: vec![start(1), start(3), detach.clone()],
@@ -759,7 +775,7 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
         walker.begin(&segment, &mut state).unwrap();
         assert!(walker.walk(&segment, &mut state, |_, _, _| Ok(true)).unwrap());
     }
-    // One session's runs alone name that session alone; a stop on a kept branch stays.
+    // The detach still names session 1 even when none of its runs remain.
     let second = keep_branches(&original, |branch| branch == 2, Cursor::new(Vec::new()), EVERY_UNIT, |_| Ok(()))
         .unwrap()
         .unwrap()
@@ -768,7 +784,7 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
     assert_eq!(
         Recording::open(second, Limits::default()).unwrap().capture().unwrap(),
         Some(Capture {
-            sessions: vec![b"second".to_vec()],
+            sessions: vec![s2, s1],
             run_sessions: vec![0],
             controls: vec![start(2), gap, detach],
             ..capture.clone()

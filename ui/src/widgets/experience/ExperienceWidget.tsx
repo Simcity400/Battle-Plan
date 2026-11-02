@@ -136,7 +136,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   useEffect(() => {
     const uncoloured = tags.filter(tag => !styles.get(tag)?.color);
     const warnings = [...(data?.warnings ?? []), ...(looks.warnings ?? []), ...(groups.data?.warnings ?? []),
-      ...(groups.error ? [`Capitulation markers are unavailable: ${groups.error}`] : []),
+      ...(groups.error ? [`Capitulation markers are unavailable: ${groups.error.message}`] : []),
       ...(uncoloured.length ? [`Map colours are loading or unavailable for ${uncoloured.join(', ')}; shown in palette colours.`] : []),
       ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);

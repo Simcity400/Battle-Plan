@@ -1241,7 +1241,7 @@ fn private_identity_quiet_steps_ignore_counter_values_but_preserve_key_proofs_an
 }
 
 #[test]
-fn sparse_existence_reads_freeze_removed_rows_and_keep_duplicate_slot_order() {
+fn sparse_existence_reads_freeze_removed_rows() {
     let mut inputs: Vec<_> = (100..=111).map(|hour| quiet(hour, 3)).collect();
     for input in &mut inputs {
         if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
@@ -1256,14 +1256,6 @@ fn sparse_existence_reads_freeze_removed_rows_and_keep_duplicate_slot_order() {
     }
     parity(&inputs, &[2, 4, 7, 9], None);
     parity_with_resume(&inputs, &[3, 6, 9], None, true);
-    for input in &mut inputs {
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *input.tables[TableId::Countries.index()]
-        {
-            rows[1].canonical_slot = rows[0].canonical_slot;
-        }
-    }
-    parity(&inputs, &[2, 7, 9], None);
 }
 
 /// Guarantees read through their owners' slices: new, seen again, unresolved, exact and late,

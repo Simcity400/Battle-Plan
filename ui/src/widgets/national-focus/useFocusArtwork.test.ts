@@ -449,7 +449,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       return { warnings: [], details: fixture.details, read: new Map(wanted.map(({ tag, hour }) => {
         const key = JSON.stringify([hour, tag]), detail = fixture.details.get(key);
         return [key, { artwork: { token: tag, name: 'Localized focus', baseDurationDays: 10, icon: null,
-          description: detail && typeof detail === 'object' ? detail.artwork.description : null }, reason: null }];
+          description: detail && typeof detail === 'object' && 'artwork' in detail ? detail.artwork.description : null }, reason: null }];
       })) }; };
       export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
   };

@@ -1275,6 +1275,8 @@ struct Walk {
     identified: Option<[ViewIdentity; 2]>,
     /// Each held group's war as the last structural change assigned it ([`assignment`]).
     assigned: Vec<usize>,
+    // Continuation reads the previous assignment even when every input table stays unchanged.
+    settled: bool,
 }
 impl Walk {
     fn new(branch: u64, first: i32) -> Self {
@@ -1297,6 +1299,7 @@ impl Walk {
             losses: true,
             identified: None,
             assigned: Vec::new(),
+            settled: false,
         }
     }
     /// Observes `decoded`, its hour `ready` when it was read ahead from this frame. The hour it
@@ -1406,9 +1409,8 @@ impl Walk {
             self.previous_view = view;
             // The very groups held before continue as losses alone only while continuing them
             // would assign each to the war it holds: overlapping groups can trade wars.
-            if (same
-                || regrouped
-                    && assignment(self.reply.wars.len(), &self.open, observed) == self.assigned)
+            if (same || regrouped)
+                && self.settled
                 && self.previous.is_some()
                 && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len()
             {
@@ -1449,6 +1451,8 @@ impl Walk {
                     self.previous,
                     self.losses.then_some(&losses as &Losses<'_>),
                 );
+                self.settled =
+                    assignment(self.reply.wars.len(), &self.open, observed) == self.assigned;
             }
             // Unchanged inputs after an observed hour, or the same countries, leave every
             // identity as it was.
@@ -1548,6 +1552,36 @@ impl Walk {
             return;
         }
         if self.previous == Some(first) {
+            if let Some(HeldHour {
+                observed: Ok((inputs, observed)),
+                ..
+            }) = &self.held
+            {
+                let mut at = first;
+                while at < last && !self.settled {
+                    at += 1;
+                    // Unchanged groups still read the wars assigned at the previous hour.
+                    for OpenWar { id, .. } in &self.open {
+                        let war = &mut self.reply.wars[*id];
+                        for &index in war.open_participants.values() {
+                            war.participants[index].last_hour = war.last_hour;
+                        }
+                    }
+                    let observations = opening(inputs, observed, at, self.losses);
+                    let losses = |pairs: &[(Pair, bool)]| inputs.losses(pairs);
+                    self.assigned = assignment(self.reply.wars.len(), &self.open, observed);
+                    self.open = continue_wars(
+                        &mut self.reply.wars,
+                        &self.open,
+                        observations,
+                        self.previous,
+                        self.losses.then_some(&losses as &Losses<'_>),
+                    );
+                    self.settled =
+                        assignment(self.reply.wars.len(), &self.open, observed) == self.assigned;
+                    self.previous = Some(at);
+                }
+            }
             if let Some(viewpoint) = self.reply.viewpoints.last_mut() {
                 viewpoint.last_hour = last;
             }

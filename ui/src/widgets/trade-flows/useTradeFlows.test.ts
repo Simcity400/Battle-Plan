@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -55,13 +57,12 @@ test('trade viewport, followed drill and pointer hours acquire independent prepa
 
 test('market view shares source, native country filter and moment demand without resource requests', async () => {
   const state = { requests: [] as { sourceId: string; revision: string; product: string; params: { hour: number; tags: string[] } }[],
-    groups: { branchId: '1', warnings: [], identityChanges: [], warStarts: [], capitulations: [],
+    groups: deepFreeze(countryGroupReply({
       humans: [{ tag: 'AAA', firstHour: 0, lastHour: 29 }, { tag: 'BBB', firstHour: 30, lastHour: 100 }],
-      factions: [], wars: [], unobserved: { humans: [] as { firstHour: number; lastHour: number }[], factions: [], wars: [] },
       countryIdentities: [
         { tag: 'AAA', identities: [{ firstHour: 0, lastHour: 29, slot: 1, countryId: 1 }] },
         { tag: 'BBB', identities: [{ firstHour: 30, lastHour: 100, slot: 1, countryId: 1 }] },
-      ] }, groupDemand: false, result: null as null | { marketReason: string | null } };
+      ] })), groupDemand: false, result: null as null | { marketReason: string | null } };
   const globals = globalThis as typeof globalThis & { __marketAcquisition?: typeof state }; globals.__marketAcquisition = state;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'trade-market-demand', enforce: 'pre', transform(_code, id) {
@@ -82,10 +83,10 @@ test('market view shares source, native country filter and moment demand without
     hour = 45;
     assert.deepEqual(render().map(request => [request.sourceId, request.revision, request.params.hour, request.params.tags]), [['source', 'revision', 45, ['BBB']]]);
     assert.equal(state.groupDemand, true);
-    state.groups.unobserved.humans = [{ firstHour: 40, lastHour: 50 }];
+    state.groups = deepFreeze({ ...state.groups, unobserved: { ...state.groups.unobserved, humans: [{ firstHour: 40, lastHour: 50 }] } });
     assert.deepEqual(render(), [], 'unknown membership must never become an all-countries request');
     assert.match(state.result!.marketReason!, /unavailable/);
-    state.groups.unobserved.humans = [];
+    state.groups = deepFreeze({ ...state.groups, unobserved: { ...state.groups.unobserved, humans: [] } });
     widget.countries = { kind: 'tags', tags: ['AAA'] } as never;
     assert.deepEqual(render()[0].params.tags, ['BBB'], 'manual picks follow their native holder through its renamed tag');
     widget.countries = { kind: 'all' } as never;

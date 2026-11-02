@@ -18,7 +18,8 @@ test('failed demand-loaded log pages show a plain row failure without backend te
       pages: [{ key: 'missing', start: 0, end: 10, count: 5, error: new Error('Synthetic private page refusal') }], renderRow: () => null,
       describe: () => '', empty: 'Empty' }));
     assert.match(html, /Couldn’t load rows\./);
-    assert.doesNotMatch(html, /Synthetic private page refusal|Rows unavailable/);
+    assert.equal(html.match(/data-detail="([^"]*)"/)?.[1], 'Synthetic private page refusal');
+    assert.doesNotMatch(html.replace(/<[^>]*>/g, ''), /Synthetic private page refusal|Rows unavailable/);
   } finally { await vite.close(); }
 });
 

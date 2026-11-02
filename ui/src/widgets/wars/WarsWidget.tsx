@@ -155,8 +155,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const menu = useContextMenu('Timeline actions');
   useEffect(() => {
     const warnings = [...new Set([...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...factions.warnings,
-      ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Country history unavailable: ${groups.error}`] : []),
-      ...(exact.error ? [`War casualty values unavailable: ${exact.error}`] : []),
+      ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Country history unavailable: ${groups.error.message}`] : []),
+      ...(exact.error ? [`War casualty values unavailable: ${exact.error.message}`] : []),
       ...(prepared?.unidentifiedHours ? [`${prepared.unidentifiedHours} participant-hours have unknown countries; those lanes keep unknown labels and colours.`] : [])])];
     onDiagnostics(warnings.length ? warnings.map(warning => warning instanceof Error ? warning.message : warning) : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);

@@ -1138,9 +1138,11 @@ fn a_job_with_a_native_backend_is_prepared_among_the_families() {
                 &crate::prepared::coverage::family_section(job, 1),
                 0,
                 &b"{}"[..],
-            )?;
-            status::coordinate(writer, plan, &shape, &mark)
+            )
         })
+        .unwrap();
+    publisher
+        .coordinate(|writer| status::coordinate(writer, plan, &shape, &mark))
         .unwrap();
     let published = gates::decode(&fixture.store, None).unwrap().unwrap();
     assert!(

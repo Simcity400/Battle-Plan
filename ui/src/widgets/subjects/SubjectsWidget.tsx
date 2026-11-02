@@ -106,7 +106,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []),
       ...(views[0]?.identityGaps.length || data?.runs.length && identities && !views.length ? ['Some subject relations have unknown countries; those hours stay unknown.'] : []),
-      ...(groups.error ? [`Country history unavailable: ${groups.error}`] : [])];
+      ...(groups.error ? [`Country history unavailable: ${groups.error.message}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, identities, views, onDiagnostics]);

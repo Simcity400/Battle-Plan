@@ -22,7 +22,8 @@ const reply = (): TensionReply => ({ branchId: 'branch', tensionScale: 1000, con
   reads: [{ firstHour: 100, lastHour: 123, startsSegment: true, tensionRaw: '100000', sumRaw: '13350000', unnamedRaw: '50000' },
     { firstHour: 150, lastHour: 150, startsSegment: true, tensionRaw: '0', sumRaw: '-300000', unnamedRaw: '0' }],
   countries: [{ tag: 'mod country', slot: 1, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '13500000', startsSegment: true }] },
-    { tag: 'same tag', slot: 2, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '-200000', startsSegment: true }] }],
+    { tag: 'same tag', slot: 2, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '-200000', startsSegment: true }] }].map(country => ({ ...country,
+      identities: [{ firstHour: 100, lastHour: 123, slot: country.slot, countryId: country.slot }] })),
   events: [{ hour: 99, tag: 'mod country', reason: 'Native cause text', firstRead: 100, lastRead: 123,
     added: [{ hour: 100, addedRaw: '20000000' }, { hour: 120, addedRaw: '19000000' }] }],
 });
@@ -37,7 +38,6 @@ test('tension drill uses plain cause controls while retaining signed contributio
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),globalThis.__tensionPresentation.style]));',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryFlagsAt = () => new Map(); export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = {};',
-    '/dashboard/countryLooks.ts': 'export const lookHour = (_branch, hour) => ({ hour });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ muted: "#888888", surface: "#000000", countryColours: "game" });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',
     '/components/Select.tsx': 'export const Select = props => { globalThis.__tensionPresentation.select = props; return props.label; };',

@@ -121,7 +121,8 @@ async function withTable(run: (fixture: { Table: typeof import('./Table.tsx').de
   const observers = new Set<Observer>();
   class Observer {
     targets = new Set<FakeNode>(); pending = new Set<FakeNode>();
-    constructor(readonly callback: (entries: unknown[]) => void) { observers.add(this); }
+    readonly callback: (entries: unknown[]) => void;
+    constructor(callback: (entries: unknown[]) => void) { this.callback = callback; observers.add(this); }
     observe(target: FakeNode) { reads.observed.push(target.dataset.tableNatural ?? 'row/view'); this.targets.add(target); this.pending.add(target); }
     unobserve(target: FakeNode) { this.targets.delete(target); this.pending.delete(target); }
     disconnect() { this.targets.clear(); this.pending.clear(); observers.delete(this); }

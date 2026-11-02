@@ -14,6 +14,8 @@
 static TEST_ALLOCATOR: test_allocator::Allocator = test_allocator::Allocator;
 #[cfg(test)]
 mod test_allocator;
+#[cfg(test)]
+mod test_country_links;
 
 pub mod air_wing_names;
 pub mod artwork;

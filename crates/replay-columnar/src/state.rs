@@ -519,7 +519,7 @@ impl Column {
         }
     }
 
-    /// The value at `slot`, live or not: a deleted row's slot keeps stale scalars.
+    /// The value at `slot`, live or not: a freed slot holds the column's default.
     pub fn cell(&self, slot: u32) -> Option<Cell<'_>> {
         let at = slot as usize;
         Some(match self {
@@ -733,6 +733,16 @@ impl Column {
     fn release(&mut self, slot: u32) {
         let at = slot as usize;
         match self {
+            // Restarts omit freed cells; hot walks must leave the same page bases.
+            Self::U8(values) => values[at] = 0,
+            Self::I8(values) => values[at] = 0,
+            Self::U16(values) => values[at] = 0,
+            Self::I16(values) => values[at] = 0,
+            Self::U32(values) | Self::Bytes(values) => values[at] = 0,
+            Self::I32(values) => values[at] = 0,
+            Self::U64(values) => values[at] = 0,
+            Self::I64(values) => values[at] = 0,
+            Self::Bool(values) => values[at] = false,
             Self::OptionalI32(_, bits)
             | Self::OptionalU32(_, bits)
             | Self::OptionalI64(_, bits)
@@ -752,7 +762,6 @@ impl Column {
                     *cell = Box::default();
                 }
             }
-            _ => {}
         }
     }
 }

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import type { OperativeRosterReply } from '../../generated/dashboard';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { sortRows } from '../../charts/table/logic.ts';
@@ -59,10 +60,10 @@ test('departed roster selection uses its last native holder date after unrelated
   const entry = reply.countries[0].operatives[0];
   entry.runs = entry.runs.slice(0, 2);
   entry.departedHour = 205;
-  const groups = { countryIdentities: [
+  const groups = countryGroupReply({ countryIdentities: [
     { tag: 'X', identities: [{ firstHour: 250, lastHour: 300, slot: 1, countryId: 7 }] },
     { tag: 'MOD owner', identities: [{ firstHour: 100, lastHour: 199, slot: 1, countryId: 7 }, { firstHour: 220, lastHour: 300, slot: 2, countryId: 9 }] },
-  ] } as import('../../generated/dashboard').CountryGroupReply;
+  ] });
   const match = countryMatch({ kind: 'tags', tags: ['X'] }, [], groups, 300);
   assert.equal(match.matches('MOD owner', 250), false);
   const view = rosterAt(reply, 250, true, match.matches);

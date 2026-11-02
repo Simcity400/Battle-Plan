@@ -59,7 +59,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
     // A view read lands in the same render, as the fixture's products do; a read that throws is its error.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
       if (active && lane != null && view != null) {
-        try { void read(view, new AbortController().signal, value => { data = value; }); } catch (reason) { error = reason.message; }
+        try { void read(view, new AbortController().signal, value => { data = value; }); } catch (reason) { error = reason; }
       }
       return { data, error, retry() {} }; };`,
     '/dashboard/model.ts': `export const resolveWindow = (widget, track) => widget.time.mode === 'pin'
@@ -98,7 +98,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
             export function loadProduct(_client, request, _signal, validate, _source, _restart, publish) {
               const state = request.product === 'resource-balance' ? globalThis.__economyNumeric.product : null;
               if (!state) throw Error('Unexpected economy product: ' + request.product);
-              if (state.error) throw Error(state.error);
+              if (state.error) throw state.error;
               check(state.data, request, validate);
               if (state.data !== undefined) publish?.(state.data);
               return new Promise(() => {});
@@ -210,7 +210,10 @@ test('economy and shared race picks keep their mounted numeric owner through con
           render(changed);
           assert.equal(canvas.pick(beforeMembership, 50), false);
         }
-        assert.match(render(undefined, new Error('Content failed')).html, /Content failed/);
+        const failed = render(undefined, new Error('Content failed')).html;
+        assert.match(failed, /data-detail="Content failed"/);
+        assert.match(failed, />Couldn’t load\.<\/span>/);
+        assert.doesNotMatch(failed.replace(/<[^>]*>/g, ''), /Content failed/);
         assert.equal(mounted, undefined);
         track.source.id = 'other source';
         assert.equal(render().chart, undefined);

@@ -153,9 +153,9 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   [current, pinned, model, namedModel, origin, names, query]);
   const diagnosticKey = JSON.stringify([...(data?.warnings ?? []), ...looks.warnings, ...mainWarnings,
       ...(partsProduct.data?.warnings ?? []), ...(looks.loading ? ['Faction names and colours are loading.'] : []),
-      ...(error ? [`Faction totals refresh is unavailable: ${error}`] : []),
-      ...(partsProduct.error ? [`Faction members refresh is unavailable: ${partsProduct.error}`] : []),
-      ...(looks.error ? [`Faction colours are unavailable: ${looks.error}`] : [])]);
+      ...(error ? [`Faction totals refresh is unavailable: ${error.message}`] : []),
+      ...(partsProduct.error ? [`Faction members refresh is unavailable: ${partsProduct.error.message}`] : []),
+      ...(looks.error ? [`Faction colours are unavailable: ${looks.error.message}`] : [])]);
   const diagnostics = useMemo(() => JSON.parse(diagnosticKey) as string[], [diagnosticKey]);
   useEffect(() => {
     onDiagnostics(diagnostics.length ? diagnostics : NO_WARNINGS);

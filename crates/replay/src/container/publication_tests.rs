@@ -2,7 +2,10 @@ use super::*;
 use crate::publication::{ReplaceError, posix_replace, posix_replace_with, replace_file_with};
 use std::{
     fs,
-    os::windows::fs::OpenOptionsExt,
+    os::windows::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -258,6 +261,35 @@ fn replacement_errors_tell_a_refused_rename_from_a_failed_flush() {
     });
     assert!(matches!(unflushed, Err(ReplaceError::Unflushed(_))));
     assert_eq!(fs::read(&path).unwrap(), b"new");
+    assert!(!staged.exists());
+}
+
+#[test]
+fn long_paths_hide_unsaved_folders_move_files_and_replace_without_posix_rename() {
+    let scratch = Scratch::new();
+    let folder = scratch.0.join("a".repeat(120)).join("b".repeat(120));
+    let unsaved = crate::publication::create_unsaved_folder(&folder).unwrap();
+    assert!(unsaved.as_os_str().encode_wide().count() > 260);
+    assert_ne!(
+        fs::metadata(&unsaved).unwrap().file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN,
+        0
+    );
+    let staged = unsaved.join("staged.battleplan");
+    let target = folder.join("published.battleplan");
+    fs::write(&staged, b"first").unwrap();
+    crate::publication::rename_new(&staged, &target).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"first");
+    assert!(!staged.exists());
+    fs::write(&staged, b"second").unwrap();
+    replace_file_with(
+        &staged,
+        &target,
+        |_, _| Ok(false),
+        || panic!("classic replacement has its own durability barrier"),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"second");
     assert!(!staged.exists());
 }
 

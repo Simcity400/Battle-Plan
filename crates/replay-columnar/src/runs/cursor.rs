@@ -1213,6 +1213,7 @@ impl Cursor {
 #[derive(Debug)]
 pub struct Keyed {
     pub status: Status,
+    /// The complete table's sample hour; none for an incomplete read.
     pub sampled: Option<i32>,
     /// The rows live there at the keys asked, in a truncated table those its view holds, at
     /// slots `0..` in key order.
@@ -1251,7 +1252,8 @@ pub fn rows_at(
     let sampled = at(&series.samples, ordinal)
         .ok_or_else(|| entry("sample hour"))?
         .1
-        .at(hour);
+        .at(hour)
+        .filter(|_| status == Status::Complete);
     let slots = *at(&series.slots, ordinal)
         .ok_or_else(|| entry("slot count"))?
         .1 as usize;

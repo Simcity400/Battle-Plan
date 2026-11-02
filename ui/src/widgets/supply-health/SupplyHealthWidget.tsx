@@ -169,7 +169,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   }, []);
   useEffect(() => {
     const diagnostics = [...(warnings ?? []), ...(data?.reason ? [data.reason] : []), ...(groupWarnings ?? []),
-      ...(widget.countries.kind !== 'group' && !pinned && incomingGroups.error ? [`Capitulation markers are unavailable: ${incomingGroups.error}`] : []), ...drillWarnings];
+      ...(widget.countries.kind !== 'group' && !pinned && incomingGroups.error ? [`Capitulation markers are unavailable: ${incomingGroups.error.message}`] : []), ...drillWarnings];
     onDiagnostics(diagnostics.length ? diagnostics : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, warnings, groupWarnings, incomingGroups.error, widget.countries.kind, pinned, drillWarnings, onDiagnostics]);

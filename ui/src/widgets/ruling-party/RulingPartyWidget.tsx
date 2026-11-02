@@ -137,7 +137,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const menu = useContextMenu('Chart actions');
   useEffect(() => {
     const warnings = [...peopleWarnings, ...(data?.warnings ?? []), ...(governmentReply.data?.warnings ?? []),
-      ...(governmentReply.error ? [`Government causes could not be loaded: ${governmentReply.error}`] : [])];
+      ...(governmentReply.error ? [`Government causes could not be loaded: ${governmentReply.error.message}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, governmentReply.data, governmentReply.error, peopleWarnings, onDiagnostics]);

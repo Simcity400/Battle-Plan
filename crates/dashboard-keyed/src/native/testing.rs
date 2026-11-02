@@ -55,7 +55,9 @@ fn bound_operator<O: Observer>(binding: Option<&Binding<O>>) -> segment::Operato
 /// unavailable, read where the frame's metrics read it.
 pub fn write<T: TableSchema>(walk: &mut Synthetic, frame: &DecodedFrame) {
     let read = frame.metrics.table_ns[T::ID.index()] != 0;
-    let sample = Sample::FromReadBit;
+    let sample = frame.tables[T::ID.index()]
+        .sampled_at()
+        .map_or(Sample::FromReadBit, Sample::Carried);
     let input = match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) => Input::Snapshot {
             rows: rows.rows::<T>().unwrap(),

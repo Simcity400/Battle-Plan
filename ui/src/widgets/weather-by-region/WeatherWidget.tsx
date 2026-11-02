@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
@@ -88,7 +89,8 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     // An unread day is read; one read before preparation finished is read again.
     if (!exact || exact.reply && !finalPreparedReply(exact.reply)) days.want(Math.floor(hour / dayHours));
     if (!exact) return { ...summary, rows: [...summary.rows, { label: date, value: 'Loading…', divider: true }] };
-    if (!exact.reply) return { ...summary, rows: [...summary.rows, { label: date, value: `Unavailable: ${exact.error}`, divider: true, tone: 'muted' }] };
+    if (!exact.reply) return { ...summary, rows: [...summary.rows, { label: date,
+      value: exact.error ? failureText(exact.error, 'Couldn’t load weather.') : 'Loading…', detail: exact.error?.message, divider: true, tone: 'muted' }] };
     if (pendingAt(preparedPrefix(exact.reply), hour)) return { ...summary, rows: [...summary.rows, { label: date, value: 'Still being prepared', divider: true }] };
     // The day reads its values; the shown history names its flags and modifiers.
     const day = weatherTooltip({ ...exact.reply, flags: data.flags, modifiers: data.modifiers }, region, exact.day, date,

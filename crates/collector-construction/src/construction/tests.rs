@@ -821,10 +821,10 @@ fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_dem
     let length = name - kit::BASE + msvc_string::LENGTH;
     bytes[length..length + 8].copy_from_slice(&7_u64.to_le_bytes());
     for (address, len, occurrence, required) in [
-        (name, 32, 1, 21),
-        (name, 7, 1, 28),
-        (name, 7, 2, 28),
-        (name + 7, 1, 1, 28),
+        (name, 32, 1, 7),
+        (name, 7, 1, 14),
+        (name, 7, 2, 14),
+        (name + 7, 1, 1, 14),
     ] {
         let memory = || Fault {
             memory: engine_native::memory::SliceMemory {
@@ -842,6 +842,8 @@ fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_dem
         capacity.law_bytes = 7;
         let (mut captured, _, mut job) = kit::split(&memory(), &capacity);
         kit::assert_matches_direct(&captured, &direct);
+        assert_eq!(job.census.len(), 1);
+        assert_eq!(job.settings_required, 1);
         assert_eq!(job.law_bytes_required, required);
         assert_eq!(captured.law_bytes.first.len(), required);
         assert_eq!(captured.law_bytes.required, required);
@@ -982,7 +984,8 @@ fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_ze
         let mut capacity = kit::capacities();
         capacity.group_laws = 0;
         let (split, _, job) = kit::split(&memory, &capacity);
-        assert_eq!(job.group_laws_required, 2);
+        assert_eq!(job.census.len(), 1);
+        assert_eq!(job.group_laws_required, 1);
         kit::assert_matches_direct(&split, &direct);
         let tables = split.tables();
         let row = &complete::<tables::OccupationSettings>(&tables[5])[0];

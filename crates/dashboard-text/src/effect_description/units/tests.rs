@@ -2191,14 +2191,13 @@ fn units_recorded_variant_no_tech_probe() {
         ..Default::default()
     };
     let mut fixture = equipment_fixture();
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
-    {
-        rows.push(CountryLinkRow {
+    crate::test_country_links::extend(
+        &mut fixture.frame,
+        [CountryLinkRow {
             id: 101,
             canonical_slot: 1,
-        });
-    }
+        }],
+    );
     let definitions = fixture.frame.tables[TableId::VariantDefinitions.index()].clone();
     let available = fixture.frame.tables[TableId::AvailableEquipmentVariants.index()].clone();
     for (version, creator, origin, expected) in [
@@ -2321,10 +2320,9 @@ fn units_recorded_variant_pool_order_and_equality() {
         .collect::<Localisation>()
         .into();
     Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
-    {
-        rows.extend([
+    crate::test_country_links::extend(
+        &mut fixture.frame,
+        [
             CountryLinkRow {
                 id: 101,
                 canonical_slot: 1,
@@ -2333,8 +2331,8 @@ fn units_recorded_variant_pool_order_and_equality() {
                 id: 201,
                 canonical_slot: 2,
             },
-        ]);
-    }
+        ],
+    );
     *fixture.frame.tables[TableId::AvailableEquipmentVariants.index()] =
         TableView::Complete(TableRows::AvailableEquipmentVariants(vec![
             AvailableEquipmentVariantRow {

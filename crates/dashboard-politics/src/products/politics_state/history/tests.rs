@@ -253,11 +253,13 @@ fn exile_and_balance_histories_cover_every_holder_with_independent_fields() {
                     exile_manpower: Some(12_400).into(),
                     exile_manpower_cap: Some(24_000).into(),
                     exile_leaders: leaders,
+                    keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
                     ..Default::default()
                 },
                 CountryStabilityInputRow {
                     country: 3,
                     exile_host: Some(0).into(),
+                    keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
                     ..Default::default()
                 },
             ]),
@@ -426,6 +428,7 @@ fn an_exile_window_clips_carried_daily_reads_and_needs_bounds() {
                             exile_manpower: Some(day).into(),
                             exile_manpower_cap: Some(day + 1).into(),
                             exile_leaders: Some(day).into(),
+                            keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
                             ..Default::default()
                         }
                     })
@@ -584,7 +587,12 @@ fn an_exile_or_schedule_naming_a_country_with_no_identity_leaves_its_hour_unknow
             TableRows::CountryStabilityInputs(
                 exiles
                     .into_iter()
-                    .map(|(country, exile_host)| CountryStabilityInputRow { country, exile_host, ..Default::default() })
+                    .map(|(country, exile_host)| CountryStabilityInputRow {
+                        country,
+                        exile_host,
+                        keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
+                        ..Default::default()
+                    })
                     .collect(),
             ),
         );

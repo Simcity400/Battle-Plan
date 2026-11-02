@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { dayLabel } from '../../charts/draw.ts';
 import { mountModule } from '../../dashboard/pendingGroups.fixture.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
+import type { QueryError } from '../../generated/dashboard';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { BoundTrack } from '../../dashboard/model';
 import type { WeatherReply } from './weatherData';
@@ -24,15 +25,17 @@ const daily: WeatherReply = { ...choices, window, columns: { days: 1,
 const snowDay: WeatherReply = { ...choices, modifiers: [], window: { firstHour: 120, lastHour: 143, known: [{ firstHour: 120, lastHour: 143 }], reads: [[120, 143, 140]],
   series: [{ name: '1|snow', runs: [[120, 143, '1', true]] }] } };
 
-interface Fixture { data: WeatherReply; chart?: TimeChartProps; read: Map<number, { data?: WeatherReply; error?: Error }>; wanted: number[];
+interface Fixture { data: WeatherReply; chart?: TimeChartProps; read: Map<number, { data?: WeatherReply; error?: QueryError }>; wanted: number[];
   menu?: unknown[]; drilled?: number }
 const host = globalThis as typeof globalThis & { __weather?: Fixture };
 
 async function mount() {
   return mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/weather-by-region/WeatherWidget.tsx', {
-    '/widgets/weather-by-region/useWeather.ts': `export const useWeatherInView = () => ({ options: {}, show: 'conditions', modifier: null, data: globalThis.__weather.data,
+    '/widgets/weather-by-region/useWeather.ts': `import { queryFailure } from '../../dashboard/queryError.ts';
+      export const useWeatherInView = () => ({ options: {}, show: 'conditions', modifier: null, data: globalThis.__weather.data,
         retry() {}, onSummaryView() {} });
-      export const useWeatherDays = () => ({ get: day => globalThis.__weather.read.get(day), want: day => globalThis.__weather.wanted.push(day), hover() {} });`,
+      export const useWeatherDays = () => ({ get: day => { const read = globalThis.__weather.read.get(day);
+        return read?.error ? { ...read, error: queryFailure(read.error) } : read; }, want: day => globalThis.__weather.wanted.push(day), hover() {} });`,
     '/charts/TimeChart.tsx': `export default props => { globalThis.__weather.chart = props; return null; };`,
     '/charts/jump.ts': 'export const jumpItem = (_runtime, _track, hour) => ({ hour });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open: (_x, _y, items) => { globalThis.__weather.menu = items; }, menu: null });',
@@ -87,6 +90,23 @@ test('a folded column keeps the hovered day: its tooltip, menu and drill read th
     const { pickedDay } = await import('./weatherData.ts');
     assert.equal(pickedDay(125, 24, [0, 239]), 143, 'the drill opens the hovered day, not the last day of its column');
     assert.equal(pickedDay(239, 24, [0, 230]), 230);
+  } finally { delete host.__weather; await close(); }
+});
+
+test('a folded day shows refusal text or a generic failure with its detail', async () => {
+  const fixture: Fixture = { data: folded, read: new Map(), wanted: [] };
+  host.__weather = fixture;
+  const { module, close } = await mount();
+  try {
+    for (const [error, value, detail] of [
+      [{ kind: 'failed', message: 'Weather request failed.' }, 'Couldn’t load weather.', 'Weather request failed.'],
+      [{ kind: 'refused', text: 'Weather was not recorded for this day.' }, 'Weather was not recorded for this day.', 'Weather was not recorded for this day.'],
+    ] as const) {
+      fixture.read.set(5, { error });
+      renderToStaticMarkup(createElement(module.default, props));
+      assert.deepEqual(fixture.chart!.rows!.tooltip(0, 125)!.rows.at(-1),
+        { label: dayLabel(125), value, detail, divider: true, tone: 'muted' });
+    }
   } finally { delete host.__weather; await close(); }
 });
 

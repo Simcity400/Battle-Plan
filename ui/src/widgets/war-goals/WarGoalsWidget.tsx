@@ -29,7 +29,7 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   const product = useFollowedProduct<WargoalsReply>(runtime.client, track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'wargoals', params: { branchId: track.branch.id, hour, tag } } : null, ['hour'], active, validateWargoalsReply, track?.source);
   const data = product.data?.tag === tag && product.data.branchId === track?.branch.id ? product.data : null;
-  useDiagnostics(onDiagnostics, active ? product.error ? [`War-goal inventory refused (1): ${product.error}`] : data?.warnings ?? EMPTY : EMPTY);
+  useDiagnostics(onDiagnostics, active ? product.error ? [`War-goal inventory refused (1): ${product.error.message}`] : data?.warnings ?? EMPTY : EMPTY);
   const wanted = useMemo(() => data ? [...new Set([data.tag, ...data.goals.flatMap(goal => [goal.actor, goal.recipient, ...goal.liberate, ...goal.puppets]),
     ...data.justifications.map(entry => entry.recipient)])].map(country => ({ hour: data.hour, tag: country })) : [], [data]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && !!data);

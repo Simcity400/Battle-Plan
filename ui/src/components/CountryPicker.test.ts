@@ -52,7 +52,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__pickerWitness.content;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
-      export const useCountryNamesAt = (_client, _track, wanted) => { const s = globalThis.__pickerWitness; s.wanted = wanted;
+      export const useCountryNamesAt = (_client, _track, wanted) => { const s = globalThis.__pickerWitness; s.wanted.push(...wanted);
         return new Map(wanted.map(({ tag, hour }) => { const key = nameKey(hour, tag); return [key, s.names.has(key)
           ? { kind: 'value', value: s.names.get(key) } : { kind: 'loading' }]; })); };`,
     '/dashboard/products.ts': `export const loadProduct = (_client, request) => {
@@ -89,7 +89,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
       source: { id: 'synthetic', revision: '1', metadata: { countries, branches: [{ id: '1', firstHour: 100, lastHour: 120 }] } },
       client: {}, flagAt: { branchId: '1', hour: 110 }, choiceReads: reads, onChange: (tag: string | null) => state.changed.push(tag),
     } as unknown as ComponentProps<typeof CountryPicker>;
-    const render = () => { state.cursor = 0; state.flagCall = 0; state.rows = []; return renderToStaticMarkup(createElement(Picker, props)); };
+    const render = () => { state.cursor = 0; state.flagCall = 0; state.rows = []; state.wanted = []; return renderToStaticMarkup(createElement(Picker, props)); };
     const flush = async () => { const effects = state.effects.splice(0); effects.forEach(effect => effect()); await Promise.resolve(); await Promise.resolve(); };
     let html = render(); await flush(); html = render();
     assert.ok(state.rows.length < 30, '5000 choices draw only the viewport');
@@ -137,7 +137,8 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     await flush(); html = render();
     assert.match(html, /Couldn’t load countries\./);
     assert.match(html, />Retry</);
-    assert.doesNotMatch(html, /Synthetic native roster request failed/);
+    assert.match(html, /data-detail="Synthetic native roster request failed"/);
+    assert.doesNotMatch(html.replace(/<[^>]*>/g, ''), /Synthetic native roster request failed/);
     const failedLoads = state.rosterLoads;
     state.rosterError = null; state.rosterReply = { countries: props.countries, warnings: ['Synthetic ownership diagnostic'] };
     assert.ok(state.retryAction); state.retryAction(); render(); await flush(); html = render(); await flush(); html = render();

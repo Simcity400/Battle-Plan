@@ -171,6 +171,53 @@ fn keyed_runs_keep_values_absence_unknown_hours_and_continue_across_flushes() {
 }
 
 #[test]
+fn keyed_changes_match_point_reads_of_backdated_runs() {
+    use dashboard_base::prepared::series::{Run, tests::Fixture};
+
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut scan = Scan::<Mines>::default();
+    scan.names.push("GER@7|3".into());
+    scan.batch.push(crate::KNOWN, Run::new(0, 10, 1, true));
+    scan.batch.push(crate::READ, Run::new(0, 10, 0, true));
+    for (first, last, value) in [(0, 2, 1), (5, 5, 2), (0, 10, 3)] {
+        scan.batch
+            .push(crate::FIRST, Run::new(first, last, value, true));
+    }
+    let mut writer = fixture.writer();
+    scan.flush(&mut writer, 1, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut opened = query::open::<Mines>(&fixture.store, &fixture.key, 1, &flag)
+        .unwrap()
+        .unwrap();
+    let keys = [
+        crate::FIRST,
+        crate::KNOWN,
+        crate::FIRST,
+        crate::READ,
+        crate::FIRST + 1,
+    ];
+    let hours: Vec<_> = (-1..=12).collect();
+    let changes = opened.changes_at(&keys, &hours).unwrap();
+    let mut held = vec![None; keys.len()];
+    let mut next = vec![0; keys.len()];
+    for (at, &hour) in hours.iter().enumerate() {
+        for (key, changes) in changes.iter().enumerate() {
+            if let Some(&(changed, value)) = changes.get(next[key])
+                && changed == at
+            {
+                assert_ne!(held[key], value, "key {key} hour {hour}");
+                held[key] = value;
+                next[key] += 1;
+            }
+        }
+        assert_eq!(held, opened.values_at(&keys, hour).unwrap(), "hour {hour}");
+    }
+    assert_eq!(next, changes.iter().map(Vec::len).collect::<Vec<_>>());
+    assert!(opened.changes_at(&keys, &[2, 2]).is_err());
+}
+
+#[test]
 fn keyed_quiet_hours_hold_values_and_date_them_by_their_reads() {
     let format = FormatVersion::CURRENT;
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();

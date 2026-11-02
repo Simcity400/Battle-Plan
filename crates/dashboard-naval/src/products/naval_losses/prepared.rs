@@ -815,9 +815,10 @@ impl Prepared {
         serde_json::to_string(&(self, written, &self.corrections, &self.reads))
             .expect("naval losses spell out")
     }
-    /// What it saves, spelled out.
+    /// What it saves, with rank tails extended to the last observed hour.
     #[cfg(test)]
-    pub(crate) fn state(&self) -> String {
+    pub(crate) fn settled_state(&mut self) -> String {
+        self.extend_ranks();
         serde_json::to_string(self).expect("naval losses spell out")
     }
     /// The reads not handed to its series yet: (0 for ships or 1 for convoys, hour).

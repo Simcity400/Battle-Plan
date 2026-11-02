@@ -82,7 +82,7 @@ function useDeployedAir(runtime: WidgetProps['runtime'], track: BoundTrack | und
   }, [runtime.client, key]);
   const current = state?.client === runtime.client && state.key === key ? state : undefined;
   const air = useMemo(() => current?.data ? deployedAirByTag(current.data) : null, [current?.data]);
-  const warnings = useMemo(() => current?.error ? [`1 refused exile deployed air crews: ${current.error}`] : current?.data?.warnings ?? NO_WARNINGS,
+  const warnings = useMemo(() => current?.error ? [`1 refused exile deployed air crews: ${current.error.message}`] : current?.data?.warnings ?? NO_WARNINGS,
     [current?.data, current?.error]);
   return { air, warnings };
 }

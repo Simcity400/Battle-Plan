@@ -13,6 +13,9 @@ export const PAGES = [
     ['scoreboard', 0, 14, 8, 10], ['game-score', 8, 14, 4, 10],
     ['territory', 0, 24, 4, 10], ['faction-strength', 4, 24, 4, 10], ['world-tension', 8, 24, 4, 10],
     ['wars', 0, 34, 12, 9],
+    ['apm-graph', 0, 43, 12, 9],
+    ['apm-table', 0, 52, 10, 10],
+    ['campaign-clock', 0, 62, 8, 8],
   ] },
   { id: 'politics', label: 'Politics', icon: 'parliament', panels: [
     ['national-focus', 0, 0, 4, 19], ['ruling-party', 4, 0, 8, 11], ['stability', 4, 11, 8, 8],

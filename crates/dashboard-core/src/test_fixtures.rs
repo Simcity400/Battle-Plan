@@ -8,7 +8,7 @@ use replay_data::{
 };
 use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Parentage, frame::DecodedFrame,
-    frame::FrameEncoder, frame::Metrics, frame::TableView,
+    frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableView,
 };
 
 pub const CAMPAIGN: &[u8] = b"analytics-test";
@@ -116,8 +116,10 @@ pub fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame {
 }
 
 pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
+    let session = session(branch);
+    let mode = session.capture_mode;
     let mut out = vec![
-        Record::SessionStart(session(branch)),
+        Record::SessionStart(session),
         Record::BranchStart(BranchStart {
             id: branch,
             session: branch,
@@ -137,7 +139,9 @@ pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
                 if matches!(&*frame.tables[TableId::ResearchInputs.index()], TableView::Unavailable { reason } if reason == "fixture hourly research") {
                     fixture_research_inputs(&mut frame);
                 }
-                Record::Frame(encoder.encode(frame, false).unwrap())
+                let mut frame = FrameInput::from(frame);
+                frame.scope_to(mode);
+                Record::Frame(encoder.encode_input(frame, false).unwrap())
             }),
     );
     out
@@ -634,6 +638,7 @@ pub fn production_frame(
         cost_raw: 50_000,
         ..Default::default()
     });
+    rows.sort_unstable_by_key(|row| row.handle);
     *frame.tables[TableId::ProductionLines.index()] =
         TableView::Complete(TableRows::ProductionLines(rows));
     *frame.tables[TableId::IndustrialOrganisations.index()] =

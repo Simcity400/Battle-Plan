@@ -668,28 +668,42 @@ fn partner_turnover_adds_keys_per_holder_not_per_pair_and_idle_hours_publish_lit
     assert_eq!((parties, streams), (60, 2));
     let fixture = fixture();
     let flag = AtomicBool::new(false);
-    let size = |fixture: &dashboard_base::prepared::series::tests::Fixture| -> u64 {
-        fn walk(path: &std::path::Path) -> u64 {
-            std::fs::read_dir(path).map_or(0, |entries| entries.flatten().map(|entry| {
-                let path = entry.path();
-                if path.is_dir() { walk(&path) } else { entry.metadata().map_or(0, |meta| meta.len()) }
-            }).sum())
+    let occurrence_bytes = |state: &Prepared| {
+        let mut reader = dashboard_base::prepared::series::Reader::new(
+            &fixture.store,
+            &fixture.key,
+            crate::products::keyed::values_section(FAMILY, 1),
+            &flag,
+        )
+        .unwrap();
+        let (mut count, mut bytes) = (0, 0);
+        for (&key, field) in &state.keyed.meta.fields {
+            if matches!(field, Field::Stream(..) | Field::Party(..)) {
+                reader
+                    .each_event(key, 5, 6, &mut |_, row| {
+                        count += 1;
+                        bytes += row.len();
+                        Ok(())
+                    })
+                    .unwrap();
+            }
         }
-        walk(&fixture.directory)
+        (count, bytes)
     };
     let mut writer = fixture.writer();
     state.flush(&mut writer, 1, &flag).unwrap();
     writer.commit().unwrap();
-    let busy = size(&fixture);
-    // A later idle hour republishes no occurrence history.
+    let busy = occurrence_bytes(&state);
+    assert_eq!(busy.0, 900 * 3);
+    assert!(busy.1 > 0);
+    // Idle hours extend coverage without adding any occurrence payload bytes.
     let mut at = frame(6);
     many_countries(&mut at, 60);
     state.step(&at);
     let mut writer = fixture.writer();
     state.flush(&mut writer, 1, &flag).unwrap();
     writer.commit().unwrap();
-    let idle = size(&fixture) - busy;
-    assert!(idle * 4 < busy, "an idle flush wrote {idle} bytes after {busy}");
+    assert_eq!(occurrence_bytes(&state), busy);
 }
 
 #[test]

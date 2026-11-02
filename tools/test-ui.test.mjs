@@ -145,8 +145,112 @@ async function importFixtures(t, files) {
 }
 
 function nodeImportError(...violations) {
-  return new Error(['Node test imports must name, with its extension, a file Node can load:', ...violations].join('\n'));
+  return new Error(['Node test modules must use imports and syntax Node can load with type stripping:', ...violations].join('\n'));
 }
+
+test('Node modules refuse parameter properties with their own file and line through imports and re-exports', async t => {
+  const root = await importFixtures(t, {
+    'entry.test.ts': "import './observer.mts';\nexport * from './barrel.ts';",
+    'barrel.ts': "export * from './observer.mts';\nexport { Other } from './other.cts';",
+    'observer.mts': 'export class Observer {\r\n  constructor(readonly callback: () => void) {}\r\n}',
+    'other.cts': 'export class Other {\n  constructor(public value = 1, protected name: string) {}\n}',
+  });
+  await assert.rejects(checkNodeImports(['entry.test.ts', 'entry.test.ts'], root), nodeImportError(
+    'observer.mts:2: parameter properties require transformation',
+    'other.cts:2: parameter properties require transformation',
+  ));
+});
+
+test('Node modules refuse runtime enums, namespaces and import/export aliases', async t => {
+  const sources = {
+    'enum': 'enum State { Ready }',
+    'const-enum': 'const enum State { Ready }',
+    'namespace': 'namespace State { export const ready = true; }',
+    'nested-namespace': 'namespace State.Types { export class Ready {} }',
+    'namespace-declare': 'namespace State { export declare const ready: boolean; }',
+    'namespace-empty-statement': 'namespace State { ; }',
+    'namespace-type-export': 'namespace State { export type { Ready }; }',
+    'namespace-type-import': 'namespace State { import type Ready = Other.Ready; }',
+    'module': 'module Types { export type Ready = boolean; }',
+    'require-alias': "import value = require('./value.cjs');",
+    'qualified-alias': 'import Ready = State.Ready;',
+    'export-assignment': 'export = value;',
+    'namespace-export': 'export as namespace State;',
+  };
+  const root = await importFixtures(t, Object.fromEntries([
+    ['entry.test.ts', Object.keys(sources).map(name => `import './${name}.ts';`).join('\n')],
+    ...Object.entries(sources).map(([name, source]) => [`${name}.ts`, `\n${source}`]),
+  ]));
+  await assert.rejects(checkNodeImports(['entry.test.ts'], root), nodeImportError(
+    'const-enum.ts:2: enums require transformation',
+    'enum.ts:2: enums require transformation',
+    'export-assignment.ts:2: export assignments require transformation',
+    'module.ts:2: module declarations are not supported by Node',
+    'namespace-declare.ts:2: namespaces with values require transformation',
+    'namespace-empty-statement.ts:2: namespaces with values require transformation',
+    'namespace-export.ts:2: namespace exports are not supported by Node',
+    'namespace-type-export.ts:2: namespaces with values require transformation',
+    'namespace-type-import.ts:2: namespaces with values require transformation',
+    'namespace.ts:2: namespaces with values require transformation',
+    'nested-namespace.ts:2: namespaces with values require transformation',
+    'qualified-alias.ts:2: import aliases require transformation',
+    'require-alias.ts:2: import aliases require transformation',
+  ));
+});
+
+test('Node modules refuse decorators and auto-accessors that stripping leaves for the JavaScript parser', async t => {
+  const root = await importFixtures(t, {
+    'entry.test.ts': "import './decorated.ts';\nimport './accessor.mjs';",
+    'decorated.ts': [
+      '@decorate',
+      'export class Model {',
+      '  @decorate value: string;',
+      '  constructor(@inject value: string) {}',
+      '  accessor count: number = 0;',
+      '}',
+    ].join('\n'),
+    'accessor.mjs': 'export class Model {\n  accessor count = 0;\n}',
+  });
+  await assert.rejects(checkNodeImports(['entry.test.ts'], root), nodeImportError(
+    'accessor.mjs:2: auto-accessors are not supported by Node',
+    'decorated.ts:1: decorators are not supported by Node',
+    'decorated.ts:3: decorators are not supported by Node',
+    'decorated.ts:4: decorators are not supported by Node',
+    'decorated.ts:5: auto-accessors are not supported by Node',
+  ));
+});
+
+test('Node modules accept erasable declarations, type-only namespaces and ordinary typed constructor parameters', async t => {
+  const root = await importFixtures(t, {
+    'entry.test.ts': [
+      'declare enum State { Ready }',
+      'declare namespace Ambient { enum State { Ready } }',
+      'declare module "external" { export enum State { Ready } }',
+      'namespace Types { export type Ready = boolean; export interface Item { ready: Ready } }',
+      'namespace Nested.Types { export interface Item {} }',
+      'namespace Empty {}',
+      'import type Value = Missing.Value;',
+      'import type External = require("external");',
+      'abstract class Model { abstract accessor count: number; }',
+      'class Observer { readonly callback: () => void; constructor(callback: () => void) { this.callback = callback; } }',
+    ].join('\n'),
+  });
+  await checkNodeImports(['entry.test.ts'], root);
+});
+
+test('Node syntax checks leave Vite-only modules, type-only dependencies and synthetic source strings unconstrained', async t => {
+  const root = await importFixtures(t, {
+    'entry.test.ts': [
+      "import type { Model } from './types.ts';",
+      "const load = vite.ssrLoadModule('./view.ts');",
+      "const fixture = 'enum State { Ready }; class C { constructor(readonly value: string) {} }';",
+      '// namespace State { export const ready = true; }',
+    ].join('\n'),
+    'types.ts': 'export class Model { constructor(readonly value: string) {} }',
+    'view.ts': 'enum State { Ready }; namespace Values { export const ready = State.Ready; }',
+  });
+  await checkNodeImports(['entry.test.ts'], root);
+});
 
 test('Node imports refuse extensionless static imports with the importing file and line', async t => {
   const root = await importFixtures(t, {

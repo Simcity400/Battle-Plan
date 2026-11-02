@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { deepFreeze } from '../../testFrozen.ts';
+import { countryGroupReply } from '../../dashboard/countryGroups.fixture.ts';
 import type { CountryGroupReply, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { closedLane, currentProjectReply, completedWhenFirstRecorded, currentProjects, earlierBound, historyCard, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
@@ -131,8 +133,8 @@ test('group membership clips timeline bars and unassigned is an explicit flag', 
   assert.equal(projectHistory(data,120).lanes[0].label,'Scientist unknown');
 });
 
-const countryGroups = (): CountryGroupReply => ({ branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
-  unobserved: { humans: [], factions: [], wars: [] }, humans: [{ tag: 'X', firstHour: 100, lastHour: 109 }, { tag: 'Y', firstHour: 110, lastHour: 114 }],
+const countryGroups = (): CountryGroupReply => countryGroupReply({
+  humans: [{ tag: 'X', firstHour: 100, lastHour: 109 }, { tag: 'Y', firstHour: 110, lastHour: 114 }],
   countryIdentities: [
     { tag: 'X', identities: [{ firstHour: 100, lastHour: 109, slot: 1, countryId: 11 }, { firstHour: 120, lastHour: 150, slot: 2, countryId: 22 }] },
     { tag: 'Y', identities: [{ firstHour: 110, lastHour: 114, slot: 1, countryId: 11 }, { firstHour: 117, lastHour: 119, slot: 1, countryId: 11 }, { firstHour: 120, lastHour: 150, slot: 3, countryId: 33 }] },
@@ -158,17 +160,17 @@ test('manual project requests retain original roots and all their holders withou
 });
 
 test('smart project membership keeps its dated hour, end and ever rules', () => {
-  const groups = countryGroups();
-  const scope = (membership: 'hour' | 'end' | 'ever') => projectCountries({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }, [], groups, 100, 150);
+  const groups = deepFreeze(countryGroups());
+  const scope = (membership: 'hour' | 'end' | 'ever', reply = groups) => projectCountries({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }, [], reply, 100, 150);
   assert.equal(scope('hour').match.matches('Y', 118), false);
   assert.equal(scope('ever').match.matches('Y', 118), true);
   assert.equal(scope('ever').match.matches('Y', 120), false);
   assert.ok(scope('end').reason, 'the ended human group stays empty at the branch end');
-  groups.humans.push({ tag: 'X', firstHour: 130, lastHour: 150 });
-  assert.equal(scope('end').match.matches('X', 140), true);
-  assert.equal(scope('end').match.matches('X', 105), false, 'end membership does not admit a previous holder');
-  groups.unobserved.humans = [{ firstHour: 112, lastHour: 113 }];
-  assert.equal(scope('hour').match.matches('Y', 112), false);
+  const end = deepFreeze({ ...groups, humans: [...groups.humans, { tag: 'X', firstHour: 130, lastHour: 150 }] });
+  assert.equal(scope('end', end).match.matches('X', 140), true);
+  assert.equal(scope('end', end).match.matches('X', 105), false, 'end membership does not admit a previous holder');
+  const gap = deepFreeze({ ...end, unobserved: { ...end.unobserved, humans: [{ firstHour: 112, lastHour: 113 }] } });
+  assert.equal(scope('hour', gap).match.matches('Y', 112), false);
 });
 
 test('a comparison heading carries complete flag status at the selected holder date', () => {

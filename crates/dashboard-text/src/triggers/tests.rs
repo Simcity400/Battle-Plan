@@ -83,14 +83,13 @@ fn frame(countries: &[(u32, u32, &str, i32, &str, &str)], flagged: &[u32]) -> De
     );
     set(
         TableId::CountryLinks,
-        TableRows::from_rows::<tables::CountryLinks>(
+        crate::test_country_links::rows(
             countries
                 .iter()
                 .map(|(id, slot, ..)| CountryLinkRow {
                     id: *id,
                     canonical_slot: *slot,
-                })
-                .collect(),
+                }),
         ),
     );
     set(
@@ -2054,15 +2053,13 @@ fn recorded_builtin_opinion_uses_the_callback_scope_and_directed_sparse_relation
             (1, 100, &[("opinionfra", 99 * ONE)]),
         ],
     );
-    let TableView::Complete(TableRows::CountryLinks(links)) =
-        &mut *f.tables[TableId::CountryLinks.index()]
-    else {
-        panic!("complete links");
-    };
-    links.push(CountryLinkRow {
-        id: 103,
-        canonical_slot: 12,
-    });
+    crate::test_country_links::extend(
+        &mut f,
+        [CountryLinkRow {
+            id: 103,
+            canonical_slot: 12,
+        }],
+    );
     *f.tables[TableId::RelationOpinions.index()] =
         TableView::Complete(TableRows::RelationOpinions(
             [(100, 103, -37), (101, 100, 12), (101, 101, 23)]
@@ -2906,6 +2903,12 @@ fn a_state_trigger_reading_no_provinces_is_answered_without_them() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay_data::rows::StateRow;
     let mut f = frame(&countries(), &[]);
+    let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+        &mut *f.tables[TableId::ReservedCountryNaming.index()]
+    else {
+        panic!("the fixture records ReservedCountryNaming");
+    };
+    rows[0].owned_state_count = Recorded::Value(Some(2));
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
         id: 64,
         owner: 100,

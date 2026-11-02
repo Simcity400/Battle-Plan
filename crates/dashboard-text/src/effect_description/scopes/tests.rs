@@ -695,21 +695,19 @@ fn subject_roster_preserves_alias_duplicates_after_native_filters() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    let TableView::Complete(TableRows::CountryLinks(links)) =
-        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
-    else {
-        unreachable!()
-    };
-    links.extend([
-        CountryLinkRow {
-            id: 101,
-            canonical_slot: 1,
-        },
-        CountryLinkRow {
-            id: 301,
-            canonical_slot: 3,
-        },
-    ]);
+    crate::test_country_links::extend(
+        &mut fixture.frame,
+        [
+            CountryLinkRow {
+                id: 101,
+                canonical_slot: 1,
+            },
+            CountryLinkRow {
+                id: 301,
+                canonical_slot: 3,
+            },
+        ],
+    );
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     else {
@@ -747,15 +745,13 @@ fn subject_roster_reads_existence_before_excluding_caller_alias() {
         unreachable!()
     };
     rows[0].subjects = vec![101].into();
-    let TableView::Complete(TableRows::CountryLinks(links)) =
-        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
-    else {
-        unreachable!()
-    };
-    links.push(CountryLinkRow {
-        id: 101,
-        canonical_slot: 1,
-    });
+    crate::test_country_links::extend(
+        &mut fixture.frame,
+        [CountryLinkRow {
+            id: 101,
+            canonical_slot: 1,
+        }],
+    );
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
     else {

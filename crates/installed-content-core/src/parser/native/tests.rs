@@ -117,8 +117,10 @@ fn states_direct_persistent_diagnostics_keep_item_alignment() {
     );
     assert_eq!(read.items.len(), 3);
     assert_eq!(read.item_misreads.len(), read.items.len());
-    assert!(read.item_misreads.iter().all(Vec::is_empty));
-    assert_eq!(read.unattributed_misreads.len(), 2);
+    assert_eq!(read.item_misreads[0].len(), 1);
+    assert!(read.item_misreads[1].is_empty());
+    assert_eq!(read.item_misreads[2].len(), 1);
+    assert!(read.unattributed_misreads.is_empty());
     assert!(
         read.items
             .iter()

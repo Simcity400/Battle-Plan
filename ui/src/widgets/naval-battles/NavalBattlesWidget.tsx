@@ -49,7 +49,7 @@ export default function NavalBattlesWidget(props: WidgetProps) {
     const detail = (row: NavalBattleRow) => rows.get(navalDetailKey(row.id, row.observedHour));
     return { ...adapter, onVisibleRows, description: (row: NavalBattleRow) => navalFleetDescription(detail(row)),
       tooltipRows: (row: NavalBattleRow) => navalDetailTooltip(detail(row), details.error),
-      diagnostics: [...(details.data?.warnings ?? []), ...(details.error ? [`Battle details: ${details.error}`] : [])],
+      diagnostics: [...(details.data?.warnings ?? []), ...(details.error ? [`Battle details: ${details.error.message}`] : [])],
     };
   }, [onVisibleRows, details.data, details.error]);
   return <BattleLogView {...props} adapter={enriched} />;

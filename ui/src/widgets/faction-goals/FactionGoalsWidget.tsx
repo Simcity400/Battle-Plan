@@ -54,7 +54,7 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   const absent = useMemo(() => new RefusedError(ABSENT_FACTION), []);
   const failure = fallback ? details.error : lookup?.kind === 'absent' ? absent : undefined;
   const retry = fallback ? details.retry : () => setRetried(at);
-  const historyFailure = history.error === undefined ? null : `Goal history unavailable: ${history.error}`;
+  const historyFailure = history.error === undefined ? null : `Goal history unavailable: ${history.error.message}`;
   useHeldFailures(history.error ? [history.error] : [], history.retry);
   const all = useMemo(() => data && !data.goalReason ? goalRows(data) : [], [data]);
   const rows = useMemo(() => filterGoals(all, options.goals as GoalFilter), [all, options.goals]);

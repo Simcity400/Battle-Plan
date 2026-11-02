@@ -183,6 +183,10 @@ impl Model {
     }
 
     fn churn(&mut self, seed: &mut u64) {
+        if self.divisions.is_empty() {
+            self.add(1 + draw(seed, u64::from(self.countries)) as u32);
+            return;
+        }
         let ids: Vec<u64> = self.divisions.keys().copied().collect();
         let picked = ids[draw(seed, ids.len() as u64) as usize];
         let country = 1 + draw(seed, u64::from(self.countries)) as u32;

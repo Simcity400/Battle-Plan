@@ -13,7 +13,7 @@ test('opening and releasing native sources sends only dashboard commands, includ
     invoke: async (command: string, args: any) => {
       calls.push([command, args]);
       if (command === 'dashboard_open_source') {
-        if (failOpen) throw new Error('synthetic open failure');
+        if (failOpen) throw { kind: 'failed', message: 'synthetic open failure' };
         if (delayOpen) return new Promise(resolve => { pendingOpen = resolve; });
         return { id: 'lease', path: args.path, revision: 'new', metadata: {} };
       }

@@ -186,7 +186,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
     ...(ranking.data?.warnings ?? []).map(w => `Hour ${w.hour}: ${w.reason} (${w.count})`)]
     : battleWarnings(history.data, first, shownHour ?? first), [view, ranking.data, history.data, first, shownHour]);
   const diagnostics = useMemo(() => [...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS), ...warnings,
-    ...(placeData.data?.warnings ?? NO_WARNINGS), ...(placeData.error ? [`Place names: ${placeData.error}`] : []), ...(adapter.diagnostics ?? NO_WARNINGS)])],
+    ...(placeData.data?.warnings ?? NO_WARNINGS), ...(placeData.error ? [`Place names: ${placeData.error.message}`] : []), ...(adapter.diagnostics ?? NO_WARNINGS)])],
   [warnings, manifest.data, placeData.data, placeData.error, adapter.diagnostics]);
   useDiagnostics(onDiagnostics, diagnostics);
 

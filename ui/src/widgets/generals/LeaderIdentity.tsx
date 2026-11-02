@@ -39,8 +39,9 @@ export function SkillStars({ level, maximum }: { level: number | null; maximum: 
 
 export function LeaderPortrait({ art }: { art?: Pick<UnitLeaderPortrait, 'image' | 'missing'> | Error }) {
   const portrait = art instanceof Error ? undefined : art?.image;
-  return <span className="leader-portrait">
-    {portrait ? <img src={portrait} alt="" /> : <ArtFallback icon="helmet" failure={art instanceof Error ? art : undefined} reason={art instanceof Error ? undefined : art?.missing} />}
+  return <span className="leader-portrait" data-detail={art instanceof Error ? undefined : art?.missing ?? undefined}>
+    {portrait ? <img src={portrait} alt="" /> : <ArtFallback icon="helmet" failure={art instanceof Error ? art : undefined}
+      reason={art instanceof Error || art?.missing == null ? undefined : 'Portrait unavailable.'} />}
   </span>;
 }
 

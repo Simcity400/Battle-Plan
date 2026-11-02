@@ -508,7 +508,7 @@ impl Operator<World> for Projector {
             templates: Self::templates(state)?,
             tokens: Self::tokens(state)?,
             subunits: Self::wrote(state, TableId::CountryLocalSubunits)?,
-            frame: if context_changed {
+            frame: if context_changed || self.engine.as_ref().is_some_and(|engine| !engine.own()) {
                 Some(world.frame_held(state, &self.context)?)
             } else {
                 None

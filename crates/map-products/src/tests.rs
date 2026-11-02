@@ -2916,7 +2916,7 @@ impl CertifiedFrames {
         }
         let mut encoded = self.encoder.encode(surrogate, false).unwrap();
         // Current writers cannot store a historical packet stamp; hand those rows over as its recording did.
-        for index in stamped {
+        for &index in &stamped {
             encoded.tables[index] = match self.decoder.current() {
                 Some(current)
                     if !encoded.keyframe
@@ -2933,6 +2933,43 @@ impl CertifiedFrames {
                     TableUpdate::Snapshot(rows.clone())
                 }
             };
+        }
+        if !encoded.keyframe
+            && let Some(current) = self.decoder.current()
+        {
+            for &index in &complete {
+                let table = TableId::ALL[index];
+                if stamped.contains(&index) || !PACKET_HOUR_HOSTS.contains(&table) {
+                    continue;
+                }
+                let TableView::Complete(previous) = &*current.tables[index] else {
+                    continue;
+                };
+                if packet_hours(previous)
+                    .iter()
+                    .all(|hour| hour.stamp().is_none())
+                {
+                    continue;
+                }
+                let TableView::Complete(rows) = &*frame.tables[index] else {
+                    unreachable!("certified rows are complete")
+                };
+                // The encoder never held the stamped rows that the decoder is replacing.
+                let mut bytes = vec![1];
+                bytes.extend_from_slice(&current.hour.to_le_bytes());
+                rows.encode_changes(previous, &mut bytes, &mut Vec::new())
+                    .unwrap();
+                let mut input = replay_data::codec::Decoder::new(&bytes);
+                encoded.tables[index] = replay_frame::frame::decode_update(
+                    table,
+                    table.last_change(),
+                    replay_data::format::FormatVersion::CURRENT,
+                    false,
+                    &mut input,
+                )
+                .unwrap();
+                input.finish().unwrap();
+            }
         }
         let decoded = self.decoder.apply(&encoded).unwrap();
         for index in complete {
@@ -3752,7 +3789,7 @@ fn incremental_fog_country_zero_packets_clocks_refusals_and_recovery_match_froze
                 let work = content.visions.stats().unwrap();
                 assert!(
                     !work.cold && work.jobs < 100 && work.provinces <= 3,
-                    "{work:?}"
+                    "{count} countries zero step {step}: {work:?}"
                 );
             }
         }

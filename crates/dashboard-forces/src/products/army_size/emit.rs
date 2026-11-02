@@ -334,8 +334,9 @@ impl Emit {
         let starts = !continues;
         if starts || country.totals != Some(totals) {
             for (channel, value) in totals.into_iter().enumerate() {
-                self.carry
-                    .value(writer, country.keys[channel], hour, value, starts)?;
+                let key = country.keys[channel];
+                let starts = starts || self.carry.held(key).is_none();
+                self.carry.value(writer, key, hour, value, starts)?;
             }
             self.carry.value(
                 writer,

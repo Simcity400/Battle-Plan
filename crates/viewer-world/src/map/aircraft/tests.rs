@@ -2271,8 +2271,8 @@ fn one_run(
         values: &[100; 64],
     };
     let route = Route {
-        points: Vec::new(),
-        arcs: Vec::new(),
+        points: vec![[1.0, 10.0, 2.0], [2.0, 10.0, 2.0]],
+        arcs: vec![0.0, 1.0],
     };
     let plan = AircraftPlan {
         flights: vec![Flight {

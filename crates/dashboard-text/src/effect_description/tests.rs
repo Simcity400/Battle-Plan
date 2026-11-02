@@ -377,14 +377,13 @@ impl Fixture {
 
     pub(super) fn set_countries(&mut self, countries: Vec<CountryRow>) {
         *self.frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
+            TableView::Complete(crate::test_country_links::rows(
                 countries
                     .iter()
                     .map(|row| CountryLinkRow {
                         id: row.id,
                         canonical_slot: row.canonical_slot,
-                    })
-                    .collect(),
+                    }),
             ));
         *self.frame.tables[TableId::CountryAppearance.index()] =
             TableView::Complete(TableRows::CountryAppearance(

@@ -578,8 +578,12 @@ fn the_publication_holds_what_the_row_census_reads_across_segments_cuts_and_a_re
             Some(120),
         ),
     ] {
+        let mut starts = starts.to_vec();
+        if let Some(hour) = resume.and_then(|cut| hours.iter().find(|hour| hour.hour > cut)) {
+            starts.push(hour.hour);
+        }
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
-        let (projected, frames) = projected(&hours, starts);
+        let (projected, frames) = projected(&hours, &starts);
         let built = build(projected, cuts, resume, &budget);
         check(&built, &frames, &label);
     }

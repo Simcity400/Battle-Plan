@@ -450,7 +450,7 @@ test('recorded battle totals remain visible for initial holdings and missing cov
   data.observed[0].landBattles = false;
   assert.equal(leaderAt(data, leader, 101)?.fought, 0);
   const initialTip = leaderTooltip(leaderAt(data, leader, 101)!, { name: 'Country' });
-  assert.equal(initialTip.rows[3].value, 'Result not recorded / 0');
+  assert.equal(initialTip.rows[3].value, 'Result not recorded / at least 0');
   assert.equal(initialTip.description, undefined);
   leader.battleStarts = [101]; leader.battleStartReadHours = decodedStarts(leader.battleStarts); leader.battleWon = [true]; leader.battleResultHours = [102]; leader.battleResultReadHours = [...leader.battleResultHours!];
   assert.equal(leaderAt(data, leader, 102)?.won, 1);

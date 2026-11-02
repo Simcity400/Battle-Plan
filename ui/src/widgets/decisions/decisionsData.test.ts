@@ -21,8 +21,8 @@ const edge = (kind: EventFeedKind, hour: number, extra: Partial<ScriptEdge> = {}
     tags: participants.filter((tag): tag is string => tag !== null), participants, item: 0, amount: null, ...more },
   option: null, lifecycle: null, days: null, costs: null, ...extra });
 const card = (edges: ScriptEdge[], opened = true): ScriptOccurrence => ({ id: edges[0].row.id, opened, edges });
-const item: EventFeedItem = { token: 'mod_decision', name: 'Modded decision', icon: null, description: 'Authored effects.', idea: null };
-const page = (occurrences: ScriptOccurrence[], items: EventFeedItem[] = [item]) => validateScriptPage({
+const item = (): EventFeedItem => ({ token: 'mod_decision', name: 'Modded decision', icon: null, description: 'Authored effects.', idea: null });
+const page = (occurrences: ScriptOccurrence[], items: EventFeedItem[] = [item()]) => validateScriptPage({
   reply: { branchId: '1', firstHour: START, lastHour: END, occurrences, items, unavailable: [], warnings: [] }, nextCursor: null }).reply;
 const all: DecisionFilter = { country: () => true, allCountries: true, firstHour: null };
 const every = new Set<string>(STATUS_CHOICES.map(status => status.value));
@@ -128,7 +128,7 @@ test('country narrowing matches any recorded country of a row at its own hour; m
   assert.deepEqual(prepareDecisions(page([targeted, other]), narrowed('mod | other')).map(row => row.item.card.country), ['mod | other']);
   assert.deepEqual(prepareDecisions(page([targeted, other]), { ...all, firstHour: day(3, 2) }).map(row => row.item.card.country), ['mod | other']);
   const unnamed = page([card([edge('decisionSelected', day(3, 1))]), card([edge('decisionSelected', day(3, 2))])],
-    [{ ...item, name: null }]);
+    [{ ...item(), name: null }]);
   assert.equal(decisionName(prepareDecisions(unnamed, all)[0].item.card), 'Decision name unavailable');
   assert.deepEqual(decisionDiagnostics([unnamed]), ['Decision name unavailable: mod_decision (2 counted)']);
 });

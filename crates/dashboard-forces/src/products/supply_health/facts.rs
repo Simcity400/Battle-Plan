@@ -481,6 +481,10 @@ impl Operator<World> for Projector {
         hour: &segments::Hour<'_, World>,
         out: &mut dyn Sink<Hour>,
     ) -> io::Result<()> {
+        if hour.starts {
+            self.numbers.clear();
+            self.named.clear();
+        }
         let state = hour.state;
         let countries = hour.world.countries()?;
         let land_present = !columns::unavailable(state, TableId::DivisionLandInputs);

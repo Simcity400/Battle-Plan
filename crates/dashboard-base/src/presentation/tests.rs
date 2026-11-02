@@ -612,19 +612,18 @@ fn work_on_any_thread_draws_the_presentation_its_request_was_admitted_under() {
         &[choice("mod/art.mod", "Art")]
     ));
     let admitted = options.clone();
-    let (selected, drawn_on_worker) = (std::sync::Barrier::new(2), std::sync::Barrier::new(2));
     let worker_colour = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| {
+        let (selected, selection_changed) = std::sync::mpsc::channel();
+        let (worker_source, worker_admitted) = (&source, &admitted);
+        let worker = scope.spawn(move || {
             // The worker starts drawing only once the selection has changed under it.
-            selected.wait();
-            let catalogue = catalogue::catalogue(&source, &admitted).unwrap();
+            selection_changed.recv().unwrap();
+            let catalogue = catalogue::catalogue(worker_source, worker_admitted).unwrap();
             let colour = drawn(&catalogue, "GFX_icon").0;
-            drawn_on_worker.wait();
             (catalogue.presentation.clone(), colour)
         });
         assert!(present(&source, &mut options, &[]));
-        selected.wait();
-        drawn_on_worker.wait();
+        selected.send(()).unwrap();
         worker.join().unwrap()
     });
     assert_eq!(

@@ -113,10 +113,13 @@ fn every_section_has_one_exact_owner() {
             Some(Owner::Job("production-lines")),
         ),
         (
-            "occupation-reserve-values-3",
+            "preparation-root-occupation-reserve-3",
             Some(family("occupation-reserve")),
         ),
-        ("fuel_branches-values-1", Some(family("fuel_branches"))),
+        (
+            "preparation-root-fuel_branches-1",
+            Some(family("fuel_branches")),
+        ),
         ("air-values-1-0", Some(family("air"))),
         ("air-1-catalogue", Some(family("air"))),
         ("air-aces-1-windows", Some(family("aces"))),
@@ -136,6 +139,7 @@ fn every_section_has_one_exact_owner() {
         ("production_catalogue-values-3", None),
         ("fuel-branches-values-1", None),
         ("fuel_branches-values-1", None),
+        ("occupation-reserve-values-3", None),
         ("lend-lease-balance-1-catalogue", None),
         ("wars-series-1", None),
         (
@@ -382,7 +386,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         ("army-size", None),
         ("country-measure", Some("measure")),
         ("game-score", Some("game_score")),
-        ("resource-balance", None),
+        ("resource-balance", Some("resources")),
         ("land-battles", Some("land")),
         ("autonomy", None),
         ("scoreboard", None),
@@ -567,13 +571,14 @@ fn a_plan_refuses_what_its_registry_or_backends_cannot_prepare() {
 fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
     let rows = plan::native();
     let native = super::native::names();
-    let bumped = |name: &str, version: u32| -> &'static Descriptor {
+    let bumped = |name: &str| -> &'static Descriptor {
+        let family = registry::family_named(name).unwrap();
         Box::leak(Box::new(Descriptor {
-            version,
-            ..*registry::family_named(name).unwrap()
+            version: family.version + 1,
+            ..*family
         }))
     };
-    let plan = plan::test_native(&[bumped("identities", 2)], &native).unwrap();
+    let plan = plan::test_native(&[bumped("identities")], &native).unwrap();
     for (name, moved) in [
         ("identities", true),
         ("territory", false),
@@ -584,10 +589,10 @@ fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
     ] {
         assert_eq!(plan.stamp(name) != rows.stamp(name), moved, "{name}");
     }
-    let plan = plan::test_native(&[bumped("groups", 3)], &native).unwrap();
+    let plan = plan::test_native(&[bumped("groups")], &native).unwrap();
     assert_ne!(plan.stamp("air_superiority"), rows.stamp("air_superiority"));
     assert_eq!(plan.stamp("identities"), rows.stamp("identities"));
-    let plan = plan::test_native(&[bumped("land", 2)], &native).unwrap();
+    let plan = plan::test_native(&[bumped("land")], &native).unwrap();
     assert_ne!(plan.stamp("land"), rows.stamp("land"));
     assert_eq!(plan.stamp("stability"), rows.stamp("stability"));
     assert_eq!(rows.stamp("nonexistent"), None);

@@ -2844,8 +2844,7 @@ fn a_damaged_restart_loses_no_hours() {
     }
 }
 
-/// A recording of one run of `segments` segments, the restarts of its second to its
-/// `count + 1`th damaged, and the same recording intact.
+/// One run with restarts after pages `1..=count` damaged, plus its intact copy.
 fn damaged_restarts(segments: u32, count: u32) -> (Recording, Recording) {
     let runs = [(1, 0, segments * UNIT_ORDINALS)];
     let countries = TableId::Countries.index() as u32;
@@ -3008,10 +3007,7 @@ fn a_walk_given_back_after_a_panic_holds_nothing_of_the_failed_family() {
     assert_eq!((large.now(), small.now()), (0, 0));
 }
 
-/// Restarts damaged one after another cost each segment one walk of the segments before it,
-/// begun at the last restart that restores: a walk goes back past every restart known not to
-/// restore at once, and each segment's own pages are measured once, however many walks begin
-/// before it.
+/// Damaged restarts reuse the first intact restart and measure every segment once.
 #[test]
 fn restarts_damaged_one_after_another_are_measured_once_each() {
     let (file, clean) = damaged_restarts(5, 4);
@@ -3031,8 +3027,9 @@ fn restarts_damaged_one_after_another_are_measured_once_each() {
     );
     assert_eq!(seen, expected(&clean, anywhere));
     assert_eq!(stats.measured, segments);
-    // Each segment begins at the run's start, walking every one before it.
-    assert_eq!(stats.derived, (0..segments).sum::<usize>());
+    assert_eq!(stats.chained, 0);
+    // Page 0's restart is intact: segments 2, 3 and 4 derive from segment 1.
+    assert_eq!(stats.derived, (1..segments - 1).sum::<usize>());
 }
 
 /// A family holding its branch's history (each hour counts the hours its operator saw since

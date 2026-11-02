@@ -458,7 +458,7 @@ fn equal_reads_keep_their_boundaries_and_wide_gains_sum_exactly() {
             countries: Some(countries.clone()),
         })
         .collect();
-    let (projected, _) = projected(&hours, &[base + 40]);
+    let (projected, _) = projected(&hours, &[base + 40, base + 66]);
     let built = build(
         projected,
         &[base + 32, base + 65, base + 99],

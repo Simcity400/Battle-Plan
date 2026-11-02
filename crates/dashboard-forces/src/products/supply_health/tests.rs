@@ -48,7 +48,13 @@ struct Built {
     root: u64,
 }
 
-fn build(configured: &Configured, hours: Vec<Hour>, cuts: &[i32], budget: &Budget) -> Built {
+fn build(
+    configured: &Configured,
+    hours: Vec<Hour>,
+    cuts: &[i32],
+    resume: Option<i32>,
+    budget: &Budget,
+) -> Built {
     let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
@@ -77,6 +83,14 @@ fn build(configured: &Configured, hours: Vec<Hour>, cuts: &[i32], budget: &Budge
             Blob::EMPTY,
         )
         .unwrap();
+        if resume == Some(cut) {
+            let mut saved = Vec::new();
+            emit.save(&mut saved).unwrap();
+            writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+            emit = emit::Emit::load(configured, &directory, &saved).unwrap();
+        }
     }
     assert!(hours.next().is_none());
     Built { pages, root }
@@ -193,7 +207,7 @@ fn replies_follow_holders_counts_cuts_and_gaps() {
         hour(111, false, &[], &[]),
     ];
     let budget = Budget::new(64 << 20);
-    let built = build(&configured, hours, &[105, 111], &budget);
+    let built = build(&configured, hours, &[105, 111], None, &budget);
     let cache = Cache::new(&budget);
     let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
@@ -261,6 +275,84 @@ fn replies_follow_holders_counts_cuts_and_gaps() {
     assert_eq!(step(&mut snapshot, "Home", None), Some(100.0));
 }
 
+#[test]
+fn shares_restart_after_zero_divisions_through_cuts_and_a_resume() {
+    let configured = Configured::with(Ok(defines()), vec![]);
+    for (cuts, resume) in [
+        (&[104][..], None),
+        (&[100, 101, 102, 104][..], None),
+        (&[100, 101, 102, 104][..], Some(101)),
+        (&[100, 101, 102, 104][..], Some(102)),
+    ] {
+        let holder = Some((1, 10));
+        let hours = vec![
+            hour(
+                100,
+                true,
+                &[(0, "GER")],
+                &[country(0, holder, Some([0, 0, 1]))],
+            ),
+            hour(101, false, &[], &[country(0, holder, Some([0, 0, 0]))]),
+            hour(102, false, &[], &[]),
+            hour(
+                103,
+                true,
+                &[(0, "GER")],
+                &[country(0, holder, Some([0, 0, 1]))],
+            ),
+            hour(104, false, &[], &[country(0, holder, Some([1, 1, 2]))]),
+        ];
+        let budget = Budget::new(32 << 20);
+        let built = build(&configured, hours, cuts, resume, &budget);
+        let cache = Cache::new(&budget);
+        let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+        let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+        let actor = directory.actor(b"GER").unwrap();
+        for (channel, measure) in emit::SHARES.into_iter().enumerate() {
+            let key = directory.key(actor, measure, None).unwrap();
+            let runs: Vec<_> = dashboard_base::prepared::engine::runs(&mut snapshot, key, 100, 104)
+                .unwrap()
+                .into_iter()
+                .map(|run| (run.span.first, run.span.last, run.break_before, run.value))
+                .collect();
+            let before = if channel == 2 { 100_000_000_000_000 } else { 0 };
+            let after = if channel == 2 {
+                50_000_000_000_000
+            } else {
+                25_000_000_000_000
+            };
+            assert_eq!(
+                runs,
+                vec![
+                    (100, 100, true, before),
+                    (103, 103, true, before),
+                    (104, 104, false, after)
+                ],
+                "share {channel}, cuts {cuts:?}, resume {resume:?}"
+            );
+        }
+        let history = history(&[("GER", &[(100, 104, 1, 10)])]);
+        let params = json!({ "branchId": "1", "tags": ["GER"], "from": 100, "to": 104 });
+        let reply = query::reply_to(
+            &mut snapshot,
+            &directory,
+            &params,
+            &history,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            reply.series[0].runs,
+            vec![
+                run(100, 100, true, [0, 0, 1]),
+                run(101, 102, false, [0, 0, 0]),
+                run(103, 103, false, [0, 0, 1]),
+                run(104, 104, false, [1, 1, 2]),
+            ]
+        );
+    }
+}
+
 /// Without land inputs the family is unavailable, whatever its content says; a refused
 /// content is the reply's refusal once inputs exist.
 #[test]
@@ -277,7 +369,7 @@ fn unavailable_and_refused_content_reply_as_before() {
     for hour in &mut hours {
         hour.land_present = false;
     }
-    let built = build(&configured, hours, &[3], &budget);
+    let built = build(&configured, hours, &[3], None, &budget);
     let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let reply = query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap();
@@ -289,7 +381,7 @@ fn unavailable_and_refused_content_reply_as_before() {
 
     let refused = Configured::with(Err("Supply health refused 1 define(s): x".into()), vec![]);
     let hours = (0..4).map(|at| hour(at, at == 0, &[], &[])).collect();
-    let built = build(&refused, hours, &[1, 3], &budget);
+    let built = build(&refused, hours, &[1, 3], None, &budget);
     let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
     let error =
@@ -362,7 +454,7 @@ fn fifteen_hundred_countries_keep_their_runs_through_cuts() {
     }
     let cuts: Vec<i32> = (23..200).step_by(24).chain([199]).collect();
     let budget = Budget::new(512 << 20);
-    let built = build(&configured, hours, &cuts, &budget);
+    let built = build(&configured, hours, &cuts, None, &budget);
     let cache = Cache::new(&budget);
     let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();

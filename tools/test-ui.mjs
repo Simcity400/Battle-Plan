@@ -41,6 +41,30 @@ export async function discoverTests(root = repositoryRoot) {
   return [...await visit('ui/src'), ...toolTests].sort();
 }
 
+function namespaceHasValues(node) {
+  // Node only erases namespaces containing type declarations or other erased namespaces.
+  if (node.type === 'TSModuleDeclaration') return node.body && namespaceHasValues(node.body);
+  if (node.type === 'TSModuleBlock') return node.body.some(namespaceHasValues);
+  if (node.type === 'ExportNamedDeclaration' && node.declaration) return namespaceHasValues(node.declaration);
+  return node.type !== 'TSTypeAliasDeclaration' && node.type !== 'TSInterfaceDeclaration';
+}
+
+function nodeSyntaxRefusal(node) {
+  switch (node.type) {
+    case 'TSParameterProperty': return 'parameter properties require transformation';
+    case 'TSEnumDeclaration': return 'enums require transformation';
+    case 'TSModuleDeclaration':
+      if (node.kind === 'module') return 'module declarations are not supported by Node';
+      return namespaceHasValues(node) ? 'namespaces with values require transformation' : null;
+    case 'TSImportEqualsDeclaration': return node.importKind === 'type' ? null : 'import aliases require transformation';
+    case 'TSExportAssignment': return 'export assignments require transformation';
+    case 'TSNamespaceExportDeclaration': return 'namespace exports are not supported by Node';
+    case 'Decorator': return 'decorators are not supported by Node';
+    case 'AccessorProperty': return 'auto-accessors are not supported by Node';
+    default: return null;
+  }
+}
+
 function moduleGraph(root) {
   const modules = new Map();
   const resolutions = new Map();
@@ -75,6 +99,7 @@ function moduleGraph(root) {
       const text = await readFile(path, 'utf8');
       const source = parseAst(text, { lang }, path);
       const references = new Map();
+      const syntax = [];
       let browser = path === resolve(root, 'tools/canvas-page.ts');
       function reference(specifier, kind, start, attributes = []) {
         const key = `${kind}\0${specifier}`;
@@ -83,6 +108,9 @@ function moduleGraph(root) {
         if (start !== undefined) references.get(key).lines.push({ line: text.slice(0, start).split('\n').length, attributes: named });
       }
       function visit(node) {
+        if (node.declare || node.type === 'TSModuleDeclaration' && node.global) return;
+        const refusal = nodeSyntaxRefusal(node);
+        if (refusal) syntax.push({ line: text.slice(0, node.start).split('\n').length, refusal });
         if ((node.type === 'ImportDeclaration' && node.importKind !== 'type')
           || ((node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') && node.exportKind !== 'type')) {
           if (typeof node.source?.value === 'string') reference(node.source.value, 'import', node.start, node.attributes);
@@ -102,7 +130,7 @@ function moduleGraph(root) {
       if ([...references.values()].some(({ reference }) => browserPackage.test(reference))) browser = true;
       const edges = await Promise.all([...references.values()].map(async edge =>
         ({ ...edge, ...await localModule(path, edge.reference, edge.kind) })));
-      return { browser, edges };
+      return { browser, edges, syntax };
     })());
     return modules.get(path);
   }
@@ -133,17 +161,18 @@ function nodeRefusal({ path, file }, attributes) {
 
 export async function checkNodeImports(files, root = repositoryRoot, graph = moduleGraph(root)) {
   const violations = new Set();
-  for await (const { path, edges } of graph.walk(files, true)) {
+  for await (const { path, edges, syntax } of graph.walk(files, true)) {
+    const importer = relative(root, path).split(sep).join('/');
+    for (const { line, refusal } of syntax) violations.add(`${importer}:${line}: ${refusal}`);
     for (const edge of edges) {
       if (!edge.reference.startsWith('.')) continue;
-      const importer = relative(root, path).split(sep).join('/');
       for (const { line, attributes } of edge.lines) {
         const refusal = nodeRefusal(edge, attributes);
         if (refusal) violations.add(`${importer}:${line}: '${edge.reference}' (${refusal})`);
       }
     }
   }
-  if (violations.size) throw new Error(`Node test imports must name, with its extension, a file Node can load:\n${[...violations].sort().join('\n')}`);
+  if (violations.size) throw new Error(`Node test modules must use imports and syntax Node can load with type stripping:\n${[...violations].sort().join('\n')}`);
 }
 
 /** Inspect actual module dependencies rather than text inside synthetic fixtures. */
