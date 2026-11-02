@@ -887,6 +887,7 @@ pub enum Query {
     Government(u32),
     NamedIdeology(Vec<u8>),
     IdeologyToken(u32),
+    RulingParty(u32),
     ScopedRulingIdeology(u32),
     HasElections(u32),
     Flag(u8, u32, Vec<u8>),
@@ -1016,6 +1017,7 @@ impl World<'_> {
                 super::inputs::digest(&self.named_ideology_unrecorded(token))
             }
             Query::IdeologyToken(id) => super::inputs::digest(&self.ideology_token_unrecorded(*id)),
+            Query::RulingParty(slot) => super::inputs::digest(&self.ruling_party_unrecorded(*slot)),
             Query::ScopedRulingIdeology(slot) => {
                 super::inputs::digest(&self.scoped_ruling_ideology_unrecorded(*slot))
             }
@@ -2447,14 +2449,14 @@ impl<'a> World<'a> {
         ))
     }
 
-    pub(super) fn scoped_ruling_ideology(&self, slot: u32) -> Result<(u32, &'a [u8]), Failure> {
+    pub(super) fn ruling_party(&self, slot: u32) -> Result<Option<u32>, Failure> {
         super::inputs::query_resolved(
-            || super::inputs::Key::World(Query::ScopedRulingIdeology(slot)),
-            || self.scoped_ruling_ideology_unrecorded(slot),
+            || super::inputs::Key::World(Query::RulingParty(slot)),
+            || self.ruling_party_unrecorded(slot),
         )
     }
 
-    fn scoped_ruling_ideology_unrecorded(&self, slot: u32) -> Result<(u32, &'a [u8]), Failure> {
+    fn raw_ruling_party(&self, slot: u32) -> Result<Option<Option<u32>>, Failure> {
         let (ruling, unresolved) = get(&self.politics_ruling, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
@@ -2468,7 +2470,34 @@ impl<'a> World<'a> {
             }
             Ok((out, unresolved))
         })?;
-        let id = linked(ruling.get(&slot).copied(), unresolved)?
+        linked(ruling.get(&slot).copied(), unresolved)
+    }
+
+    fn ruling_party_unrecorded(&self, slot: u32) -> Result<Option<u32>, Failure> {
+        self.raw_ruling_party(slot)
+            .and_then(|ruling| {
+                ruling.ok_or_else(|| {
+                    Failure::input(
+                        tables::Politics::ID,
+                        "ruling_party",
+                        Some(Store::Country(slot)),
+                        format!("Politics lacks country slot {slot}"),
+                    )
+                })
+            })
+            .map_err(|why| why.context(|why| format!("ruling party of country slot {slot}: {why}")))
+    }
+
+    pub(super) fn scoped_ruling_ideology(&self, slot: u32) -> Result<(u32, &'a [u8]), Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::ScopedRulingIdeology(slot)),
+            || self.scoped_ruling_ideology_unrecorded(slot),
+        )
+    }
+
+    fn scoped_ruling_ideology_unrecorded(&self, slot: u32) -> Result<(u32, &'a [u8]), Failure> {
+        let id = self
+            .raw_ruling_party(slot)?
             .flatten()
             .ok_or("Politics lacks ruling ideology")?;
         let parties = self.political_parties()?;

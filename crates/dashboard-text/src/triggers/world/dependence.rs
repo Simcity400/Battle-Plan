@@ -263,6 +263,9 @@ impl Query {
             Query::Government(_) | Query::NamedIdeology(_) | Query::IdeologyToken(_) => {
                 parties().to_vec()
             }
+            Query::RulingParty(_) => {
+                vec![TableRead::fields(T::Politics, &["ruling_party"]), links()]
+            }
             Query::ScopedRulingIdeology(_) => [
                 &[TableRead::fields(T::Politics, &["ruling_party"])][..],
                 &parties(),

@@ -5,8 +5,8 @@ use crate::triggers::{
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
     rows::CountryWarRow, rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow,
-    rows::PoliticalPartyRow, rows::ScriptFlagRow, rows::SubjectRow, rows::TableRows,
-    rows::TableSchema, rows::WarRelationRow,
+    rows::PoliticalPartyRow, rows::PoliticsRow, rows::ScriptFlagRow, rows::SubjectRow,
+    rows::TableRows, rows::TableSchema, rows::WarRelationRow,
 };
 use replay_frame::{frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::TableUpdate};
 use std::{
@@ -210,6 +210,83 @@ fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(&World<'_>) -> T) -> T {
 }
 
 #[test]
+fn scoped_ruling_ideology_keeps_missing_ruling_ideology_refusals() {
+    for rows in [
+        Vec::new(),
+        vec![PoliticsRow {
+            country: 102,
+            ruling_party: Some(1),
+            ..Default::default()
+        }],
+        vec![PoliticsRow {
+            country: 101,
+            ruling_party: None,
+            ..Default::default()
+        }],
+    ] {
+        let mut frame = frame(100, BASE);
+        set::<tables::Politics>(&mut frame, rows);
+        with_world(&frame, |world| {
+            assert_eq!(
+                world.scoped_ruling_ideology(1).unwrap_err().to_string(),
+                "Politics lacks ruling ideology"
+            );
+        });
+    }
+}
+
+#[test]
+fn scoped_ruling_ideology_keeps_unavailable_and_truncated_politics_refusals() {
+    for (politics, expected) in [
+        (
+            TableView::Unavailable {
+                reason: "synthetic politics gap".into(),
+            },
+            "hour 100 Politics is unavailable: synthetic politics gap",
+        ),
+        (
+            TableView::Truncated {
+                rows: TableRows::Politics(vec![PoliticsRow {
+                    country: 101,
+                    ruling_party: Some(1),
+                    ..Default::default()
+                }]),
+                missing: 1,
+            },
+            "hour 100 Politics is truncated (1 missing rows)",
+        ),
+    ] {
+        let mut frame = frame(100, BASE);
+        *frame.tables[TableId::Politics.index()] = politics;
+        with_world(&frame, |world| {
+            assert_eq!(
+                world.scoped_ruling_ideology(1).unwrap_err().to_string(),
+                expected
+            );
+        });
+    }
+}
+
+#[test]
+fn scoped_ruling_ideology_keeps_unresolved_country_refusal() {
+    let mut frame = frame(100, BASE);
+    set::<tables::Politics>(
+        &mut frame,
+        vec![PoliticsRow {
+            country: 103,
+            ruling_party: Some(1),
+            ..Default::default()
+        }],
+    );
+    with_world(&frame, |world| {
+        assert_eq!(
+            world.scoped_ruling_ideology(1).unwrap_err().to_string(),
+            "a Politics row's country 103 has no CountryLinks row"
+        );
+    });
+}
+
+#[test]
 fn has_war_records_clock_only_when_scanning_relations() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let body = installed_content_core::parser::parse(b"has_war=yes").unwrap().items;
@@ -331,6 +408,59 @@ impl TableChanges for Updates<'_> {
             } => TableChange::Rows(changed, deleted),
             _ => TableChange::Any,
         }
+    }
+}
+
+#[test]
+fn ruling_party_invalidates_only_when_its_canonical_slots_answer_changes() {
+    for changed_country in [101, 102] {
+        let mut recording = Recording::new();
+        let mut first = frame(100, BASE);
+        set::<tables::Politics>(
+            &mut first,
+            [101, 102]
+                .into_iter()
+                .map(|country| PoliticsRow {
+                    country,
+                    ruling_party: Some(1),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        let (_, first) = recording.record(first);
+        let (value, mut inputs) =
+            with_world(&first, |world| capture(&first, || world.ruling_party(1)));
+        assert_eq!(value, Ok(Some(1)));
+        assert_eq!(
+            inputs.keys().collect::<Vec<_>>(),
+            [&Key::World(Query::RulingParty(1))]
+        );
+        let mut second = first.clone();
+        second.hour += 1;
+        set::<tables::Politics>(
+            &mut second,
+            [101, 102]
+                .into_iter()
+                .map(|country| PoliticsRow {
+                    country,
+                    ruling_party: Some(if country == changed_country { 2 } else { 1 }),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        let (wire, second) = recording.record(second);
+        let updates = Updates(&wire);
+        let since = Since::hour_before(&second, &updates).unwrap();
+        assert!(!inputs.unchanged(&since));
+        assert_eq!(
+            reusing(|| confirm(&mut inputs, &second, Some(&since))),
+            (changed_country != 101, 1),
+            "country {changed_country} changed"
+        );
+        assert_eq!(
+            with_world(&second, |world| world.ruling_party(1)).unwrap(),
+            Some(if changed_country == 101 { 2 } else { 1 })
+        );
     }
 }
 

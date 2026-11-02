@@ -222,7 +222,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["faction-state"],
         gates: &["faction-state"],
         // 2: lanes on the segment driver, published as a series root.
-        version: 2,
+        // 3: stored scripted names: is_country_leader is now evaluated.
+        version: 3,
         ..family("faction_state")
     },
     Descriptor {
@@ -647,7 +648,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["unit-leaders"],
         sections: &["unit-leaders"],
         // 2: replies and saved scans hold per-leader withheld refusals.
-        version: 2,
+        // 3: unit leader visibility: is_country_leader is now evaluated.
+        version: 3,
         ..family("leaders")
     },
     Descriptor {
@@ -683,7 +685,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["politics-ledger"],
         gates: &["politics-ledger"],
         // 2: facts on the segment driver, published as a series root.
-        version: 2,
+        // 3: stored names and icon choices: is_country_leader is now evaluated.
+        version: 3,
         ..family("politics_ledger")
     },
     Descriptor {
@@ -718,7 +721,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "occupation-trend",
         ],
         // 2: on the segment driver, published as a series root.
-        version: 2,
+        // 3: occupation law eligibility: is_country_leader is now evaluated.
+        version: 3,
         ..family("occupation")
     },
     Descriptor {
@@ -779,7 +783,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["special-projects", "event-feed"],
         gates: &["special-projects"],
         // 2: observations and completions on the segment driver, published as a series root.
-        version: 2,
+        // 3: stored project names: is_country_leader is now evaluated.
+        version: 3,
         ..family("projects")
     },
     // Its series queries route by the family kind `war-casualties`.

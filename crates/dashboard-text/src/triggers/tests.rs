@@ -29,6 +29,9 @@ mod organisations;
 #[path = "flag_tests.rs"]
 mod flags;
 
+#[path = "country_leader_tests.rs"]
+mod country_leaders;
+
 #[path = "collections/tests.rs"]
 mod collections;
 

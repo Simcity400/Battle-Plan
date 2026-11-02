@@ -1842,6 +1842,38 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let bytes = item.value.scalar().unwrap_or_default();
         Ok(Some(match name {
             "has_character_flag" => self.flag_trigger(item, CHARACTER_FLAGS, Some(character))?,
+            "is_country_leader" => {
+                let expected = item
+                    .value
+                    .scalar()
+                    .and_then(installed_content_core::parser::read_bool)
+                    .ok_or("is_country_leader needs yes or no")?;
+                if character == 0
+                    || self
+                        .world
+                        .character_tables()
+                        .retired(character, |raw| self.canonical(raw))?
+                {
+                    Eval::False
+                } else {
+                    let row = self.world.character(character)?.ok_or_else(|| -> Failure {
+                        format!("character {character} is not recorded").into()
+                    })?;
+                    let country = self.canonical(row.country)?;
+                    if self.world.ruling_party(country)?.is_none() {
+                        Eval::False
+                    } else {
+                        let parties = self.world.party_leaders(country)?;
+                        let ruling = parties
+                            .iter()
+                            .find(|party| party.ruling)
+                            .and_then(|party| party.leaders.first());
+                        Eval::from_bool(ruling.is_some_and(|leader| {
+                            (leader.character == Some(character)) == expected
+                        }))
+                    }
+                }
+            }
             // Skill in a character scope: the
             // scope has no combat, so it is the character's unit leader's
             // skill level, compared as an integer.
