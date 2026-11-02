@@ -1,5 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { GRAPH_OPTIONS } from '../player-apm/definition';
+import { GRAPH_OPTIONS } from '../player-apm/definition.ts';
 
 export const definition = {
   kind: 'apm-graph', version: 1, title: 'eAPM graph', icon: 'chart-bars', category: 'Overview',

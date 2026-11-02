@@ -1,5 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { TABLE_APM_OPTIONS } from '../player-apm/definition';
+import { TABLE_APM_OPTIONS } from '../player-apm/definition.ts';
 
 export const definition = {
   kind: 'apm-table', version: 1, title: 'eAPM table', icon: 'chart-bars', category: 'Overview',

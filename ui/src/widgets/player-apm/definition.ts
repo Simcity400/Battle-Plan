@@ -1,5 +1,5 @@
 import type { OptionField } from '../../dashboard/options';
-import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options';
+import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 
 export const SHARED_OPTIONS: readonly OptionField[] = [
   { key: 'group', section: 'options', label: 'Compare', kind: 'choice', default: 'country',
