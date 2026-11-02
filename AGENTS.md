@@ -8,56 +8,32 @@
 - Keep the game out of the repo: no installed content, addresses, decompiler names, or copied game code, shaders, scripts or text. Name offsets for what they are.
 - Read game data from the user's installation at run time. Installed content are read-only.
 - Mods are first-class: read content through the recorded mod stack, hard-code nothing from vanilla, and refuse anything unsupported by name.
-- Ask the owner before recording any new data.
 
 ## Building
 
-- Needs Rust 1.96+ with the x64 MSVC toolchain, Visual Studio C++ Build Tools with a Windows SDK, and Node.js 22.12+.
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
-- Compile on Boat, not this machine, with `tools/boat.py` from inside your worktree: `python tools/boat.py check --all-targets -p <crate>...`, `python tools/boat.py ui`, and `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>` for release binaries. It uploads the worktree's current source, picks, isolates and stops the VM, and passes Cargo's exit code through. Don't drive `boat` by hand or pass `-j`. Check only the crates you changed, never the whole workspace.
-- Exit 75 means Boat itself failed: run it on Boat again, never locally.
-- Compile once, when the work is done, not as you go. Work that compiled needs no second compile before merging.
-
-## Where things are
-
-- `crates/engine*`: reading the game's memory.
-- `crates/collector*`: the DLL loaded into the game.
-- `crates/recorder*`: the recorders, recovery and offline tools.
-- `crates/replay*`: the recording format.
-- `crates/installed-content*`: game, DLC and mod files.
-- `crates/viewer*`: the map.
-- `crates/dashboard*`: the dashboard's data.
-- `crates/desktop` and `ui/`: the desktop app and its interface.
+- Only Rust compiles go to Boat, never this machine. Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
+  - Check: `python tools/boat.py check --all-targets -p <crate>...` for the crates you changed only. Never the whole workspace, never their dependents.
+  - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
+- Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
+- Check once, when the work is done, not as you go. Work that passed needs no second check before merging.
+- Only run builds when you actually need it.
 
 ## Code
 
 - Make everything as fast and efficient as it can be. Design every part, new or changed, as the best solution built from scratch, not a patch on what is there.
 - Design for 1,500 countries. No caps we made up.
 - Change file-format readers, writers and users together. No backwards compatibility.
-- Depend on the specific crate you use, not the `engine` or `installed-content` bundles.
-- After changing dependencies, run `python tools/check-build-dependencies.py`, `python tools/check-content-dependencies.py` and `python tools/check-feature-unification.py --fix`.
-- After changing types the UI reads, regenerate them: `python tools/boat.py build --out <dir> --release -p dashboard --features export-types --bin export-types`, then run `<dir>\export-types.exe --out ui\src\generated\dashboard.ts` from the repo root.
 - Don't write READMEs or other docs.
 - Only comment what reading the code can't tell you: a quirk, or something an agent must know. Keep it to one short line. Licence notices stay.
 
 ## Tests
 
 - Don't run tests, not even before merging. Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00.
-- When the work is done, compile what the PR changed, without running tests: `python tools/boat.py check --all-targets -p <crate>...` for every crate it changes, and nothing else (not its dependents, not `--workspace`), and `python tools/boat.py ui` when it changes the UI or the types the UI reads.
-- Read the last run in `captures\ci\latest.md`. If it fails in something you changed, fix it in a new PR; the next daily run checks the fix. No clippy.
-- Each test sets up everything it needs. Never rely on another test or on timing.
-- No tests behind features. Use `#[ignore]` only for benchmarks and tests that need special hardware.
-- Use synthetic data. Tests that need the real game read `BATTLE_PLAN_GAME_DIR`.
 
 ## Sharing this machine
 
-- No work waits for anything: not a `BENCH_RUNNING` file, the game or the daily tests. Everything runs in parallel.
-- The only thing that disturbs a benchmark is a local cargo build or check, so never run one outside the daily tests: compile on Boat.
-- If a single test holds up the daily run for more than an hour, stop the run.
-- A fresh checkout can start from the shared build: `python tools/warm_target.py warm --root warm-start\seed`.
-- Otherwise, only stop processes you started. Never change or delete other sessions' work.
-- Put captures and scratch files in `captures\<name>\`, never in Git.
 - Never use plain `git stash`; the stash is shared.
 
 ## Running the game
