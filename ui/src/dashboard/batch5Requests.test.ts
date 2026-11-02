@@ -18,15 +18,14 @@ const DTOS: Record<string, Dto> = {
     lastHour: { kind: 'i32' }, daily: { kind: 'bool' } },
   'regional-weather': { branchId: { kind: 'string', required: true }, firstHour: { kind: 'i32' }, lastHour: { kind: 'i32' },
     regions: { kind: 'strings' }, show: { kind: ['conditions', 'modifier', 'temperature'] }, modifier: { kind: 'string' }, daily: { kind: 'bool' },
-    view: { kind: ['history', 'provinces'] }, region: { kind: 'string' }, hour: { kind: 'i32' } },
+    view: { kind: ['history', 'provinces'] }, region: { kind: 'string' }, hour: { kind: 'i32' }, width: { kind: 'u32' } },
   'doctrine-mastery': { branchId: { kind: 'string', required: true }, tag: { kind: 'string', required: true }, firstHour: { kind: 'i32' },
     lastHour: { kind: 'i32' }, hour: { kind: 'i32' } },
   'occupation-reserve-manpower': { branchId: { kind: 'string', required: true }, view: { kind: ['race', 'holder'] }, tags: { kind: 'strings' },
     tag: { kind: 'string' }, firstHour: { kind: 'i32' }, lastHour: { kind: 'i32' }, top: { kind: 'usize' } },
   'intel-network-coverage': { branchId: { kind: 'string', required: true }, view: { kind: ['matrix', 'pair'] }, tags: { kind: 'strings' },
     shown: { kind: 'usize' }, touching: { kind: 'bool' }, owner: { kind: 'string' }, target: { kind: 'string' }, firstHour: { kind: 'i32' }, lastHour: { kind: 'i32' } },
-  'naval-yards': { branchId: { kind: 'string', required: true }, tag: { kind: 'string', required: true }, firstHour: { kind: 'i32' },
-    lastHour: { kind: 'i32' } },
+  'naval-yards': { branchId: { kind: 'string', required: true }, tag: { kind: 'string', required: true }, hour: { kind: 'i32', required: true } },
 };
 
 const integer = (value: unknown, min: number, max: number) => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
