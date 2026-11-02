@@ -176,7 +176,8 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
             return { data: new Map(lines.map(line => {
               const group = groups.find(item => key(item) === line.group);
               const runs = !group || line.measure === 'need' ? [] : line.measure === 'share' ? shareRuns(reply, group) : stockRuns(reply, group);
-              return [line.key, { ...view, buckets: [], runs }];
+              // The TimeChart leaf never reports a viewport; use the picking frame's hours and width.
+              return [line.key, { from: 0, to: 200, width: 350, buckets: [], runs }];
             })), retry() {} };
           }`;
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return `export const useCountryGroups = (_runtime, track) => ({
@@ -358,8 +359,16 @@ test('an actual row opens inside, history holds its picked day, Follow uses play
     assert.match(view.render(pinned), /Available <b>20<\/b> − needed <b>15<\/b> = <b class="is-positive">surplus \+5<\/b>/);
     // Per model: the game's output a day, the IC its lines put in a day, and their lowest to highest cost per unit.
     assert.match(view.render(pinned), /<span role="cell">Recorded rifles<\/span><b role="cell">999<\/b><b role="cell">45<\/b><b role="cell">0\.55–0\.65<\/b>/);
-    assert.ok(host.__stockRequests!.every(request => object(request.params) && (request.product === 'equipment-stockpile-at' ? request.params.tag === 'AAA'
-      : request.product === 'equipment-stockpile-catalogue' && JSON.stringify(request.params.holders) === '[{"tag":"AAA"}]')));
+    const catalogueHolders = new Set<string>();
+    for (const request of host.__stockRequests!) {
+      assert.ok(object(request.params));
+      if (request.product === 'equipment-stockpile-at') assert.equal(request.params.tag, 'AAA');
+      else {
+        assert.equal(request.product, 'equipment-stockpile-catalogue');
+        catalogueHolders.add(JSON.stringify(request.params.holders));
+      }
+    }
+    assert.deepEqual(catalogueHolders, new Set(['[{"tag":"AAA"}]', '[{"tag":"AAA","within":[{"firstHour":0,"lastHour":200}]}]']));
   } finally { await view.close(); }
 });
 
