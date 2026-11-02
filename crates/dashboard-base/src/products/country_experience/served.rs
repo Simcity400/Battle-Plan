@@ -22,7 +22,7 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let mut keys = ask
             .holders(branch.id)?
             .into_iter()
-            .map(|(tag, slot, country)| serde_json::to_string(&(tag, slot, country)))
+            .map(|holder| serde_json::to_string(&(holder.tag, holder.slot, holder.country_id)))
             .collect::<Result<Vec<_>, _>>()?;
         keys.sort_unstable();
         keys.dedup();

@@ -31,14 +31,23 @@ pub struct Plan {
 pub trait Ask {
     /// The recording's branches.
     fn branches(&self) -> &[Branch];
+    /// Replaces this plan's default request allowance for `branch` with its calculated bound.
+    fn request_allowance(&mut self, branch: u64, requests: usize) -> io::Result<()>;
     /// `product`'s reply data to `params`, kept to compare; None when the
     /// store refused it.
     fn ask(&mut self, product: &str, params: Value) -> io::Result<Option<Value>>;
     /// Every country `branch`'s identity history names, in tag order.
     fn countries(&mut self, branch: u64) -> io::Result<Vec<String>>;
-    /// Every native country holding a tag in `branch`'s identity history, as its tag,
-    /// canonical slot and id, in that order.
-    fn holders(&mut self, branch: u64) -> io::Result<Vec<(String, u32, u32)>>;
+    /// Every native holder of a tag, in tag/slot/id order, with its first witnessed origin.
+    fn holders(&mut self, branch: u64) -> io::Result<Vec<Holder>>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holder {
+    pub tag: String,
+    pub slot: u32,
+    pub country_id: u32,
+    pub origin_hour: i32,
 }
 
 /// One branch of the recording, as plans choose its hours, windows and spans.

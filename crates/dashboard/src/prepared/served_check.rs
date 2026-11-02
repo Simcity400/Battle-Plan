@@ -5,7 +5,7 @@
 //! Stored formats are free to differ; the data users are served is not.
 
 use crate::{Source, SourceKey, products::ContentOptions, transport::ProductRequest};
-use dashboard_base::prepared::served::{Ask, Branch, Plan};
+use dashboard_base::prepared::served::{Ask, Branch, Holder, Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value, json};
 use std::{
@@ -20,8 +20,7 @@ mod tests;
 
 /// The transcript's layout.
 const VERSION: u32 = 1;
-/// Requests one plan asks of each branch at most: past it the plan, not the
-/// store, is wrong.
+/// Default requests per plan and branch; discovery-driven plans declare their own bound.
 const PER_BRANCH: usize = 4096;
 const SOURCE: &str = "served-check";
 
@@ -208,6 +207,7 @@ struct Recorder<'a, 's, 'w> {
     owner: &'static str,
     tally: Recorded,
     limit: usize,
+    allowances: HashMap<u64, usize>,
 }
 
 /// A branch's countries as its identity history names them.
@@ -215,8 +215,7 @@ struct Recorder<'a, 's, 'w> {
 struct Discovered {
     /// In tag order.
     tags: Vec<String>,
-    /// Each tag's native countries, as tag, canonical slot and id, in that order.
-    holders: Vec<(String, u32, u32)>,
+    holders: Vec<Holder>,
 }
 
 impl Recorder<'_, '_, '_> {
@@ -248,19 +247,37 @@ impl Recorder<'_, '_, '_> {
                     .and_then(Value::as_u64)
                     .and_then(|number| u32::try_from(number).ok())
             };
-            let mut holders = Vec::new();
+            let mut origins = BTreeMap::new();
             for (tag, country) in countries.into_iter().flatten() {
                 let identities = country.get("identities").and_then(Value::as_array);
                 for identity in identities.into_iter().flatten() {
-                    if let (Some(slot), Some(id)) =
-                        (number(identity, "slot"), number(identity, "countryId"))
+                    if let (Some(slot), Some(id), Some(first), Some(last)) = (
+                        number(identity, "slot"),
+                        number(identity, "countryId"),
+                        identity["firstHour"]
+                            .as_i64()
+                            .and_then(|hour| i32::try_from(hour).ok()),
+                        identity["lastHour"]
+                            .as_i64()
+                            .and_then(|hour| i32::try_from(hour).ok()),
+                    ) && first <= last
                     {
-                        holders.push((tag.clone(), slot, id));
+                        origins
+                            .entry((tag.clone(), slot, id))
+                            .and_modify(|origin: &mut i32| *origin = (*origin).min(first))
+                            .or_insert(first);
                     }
                 }
             }
-            holders.sort_unstable();
-            holders.dedup();
+            let holders = origins
+                .into_iter()
+                .map(|((tag, slot, country_id), origin_hour)| Holder {
+                    tag,
+                    slot,
+                    country_id,
+                    origin_hour,
+                })
+                .collect();
             self.countries.insert(branch, Discovered { tags, holders });
         }
         &self.countries[&branch]
@@ -286,6 +303,22 @@ impl Recorder<'_, '_, '_> {
 impl Ask for Recorder<'_, '_, '_> {
     fn branches(&self) -> &[Branch] {
         self.branches
+    }
+
+    fn request_allowance(&mut self, branch: u64, requests: usize) -> io::Result<()> {
+        if !self.branches.iter().any(|held| held.id == branch) {
+            return Err(invalid(format!(
+                "Unknown request allowance branch {branch}"
+            )));
+        }
+        let previous = self.allowances.get(&branch).copied().unwrap_or(PER_BRANCH);
+        self.limit = self
+            .limit
+            .checked_sub(previous)
+            .and_then(|limit| limit.checked_add(requests))
+            .ok_or_else(|| invalid("Request allowance overflow"))?;
+        self.allowances.insert(branch, requests);
+        Ok(())
     }
 
     fn ask(&mut self, product: &str, params: Value) -> io::Result<Option<Value>> {
@@ -332,7 +365,7 @@ impl Ask for Recorder<'_, '_, '_> {
         Ok(self.discover(branch).tags.clone())
     }
 
-    fn holders(&mut self, branch: u64) -> io::Result<Vec<(String, u32, u32)>> {
+    fn holders(&mut self, branch: u64) -> io::Result<Vec<Holder>> {
         Ok(self.discover(branch).holders.clone())
     }
 }
@@ -365,11 +398,14 @@ pub fn record(
         countries: BTreeMap::new(),
         owner: "",
         tally: Recorded::default(),
-        limit: PER_BRANCH * branches.len().max(1),
+        limit: 0,
+        allowances: HashMap::new(),
     };
     let mut recorded = Vec::with_capacity(owners.len());
     for owner in owners {
         recorder.owner = owner.name();
+        recorder.limit = PER_BRANCH * branches.len().max(1);
+        recorder.allowances.clear();
         recorder.tally = Recorded {
             owner: owner.name().to_owned(),
             generic: matches!(owner, Owner::Generic(_)),
