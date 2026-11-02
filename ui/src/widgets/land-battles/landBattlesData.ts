@@ -1,3 +1,6 @@
+import type { PlaybackIntervals } from '../../charts/playbackIntervals';
+import { playbackRows, spanChanges } from '../../charts/playbackIntervals.ts';
+import { countryMatchChangeHours } from '../../dashboard/groups.ts';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
@@ -149,8 +152,45 @@ export function validateLandBattlesRanking(v: unknown): LandBattlesRanking {
 const resultSide = (result: NonNullable<LandBattle['result']>, run: LandBattle['runs'][number], index: number) =>
   !result.countriesUnknown[index] || run.countriesUnknown[index];
 /** Merge in recording order, independent of network completion order. */
-export function landBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, at: number,
-  matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null = null): LandBattleRow[] {
+type Windows = ReadonlyMap<number, LandBattlesWindow>;
+type CountryMatch = (tag: string, hour: number) => boolean;
+const rowPlaybacks = new WeakMap<Windows, WeakMap<CountryMatch, Map<string, PlaybackIntervals<ReadonlyArray<LandBattleRow>>>>>();
+const matchAll: CountryMatch = () => true;
+const rankedWindows = new WeakMap<LandBattlesRanking, Windows>();
+
+export function landBattleRows(windows: Windows, at: number, matches: CountryMatch, all: boolean, from: number | null = null): ReadonlyArray<LandBattleRow> {
+  let byMatch = rowPlaybacks.get(windows);
+  if (!byMatch) rowPlaybacks.set(windows, byMatch = new WeakMap());
+  let bySettings = byMatch.get(matches);
+  if (!bySettings) byMatch.set(matches, bySettings = new Map());
+  const key = JSON.stringify([all, from]);
+  let playback = bySettings.get(key);
+  if (!playback) {
+    const matchingHours = countryMatchChangeHours(matches);
+    function* changes() {
+      yield* matchingHours ?? [];
+      if (from !== null) yield from;
+      for (const window of windows.values()) {
+        yield window.interval.firstHour;
+        for (const history of window.rows) {
+          yield* spanChanges(history.runs);
+          if (history.result) yield history.result.hour;
+          if (history.end && 'hour' in history.end) yield history.end.hour;
+          if (history.endUnknownHour != null) yield history.endUnknownHour;
+          for (const loss of history.losses) yield loss.hour;
+        }
+      }
+    }
+    playback = playbackRows(changes(), hour => readLandBattleRows(windows, hour, matches, all, from), (rows, hour) =>
+      !all && matchingHours === undefined || rows.some(row => row.readHour === hour)
+        ? { first: hour, end: hour + 1 } : { first: -Infinity, end: Infinity });
+    bySettings.set(key, playback);
+  }
+  return playback.at(at);
+}
+
+function readLandBattleRows(windows: ReadonlyMap<number, LandBattlesWindow>, at: number,
+  matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null = null): ReadonlyArray<LandBattleRow> {
   const histories = new Map<string, { history: LandBattle; index: number }>();
   for (const [index, window] of [...windows].sort(([a], [b]) => a - b)) {
     if (window.interval.firstHour > at) continue;
@@ -235,9 +275,15 @@ export function casualtyRankingNote(data: LandBattlesRanking | undefined): strin
   return null;
 }
 /** Ranking is computed before top N by the product, including country selection. */
-export function rankedLandBattleRows(data: LandBattlesRanking | undefined, at: number): LandBattleRow[] {
+export function rankedLandBattleRows(data: LandBattlesRanking | undefined, at: number): ReadonlyArray<LandBattleRow> {
   if (!data) return [];
-  return landBattleRows(new Map([[-1, { window: 0, interval: { firstHour: at, lastHour: at }, rows: data.rows, observed: [], warnings: [], contentWarnings: data.contentWarnings }]]), at, () => true, true);
+  let windows = rankedWindows.get(data);
+  if (!windows) {
+    windows = new Map([[-1, { window: 0, interval: { firstHour: -Infinity, lastHour: Infinity }, rows: data.rows,
+      observed: [], warnings: [], contentWarnings: data.contentWarnings }]]);
+    rankedWindows.set(data, windows);
+  }
+  return landBattleRows(windows, at, matchAll, true);
 }
 export { battleWindowIndex, battleWindows, battleWarnings, shownBattleCensusHour as shownCensusHour,
   battlePlaceRequests as landBattlePlaceRequests, namedBattles as namedLandBattles } from '../battles/battleRows.ts';

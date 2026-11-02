@@ -382,12 +382,9 @@ impl<'a> Walk<'a> {
         }) {
             for hour in block.first_hour.max(first)..=block.last_hour.min(last) {
                 check_cancel(cancelled)?;
-                if source
-                    .replay_ref()
-                    .gaps
-                    .iter()
-                    .any(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
-                {
+                if source.replay_ref().gaps.iter().any(|gap| {
+                    gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour
+                }) {
                     continue;
                 }
                 if let SeekResult::Frame(frame) = self.seek(hour, tables, cancelled)? {
@@ -1360,4 +1357,42 @@ fn masked(held: &HourFrame, wanted: &[TableId]) -> Option<DecodedFrame> {
     }
     debug_assert_eq!(frame.tables.len(), TABLE_COUNT);
     Some(frame)
+}
+
+pub fn gap_error(reason: &str, text: impl Into<String>) -> io::Error {
+    if reason == "frame campaign identity differs from replay header"
+        || reason.starts_with("unreadable block")
+        || reason.starts_with("invalid frame baseline at hour ")
+    {
+        crate::invalid(reason)
+    } else {
+        dashboard_core::refused(text)
+    }
+}
+
+#[cfg(test)]
+mod gap_error_tests {
+    use super::*;
+
+    #[test]
+    fn corruption_and_campaign_mismatches_are_not_public_refusals() {
+        for reason in [
+            "unreadable block: grouped section is not a zstd frame",
+            "invalid frame baseline at hour 17: synthetic damage",
+            "frame campaign identity differs from replay header",
+        ] {
+            let error = gap_error(reason, "Synthetic hour was not recorded");
+            assert!(dashboard_core::refusal(&error).is_none());
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), reason);
+        }
+        let error = gap_error(
+            "collector refused synthetic capture",
+            "Synthetic hour was not recorded",
+        );
+        assert_eq!(
+            dashboard_core::refusal(&error),
+            Some("Synthetic hour was not recorded")
+        );
+    }
 }

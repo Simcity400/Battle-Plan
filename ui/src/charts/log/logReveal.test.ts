@@ -3,7 +3,13 @@ import test from 'node:test';
 import { logItems } from './logData.ts';
 import type { LogRow } from './logData';
 import { logPageItems } from './logPages.ts';
-import { EMPTY_LOG_REVEALS, logReveals, logVisibleEntries } from './logReveal.ts';
+import { EMPTY_LOG_REVEALS, logRevealHistory, logReveals as revealAt, logVisibleEntries } from './logReveal.ts';
+import { deepFreeze } from '../../testFrozen.ts';
+
+const logReveals = (...[previous, items, playhead]: Parameters<typeof revealAt>) => {
+  const reveals = revealAt(deepFreeze(previous), deepFreeze(items), playhead);
+  return deepFreeze({ ...reveals, history: logRevealHistory(previous, reveals, playhead) });
+};
 
 const row = (key: string, hour: number, revealedHour = hour): LogRow<string> => ({ key, hour, revealedHour, item: key });
 const pageItems = (key: string, rows?: LogRow<string>[]) => logPageItems([{ key, start: 0, end: 200, count: 10, rows }], false);
@@ -93,4 +99,50 @@ test('arrival waits for both the exact displayed date and the supplying read', (
   const read = logReveals(initial, items, 10);
   assert.deepEqual([...read.entering], []);
   assert.deepEqual([...logReveals(read.history, items, 20).entering], ['future-date']);
+});
+
+test('unchanged intervals retain reveal identity and crossings visit only indexed boundaries', () => {
+  let reads = 0;
+  const rows = Array.from({ length: 5000 }, (_, index) => ({ key: `r${index}`, item: '',
+    get hour() { reads++; return index * 10; } }));
+  const items = deepFreeze(logItems(rows, true));
+  const first = revealAt(EMPTY_LOG_REVEALS, items, 10);
+  let history = logRevealHistory(EMPTY_LOG_REVEALS, first, 10);
+  reads = 0;
+  const inside = revealAt(history, items, 19);
+  assert.equal(inside, first);
+  history = logRevealHistory(history, inside, 19);
+  const crossed = revealAt(history, items, 40);
+  assert.notEqual(crossed, first);
+  assert.deepEqual([...crossed.entering], ['r2', 'r3', 'r4']);
+  assert.equal(reads, 0, 'forward playback never reads the item rows again');
+  history = logRevealHistory(history, crossed, 40);
+  assert.equal(revealAt(history, items, 49), crossed);
+  const backward = revealAt(history, items, 9);
+  assert.notEqual(backward, crossed);
+  assert.equal(backward.entering.size, 0);
+});
+
+test('an async load after unchanged intervals uses the last committed tick and preserves page history', () => {
+  const items = deepFreeze(pageItems('page', [row('old', 3)]));
+  const first = revealAt(EMPTY_LOG_REVEALS, items, 10);
+  const history = logRevealHistory(logRevealHistory(EMPTY_LOG_REVEALS, first, 10), first, 14);
+  const advanced = revealAt(history, items, 15);
+  assert.equal(advanced, first);
+  const committed = logRevealHistory(history, advanced, 15);
+  const loaded = logReveals(committed, pageItems('page', [row('too-old', 12), row('new', 15), row('old', 3)]), 15);
+  assert.deepEqual([...loaded.entering], ['new']);
+  assert.equal(loaded.history.from, 14);
+  assert.deepEqual([...loaded.history.presented.get('page')!].sort(), ['new', 'old', 'too-old']);
+});
+
+test('replacing frozen log rows updates their supplying-read boundary', () => {
+  const items = deepFreeze(logItems([row('row', 3, 20)], false));
+  const first = logReveals(EMPTY_LOG_REVEALS, items, 10);
+  const item = items.find(item => item.kind === 'row');
+  assert.ok(item?.kind === 'row');
+  assert.throws(() => Object.assign(item.row, { revealedHour: 12 }), TypeError);
+  const replaced = deepFreeze(logItems([row('row', 3, 12)], false));
+  const next = logReveals(first.history, replaced, 12);
+  assert.deepEqual([...next.entering], ['row']);
 });

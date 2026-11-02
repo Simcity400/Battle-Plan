@@ -18,6 +18,7 @@
 //! holds since.
 
 mod backend;
+mod campaign;
 mod content;
 mod convoys;
 mod families;
@@ -125,9 +126,8 @@ pub(crate) fn recording(source: &Source) -> io::Result<Option<Recording>> {
             Err(error) => return Err(error),
         };
         let captured = match recording.capture() {
-            Ok(Some(capture)) => columnar_runs::recorded_runs(&recording)?.is_some_and(|runs| {
-                columnar_runs::captures(&capture, &runs, source.replay_ref())
-            }),
+            Ok(Some(capture)) => columnar_runs::recorded_runs(&recording)?
+                .is_some_and(|runs| columnar_runs::captures(&capture, &runs, source.replay_ref())),
             Ok(None) | Err(_) => false,
         };
         if captured && pairs(source, &recording)? {
@@ -155,7 +155,9 @@ struct Options<'a> {
     measure: bool,
 }
 
-/// Prepares `source` from its native `recording`, reporting each commit to `accepted`.
+/// Prepares `source` from its native `recording`, reporting each commit to `accepted`. A recording
+/// whose Campaign rows name another campaign than it is refused whole, before anything is
+/// published ([`campaign::check`]).
 pub(crate) fn prepare(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -323,9 +325,7 @@ fn selected(names: Option<&[&str]>) -> io::Result<Vec<&'static families::Registe
         .filter(|registered| {
             names
                 .iter()
-                .any(|name| {
-                    FamilyId::publisher(name).is_ok_and(|id| id.name() == registered.name)
-                })
+                .any(|name| FamilyId::publisher(name).is_ok_and(|id| id.name() == registered.name))
         })
         .collect())
 }
@@ -370,7 +370,7 @@ struct Done {
 }
 
 /// Each family that failed, and why.
-pub(crate) type Failed = BTreeMap<FamilyId, String>;
+pub(crate) type Failed = BTreeMap<FamilyId, crate::QueryError>;
 
 fn run(
     source: &Source,
@@ -383,16 +383,14 @@ fn run(
     let whole = Clock::start();
     let started_with = if options.measure { working_set()? } else { 0 };
     check_cancel(cancelled)?;
+    campaign::check(&mut recording, source.replay_ref(), cancelled)?;
     // Families draw artwork on their ordered emits: the renderer is created apart, from the start.
     if content.is_some() {
         shader_pipeline::artwork::warm();
     }
     let plan = plan::native();
     let chosen = selected(options.families)?;
-    let threads = options
-        .threads
-        .unwrap_or_else(parallelism)
-        .max(1);
+    let threads = options.threads.unwrap_or_else(parallelism).max(1);
     let shape = Shape::new(&recording)?;
     let (store, key) = crate::prepared::files(source, content)?;
     let context = LoadContext {
@@ -449,7 +447,7 @@ fn run(
         if let Err(error) = loaded {
             failed.insert(
                 family.id,
-                format!("Its content could not be loaded: {error}"),
+                crate::QueryError::from(error).context("Its content could not be loaded"),
             );
             continue;
         }
@@ -462,7 +460,10 @@ fn run(
             }
             Err(error) if publication::halted(&error) => return Err(error),
             Err(error) => {
-                failed.insert(family.id, format!("Its carry could not be read: {error}"));
+                failed.insert(
+                    family.id,
+                    crate::QueryError::from(error).context("Its carry could not be read"),
+                );
             }
         }
     }
@@ -476,12 +477,15 @@ fn run(
                 Err(error) => {
                     failed.insert(
                         family.id,
-                        format!("Its reads could not be declared: {error}"),
+                        crate::QueryError::from(error).context("Its reads could not be declared"),
                     );
                 }
             },
             Err(error) => {
-                failed.insert(family.id, format!("It could not be bound: {error}"));
+                failed.insert(
+                    family.id,
+                    crate::QueryError::from(error).context("It could not be bound"),
+                );
             }
         }
     }
@@ -631,7 +635,7 @@ fn fail(
     shape: &Shape,
     recording: &Recording,
     family: FamilyId,
-    why: &str,
+    why: &crate::QueryError,
 ) -> io::Result<bool> {
     let mut stage = publisher.stage(family)?;
     let mut refused = false;
@@ -662,7 +666,7 @@ fn fail(
         };
         let made = Made::Refused {
             hour: first_hour,
-            reason: why.to_owned(),
+            reason: why.clone(),
             from: None,
         };
         stage.processed(hours, made, None, None)?;
@@ -802,19 +806,19 @@ fn settle(
             };
             failed.insert(
                 member.id(),
-                format!(
-                    "Its {:?} {how} at segment {}: {}",
-                    failure.operation, failure.at, failure.error
-                ),
+                crate::QueryError::from(&failure.error).context(&format!(
+                    "Its {:?} {how} at segment {}",
+                    failure.operation, failure.at
+                )),
             );
         }
         match member.settle() {
             Ok(()) => {}
             Err(error) if publication::halted(&error) => return Err(error),
             Err(error) => {
-                failed
-                    .entry(member.id())
-                    .or_insert_with(|| format!("Its last batch was not committed: {error}"));
+                failed.entry(member.id()).or_insert_with(|| {
+                    crate::QueryError::from(error).context("Its last batch was not committed")
+                });
             }
         }
     }
@@ -974,7 +978,11 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
                 .enumerate()
                 .filter_map(|(at, member)| places.contains(&at).then_some(member));
             for member in working {
-                lanes.push(member.lane(&walking));
+                lanes.push(
+                    member
+                        .lane(&walking)
+                        .refuses(|error| crate::refusal(error).is_some()),
+                );
             }
             let worlds = |_: &Segment, visited: &[usize]| {
                 let union = Needs::union(visited.iter().map(|&lane| &needs[lane]));

@@ -106,8 +106,8 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to see its game scores." />;
     if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     // Never show a failed seek with scores from another hour.
-    if (error && (!data || hour !== requestedHour)) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    if (error && (!data || hour !== requestedHour)) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+    if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
     // A group with no member found yet has no row: the hour says why once it is read.
@@ -117,8 +117,8 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     return undefined;
   })();
   // A same-hour failure must stay visible even when its published reply renders an empty state.
-  const failure = error && data && hour === requestedHour ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
-  const groupNotice = grouped && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const failure = error && data && hour === requestedHour ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
+  const groupNotice = grouped && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
     extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
     ranked={entries} lines={[]} parts={parts} raceLegendParts={split ? parts : []} partsLabel="Score parts" entityLooks={entityLooks}

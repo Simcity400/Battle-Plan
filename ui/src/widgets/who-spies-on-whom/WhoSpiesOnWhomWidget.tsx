@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -62,13 +63,13 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   const colourWanted = useMemo(() => colourTags.map(tag => ({ hour, tag })), [colourTags, hour]);
   const colors = useCountryFactsAt(runtime.client, track, colourWanted, active, COLORS);
   const colourRevision = useMemo(() => ({}), [colors]);
-  const plottedColor = useCountryColours(colourTags, tag => colors.get(nameKey(hour, tag)), tokens, colourRevision);
+  const plottedColor = useCountryColours(colourTags, tag => { const color = colors.get(nameKey(hour, tag)); return color instanceof Error ? null : color; }, tokens, colourRevision);
   const menu = useContextMenu('Operative placement actions');
   const [chartError, setChartError] = useState<string | null>(null);
   const chordAt = useMemo(() => placementChordMemo(), []);
   const diagnostics = useMemo(() => {
     const missing = wanted.filter(w => !colors.has(nameKey(w.hour, w.tag))).length;
-    return [...(data?.warnings ?? NO_WARNINGS), ...(missing ? [`${missing} country map colours are unavailable at the shown hour; their arcs use the muted theme colour.`] : [])];
+    return [...(data?.warnings ?? NO_WARNINGS), ...[...colors.values()].filter((value): value is Error => value instanceof Error).map(error => error.message), ...(missing ? [`${missing} country map colours are unavailable at the shown hour; their arcs use the muted theme colour.`] : [])];
   }, [data, wanted, colors]);
   useDiagnostics(onDiagnostics, diagnostics);
 
@@ -99,9 +100,9 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
     return { at, exact };
   }, [data, track, widget, runtime.clock, runtime.tracks, groups.data, options.mostCountries, labelAt, plottedColor, colors, hour, tokens.muted, selectedTag, chordAt]);
 
-  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
-  if (error || (groups.error && !groups.data)) return <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
+  if (error || (groups.error && !groups.data)) return <WidgetState kind="error" failure={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
   if (!data || !current) return <>{groupNotice}<WidgetState kind="loading" label="Loading operative placements…" /></>;
   if (pendingAt(preparedPrefix(data), hour)) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (current.period?.availability !== 'recorded') return <>{groupNotice}<WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
@@ -117,7 +118,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
       }} />
     {menu.menu}
     {groupNotice}
-    {chartError && <WidgetState kind="error" detail={chartError} />}
+    {chartError && <WidgetState kind="error" failure={asFailure(chartError)} />}
     {!picked?.placements.some(n => n.count > 0) && (picked?.known === false ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
       : <WidgetState kind="empty" message="No operatives placed yet." />)}
     {wanted.some(w => !colors.has(nameKey(w.hour, w.tag))) && <p className="sr-only">Some country colours were not recorded; their arcs use the muted theme colour.</p>}

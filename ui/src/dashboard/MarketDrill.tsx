@@ -22,7 +22,7 @@ export default function MarketDrill({ runtime, track, hour, tags, selected, acti
     onAnswered?.(data?.hour);
     return () => onAnswered?.(undefined);
   }, [onAnswered, data?.hour]);
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the market…" />;
   return <TradeMarketView data={data} selected={selected} />;
 }

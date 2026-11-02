@@ -63,8 +63,8 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__paymentFixture.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__paymentFixture.clock;',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__paymentFixture.styles;',
-    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = (_client, _track, wanted) =>
-      new Map(wanted.map(row => [nameKey(row.hour, row.tag), row.tag]));`,
+    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = (_client, _track, wanted) =>
+      new Map(wanted.map(row => [nameKey(row.hour, row.tag), { kind: 'value', value: row.tag }]));`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ flag() {}, flagPending: () => false, flagReason() {} });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => globalThis.__paymentFixture.tokens; export const useViewportHeight = () => 1000;',

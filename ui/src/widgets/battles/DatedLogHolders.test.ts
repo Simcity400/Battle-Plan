@@ -33,7 +33,7 @@ const paths = [
 ] as const;
 interface Predicate { tags: string[] | null; membership: MembershipRun[] | null; unobserved: { firstHour: number; lastHour: number }[] }
 interface Fixture {
-  actor: { tag: string; hour: number }; groups?: CountryGroupReply; error?: string;
+  actor: { tag: string; hour: number }; groups?: CountryGroupReply; error?: Error;
   groupLoads: boolean[]; rows: readonly unknown[] | undefined; requests: { product: string; active: boolean; countries?: Predicate }[];
   replies: Record<string, unknown>; windows: Record<string, unknown>;
 }
@@ -154,7 +154,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       host.__datedLogHolder = fixture('Y', 115); delete host.__datedLogHolder.groups;
       assert.match(render(selected), /Loading/i, `${kind} must keep a pending identity catalogue pending`);
       assert.equal(rows(), undefined);
-      host.__datedLogHolder.error = 'Native identity catalogue unavailable';
+      host.__datedLogHolder.error = new Error('Native identity catalogue unavailable');
       assert.match(render(selected), /Native identity catalogue unavailable/);
       host.__datedLogHolder.groupLoads = [];
       assert.doesNotMatch(render({ kind: 'all' }), /Native identity catalogue unavailable/,

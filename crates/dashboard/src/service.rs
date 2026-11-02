@@ -619,7 +619,7 @@ impl Service {
             _ => {
                 self.inner.error(
                     Arc::clone(request),
-                    format!("{what} source is unavailable or changed"),
+                    format!("{what} source is unavailable or changed").into(),
                 );
                 None
             }
@@ -631,7 +631,9 @@ impl Service {
         if content.is_none() {
             self.inner.error(
                 Arc::clone(request),
-                "Choose the game and user folders in Settings first".into(),
+                crate::QueryError::Refused {
+                    text: "Choose the game and user folders in Settings first".into(),
+                },
             );
         }
         content
@@ -744,8 +746,10 @@ impl Service {
                     return;
                 }
                 if products::find(&body.product).is_none() {
-                    self.inner
-                        .error(request, format!("Unknown data product: {}", body.product));
+                    self.inner.error(
+                        request,
+                        format!("Unknown data product: {}", body.product).into(),
+                    );
                     return;
                 }
                 let Some(source) =

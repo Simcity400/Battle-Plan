@@ -1,3 +1,4 @@
+import { RefusedError } from './queryError.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { availabilityReason, scopeReason, validateWidgetAvailability } from './widgetAvailability.ts';
@@ -11,7 +12,7 @@ test('feature entries require evidence, while ordinary widgets stay offered', ()
   assert.equal(availabilityReason(true, true, { available: false, unavailable: null }), 'Not in this recording');
   assert.equal(availabilityReason(true, true, { available: null, unavailable: 'Feature mask not recorded' }), 'Feature mask not recorded');
   assert.equal(availabilityReason(true, true, { available: true, unavailable: null }), null);
-  assert.match(availabilityReason(true, true, undefined, 'No content folders')!, /No content folders/);
+  assert.match(availabilityReason(true, true, undefined, new RefusedError('No content folders'))!, /No content folders/);
 });
 
 test('availability never treats missing as false or an empty success', () => {

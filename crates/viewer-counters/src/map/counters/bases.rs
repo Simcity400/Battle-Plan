@@ -649,7 +649,7 @@ impl BaseIcons {
                         *country_ids
                             .get(&ours)
                             .ok_or("the viewing country has no Countries id")?,
-                        links,
+                        |raw| links.get(&raw).copied(),
                     )?
                 };
                 let ships = naval_base_ships(

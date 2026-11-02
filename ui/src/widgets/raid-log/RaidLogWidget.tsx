@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 import ArtFallback from '../../components/ArtFallback';
@@ -23,7 +24,7 @@ import type { RaidAt } from '../../dashboard/raids';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useRaids } from '../../dashboard/useRaids';
 import { OPTIONS } from './definition';
-import { raidDescription, raidLogRows, raidLogTypes, raidPreparation, raidStatus, raidTooltip } from './raidLogData';
+import { raidDescription, raidPlayback, raidLogTypes, raidPreparation, raidStatus, raidTooltip } from './raidLogData.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<RaidAt>[] = [];
@@ -45,9 +46,10 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const types = typeof options.types === 'string' ? options.types : '';
-  const rows = useMemo(() => data && inBranch && hour != null && match.ready ? raidLogRows(data, hour, contentSet(types).map(contentKey),
-    (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read), from) : NO_ROWS,
-  [data, inBranch, hour, match, types, from, widget.countries.kind]);
+  const rowPlayback = useMemo(() => data && match.ready ? raidPlayback(data, contentSet(types).map(contentKey),
+    (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read), from) : null,
+  [data, match, types, from, widget.countries.kind]);
+  const rows = inBranch && hour != null ? rowPlayback?.at(hour) ?? NO_ROWS : NO_ROWS;
   const [visible, setVisible] = useState<readonly LogRow<RaidAt>[]>(NO_ROWS);
   const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.hour, tags: [row.item.latest.raider, row.item.latest.victim] })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
@@ -67,10 +69,10 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
 
   const root = useRef<HTMLDivElement>(null);
   useParityRows(root, () => ({ kind: 'log', label: 'Raid log rows', complete: !!data && match.ready,
-    total: rows.length, hour, from, rows: rows.map(row => ({ id: row.id, hour: row.hour, item: row.item })) }));
+    total: rows.length, hour, from, rows: rows.map(row => ({ id: row.id, hour: row.hour, item: { ...row.item, hour } })) }));
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raids." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading raids…" /></>;
   if (data.available !== true && preparedPrefix(data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(data as { exact?: number }).exact} /></>;
@@ -87,8 +89,8 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     return <>
       <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden="true">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="target" />}</span>
       <span className="log-text">
-        {row.item.latest.raider !== null && <CountryFlagUrl className="log-flag" url={raider.flag} reason={raider.flagReason} pending={raider.flagPending} />}<b>{raider.name}</b> targets{' '}
-        {row.item.latest.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b> at {raidPlace(row.item.latest)}
+        {row.item.latest.raider !== null && <CountryFlagUrl className="log-flag" url={raider.flag} detail={raider.flagDetail} reason={raider.flagReason} pending={raider.flagPending} />}<b>{raider.name}</b> targets{' '}
+        {row.item.latest.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} detail={victim.flagDetail} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b> at {raidPlace(row.item.latest)}
         {' · '}{raidStatus(data, row.item)}
         {preparation && <>{' · '}{preparation}</>}
       </span>
@@ -105,7 +107,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     <LogList rows={rows} label="Raids" density={log.density} months={log.months} animate={log.animate && widget.time.mode === 'follow'}
       columns={COLUMNS} renderRow={renderRow} onVisible={setVisible}
       describe={row => { const named = labels(row); return raidDescription(data, row.item, named.raider.name, named.victim.name); }}
-      tooltip={row => { const named = labels(row); return [raidTooltip(data, row.item, named.raider.name, named.victim.name)]; }}
+      tooltip={row => { const named = labels(row); return [{ ...raidTooltip(data, row.item, named.raider.name, named.victim.name), ...countryNameDetails(named.raider, named.victim) }]; }}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded raids match these settings." : MEMBERSHIP_PREPARING} />
   </div>;
 }

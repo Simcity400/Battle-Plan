@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
-import { FAILED_FACT } from '../dashboard/countryFacts';
+import { isFailedFact } from '../dashboard/countryFacts.ts';
 import { flagReadKey, useFlagReads } from '../dashboard/countryFlags';
 import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentation';
+import { defineCellWidth } from '../charts/table/cellWidth.ts';
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
 
@@ -72,12 +73,19 @@ export function CountryFlag({ image }: { image?: FlagImage }) {
 }
 
 /** Dated row flags retain loading and unavailable reasons in the shared presentation. */
-export function CountryFlagUrl({ url, reason, pending, className = '' }: { url?: string; reason?: string; pending?: boolean; className?: string }) {
+export function CountryFlagUrl({ url, reason, detail, pending, className = '' }: {
+  url?: string; reason?: string; detail?: string; pending?: boolean; className?: string;
+  /** The caller's slot keeps available and unavailable flags at identical dimensions. */
+  fixedSize?: boolean;
+}) {
   const [failed, setFailed] = useState<string>();
   if (url && failed !== url) return <img className={`country-flag-art ${className}`} src={url} alt="" onError={() => setFailed(url)} />;
   const { text: tooltip } = countryFlagUnavailable(reason, pending, !!url && failed === url);
-  return <span className={`country-flag country-flag-unavailable ${className}`} role="img" aria-label={tooltip} data-tooltip={tooltip} />;
+  return <span className={`country-flag country-flag-unavailable ${className}`} role="img" data-detail={detail} aria-label={tooltip} data-tooltip={tooltip} />;
 }
+
+defineCellWidth(CountryFlagUrl, ({ url, className = '', fixedSize }) => <span className={fixedSize ? className
+  : `${url ? 'country-flag-art' : 'country-flag country-flag-unavailable'} ${className}`} />);
 
 /** A country's flag from a recording's own installed content, at the hour the country was observed, as
  * preparation chose it. Without a readable flag it shows an empty frame, never a substitute.
@@ -90,5 +98,5 @@ export function SourceFlag({ client, source, tag, size = 'panel' }: { client: Da
   const read = tag && branch && hour != null ? { tag, branchId: branch.id, hour } : null;
   const flags = useFlagReads(client, source, read ? [read] : [], true, size);
   const flag = read ? flags.get(flagReadKey(read)) : undefined;
-  return <CountryFlag image={flag && flag !== FAILED_FACT ? flag.image : undefined} />;
+  return <CountryFlag image={flag && !isFailedFact(flag) ? flag.image : undefined} />;
 }

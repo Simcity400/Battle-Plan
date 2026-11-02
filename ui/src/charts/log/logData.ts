@@ -1,3 +1,4 @@
+import { type Failure } from '../../dashboard/queryError.ts';
 /** Logs: HTML rows, newest
  * first, optional month dividers, a comfortable or compact density, virtualised so
  * a campaign's thousands of rows stay cheap. Pure: the list component (`LogList`)
@@ -25,25 +26,25 @@ export function newCardKeys<T>(rows: readonly MovingRow<T>[], known: ReadonlySet
  * the row is about when that outlives its key (a project whose row re-enters as it
  * changes): the keyboard's row and a tooltip follow it; the key when absent. */
 export interface LogRow<T> {
-  key: string;
-  id?: string;
-  hour: number;
+  readonly key: string;
+  readonly id?: string;
+  readonly hour: number;
   /** The read that first revealed this row, when its displayed date predates
    * that read. Live entry motion uses this hour; defaults to `hour`. */
-  revealedHour?: number;
-  by?: boolean;
-  item: T;
+  readonly revealedHour?: number;
+  readonly by?: boolean;
+  readonly item: T;
 }
 
 /** A stable server window. Absent rows occupy `count` virtual rows until wanted;
  * a caller can retain a filtered count after releasing the window's payload. */
 export interface LogPage<T> {
-  key: string;
-  start: number;
-  end: number;
-  count: number;
-  rows?: readonly LogRow<T>[];
-  error?: string;
+  readonly key: string;
+  readonly start: number;
+  readonly end: number;
+  readonly count: number;
+  readonly rows?: ReadonlyArray<LogRow<T>>;
+  readonly error?: Failure;
 }
 
 /** Tracks after the date, shared by every row or chosen from that row's content. */
@@ -122,7 +123,7 @@ export const ROW_HEIGHT: Readonly<Record<LogDensity, number>> = { comfortable: 3
 export const MONTH_HEIGHT = 24;
 
 /** Rows newest first: by hour, then by the order given (stable). */
-export function newestFirst<T>(rows: readonly LogRow<T>[]): LogRow<T>[] {
+export function newestFirst<T>(rows: readonly LogRow<T>[]): ReadonlyArray<LogRow<T>> {
   return rows.map((row, index) => ({ row, index })).sort((a, b) => b.row.hour - a.row.hour || a.index - b.index).map(entry => entry.row);
 }
 
@@ -140,19 +141,19 @@ export function monthOf(hour: number): number | null {
 
 /** What a log draws in order: its rows, with a divider before each month's first
  * row when `months` is on. Dividers are keyed by their month, so they hold still. */
-export type LogItem<T> = { kind: 'month'; key: string; label: string; pageKey?: string }
-  | { kind: 'row'; key: string; row: LogRow<T>; pageKey?: string; pageOffset?: number }
-  | { kind: 'page'; key: string; page: LogPage<T> };
+export type LogItem<T> = Readonly<{ kind: 'month'; key: string; label: string; pageKey?: string }>
+  | Readonly<{ kind: 'row'; key: string; row: LogRow<T>; pageKey?: string; pageOffset?: number }>
+  | Readonly<{ kind: 'page'; key: string; page: LogPage<T> }>;
 
-export type LogEntry<T> = { kind: 'row'; row: LogRow<T>; pageKey?: string; pageOffset?: number } | { kind: 'page'; page: LogPage<T> };
+export type LogEntry<T> = Readonly<{ kind: 'row'; row: LogRow<T>; pageKey?: string; pageOffset?: number }> | Readonly<{ kind: 'page'; page: LogPage<T> }>;
 
-export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): LogItem<T>[] {
+export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
   return logEntryItems(rows.map(row => ({ kind: 'row', row })), months);
 }
 
 /** Ordinary and paged logs share month sections. An unloaded window interrupts
  * a section: no month is assigned to rows whose dates have not been loaded. */
-export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolean): LogItem<T>[] {
+export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
   const items: LogItem<T>[] = [];
   const sections = new Map<number | null, number>();
   let month: number | null | undefined;

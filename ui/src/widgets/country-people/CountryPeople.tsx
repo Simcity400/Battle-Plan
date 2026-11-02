@@ -26,7 +26,7 @@ export default function CountryPeople({ runtime, track, tag, hour, active, view,
   const current = result.data?.tag === tag && result.data?.branchId === track?.branch.id;
   useEffect(() => { onWarnings?.(current ? result.data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, result.data, onWarnings]);
   if (!tag || !track) return null;
-  if (result.error) return <WidgetState kind="error" what="manpower and politics" detail={result.error} onRetry={result.retry} />;
+  if (result.error) return <WidgetState kind="error" what="manpower and politics" failure={result.error} onRetry={result.retry} />;
   if (!result.data || !current) return <WidgetState kind="loading" label="Loading country details…" />;
   const data = result.data;
   const number = (value: number | null) => value === null ? 'Not recorded' : usNumber.format(value);

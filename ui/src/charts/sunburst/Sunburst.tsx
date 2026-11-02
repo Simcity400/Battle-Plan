@@ -16,7 +16,7 @@ import type { MovingRow } from '../rowMotion';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { amountText, approachColour, arcTargets, foldView, hasCorrections, keyRings, listed, keyedSlice, labelFits, notMeasured, pathTo, shareText, sliceAt, sliceColours,
-  sliceTooltip, sunGeometry, sunburstSummary, sunburstTree, unknownTotal, walk } from './layout';
+  sliceTooltip, sunGeometry, sunburstSummary, sunburstTree, unknownTotal, walk } from './layout.ts';
 import type { DrawnSlice, SunburstItem, SunburstNode, SunburstText, SunburstTotal, SunKey } from './layout';
 import type { SunburstSettings } from './sunburstOptions';
 import { pickSunburst } from './pick';
@@ -519,10 +519,10 @@ export default function Sunburst(props: SunburstProps) {
         const body = <>
           <i className={`sunburst-swatch${colours.has(part.id) ? '' : ' is-blank'}`} aria-hidden="true" style={colours.has(part.id) ? { background: colours.get(part.id) } : undefined} />
           {icons && (part.countryFlag !== undefined
-            ? <CountryFlagUrl className="sunburst-icon" url={part.countryFlag.flag} reason={part.countryFlag.flagReason} pending={part.countryFlag.flagPending} />
+            ? <CountryFlagUrl className="sunburst-icon" url={part.countryFlag.flag} detail={part.countryFlag.flagDetail} reason={part.countryFlag.flagReason} pending={part.countryFlag.flagPending} />
             : part.icon ? <img className="sunburst-icon" src={part.icon} alt="" />
             : null)}
-          <span className="sunburst-name" data-tooltip={part.label.length > 18 ? part.label : undefined}>{part.label}</span>
+          <span className="sunburst-name" data-detail={part.countryFlag?.nameFailure?.message} data-tooltip={part.label.length > 18 ? part.label : undefined}>{part.label}</span>
           <b>{part.valueUnknown ? 'Not known' : notMeasured(part) ? text.missingLabel ?? 'Not measured' : amountText(part, text)}{unknownTotal(part) ? <small className="sunburst-partial"> partial</small> : null}</b>
           <small>{text.shares === false || part.valueUnknown || focus.valueUnknown || part.unmeasured || !(part.value > 0 || part.value === 0 && part.keepZero) || hasCorrections(focus) ? '' : shareText(part.value, focus.value)}</small>
         </>;

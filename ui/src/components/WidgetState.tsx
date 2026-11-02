@@ -1,16 +1,14 @@
+import type { ReactNode } from 'react';
+import { failureText, RefusedError, type Failure } from '../dashboard/queryError.ts';
 import { Icon } from './Icons';
 import type { IconName } from './Icons';
 import '../charts/charts.css';
 
-/** The standard states every widget uses, so they look the same everywhere:
- * loading, nothing yet, an error with Retry, and data this recording doesn't have.
- * An error says only what failed to load (the widget, unless `what` names a part of
- * it); the underlying `detail` stays out of sight for developer tools. */
 export type WidgetStateProps =
   | { kind: 'loading'; label: string }
-  | { kind: 'empty'; message: string; detail?: string; icon?: IconName }
-  | { kind: 'error'; what?: string; detail?: string; onRetry?: () => void }
-  | { kind: 'unavailable'; message?: string };
+  | { kind: 'empty'; message: string; detail?: ReactNode; icon?: IconName }
+  | { kind: 'error'; what?: string; failure?: Failure; onRetry?: () => void }
+  | { kind: 'unavailable'; message?: string; detail?: ReactNode };
 
 export default function WidgetState(props: WidgetStateProps) {
   switch (props.kind) {
@@ -19,9 +17,9 @@ export default function WidgetState(props: WidgetStateProps) {
     case 'empty':
       return <div className="widget-state">{props.icon && <Icon name={props.icon} />}<span>{props.message}</span>{props.detail && <small>{props.detail}</small>}</div>;
     case 'error':
-      return <div className="widget-state is-error" role="alert" data-detail={props.detail}><Icon name="alert" /><span>{props.what ? `Couldn’t load ${props.what}.` : 'Couldn’t load.'}</span>
-        {props.onRetry && <button type="button" className="button small" onClick={props.onRetry}>Retry</button>}</div>;
+      return <div className="widget-state is-error" role="alert" data-detail={props.failure?.message}><Icon name="alert" /><span>{failureText(props.failure, props.what ? `Couldn’t load ${props.what}.` : 'Couldn’t load.')}</span>
+        {props.onRetry && !(props.failure instanceof RefusedError) && <button type="button" className="button small" onClick={props.onRetry}>Retry</button>}</div>;
     case 'unavailable':
-      return <div className="widget-state"><Icon name="info" /><span>{props.message ?? 'Not in this recording.'}</span></div>;
+      return <div className="widget-state"><Icon name="info" /><span>{props.message ?? 'Not in this recording.'}</span>{props.detail && <small>{props.detail}</small>}</div>;
   }
 }

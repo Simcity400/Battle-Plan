@@ -6,7 +6,7 @@ import { Icon } from './Icons';
 import {
   engineHour, firstHourOfMonth, formatDate, formatDateTime, formatTime, gameDate, HOUR_EPOCH,
   monthAt, monthIndex, monthLengths, monthNames,
-} from '../dashboard/calendar';
+} from '../dashboard/calendar.ts';
 import './DateTimePicker.css';
 
 interface Props {

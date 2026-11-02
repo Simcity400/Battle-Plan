@@ -32,6 +32,7 @@ thread_local! {
     pub(super) static MANIFEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static INPUT_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static KEY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static ENTRY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Files the store created: packs and publication temporaries.
     pub(super) static CREATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Flushes the store issued (or skipped under `test-support`).
@@ -1049,12 +1050,10 @@ fn commits_recheck_content_once_per_interval_and_reopen_refuses_an_edit_within_i
 }
 
 #[test]
-fn hundred_year_range_count_opens_only_the_root_and_one_entry() {
+fn hundred_year_range_count_opens_only_the_root_and_needed_run() {
     let fixture = Fixture::new();
     let key = fixture.save(b"placeholder");
-    // One hourly range per section over 100 years, each section one run of
-    // one entry log. References are synthetic; all but the final entry are
-    // deliberately absent: opening and lookup cannot touch them.
+    // Sparse synthetic entries give each section a century of hourly ranges.
     let count = 100 * 366 * 24;
     let pack = 0x0123_4567_89ab_cdef;
     let id = RangeId {
@@ -3545,6 +3544,367 @@ fn a_pinned_scope_reads_its_own_publication_or_fails_as_superseded() {
     // An ordinary session goes on to the current manifest.
     let current = fixture.store.session(&key).unwrap().unwrap().snapshot();
     assert_eq!(bytes(current.read("pages", 0).unwrap().unwrap()), b"second");
+}
+
+fn save_entry_runs(fixture: &Fixture) -> (SourceKey, Vec<Vec<RangeId>>) {
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    let mut expected = Vec::new();
+    for (section, count) in [11, 7, 0].into_iter().enumerate() {
+        let name = format!("entries-{section}");
+        writer.ensure_section(&name).unwrap();
+        let mut ids = Vec::new();
+        for range in 0..count {
+            let value = (section as u64 * 100 + range).to_le_bytes();
+            let payload = if range % 5 == 0 { &[][..] } else { &value[..] };
+            assert_eq!(writer.write(&name, payload).unwrap(), range);
+            ids.push(writer.range_id(&name, range).unwrap().unwrap());
+        }
+        expected.push(ids);
+    }
+    writer.commit().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    for (section, ids) in expected.iter_mut().enumerate().take(2) {
+        let name = format!("entries-{section}");
+        writer
+            .write_at(&name, 4, &(1000 + section as u64).to_le_bytes()[..])
+            .unwrap();
+        ids[4] = writer.range_id(&name, 4).unwrap().unwrap();
+    }
+    writer.commit().unwrap();
+    (key, expected)
+}
+
+fn check_entry_lookups(session: &Session, expected: &[Vec<RangeId>]) -> usize {
+    let snapshot = session.snapshot();
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|worker| {
+                let snapshot = &snapshot;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    ENTRY_READS.set(0);
+                    barrier.wait();
+                    assert_eq!(
+                        snapshot.range_id("entries-0", 0).unwrap(),
+                        Some(expected[0][0])
+                    );
+                    for round in 0..3 {
+                        for (section, ids) in expected.iter().enumerate() {
+                            let name = format!("entries-{section}");
+                            for step in 0..ids.len() {
+                                let range = (worker
+                                    + if round % 2 == 0 {
+                                        step
+                                    } else {
+                                        ids.len() - 1 - step
+                                    })
+                                    % ids.len();
+                                let id = Some(ids[range]);
+                                assert_eq!(snapshot.range_id(&name, range as u64).unwrap(), id);
+                                assert_eq!(session.range_id(&name, range as u64).unwrap(), id);
+                                let (count, read) =
+                                    session.read_counted(&name, range as u64).unwrap();
+                                let read = read.unwrap();
+                                assert_eq!(count, ids.len() as u64);
+                                assert_eq!(read.id(), ids[range]);
+                                assert_eq!(read.is_empty(), ids[range].is_empty());
+                            }
+                            assert_eq!(snapshot.range_id(&name, ids.len() as u64).unwrap(), None);
+                            assert_eq!(session.range_id(&name, u64::MAX).unwrap(), None);
+                            let (count, read) =
+                                session.read_counted(&name, ids.len() as u64).unwrap();
+                            assert_eq!(count, ids.len() as u64);
+                            assert!(read.is_none());
+                        }
+                    }
+                    assert_eq!(snapshot.range_id("absent", 0).unwrap(), None);
+                    ENTRY_READS.get()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum()
+    })
+}
+
+#[test]
+fn log_entries_fill_each_run_once_across_concurrent_lookups() {
+    let fixture = Fixture::new();
+    let (key, expected) = save_entry_runs(&fixture);
+    let session = fixture.store.session(&key).unwrap().unwrap();
+    let snapshot = session.snapshot();
+    assert!(snapshot.catalog.logs.len() > 1);
+    assert!(snapshot.catalog.runs[..2].iter().all(|runs| runs.len() > 1));
+    let slots: Vec<_> = snapshot.catalog.resident.iter().flatten().collect();
+    assert!(slots.iter().all(|slot| slot.bytes.get().is_none()));
+    assert_eq!(check_entry_lookups(&session, &expected), slots.len());
+    let resident: usize = slots
+        .iter()
+        .map(|slot| slot.bytes.get().unwrap().len())
+        .sum();
+    assert_eq!(
+        resident,
+        expected.iter().map(Vec::len).sum::<usize>() * ENTRY_BYTES as usize
+    );
+    assert_eq!(snapshot.catalog.entry(expected.len(), 0).unwrap(), None);
+}
+
+#[test]
+fn flat_entries_fill_each_section_once_across_concurrent_lookups() {
+    let fixture = Fixture::new();
+    let (key, expected) = save_entry_runs(&fixture);
+    let listing = Listing::open(&fixture.store.directory.join(MANIFEST))
+        .unwrap()
+        .unwrap();
+    let path = fixture.root.join("flat-entries");
+    listing
+        .write_snapshot(&mut File::create(&path).unwrap())
+        .unwrap();
+    assert!(
+        listing
+            .0
+            .resident
+            .iter()
+            .flatten()
+            .all(|slot| slot.bytes.get().is_none())
+    );
+    let catalog = Arc::new(Catalog::open(&path).unwrap().unwrap());
+    assert!(
+        catalog
+            .resident
+            .iter()
+            .flatten()
+            .all(|slot| slot.bytes.get().is_none())
+    );
+    let session = Session::new(
+        fixture.store.directory.clone(),
+        key,
+        Arc::clone(&catalog),
+        false,
+    );
+    assert_eq!(check_entry_lookups(&session, &expected), 2);
+    for (section, ids) in expected.iter().enumerate() {
+        let bytes = catalog.resident[section][0].bytes.get();
+        if ids.is_empty() {
+            assert!(bytes.is_none());
+        } else {
+            assert_eq!(bytes.unwrap().len(), ids.len() * ENTRY_BYTES as usize);
+        }
+    }
+    assert_eq!(catalog.entry(expected.len(), 0).unwrap(), None);
+}
+
+#[test]
+fn truncated_entry_fills_retry_without_retaining_partial_bytes() {
+    for flat in [false, true] {
+        let fixture = Fixture::new();
+        let (_, expected) = save_entry_runs(&fixture);
+        let mut catalog = fixture.store.catalog().unwrap().unwrap();
+        let (path, offset, slot) = if flat {
+            let path = fixture.root.join("flat-entries");
+            Listing(catalog)
+                .write_snapshot(&mut File::create(&path).unwrap())
+                .unwrap();
+            catalog = Catalog::open(&path).unwrap().unwrap();
+            let Entries::Flat { offsets, .. } = &catalog.entries else {
+                unreachable!()
+            };
+            (path, offsets[1] + 6 * ENTRY_BYTES, 0)
+        } else {
+            let index = catalog.runs[1].len() - 1;
+            let run = &catalog.runs[1][index];
+            (
+                fixture.store.directory.join(log_name(run.log)),
+                run.offset + (6 - run.first) * ENTRY_BYTES,
+                index,
+            )
+        };
+        let mut original = fs::read(&path).unwrap();
+        let file = OpenOptions::new()
+            .write(true)
+            .share_mode(SHARING)
+            .open(&path)
+            .unwrap();
+        file.set_len(offset + ENTRY_BYTES - 1).unwrap();
+        ENTRY_READS.set(0);
+        for _ in 0..2 {
+            let error = catalog.entry(1, 6).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), "truncated prepared entry log");
+            assert!(catalog.resident[1][slot].bytes.get().is_none());
+        }
+        assert_eq!(ENTRY_READS.get(), 2);
+        let changed = RangeId {
+            offset: expected[1][6].offset + 1,
+            len: expected[1][6].len - 1,
+            ..expected[1][6]
+        };
+        let start = offset as usize;
+        original[start..start + ENTRY_BYTES as usize].copy_from_slice(&changed.encode());
+        write_all_at(&file, &original, 0).unwrap();
+        file.set_len(original.len() as u64).unwrap();
+        assert_eq!(catalog.entry(1, 6).unwrap(), Some(changed));
+        assert_eq!(ENTRY_READS.get(), 3);
+        assert_eq!(catalog.entry(1, 6).unwrap(), Some(changed));
+        assert_eq!(ENTRY_READS.get(), 3);
+    }
+}
+
+#[test]
+fn an_oversized_listed_run_fails_as_truncated_without_allocating() {
+    for flat in [false, true] {
+        let fixture = Fixture::new();
+        let _ = save_entry_runs(&fixture);
+        let mut catalog = fixture.store.catalog().unwrap().unwrap();
+        if flat {
+            let path = fixture.root.join("flat-entries");
+            Listing(catalog)
+                .write_snapshot(&mut File::create(&path).unwrap())
+                .unwrap();
+            catalog = Catalog::open(&path).unwrap().unwrap();
+            catalog.header.sections[1].count = 1 << 59;
+        } else {
+            let last = catalog.runs[1].len() - 1;
+            let run = &mut catalog.runs[1][last];
+            run.count = (1 << 59) - run.first;
+            catalog.header.sections[1].count = 1 << 59;
+        }
+        ENTRY_READS.set(0);
+        let range = if flat {
+            0
+        } else {
+            catalog.runs[1].last().unwrap().first
+        };
+        let error = catalog.entry(1, range).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "truncated prepared entry log");
+        assert_eq!(ENTRY_READS.get(), 1);
+        assert!(
+            catalog.resident[1]
+                .iter()
+                .all(|slot| slot.bytes.get().is_none())
+        );
+    }
+}
+
+#[test]
+fn visiting_runs_streams_cold_entries_and_reuses_resident_bytes() {
+    let fixture = Fixture::new();
+    let (_, expected) = save_entry_runs(&fixture);
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    let mut scratch = [0; 49];
+    for (section, runs) in catalog.runs.iter().enumerate() {
+        for (index, run) in runs.iter().enumerate() {
+            let mut visited = Vec::new();
+            catalog
+                .visit_run(section, index, &mut scratch, |range, id| {
+                    visited.push((range, id));
+                    Ok(())
+                })
+                .unwrap();
+            let entries: Vec<_> = (run.first..run.end())
+                .map(|range| (range, expected[section][range as usize]))
+                .collect();
+            assert_eq!(visited, entries);
+            assert!(catalog.resident[section][index].bytes.get().is_none());
+        }
+    }
+    assert_eq!(catalog.entry(0, 1).unwrap(), Some(expected[0][1]));
+    let run = catalog.runs[0][0];
+    let path = fixture.store.directory.join(log_name(run.log));
+    OpenOptions::new()
+        .write(true)
+        .share_mode(SHARING)
+        .open(&path)
+        .unwrap()
+        .set_len(0)
+        .unwrap();
+    delete(&path).unwrap();
+    let mut visited = Vec::new();
+    catalog
+        .visit_run(0, 0, &mut scratch, |range, id| {
+            visited.push((range, id));
+            Ok(())
+        })
+        .unwrap();
+    let entries: Vec<_> = (run.first..run.end())
+        .map(|range| (range, expected[0][range as usize]))
+        .collect();
+    assert_eq!(visited, entries);
+}
+
+#[test]
+fn resident_entries_survive_cleanup_and_unopened_logs_still_advance_or_supersede() {
+    let fixture = Fixture::new();
+    let (key, expected) = save_entry_runs(&fixture);
+    let session = fixture.store.session(&key).unwrap().unwrap();
+    let snapshot = session.snapshot();
+    let reading = Session::new(
+        fixture.store.directory.clone(),
+        key.clone(),
+        Arc::clone(&snapshot.catalog),
+        false,
+    );
+    assert_eq!(
+        snapshot.read("entries-0", 1).unwrap().unwrap().id(),
+        expected[0][1]
+    );
+    assert!(snapshot.catalog.resident[0][1].bytes.get().is_none());
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for _ in 0..6 {
+        writer.write("entries-0", &b"replacement"[..]).unwrap();
+    }
+    writer.commit().unwrap();
+    drop(fixture.store.extend(&key).unwrap());
+    assert!(
+        snapshot.catalog.logs.iter().all(|log| !fixture
+            .store
+            .directory
+            .join(log_name(log.id))
+            .exists())
+    );
+    assert_eq!(
+        snapshot.range_id("entries-0", 1).unwrap(),
+        Some(expected[0][1])
+    );
+    assert_eq!(
+        snapshot.read("entries-0", 1).unwrap().unwrap().id(),
+        expected[0][1]
+    );
+    assert!(snapshot.read("entries-0", 0).unwrap().unwrap().is_empty());
+    assert_eq!(
+        snapshot.catalog.entry(0, 4).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(snapshot.catalog.resident[0][1].bytes.get().is_none());
+    assert!(is_superseded(
+        &snapshot.range_id("entries-0", 4).unwrap_err()
+    ));
+    assert!(is_superseded(&snapshot.read("entries-0", 4).unwrap_err()));
+    {
+        let scope = snapshot.scope();
+        assert_eq!(
+            fixture.store.range_id(&key, "entries-0", 1).unwrap(),
+            Some(expected[0][1])
+        );
+        assert!(is_superseded(
+            &fixture.store.range_id(&key, "entries-0", 4).unwrap_err()
+        ));
+        assert!(is_superseded(
+            &fixture.store.read(&key, "entries-0", 4).unwrap_err()
+        ));
+        assert!(scope.superseded());
+    }
+    let current = fixture.store.range_id(&key, "entries-0", 4).unwrap();
+    assert_ne!(current, Some(expected[0][4]));
+    assert_eq!(session.range_id("entries-0", 4).unwrap(), current);
+    let (count, read) = reading.read_counted("entries-0", 4).unwrap();
+    assert_eq!(count, 6);
+    assert_eq!(bytes(read.unwrap()), b"replacement");
 }
 
 #[test]

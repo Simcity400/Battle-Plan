@@ -58,7 +58,11 @@ pub fn reads_recorded(options: &ContentOptions) -> bool {
 }
 
 /// `change` run on the catalogue slot `options` read, under its lock.
-fn with_slot<R>(source: &Source, options: &ContentOptions, change: impl FnOnce(&mut Cached) -> R) -> R {
+fn with_slot<R>(
+    source: &Source,
+    options: &ContentOptions,
+    change: impl FnOnce(&mut Cached) -> R,
+) -> R {
     if reads_recorded(options) {
         change(
             source
@@ -150,9 +154,11 @@ fn load_with(
     )?;
     let gui_decode = settings
         .as_ref()
-        .map(|&(_, force_pow2_textures)| installed_content_image::native::Decode {
-            force_pow2_textures,
-        })
+        .map(
+            |&(_, force_pow2_textures)| installed_content_image::native::Decode {
+                force_pow2_textures,
+            },
+        )
         .map_err(|why| format!("settings.txt is unavailable: {why}"));
     Catalogue::from_content(
         Arc::clone(&presented.content),
@@ -287,12 +293,12 @@ pub fn recorded_catalogue(source: &Source, options: &ContentOptions) -> io::Resu
 /// always was. Everything runs in one capture, so the memo names its notes on every reply that
 /// shows it. Inside another transaction's strict attempt it draws `admitted` alone, strictly:
 /// falling back to the recording is that transaction's.
-pub fn present<T>(
+pub fn present<T, E: std::fmt::Display>(
     what: &str,
     admitted: &Catalogue,
     recorded: &Catalogue,
-    draw: impl Fn(&Catalogue) -> Result<T, String>,
-) -> Drawn<Result<T, String>> {
+    draw: impl Fn(&Catalogue) -> Result<T, E>,
+) -> Drawn<Result<T, E>> {
     #[cfg(any(test, feature = "test-support"))]
     PRESENTED.with(|count| count.set(count.get() + 1));
     Drawn::new(|| {
@@ -326,11 +332,11 @@ pub fn present<T>(
 /// choice that depends on what the catalogue declares included. A catalogue showing no visual
 /// mod draws it once, as it is. A memo keeping the result keeps it per artwork mode
 /// (`installed_content_core::content::ByMode`) when another transaction's strict attempt can reach it.
-pub fn draw<T>(
+pub fn draw<T, E: std::fmt::Display>(
     what: impl FnOnce() -> String,
     shown: &Catalogue,
-    operation: impl Fn(&Catalogue) -> Result<T, String>,
-) -> Drawn<Result<T, String>> {
+    operation: impl Fn(&Catalogue) -> Result<T, E>,
+) -> Drawn<Result<T, E>> {
     match shown.recorded() {
         Some(recorded) => present(&what(), shown, recorded, operation),
         None => Drawn::new(|| operation(shown)),
@@ -340,7 +346,7 @@ pub fn draw<T>(
 #[cfg(test)]
 mod present_tests {
     use super::*;
-    use crate::test_fixtures::visual_mods::{Machine, fallback_line, png, select, RED};
+    use crate::test_fixtures::visual_mods::{Machine, RED, fallback_line, png, select};
 
     /// The admitted attempt runs strictly and keeps its notes to itself: a failed one leaves no
     /// note of its own on the reply or the memo, only the fallback named once; a drawn one
@@ -366,23 +372,26 @@ mod present_tests {
                     Err("the mod's sprite does not load".to_owned())
                 } else {
                     assert!(!installed_content_core::content::is_strict());
-                    Ok(7)
+                    Ok::<_, String>(7)
                 }
             })
         });
-        assert_eq!(*drawn.get(), Ok(7));
+        assert_eq!(*drawn.get(), Ok::<_, String>(7));
         for line in [line, fallback_line(|| drawn.get().clone()).1] {
             let line = line.unwrap();
-            assert!(line.contains("the icon (the mod's sprite does not load)"), "{line}");
+            assert!(
+                line.contains("the icon (the mod's sprite does not load)"),
+                "{line}"
+            );
             assert!(!line.contains("discarded"), "{line}");
         }
         let (drawn, line) = fallback_line(|| {
             present("the icon", &admitted, &recorded, |_| {
                 note("kept selector note");
-                Ok(8)
+                Ok::<_, String>(8)
             })
         });
-        assert_eq!(*drawn.get(), Ok(8));
+        assert_eq!(*drawn.get(), Ok::<_, String>(8));
         assert!(line.is_some_and(|line| line.contains("kept selector note")));
     }
 
@@ -399,29 +408,47 @@ mod present_tests {
         assert!(plain.recorded().is_none());
         let attempts = std::cell::Cell::new(0);
         let (drawn, line) = fallback_line(|| {
-            draw(|| unreachable!("nothing is named"), &plain, |cat| {
-                attempts.set(attempts.get() + 1);
-                assert!(!installed_content_core::content::is_strict());
-                assert!(std::ptr::eq(cat, &*plain));
-                Ok(1)
-            })
+            draw(
+                || unreachable!("nothing is named"),
+                &plain,
+                |cat| {
+                    attempts.set(attempts.get() + 1);
+                    assert!(!installed_content_core::content::is_strict());
+                    assert!(std::ptr::eq(cat, &*plain));
+                    Ok::<_, String>(1)
+                },
+            )
         });
-        assert_eq!((drawn.get().clone(), attempts.get(), line), (Ok(1), 1, None));
+        assert_eq!(
+            (drawn.get().clone(), attempts.get(), line),
+            (Ok::<_, String>(1), 1, None)
+        );
         select(&source, &mut options, &["art"]);
         let shown = catalogue(&source, &options).unwrap();
-        let recorded = shown.recorded().expect("the recording's own catalogue kept");
-        assert!(Arc::ptr_eq(recorded, &recorded_catalogue(&source, &options).unwrap()));
+        let recorded = shown
+            .recorded()
+            .expect("the recording's own catalogue kept");
+        assert!(Arc::ptr_eq(
+            recorded,
+            &recorded_catalogue(&source, &options).unwrap()
+        ));
         let (drawn, line) = fallback_line(|| {
-            draw(|| "the icon".to_owned(), &shown, |cat| {
-                if std::ptr::eq(cat, &*shown) {
-                    Err("the mod's sprite does not load".to_owned())
-                } else {
-                    Ok(2)
-                }
-            })
+            draw(
+                || "the icon".to_owned(),
+                &shown,
+                |cat| {
+                    if std::ptr::eq(cat, &*shown) {
+                        Err("the mod's sprite does not load".to_owned())
+                    } else {
+                        Ok::<_, String>(2)
+                    }
+                },
+            )
         });
-        assert_eq!(*drawn.get(), Ok(2));
-        assert!(line.is_some_and(|line| line.contains("the icon (the mod's sprite does not load)")));
+        assert_eq!(*drawn.get(), Ok::<_, String>(2));
+        assert!(
+            line.is_some_and(|line| line.contains("the icon (the mod's sprite does not load)"))
+        );
     }
 
     /// A transaction reached inside another's strict attempt draws the selection alone,
@@ -436,26 +463,45 @@ mod present_tests {
         select(&source, &mut options, &["art"]);
         let shown = catalogue(&source, &options).unwrap();
         let inner = |cat: &Catalogue| {
-            draw(|| "the inner icon".to_owned(), cat, |drawing| {
-                if std::ptr::eq(drawing, &*shown) {
-                    assert!(installed_content_core::content::is_strict());
-                    Err("the mod's inner sprite does not load".to_owned())
-                } else {
-                    Ok("recorded inner")
-                }
-            })
+            draw(
+                || "the inner icon".to_owned(),
+                cat,
+                |drawing| {
+                    if std::ptr::eq(drawing, &*shown) {
+                        assert!(installed_content_core::content::is_strict());
+                        Err("the mod's inner sprite does not load".to_owned())
+                    } else {
+                        Ok::<_, String>("recorded inner")
+                    }
+                },
+            )
             .get()
             .clone()
         };
         let (drawn, line) = fallback_line(|| {
-            draw(|| "the outer icon".to_owned(), &shown, |cat| {
-                let inner = inner(cat)?;
-                Ok(if std::ptr::eq(cat, &*shown) { "shown" } else { inner })
-            })
+            draw(
+                || "the outer icon".to_owned(),
+                &shown,
+                |cat| {
+                    let inner = inner(cat)?;
+                    Ok::<_, String>(if std::ptr::eq(cat, &*shown) {
+                        "shown"
+                    } else {
+                        inner
+                    })
+                },
+            )
         });
-        assert_eq!(*drawn.get(), Ok("recorded inner"), "the outer operation's fallback");
+        assert_eq!(
+            *drawn.get(),
+            Ok::<_, String>("recorded inner"),
+            "the outer operation's fallback"
+        );
         let line = line.unwrap();
-        assert!(line.contains("the outer icon (the mod's inner sprite does not load)"), "{line}");
+        assert!(
+            line.contains("the outer icon (the mod's inner sprite does not load)"),
+            "{line}"
+        );
         assert!(!line.contains("the inner icon"), "{line}");
     }
 }
@@ -626,7 +672,9 @@ pub(crate) fn bound_catalogue_with(
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_test_catalogue(source: &Source, options: &ContentOptions, catalogue: Arc<Catalogue>) {
     let result = Arc::new(CachedResult::loaded(catalogue));
-    with_slot(source, options, |slot| *slot = Some((binding(options), result)));
+    with_slot(source, options, |slot| {
+        *slot = Some((binding(options), result))
+    });
 }
 
 #[cfg(any(test, feature = "test-support"))]

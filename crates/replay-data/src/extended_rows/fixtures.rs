@@ -1818,7 +1818,12 @@ impl Sample for ProvinceTemperature {
         })
     }
 }
-sample_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u32>, hours: Vec<Option<u32>>, checksum: u64 });
+sample_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u32>, hours: Vec<Option<u32>>, witness: TemperatureWitness });
+impl Sample for TemperatureWitness {
+    fn sample(tick: usize) -> Self {
+        Self::new(u64::sample(tick))
+    }
+}
 sample_struct!(WeatherDaylight { updated: bool, held: Option<[i64; 3]>, held_feather: Option<[i64; 2]> });
 fixture!(OperationTokensRow, |key| {owner: (key >> 32) as u32, target: key as u32}, {tokens: Vec<u32>});
 fixture!(LexicalTokenRow, |key| {token: key as u32}, {literal: Vec<u8>});

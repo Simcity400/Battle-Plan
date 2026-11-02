@@ -15,7 +15,7 @@ test('failed demand-loaded log pages show a plain row failure without backend te
   try {
     const { default: Log } = await vite.ssrLoadModule('/ui/src/charts/log/LogList.tsx');
     const html = renderToStaticMarkup(createElement(Log, { label: 'Synthetic log', density: 'comfortable', months: false, animate: false,
-      pages: [{ key: 'missing', start: 0, end: 10, count: 5, error: 'Synthetic private page refusal' }], renderRow: () => null,
+      pages: [{ key: 'missing', start: 0, end: 10, count: 5, error: new Error('Synthetic private page refusal') }], renderRow: () => null,
       describe: () => '', empty: 'Empty' }));
     assert.match(html, /Couldn’t load rows\./);
     assert.doesNotMatch(html, /Synthetic private page refusal|Rows unavailable/);

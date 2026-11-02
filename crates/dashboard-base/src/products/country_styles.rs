@@ -273,9 +273,10 @@ impl Product for CountryStyles {
                     let frame = match seek_styles(source, branch, params.hour, cancelled)? {
                         SeekResult::Frame(frame) => frame,
                         SeekResult::Gap { reason, .. } => {
-                            return Err(invalid(format!(
-                                "Country styles unavailable at this hour: {reason}"
-                            )));
+                            return Err(crate::prepared::query::frames::gap_error(
+                                &reason,
+                                format!("Country styles unavailable at this hour: {reason}"),
+                            ));
                         }
                     };
                     let hour = Arc::new(HourStyles::read(&frame, key.localisation.as_deref())?);

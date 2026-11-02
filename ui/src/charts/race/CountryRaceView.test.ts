@@ -31,7 +31,7 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     return [slot.value, (next: unknown) => { slot.value = typeof next === 'function' ? (next as (before: unknown) => unknown)(slot.value) : next; }];
   };
   const replacements: Record<string, string> = {
-    '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, color() {}, revision: 0 });',
+    '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, flagDetail: () => "Synthetic sampled flag decoder failure", flagReason: () => "The flag request failed.", color() {}, revision: 0 });',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted) => {
       const state = globalThis.__countryMarkerFacts; state.wanted = wanted;
       return { labelAt: hour => tag => { const known = state.ready && wanted.some(read => read.hour === hour && read.tag === tag);
@@ -46,7 +46,7 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     '/charts/TimeChart.tsx': 'export default props => { globalThis.__countryMarkerTime = props; return null; };',
     '/charts/race/RaceChart.tsx': 'export default props => { globalThis.__countryMarkerRace = props; return null; };',
   };
-  const host = globalThis as typeof globalThis & { __countryMarkerTime?: TimeChartProps; __countryMarkerRace?: { badges?: unknown; nameSamples?: readonly string[]; remoteRows?: RemoteRaceRows }; __countryMarkerHeight?: number;
+  const host = globalThis as typeof globalThis & { __countryMarkerTime?: TimeChartProps; __countryMarkerRace?: { badges?: unknown; nameSamples?: readonly string[]; countryFlag?: (tag: string) => { flagDetail?: string }; remoteRows?: RemoteRaceRows }; __countryMarkerHeight?: number;
     __countrySummaries?: unknown[]; __countrySummaryHelpers?: typeof summaryHelpers; __countryMarkerHook?: typeof hook; __countryMarkerFacts?: typeof state };
   host.__countryMarkerHook = hook; host.__countryMarkerFacts = state;
   host.__countrySummaryHelpers = summaryHelpers;
@@ -71,7 +71,10 @@ test('actual country time views forward dated badges, keyboard stops and full ev
       lineTooltip: () => [{ title: 'Exact numeric read', rows: [{ label: 'Native count', value: '3' }], spoken: 'Exact native count 3' }],
     } as unknown as CountryRaceViewProps;
     const render = () => { state.cursor = 0; return renderToStaticMarkup(createElement(View, props)); };
-    render();
+    assert.match(render(), /data-detail="Synthetic sampled flag decoder failure"/);
+    props.view = 'race'; render();
+    assert.equal(host.__countryMarkerRace!.countryFlag!('native alias').flagDetail, 'Synthetic sampled flag decoder failure');
+    props.view = 'lines'; render();
     assert.deepEqual(state.wanted, [], 'drawn markers do not preload any dated country names or flags');
     let chart = host.__countryMarkerTime!;
     assert.equal(chart.badges, badges);

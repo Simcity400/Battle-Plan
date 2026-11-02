@@ -184,6 +184,11 @@ pub struct Operator<S: Segmented> {
 
 impl<S: Segmented> Operator<S> {
     pub fn new(format: FormatVersion) -> io::Result<Self> {
+        Self::with_reader(format, S::reader(format))
+    }
+
+    /// An operator handing its hours to `reader`, in place of [`Segmented::reader`]'s.
+    pub fn with_reader(format: FormatVersion, reader: Box<dyn Reader<S>>) -> io::Result<Self> {
         let watches = watches::<S>()?;
         Ok(Self {
             format,
@@ -197,7 +202,7 @@ impl<S: Segmented> Operator<S> {
                 metrics: Metrics::default(),
             },
             touched: Touched::default(),
-            reader: S::reader(format),
+            reader,
         })
     }
 }

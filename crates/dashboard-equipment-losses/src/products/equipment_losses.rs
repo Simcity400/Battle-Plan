@@ -1929,7 +1929,7 @@ impl Product for EquipmentLosses {
                 })
             });
             if !witnessed {
-                return Err(io::Error::other(
+                return Err(dashboard_core::refused(
                     "The selected native country identity is not recorded at its origin",
                 ));
             }

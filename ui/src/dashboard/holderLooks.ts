@@ -1,3 +1,5 @@
+import { nameReadFrom, nameReadText } from './nameReads.ts';
+import { failureKey, type Failure } from './queryError.ts';
 import { useMemo } from 'react';
 import type { CountryStyle } from '../generated/dashboard';
 import type { ChartTokens } from '../charts/tokens';
@@ -11,10 +13,6 @@ import type { BoundTrack } from './model';
 
 /** A dated read as `useCountryFactsRead` returns it: absent while it is still going. */
 type Read<V> = V | null | typeof FAILED_FACT | undefined;
-
-/** A dated name as a label shows it: the recorded name; loading only while its read is
- * still going; unavailable once the read completed without a name, or failed. */
-export const nameReadText = (name: string | null | symbol | undefined) => typeof name === 'string' ? name : name === undefined ? 'Loading name…' : 'Country name unavailable';
 
 /** One native country holder a widget draws: a key of its own, the tag it held, and an
  * hour it is known to have held that tag. Two holders of one tag are two keys. */
@@ -36,6 +34,7 @@ export interface HolderLooks {
   /** The holder's recorded name, else the loading or unavailable wording. */
   name: (key: string) => string;
   /** The holder's recorded map colour, else its palette colour, as the country charts colour. */
+  nameFailure?: (key: string) => Failure | undefined;
   colour: (key: string) => string;
   /** The holder's recorded map colour as sRGB bytes, or null when not known (yet). */
   color: (key: string) => CountryStyle['color'];
@@ -50,18 +49,19 @@ export function holderLooks(holders: readonly HolderAt[], styles: ReadonlyMap<st
   tokens: Pick<ChartTokens, 'surface' | 'muted' | 'countryColours'>): HolderLooks {
   const reads = new Map(holders.map(holder => [holder.key, styles.get(nameKey(Math.floor(holder.hour), holder.tag))]));
   const found = new Map<string, CountryStyle>();
-  for (const [key, style] of reads) if (typeof style === 'object' && style) found.set(key, style);
+  for (const [key, style] of reads) if (style && !(style instanceof Error)) found.set(key, style);
   const keys = [...reads.keys()].sort();
   const colours = countryLineColours(keys, found, tokens.surface, tokens.countryColours === 'fixed');
   return {
     name: key => {
-      if (!reads.has(key)) return nameReadText(null);
+      if (!reads.has(key)) return nameReadText(undefined);
       const style = reads.get(key);
-      return nameReadText(typeof style === 'object' && style ? style.name : style === null ? null : style);
+      return nameReadText(nameReadFrom(style && !(style instanceof Error) ? style.name : style === null ? null : style, true));
     },
+    nameFailure: key => { const read = reads.get(key); return read instanceof Error ? read : undefined; },
     colour: key => colours.get(key) ?? tokens.muted,
     color: key => found.get(key)?.color ?? null,
-    revision: keys.map(key => `${reads.get(key) === undefined ? '?' : found.get(key)?.color?.join(',') ?? '-'}:${found.get(key)?.name ?? ''}`).join('|'),
+    revision: keys.map(key => `${reads.get(key) === undefined ? '?' : found.get(key)?.color?.join(',') ?? '-'}:${(reads.get(key) instanceof Error ? failureKey(reads.get(key) as Failure) : found.get(key)?.name) ?? ''}`).join('|'),
   };
 }
 
@@ -70,5 +70,7 @@ export function useHolderLooks(client: DashboardClient, track: Pick<BoundTrack, 
   tokens: Pick<ChartTokens, 'surface' | 'muted' | 'countryColours'>): HolderLooks {
   const plan = useMemo(() => holderReads(holders), [holders]);
   const styles = useCountryFactsRead(client, track, plan.wanted, active, STYLES, plan.maxHours);
-  return useMemo(() => holderLooks(holders, styles, tokens), [holders, styles, tokens.surface, tokens.muted, tokens.countryColours]); // eslint-disable-line react-hooks/exhaustive-deps
+  return useMemo(() => holderLooks(holders, active && track ? styles
+    : new Map(plan.wanted.map(item => { const key = nameKey(item.hour, item.tag); return [key, styles.get(key) ?? null]; })), tokens),
+  [holders, styles, active, track, plan, tokens.surface, tokens.muted, tokens.countryColours]); // eslint-disable-line react-hooks/exhaustive-deps
 }

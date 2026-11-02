@@ -15,8 +15,12 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { createWidget } from '../../dashboard/model.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import type { CasualtyPairsReply, CountryGroupReply } from '../../generated/dashboard';
+import { dayLabel } from '../../charts/draw.ts';
+import { deepFreeze } from '../../testFrozen.ts';
+import type { CountryGroupReply } from '../../generated/dashboard';
+import type { CasualtyPairsReply } from './casualtyPairsData';
 import { casualtyPairsAt } from './casualtyPairsData.ts';
+import { ChordFrames } from '../../charts/chord/frame.ts';
 import '../definitions.ts';
 
 type HostProps = Parameters<typeof DrillHost>[0];
@@ -24,11 +28,11 @@ type ChordProps = Parameters<typeof ChordChart>[0];
 type TableProps = Parameters<typeof Table>[0];
 type State = { hour: number; drill: DrillState; slots: unknown[]; cursor: number; host?: HostProps; chord?: ChordProps;
   chart?: TimeChartProps; table?: TableProps; parts?: number; subscriptions: boolean[]; data: unknown; windows: Map<number, unknown>;
-  groups?: CountryGroupReply; groupsError?: string; groupActive?: boolean; groupRetries?: number; windowIdentity?: string | null;
+  groups?: CountryGroupReply; groupsError?: Error; groupActive?: boolean; groupRetries?: number; windowIdentity?: string | null;
   windowRequests?: { params: { tags: string[]; between: boolean; window: number } }[];
   career?: { hour: number; widget: WidgetSpec; onPick: (hour: number) => void }; timeline?: TimelineProps; actions?: { label: string; run: () => void }[] };
 
-async function fixture(state: State, module: string, realCareer = false) {
+async function fixture(state: State, module: string, realCareer = false, datedLabels = true) {
   const globals = globalThis as typeof globalThis & { __landDrill?: State;
     __landReducer?: (reducer: typeof reduceDrill) => [DrillState, (action: DrillAction) => void];
     __landState?: (initial: unknown) => [unknown, (value: unknown) => void];
@@ -88,6 +92,11 @@ async function fixture(state: State, module: string, realCareer = false) {
     '/widgets/generals/portraits.ts': 'export const useLeaderPortraits = () => ({ at() {}, warnings: [] });',
     '/widgets/general-career/CareerView.tsx': 'export default props => { globalThis.__landDrill.career = props; return null; };',
   };
+  if (!datedLabels) {
+    replacements['/dashboard/countryFlagsAt.ts'] = `const label = tag => ({ name: tag, flagPending: true });
+      export const useCountryLabelsAt = () => ({ labelAt: () => label }); export const flagReadMetadata = () => ({});`;
+    replacements['/charts/race/countryColours.ts'] = 'const color = () => "#123456"; export const useCountryColours = () => color;';
+  }
   if (realCareer) delete replacements['/widgets/general-career/CareerView.tsx'];
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'land-drill-actual-caller', enforce: 'pre',
@@ -118,6 +127,86 @@ async function fixture(state: State, module: string, realCareer = false) {
     await vite.close(); delete globals.__landDrill; delete globals.__landReducer; delete globals.__landState; delete globals.__landMemo; delete globals.__landRef;
   } };
 }
+
+test('equal pair data across playback renders retains one validated chord target', async () => {
+  const span = { firstHour: 100, lastHour: 160 };
+  const reply: CasualtyPairsReply = { branchId: '1', available: true, windows: [span], window: 0, observed: [span], hasGap: false,
+    warnings: [], pairs: [{ identity: '1:10|2:20', firstCountry: 'source', secondCountry: 'target', runs: [
+      { ...span, readHour: 100, hourly: false, firstTaken: '12', secondTaken: '20', incomplete: false },
+    ] }] };
+  deepFreeze(reply);
+  const state: State = { hour: 80, drill: CLOSED, slots: [], cursor: 0, subscriptions: [],
+    data: deepFreeze({ ...reply, window: null, observed: [], pairs: [] }), windows: new Map([[0, reply]]) };
+  const view = await fixture(state, '/widgets/casualties-between/CasualtyPairsWidget.tsx', false, false);
+  try {
+    const widget = { ...createWidget('casualties-between', 'main'), countries: { kind: 'all' as const }, time: { mode: 'follow' as const } };
+    view.render(widget);
+    const first = state.chord!.frameAt!(0);
+    assert.ok(first.data);
+    const frames = new ChordFrames();
+    const set = frames.motion.set.bind(frames.motion);
+    let validations = 0;
+    frames.motion.set = data => { validations++; set(data); };
+    frames.accept(first);
+    const settled = frames.motion.advance(1, 0);
+    for (let tick = 1; tick <= 40; tick++) {
+      state.hour = 80 + tick;
+      view.render(widget);
+      const frame = state.chord!.frameAt!(tick);
+      assert.equal(frame.data, first.data);
+      assert.equal(frame.segment, first.segment);
+      frames.accept(frame);
+      assert.equal(frames.motion.advance(16, 180), settled);
+      assert.equal(state.chord!.tooltip({ kind: 'flow', id: first.data.flows[0].id }, first.data)!.subtitle, dayLabel(110 + tick));
+    }
+    assert.equal(validations, 1);
+  } finally { await view.close(); }
+});
+
+test('the real hourly group caller retains one chord until membership changes', async () => {
+  const span = { firstHour: 100, lastHour: 160 };
+  const reply: CasualtyPairsReply = deepFreeze({ branchId: '1', available: true, windows: [span], window: 0, observed: [span], hasGap: false,
+    warnings: [], pairs: [{ identity: '1:10|2:20', firstCountry: 'source', secondCountry: 'target', runs: [
+      { ...span, readHour: 100, hourly: false, firstTaken: '12', secondTaken: '20', incomplete: false },
+    ] }, { identity: '3:12|4:13', firstCountry: 'other', secondCountry: 'unselected',
+      runs: Array.from({ length: 31 }, (_, index) => ({ firstHour: 100 + index, lastHour: 100 + index, readHour: 100 + index,
+        hourly: true, firstTaken: '0', secondTaken: String(index), incomplete: false })) }] });
+  const groups: CountryGroupReply = deepFreeze({ branchId: '1', humans: [{ tag: 'source', firstHour: 100, lastHour: 130 },
+    { tag: 'other', firstHour: 131, lastHour: 160 }], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [], warnings: [],
+    unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: ['source', 'target', 'other', 'unselected'].map((tag, slot) => ({ tag,
+      identities: [{ ...span, slot: slot + 1, countryId: slot + 10 }] })) });
+  const state: State = { hour: 80, drill: CLOSED, slots: [], cursor: 0, subscriptions: [], groups,
+    data: deepFreeze({ ...reply, window: null, observed: [], pairs: [] }), windows: new Map([[0, reply]]) };
+  const view = await fixture(state, '/widgets/casualties-between/CasualtyPairsWidget.tsx', false, false);
+  try {
+    let queries = 0;
+    const countries = deepFreeze({ kind: 'group' as const, group: { type: 'humans' as const }, membership: 'hour' as const, aggregate: false,
+      toJSON() { queries++; return { kind: this.kind, group: this.group, membership: this.membership, aggregate: this.aggregate }; } });
+    const widget = { ...createWidget('casualties-between', 'main'), time: { mode: 'follow' as const },
+      countries };
+    view.render(widget);
+    const first = state.chord!.frameAt!(0);
+    assert.ok(first.data?.flows.length);
+    const frames = new ChordFrames(), set = frames.motion.set.bind(frames.motion);
+    let validations = 0;
+    frames.motion.set = data => { validations++; set(data); };
+    frames.accept(first);
+    for (state.hour = 81; state.hour <= 100; state.hour++) {
+      view.render(widget);
+      const preparedQueries = queries;
+      const frame = state.chord!.frameAt!(state.hour);
+      assert.equal(queries, preparedQueries, 'playback uses the prepared group query without serializing selection');
+      assert.equal(frame.data, first.data);
+      assert.equal(frame.segment, first.segment);
+      frames.accept(frame);
+    }
+    assert.equal(validations, 1);
+    const frameAt = state.chord!.frameAt!;
+    state.hour = 101;
+    assert.equal(frameAt(101).data!.flows.length, 0);
+    assert.match(view.render(widget), /No recorded country pairs at this moment/);
+  } finally { await view.close(); }
+});
 
 test('actual manual pair choices load their catalogue and request original native roots without an all-world window', async () => {
   const span = { firstHour: 100, lastHour: 160 };
@@ -161,7 +250,7 @@ test('actual manual pair choices load their catalogue and request original nativ
     view.render(grouped);
     assert.ok(state.chord!.frameAt!(0).data, 'membership is read at the prepared prefix shown, not the hour asked');
     state.windows = new Map([[0, reply]]);
-    state.groupsError = 'Native catalogue unavailable';
+    state.groupsError = new Error('Native catalogue unavailable');
     const failure = view.render(widget);
     assert.match(failure, /Couldn’t load\./);
     assert.match(failure, /Retry/);
@@ -177,12 +266,12 @@ test('actual manual pair choices load their catalogue and request original nativ
 
 test('actual pair Drill picks dates, follows the offset clock and pins exact signed native rows', async () => {
   const windows = [{ firstHour: 100, lastHour: 119 }, { firstHour: 120, lastHour: 139 }, { firstHour: 140, lastHour: 160 }];
-  const reply = (index: number, identity: string, amount: string): CasualtyPairsReply => ({ branchId: '1', available: true,
+  const reply = (index: number, identity: string, amount: string): CasualtyPairsReply => deepFreeze({ branchId: '1', available: true,
     windows, window: index, observed: [windows[index]], hasGap: false, warnings: [], pairs: [{ identity,
       firstCountry: 'mod attacker', secondCountry: 'mod victim', runs: [{ ...windows[index], readHour: windows[index].firstHour,
         hourly: true, firstTaken: '0', secondTaken: amount, incomplete: false }] }] });
-  const first = reply(0, '1:10|2:20', '-12'), next = reply(1, '1:10|2:20', '3'), replaced = reply(2, '1:11|2:20', '999');
-  next.pairs[0].firstCountry = 'renamed mod attacker';
+  const first = reply(0, '1:10|2:20', '-12'), read = reply(1, '1:10|2:20', '3'), replaced = reply(2, '1:11|2:20', '999');
+  const next = deepFreeze({ ...read, pairs: read.pairs.map(pair => ({ ...pair, firstCountry: 'renamed mod attacker' })) });
   const state: State = { hour: 80, drill: CLOSED, slots: [], cursor: 0, subscriptions: [],
     data: { ...first, window: null, observed: [], pairs: [] }, windows: new Map([[0, first], [1, next], [2, replaced]]) };
   const view = await fixture(state, '/widgets/casualties-between/CasualtyPairsWidget.tsx');

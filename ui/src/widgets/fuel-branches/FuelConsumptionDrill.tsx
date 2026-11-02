@@ -20,7 +20,7 @@ export default function FuelConsumptionDrill({ runtime, track, tag, hour, extent
   const [level, setLevel] = useState<FuelConsumptionLevel | null>(null);
   const reply = fuel.data?.find(item => item.tag === tag);
   const error = useHeldFailure(fuel.error, reply !== undefined, fuel.retry);
-  if (error) return <WidgetState kind="error" detail={error} onRetry={fuel.retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={fuel.retry} />;
   if (!reply) return <WidgetState kind="loading" label="Loading fuel consumption…" />;
   return <FuelConsumptionBreakdown reply={reply} runtime={runtime} track={track} hour={hour} digits={digits}
     selection={selection} onSelection={setSelection} level={level} onLevel={setLevel}

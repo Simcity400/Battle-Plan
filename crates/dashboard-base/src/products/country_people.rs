@@ -659,7 +659,7 @@ pub fn read(
     let (country, _) = tagged
         .get(p.tag.as_bytes())
         .and_then(|lookup| lookup.found())
-        .ok_or_else(|| invalid("Country unavailable at this hour"))?;
+        .ok_or_else(|| dashboard_core::refused("Country unavailable at this hour"))?;
     let canonical = |raw: u32| {
         links
             .iter()

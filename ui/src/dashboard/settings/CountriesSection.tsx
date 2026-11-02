@@ -1,3 +1,4 @@
+import { failureText } from '../queryError.ts';
 import CountryPicker from '../../components/CountryPicker';
 import { Select } from '../../components/Select';
 import { SettingLabel } from './SettingLabel';
@@ -120,7 +121,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
             : choice === 'top' ? { type: 'top', count: Math.min(DEFAULT_TOP, limits.max) } : { type: 'humans' };
         if (next.type !== 'war' || next.tag) set({ group: next });
       }} /></div>
-    {groups.error && <p className="field-hint" role="alert">Couldn’t load groups.</p>}
+    {groups.error && <p className="field-hint" role="alert" data-detail={groups.error.message}>{failureText(groups.error, 'Couldn’t load groups.')}</p>}
     {group.type === 'war' && <CountryPicker key={source?.id ?? 'unbound'} field source={source} client={runtime.client}
       countries={source?.metadata.countries ?? []} playerCountryId={source?.metadata.playerCountryId ?? null} selectedTag={group.tag}
       onChange={tag => { if (tag) set({ group: { type: 'war', tag } }); }} />}

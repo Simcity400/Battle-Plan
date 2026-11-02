@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { withWindowEntries } from './windowMap.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
@@ -11,13 +12,13 @@ export interface ProductWindows<T> {
   /** The windows wanted and loaded, by index. */
   data: ReadonlyMap<number, T>;
   /** Framed windows with published prefixes report failures through the frame, not this map. */
-  errors: ReadonlyMap<number, string>;
+  errors: ReadonlyMap<number, Failure>;
   /** Asks again for every failed window wanted. */
   retry: () => void;
 }
 
 /** The windows loaded (or failed) for one identity. */
-export interface Held<T> { identity: string | null; data: ReadonlyMap<number, T>; errors: ReadonlyMap<number, string> }
+export interface Held<T> { identity: string | null; data: ReadonlyMap<number, T>; errors: ReadonlyMap<number, Failure> }
 
 export interface WindowDisplay<T> { identity: string; data: T; hour: number }
 
@@ -77,7 +78,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
     });
     // Windows landing in the same frame commit together: a widget asking for a whole
     // campaign renders once a frame, not once a window.
-    const arrived: { data: [number, T][]; errors: [number, string][] } = { data: [], errors: [] };
+    const arrived: { data: [number, T][]; errors: [number, Failure][] } = { data: [], errors: [] };
     let frame = 0;
     const commit = () => {
       if (frame) cancelAnimationFrame(frame);
@@ -98,7 +99,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       const publish = progressive ? (data: T) => arrive(() => arrived.data.push([window, data])) : undefined;
       void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0, publish, undefined, true).then(
         data => arrive(() => arrived.data.push([window, data])),
-        error => arrive(() => arrived.errors.push([window, error instanceof Error ? error.message : String(error)])),
+        error => arrive(() => arrived.errors.push([window, asFailure(error)])),
       );
     }
     // Replies that landed before this request set changed still count.
@@ -116,7 +117,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
   const framed = useHeldFailures(heldErrors, retry) && heldErrors.length > 0;
   return useMemo(() => ({
     data: data ?? new Map<number, T>(),
-    errors: errors && framed ? new Map([...errors].filter(([window]) => !data?.has(window))) : errors ?? new Map<number, string>(),
+    errors: errors && framed ? new Map([...errors].filter(([window]) => !data?.has(window))) : errors ?? new Map<number, Failure>(),
     retry,
   }), [data, errors, framed, retry]);
 }

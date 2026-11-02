@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
@@ -67,7 +68,7 @@ export function usePreparedLosses(client: DashboardClient, track: BoundTrack | u
   const [viewport, setViewport] = useState<{ owner: typeof owner; from: number; to: number; width: number }>();
   const [hover, setHover] = useState<{ owner: typeof owner; hour: number | null }>();
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
-  const [error, setError] = useState<{ owner: typeof owner; message: string }>();
+  const [error, setError] = useState<{ owner: typeof owner; failure: Error }>();
   const navigation = useRef<AbortController | null>(null), picks = useRef(new Set<AbortController>());
   useEffect(() => () => { navigation.current?.abort(); for (const controller of picks.current) controller.abort(); picks.current.clear(); }, [owner, active]);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
@@ -104,7 +105,7 @@ export function usePreparedLosses(client: DashboardClient, track: BoundTrack | u
       controller.signal, validatePreparedLosses, track.source);
       return controller.signal.aborted || alive.current !== owner ? null : reply;
     } catch (failure) {
-      if (!controller.signal.aborted && alive.current === owner) setError({ owner, message: String(failure) });
+      if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) });
       return null;
     } finally { picks.current.delete(controller); }
   }, [owner, active, request, view]);
@@ -121,11 +122,11 @@ export function usePreparedLosses(client: DashboardClient, track: BoundTrack | u
       const reply = value as { hour: unknown };
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The prepared equipment-loss navigation is malformed.');
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(before => ({ owner, hour: reply.hour as number | null, revision: (before?.revision ?? 0) + 1 }));
-    }).catch(failure => { if (!controller.signal.aborted && alive.current === owner) setError({ owner, message: String(failure) }); });
+    }).catch(failure => { if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) }); });
   }, [owner, active, track, selection, view]);
   return { ...product, request, onSummaryView, onHover, exactAt, navigate,
     retry: () => { setError(undefined); product.retry(); },
-    error: product.error ?? (error?.owner === owner ? error.message : undefined),
+    error: product.error ?? (error?.owner === owner ? error.failure : undefined),
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
     keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined };
 }

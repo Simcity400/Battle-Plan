@@ -44,6 +44,10 @@ test('a leaderboard read at its hour jumps to the first seen hour and keeps its 
     renderToStaticMarkup(createElement(Widget, props));
     const table = host.__projectedLeaders!;
     const [row] = table.rows;
+    const { sameContent } = await vite.ssrLoadModule('/ui/src/charts/memoRows.tsx') as typeof import('../../charts/memoRows.tsx');
+    const identity = table.columns.find(column => column.key === 'leader')!.render!;
+    assert.ok(sameContent(identity(row), identity({ ...row, hour: row.hour + 1 })), 'hourly metadata does not change the rendered identity props');
+    assert.ok(!sameContent(identity(row), identity({ ...row, person: { ...row.person, name: 'Renamed leader' } })), 'a displayed identity change still invalidates its cell');
     assert.deepEqual([row.fought, row.won, row.lost], [2, 1, 0]);
     const [jump] = table.menu!(row) as unknown as { hour: number; label: string }[];
     assert.equal(jump.hour, 95, 'the first seen hour, not the projected run\'s');

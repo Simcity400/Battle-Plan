@@ -63,8 +63,8 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   const selectable = (row: DrillPart) => onPick !== undefined && row.id !== '' && row.selectable !== false;
   const amount = (row: DrillPart) => row.text ?? (row.value == null ? 'Not known' : format(row.value));
   const content = (row: DrillPart) => <>
-    <span className="drill-part-label">{row.countryFlag !== undefined
-      ? <CountryFlagUrl className="drill-part-flag" url={row.countryFlag.flag} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
+    <span className="drill-part-label" data-detail={row.detail ?? row.countryFlag?.nameFailure?.message}>{row.countryFlag !== undefined
+      ? <CountryFlagUrl className="drill-part-flag" url={row.countryFlag.flag} detail={row.countryFlag.flagDetail} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
       : row.icon && <img src={row.icon} alt="" />}{row.color && <i className="drill-part-swatch" aria-hidden="true" style={{ background: row.color }} />}
       {selectable(row) ? <button type="button" tabIndex={0} className="drill-part-pick" aria-label={`${row.label}, ${amount(row)}`}
         onClick={() => onPick?.(row.id)}>{row.label}</button> : row.label}</span>
@@ -73,7 +73,7 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
     <b className={row.value != null && row.value < 0 ? 'is-negative' : undefined}>{amount(row)}</b>
     <small>{showShares ? row.shareText ?? drillPartShare(row.value, sum, signedShares) : null}</small>
   </>;
-  const closing = totalRow && <div className="drill-parts drill-total"><span className="drill-part-label">{totalRow.label}</span><span /><b>{totalRow.value}</b><small /></div>;
+  const closing = totalRow && <div className="drill-parts drill-total"><span className="drill-part-label" >{totalRow.label}</span><span /><b>{totalRow.value}</b><small /></div>;
   if (!rows.length && !totalRow) return <p className="drill-empty">Nothing recorded for this day.</p>;
   if (virtual) return <div className="drill-inventory">
     <WindowedRows items={active ? rows : []} rowHeight={32} label="Recorded parts" onVisibleRows={visible}>{({ item, key }) => <div tabIndex={selectable(item) ? undefined : 0}
@@ -82,6 +82,6 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   </div>;
   return <ol className="drill-parts">{rows.map(({ key, item }) => <li key={key} tabIndex={selectable(item) ? undefined : 0}
     className={key === 'unattributed' ? 'is-unattributed' : item.muted || item.value == null ? 'is-muted' : undefined}>{content(item)}</li>)}
-    {totalRow && <li className="is-total"><span className="drill-part-label">{totalRow.label}</span><span /><b>{totalRow.value}</b><small /></li>}
+    {totalRow && <li className="is-total"><span className="drill-part-label" >{totalRow.label}</span><span /><b>{totalRow.value}</b><small /></li>}
   </ol>;
 }

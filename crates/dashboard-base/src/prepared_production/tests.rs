@@ -627,6 +627,7 @@ fn amount(variant: u64, units: i128, exact: bool, purpose: Purpose) -> Amount {
 }
 fn source(read: i32, amounts: Vec<Amount>) -> SourceEndpoint {
     SourceEndpoint {
+        spending_since: read,
         slot: 1,
         country_id: 2,
         observation: Some(0),
@@ -1227,6 +1228,7 @@ fn persisted_pages_and_resume_states_isolate_overlapping_branch_hours() {
 fn expected_holders(index: &read::Index, page: &EndpointPage) -> BTreeMap<u32, facts::Holder> {
     let source = |source: &SourceEndpoint, read: Option<i32>| facts::Source {
         head: facts::Head {
+            spending_since: source.spending_since,
             slot: source.slot,
             country_id: source.country_id,
             observation: source.observation,

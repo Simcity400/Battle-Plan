@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -34,7 +35,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { ArmyAttribution, ArmySizeReply, CountryGroupReply } from '../../generated/dashboard';
 import { armyAbsent, armyMeasure, armyMetadataRequest, armySizeRequest, armyTooltips, armyWindows,
   formatArmyValue, formatArmyRaw, formatArmyPart, measureName, mergeArmyWindows, offersMeasure, typeName, validateArmySizeReply,
-  validateArmyWindow } from './armySizeData';
+  validateArmyWindow } from './armySizeData.ts';
 import { normaliseArmyOptions, OPTIONS } from './definition';
 import { armyCountrySelection } from './ArmyCountryChip';
 import './armySize.css';
@@ -247,9 +248,9 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
-    if (metadata.error) return <WidgetState kind="error" detail={metadata.error} onRetry={metadata.retry} />;
-    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if (metadata.error) return <WidgetState kind="error" failure={asFailure(metadata.error)} onRetry={metadata.retry} />;
+    if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" failure={groupReply.error} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="shield" message={resolved.reason} />;
     if (metadata.data && !offersMeasure(metadata.data, measure)) {
       return <WidgetState kind="unavailable" message="Not in this recording" />;
@@ -291,7 +292,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
         dispatchDrill({ type: 'choose', key: choices.key, tag, hour: drillAt });
       }} />
   </div> : breakdown;
-  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} /> : null;
+  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" failure={groupReply.error} onRetry={groupReply.retry} /> : null;
   if (pinned) return <>{neutralHeader}{groupNotice}<div ref={drillAnchor} className="army-size-drill parts-race-drill">{state ?? choice}</div></>;
   const main = <CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open} pickOwner={pickOwner} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} lines={lines} badges={badges} parts={parts} mix={mix} segmentAt={segmentAt} countryTags={shownTags}

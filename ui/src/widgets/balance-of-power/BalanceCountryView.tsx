@@ -20,7 +20,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { BalanceHistory } from '../../generated/dashboard';
 import { BALANCE_UNAVAILABLE, balanceAt, balanceAxis, balanceLanes, balanceName, balanceStatusAt, exactValue, plotRuns, RANGE_UNAVAILABLE, rangeName,
-  SIDE_UNAVAILABLE, sideName, statusText } from './balanceOfPowerData';
+  SIDE_UNAVAILABLE, sideName, statusText } from './balanceOfPowerData.ts';
 import type { BalanceNames, BalanceSubject } from './balanceOfPowerData';
 import { motionOf } from '../../charts/easing.ts';
 

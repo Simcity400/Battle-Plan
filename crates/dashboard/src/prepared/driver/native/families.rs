@@ -21,8 +21,8 @@ use crate::{
     prepared_focus as national_focus,
     prepared_production::{ProductionAccumulator, columnar as production},
     products::{
-        event_feed::columnar as event_feed, intelligence_prepared, land_battles, naval_battles, raids,
-        ships_sunk, style_runs,
+        event_feed::columnar as event_feed, intelligence_prepared, land_battles,
+        land_owners::native as land_owners, naval_battles, raids, ships_sunk, style_runs,
     },
 };
 use dashboard_air_aces::products::air_aces;
@@ -307,17 +307,29 @@ pub(crate) static REGISTERED: &[Registered] = &[
     },
     Registered {
         name: <doctrine_mastery::DoctrineMasteryObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<doctrine_mastery::DoctrineMasteryObserver>()
+                .map(drop)
+        },
         bind: observed::<doctrine_mastery::DoctrineMasteryObserver>,
     },
     Registered {
         name: <occupation_reserve::OccupationReserveObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<occupation_reserve::OccupationReserveObserver>()
+                .map(drop)
+        },
         bind: observed::<occupation_reserve::OccupationReserveObserver>,
     },
     Registered {
         name: <intel_coverage::IntelCoverageObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<intel_coverage::IntelCoverageObserver>()
+                .map(drop)
+        },
         bind: observed::<intel_coverage::IntelCoverageObserver>,
     },
     Registered {
@@ -372,7 +384,11 @@ pub(crate) static REGISTERED: &[Registered] = &[
     },
     Registered {
         name: <regional_weather::block::Observer as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<regional_weather::block::Observer>()
+                .map(drop)
+        },
         bind: observed::<regional_weather::block::Observer>,
     },
     Registered {
@@ -392,12 +408,20 @@ pub(crate) static REGISTERED: &[Registered] = &[
     },
     Registered {
         name: <air_missions::AirMissionsObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<air_missions::AirMissionsObserver>()
+                .map(drop)
+        },
         bind: observed::<air_missions::AirMissionsObserver>,
     },
     Registered {
         name: <air_statistics::AirStatisticsObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<air_statistics::AirStatisticsObserver>()
+                .map(drop)
+        },
         bind: observed::<air_statistics::AirStatisticsObserver>,
     },
     Registered {
@@ -437,13 +461,22 @@ pub(crate) static REGISTERED: &[Registered] = &[
     },
     Registered {
         name: <minefields::MinefieldsObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| content.keyed::<minefields::MinefieldsObserver>().map(drop),
         bind: observed::<minefields::MinefieldsObserver>,
     },
     Registered {
         name: <naval_supremacy::NavalSupremacyObserver as dashboard_keyed::Observer>::NAME,
-        load: free,
+        load: |content| {
+            content
+                .keyed::<naval_supremacy::NavalSupremacyObserver>()
+                .map(drop)
+        },
         bind: observed::<naval_supremacy::NavalSupremacyObserver>,
+    },
+    Registered {
+        name: land_owners::NAME,
+        load: |content| content.names().map(drop),
+        bind: catalogue_owners,
     },
 ];
 
@@ -604,6 +637,7 @@ projected!(
     crate::products::war_casualties::facts::Hour,
     crate::products::division_log::columnar::Hour,
     navy::facts::Hour,
+    land_owners::Hour,
 );
 
 /// A family's emit on the series engine.
@@ -3445,6 +3479,7 @@ impl Native for Land<'_> {
 
 struct MarketFamily<'p> {
     replay: &'p Replay,
+    blocks: Arc<BTreeMap<u64, Arc<[i32]>>>,
 }
 
 fn markets<'p>(
@@ -3454,7 +3489,26 @@ fn markets<'p>(
     taken: Taken<'p>,
 ) -> Made<'p> {
     let replay = content.source.replay_ref();
-    bound(id, MarketFamily { replay }, stage, taken)
+    let blocks = content
+        .extents
+        .iter()
+        .map(|(branch, _)| {
+            let mut starts: Vec<_> = content
+                .source
+                .block_windows(branch)
+                .iter()
+                .map(|window| window.first_hour)
+                .collect();
+            starts.sort_unstable();
+            (branch, Arc::from(starts))
+        })
+        .collect();
+    bound(
+        id,
+        MarketFamily { replay, blocks: Arc::new(blocks) },
+        stage,
+        taken,
+    )
 }
 
 impl Native for MarketFamily<'_> {
@@ -3470,7 +3524,11 @@ impl Native for MarketFamily<'_> {
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        market::facts::Projector::new(self.replay.format, self.replay.capture_mode)
+        market::facts::Projector::new(
+            self.replay.format,
+            self.replay.capture_mode,
+            Arc::clone(&self.blocks),
+        )
     }
 
     fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
@@ -3692,9 +3750,8 @@ impl<O: dashboard_keyed::Observer> Emits for scanned::Emit<O> {
 /// A keyed family published as its scan ([`scanned`]): its operators keep the hours its
 /// observer observes, and its emit observes them on the branch's one scan, its observer bound
 /// to the recording's content.
-struct Observed<'p, O> {
-    source: &'p crate::Source,
-    options: Option<&'p crate::config::ContentOptions>,
+struct Observed<O: dashboard_keyed::Observer> {
+    content: Arc<O::Content>,
     format: FormatVersion,
     observer: PhantomData<fn() -> O>,
 }
@@ -3706,23 +3763,22 @@ fn observed<'p, O: dashboard_keyed::Observer>(
     taken: Taken<'p>,
 ) -> Made<'p> {
     let native = Observed::<O> {
-        source: content.source,
-        options: content.context.content.as_ref(),
+        content: content.keyed::<O>()?,
         format: content.source.replay_ref().format,
         observer: PhantomData,
     };
     bound(id, native, stage, taken)
 }
 
-impl<O: dashboard_keyed::Observer> Observed<'_, O> {
+impl<O: dashboard_keyed::Observer> Observed<O> {
     /// `emit` with its observer bound to the recording, as the walk binds it.
     fn bound(&self, mut emit: scanned::Emit<O>) -> io::Result<Box<scanned::Emit<O>>> {
-        emit.bind(self.source, self.options, &mut || Ok(()))?;
+        emit.bind(&self.content)?;
         Ok(Box::new(emit))
     }
 }
 
-impl<O: dashboard_keyed::Observer> Native for Observed<'_, O> {
+impl<O: dashboard_keyed::Observer> Native for Observed<O> {
     type Operator = keyed::Operator<Scanned<O>>;
     type Branch = Series<Box<scanned::Emit<O>>>;
 
@@ -3735,7 +3791,7 @@ impl<O: dashboard_keyed::Observer> Native for Observed<'_, O> {
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        keyed::Operator::new(self.format)
+        Scanned::<O>::operator(self.format, &self.content)
     }
 
     fn branch(&self, branch: u64, first: i32) -> io::Result<Self::Branch> {
@@ -5159,5 +5215,82 @@ impl Native for Fleets<'_> {
         let directory = directory(stage, branch, published, navy::emit::SCHEMA)?;
         let emit = navy::emit::Emit::load(self.units.clone(), &directory, saved)?;
         Ok(Series::new(Box::new(emit), published.frontier.first_hour))
+    }
+}
+
+/// The land-owner catalogue's backend: a recording-wide job, prepared branch by branch.
+struct OwnerCatalogue<'p> {
+    format: FormatVersion,
+    names: &'p super::content::Names,
+}
+
+fn catalogue_owners<'p>(
+    id: FamilyId,
+    content: &'p Content<'p>,
+    stage: Stage<'p, 'p>,
+    taken: Taken<'p>,
+) -> Made<'p> {
+    let native = OwnerCatalogue {
+        format: content.source.replay_ref().format,
+        names: content.names()?,
+    };
+    bound(id, native, stage, taken)
+}
+
+impl Native for OwnerCatalogue<'_> {
+    type Operator = land_owners::Projector;
+    type Branch = Box<land_owners::Branch>;
+
+    fn tables(&self) -> &'static [TableId] {
+        land_owners::tables(self.names.is_ok())
+    }
+
+    fn needs(&self) -> io::Result<Needs> {
+        land_owners::needs(self.names.is_ok())
+    }
+
+    fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
+        land_owners::Projector::new(self.format, self.names.as_ref().ok().cloned())
+    }
+
+    fn branch(&self, _: u64, _: i32) -> io::Result<Self::Branch> {
+        Ok(Box::new(land_owners::Branch::new()))
+    }
+
+    fn observe(
+        &self,
+        state: &mut Self::Branch,
+        _: &mut Stage<'_, '_>,
+        _: u64,
+        hour: land_owners::Hour,
+    ) -> io::Result<()> {
+        state.observe(hour);
+        Ok(())
+    }
+
+    fn flush(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        _: Option<i32>,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        state.publish(stage.pages()?, branch)
+    }
+
+    // Its published page is all it goes on with.
+    fn save(&self, _: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(Vec::new()))
+    }
+
+    fn resume(
+        &self,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        _: &Published,
+        _: &[u8],
+    ) -> io::Result<Self::Branch> {
+        land_owners::Branch::resume(stage.pages()?, branch).map(Box::new)
     }
 }

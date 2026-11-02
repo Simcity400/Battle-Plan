@@ -693,7 +693,7 @@ export default function TimeChart(props: TimeChartProps) {
       props.onContextMenu(Math.floor(moment), bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
     }
   };
-  return <div className="time-chart">
+  return <div className="time-chart" data-detail={props.badges?.flatMap(badge => badge.failure ? [badge.failure.message] : []).join("\n") || undefined}>
     <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={spoken ? `${owner}-events` : undefined}
       aria-keyshortcuts={props.rows ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Home End' : props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p id={`${owner}-events`} className="sr-only">{spoken ? `Events: ${spoken}.` : ''}</p>

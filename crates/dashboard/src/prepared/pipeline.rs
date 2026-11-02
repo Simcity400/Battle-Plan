@@ -111,6 +111,22 @@ fn stamped(gate: &gates::Gate, name: &str) -> io::Result<bool> {
     })
 }
 
+/// The publication root the family or job `name` published for `branch`, as `published` holds
+/// it, while it is of the version the plan gives `name`.
+pub(crate) fn own_root<'p>(
+    published: &'p gates::Published,
+    name: &str,
+    branch: u64,
+) -> io::Result<Option<&'p dashboard_base::prepared::roots::Published>> {
+    let Some(gate) = published.gate(branch, name) else {
+        return Ok(None);
+    };
+    let Some(root) = gate.publication()? else {
+        return Ok(None);
+    };
+    Ok(stamped(gate, name)?.then_some(root))
+}
+
 /// The coverage page the family or job `name` published for `branch`, as `published` holds
 /// it, while it is of the version the plan gives `name`: a page of another version is pending
 /// until its family is prepared again.
@@ -438,9 +454,7 @@ pub(crate) fn refusal(
     };
     let through = super::coverage::declared().through;
     match refusal_from(&published, branch, query)? {
-        Some((hour, error)) if through.is_none_or(|through| through >= hour) => {
-            Err(io::Error::new(io::ErrorKind::InvalidData, error))
-        }
+        Some((hour, error)) if through.is_none_or(|through| through >= hour) => Err(error.into()),
         _ => Ok(()),
     }
 }
@@ -454,9 +468,9 @@ pub(crate) fn refusal_from(
     published: &gates::Published,
     branch: u64,
     query: &str,
-) -> io::Result<Option<(i32, String)>> {
+) -> io::Result<Option<(i32, crate::QueryError)>> {
     let plan = plan::native();
-    let mut found: Option<(i32, String)> = None;
+    let mut found: Option<(i32, crate::QueryError)> = None;
     let mut note = |refusal: &Refusal| {
         found = Some(match found.take() {
             Some((hour, error)) => (hour.min(refusal.hour), error),

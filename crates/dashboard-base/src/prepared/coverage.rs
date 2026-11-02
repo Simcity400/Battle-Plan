@@ -316,7 +316,7 @@ pub fn refusal(
 /// version is prepared again whole, and coverage of another is refused. What
 /// one family publishes has a version of its own in the driver's registry,
 /// whose change prepares that family again alone.
-pub const SCHEMA: u32 = 57;
+pub const SCHEMA: u32 = 58;
 
 /// Accepted extent, distinct from a complete source's timeline and recorded gaps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -362,7 +362,7 @@ fn branch_of(digits: &str) -> Option<u64> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Refusal {
     pub hour: i32,
-    pub error: String,
+    pub error: dashboard_core::QueryError,
     pub from: Option<String>,
 }
 
@@ -465,4 +465,40 @@ pub fn stored(
         note_short(WALK);
     }
     Ok(Some(range))
+}
+
+#[cfg(test)]
+mod typed_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn published_refusals_keep_their_kind_and_reject_the_old_layout() {
+        for error in [
+            dashboard_core::QueryError::from(dashboard_core::refused("Synthetic capture refused")),
+            dashboard_core::QueryError::from(io::Error::other("Synthetic internal fault")),
+        ] {
+            let page = Page {
+                coverage: Coverage {
+                    schema: SCHEMA,
+                    first_hour: 1,
+                    last_hour: 2,
+                    complete: true,
+                },
+                refused: BTreeMap::from([(
+                    "synthetic".into(),
+                    Refusal {
+                        hour: 1,
+                        error: error.clone(),
+                        from: None,
+                    },
+                )]),
+            };
+            let mut value = serde_json::to_value(&page).unwrap();
+            let decoded = Page::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let raised: io::Error = decoded.refused["synthetic"].error.clone().into();
+            assert_eq!(dashboard_core::QueryError::from(raised), error);
+            value["refused"]["synthetic"]["error"] = serde_json::json!("old string");
+            assert!(Page::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
+    }
 }

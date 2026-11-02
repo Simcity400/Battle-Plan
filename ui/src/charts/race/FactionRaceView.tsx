@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import { factionLabelAt, factionLines, factionMemberLabelLimit, factionNameAt, factionTooltipForms, factionTotalsModel,
-  factionVisibleMemberTags } from '../../dashboard/factionTotals';
+  factionVisibleMemberTags } from '../../dashboard/factionTotals.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
@@ -165,7 +165,7 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   if (!track) return <WidgetState kind="empty" icon="shield" message={`Load a campaign to see its ${label.toLowerCase()}.`} />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (unavailableReason) return <WidgetState kind="unavailable" message="Faction totals unavailable." />;
-  if (error && !numbers) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !numbers) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!params) return <WidgetState kind="empty" icon="shield" message="Choose Factions, or a faction group shown as one total, in the widget settings." />;
   if (!numbers || !model) return <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} />;
   if (numbers.unavailableReason && !pinned && !renderMain) return <WidgetState kind="unavailable" message="Faction totals unavailable." />;
@@ -199,7 +199,7 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
             if (pinned) setOption?.(FACTION_SELECTION, factionSelection(track, row.item.id, origin));
           }}>{row.item.name} · {row.item.id}</button>}
       </WindowedRows></div>
-      : partsProduct.error && !partNumbers ? <WidgetState kind="error" what="faction members" detail={partsProduct.error} onRetry={partsProduct.retry} />
+      : partsProduct.error && !partNumbers ? <WidgetState kind="error" what="faction members" failure={partsProduct.error} onRetry={partsProduct.retry} />
         : !partNumbers ? <WidgetState kind="loading" label="Loading faction members…" />
           : !proven ? <WidgetState kind="unavailable" message="Faction unavailable at the selected time." />
             : !partsModel ? <WidgetState kind="unavailable" message="Member details are unavailable." />

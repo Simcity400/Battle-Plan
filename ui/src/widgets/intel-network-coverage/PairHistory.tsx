@@ -32,7 +32,7 @@ export default function PairHistory({ widget, runtime, active, pair, hour }: Wid
   }, [data, field, tokens.accent]);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
   if (!chosen) return <WidgetState kind="empty" icon="eye" message="Choose a pair of countries: click a cell of the matrix." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the network's history…" />;
   return <div className="intel-pair-history">
     <RunLines label={`${LABELS[field]} over time`} extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}

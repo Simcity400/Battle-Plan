@@ -103,7 +103,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const failure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const failure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (failure && !data) return failure;
   if (!data) return <>{failure}<WidgetState kind="loading" label="Loading factions…" /></>;
   const opened = drill == null ? null : views.find(view => view.id === drill);

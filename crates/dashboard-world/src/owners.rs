@@ -68,6 +68,22 @@ impl Owners {
         self.unresolved
     }
 
+    /// Of those, the states whose owner is not raw id 0, which names no owner unless a link
+    /// holds it.
+    pub fn unlinked(&self) -> u32 {
+        let unowned = self
+            .raws
+            .get(&0)
+            .filter(|(_, slot)| slot.is_none())
+            .map_or(0, |&(states, _)| states);
+        self.unresolved - unowned
+    }
+
+    /// Every canonical slot owning states, in no order.
+    pub fn slots(&self) -> impl Iterator<Item = u32> + '_ {
+        self.counts.keys().copied()
+    }
+
     /// Whether the hour read every owner anew.
     pub fn rebuilt(&self) -> bool {
         self.rebuilt

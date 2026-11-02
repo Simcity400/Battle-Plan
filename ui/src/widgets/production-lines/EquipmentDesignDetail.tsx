@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useMemo, useState } from 'react';
 import { Select } from '../../components/Select';
 import type { BoundTrack } from '../../dashboard/model';
@@ -63,7 +64,7 @@ export default function EquipmentDesignDetail({ runtime, track, hour, active }: 
           { value: '', label: 'Recorded game switch' }, { value: 'on', label: 'Fog enabled' }, { value: 'off', label: 'Fog disabled' },
         ]} /></label></div>
       {(ship && !valid(ship) || wing && !valid(wing)) && <p>Use the unit's complete numeric reference.</p>}
-      {detail.error ? <p role="alert">{detail.error} <button type="button" onClick={detail.retry}>Retry</button></p>
+      {detail.error ? <p role="alert" data-detail={detail.error.message}>{failureText(detail.error, 'Couldn’t load equipment designs.')} <button type="button" onClick={detail.retry}>Retry</button></p>
         : !detail.data ? <p>Loading equipment designs…</p>
           : <>{detail.data.warnings.map((warning, index) => <p key={index} className="is-muted">{warning}</p>)}
             <DesignSections sections={detail.data.sections} /></>}

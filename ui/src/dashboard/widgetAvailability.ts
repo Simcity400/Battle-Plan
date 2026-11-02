@@ -1,3 +1,4 @@
+import { type Failure, failureText } from './queryError.ts';
 import type { CaptureMode } from '../generated/dashboard';
 import type { ProductRequest } from './client';
 import type { WidgetMeta } from './definitions';
@@ -27,10 +28,10 @@ export function scopeReason(definition: Pick<WidgetMeta, 'data' | 'captureModes'
   return `Not in this recording: a ${mode === 'map' ? 'Map' : mode} recording holds the campaign map and its battle windows only.`;
 }
 
-export function availabilityReason(required: boolean, track: boolean, data?: WidgetAvailability, error?: string): string | null {
+export function availabilityReason(required: boolean, track: boolean, data?: WidgetAvailability, error?: Failure): string | null {
   if (!required) return null;
   if (!track) return 'Load a campaign to check availability.';
-  if (error) return `Availability unavailable: ${error}`;
+  if (error) return failureText(error, 'Availability unavailable.');
   if (!data) return 'Checking this recording…';
   return data.available === true ? null : data.unavailable ?? (data.available === false ? 'Not in this recording' : 'Availability not known');
 }

@@ -1,3 +1,4 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import { useParityRows } from '../../dashboard/parityRows';
 import WidgetState from '../../components/WidgetState';
@@ -68,13 +69,13 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   }, [data, onDiagnostics]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its construction spending." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading construction spending…" />;
   if (!data.reads.length && !data.railwayReads.length && preparedPrefix(data)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (from != null && through != null && from > through) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={footnote(data, items, preparedNote)} />;
-  return <div ref={parityRoot} style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
+  return <div ref={parityRoot} data-detail={failureDetails(wantedStates.map(read => stateAt(read.hour, read.state).failure))} style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
     hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={footnote(data, items, preparedNote)} /></div>;
 }

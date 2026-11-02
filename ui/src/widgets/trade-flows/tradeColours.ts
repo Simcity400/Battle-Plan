@@ -25,11 +25,11 @@ export function tradeColourPlan(data: TradeData | null, branch: RecordedBranch |
 
 /** Correction runs only after all bounded style chunks answer, and only when
  * recorded colours change. Dates and arriving names never change palette slots. */
-export function tradeFixedColourKey(plan: ReturnType<typeof tradeColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | symbol>): string | null {
+export function tradeFixedColourKey(plan: ReturnType<typeof tradeColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | Error>): string | null {
   if (plan.wanted.some(sample => !styles.has(nameKey(sample.hour, sample.tag)))) return null;
   return JSON.stringify([...plan.selection].map(([identity, sample]) => {
     const style = sample && styles.get(nameKey(sample.hour, sample.tag));
-    return [identity, typeof style === 'object' && style != null ? style.color : null];
+    return [identity, style != null && !(style instanceof Error) ? style.color : null];
   }));
 }
 

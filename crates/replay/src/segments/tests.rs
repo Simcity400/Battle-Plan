@@ -1549,8 +1549,10 @@ fn sixteen_emits_reading_back_spilled_chunks_stay_within_the_allowance() {
     }
     assert_eq!(stats.chunks_spilled, threads * saw.len());
     assert!(restored.peak() <= working_bytes, "{}", restored.peak());
+    // A walk's families push on several workers at once, each holding an item before it spills.
+    let pushing = threads * ((1 << 10) + 4 * size_of::<Seen>());
     assert!(
-        stats.output_bytes <= working_bytes,
+        stats.output_bytes <= working_bytes + pushing,
         "{}",
         stats.output_bytes
     );
@@ -2387,7 +2389,9 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
     };
     let claim = |schedule: &mut Schedule| {
         schedule
-            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| true)
+            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| {
+                true
+            })
             .unwrap()
             .map(|task| match task {
                 Task::Walk { at, .. } => ("walk", at),
@@ -2496,7 +2500,9 @@ fn a_walk_holding_a_segment_finds_its_failed_write_out_being_written() {
     };
     let claim = |schedule: &mut Schedule| {
         schedule
-            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| true)
+            .pick(&run.plan, &settings, &run.shared.credit, true, &mut |_| {
+                true
+            })
             .unwrap()
             .map(|task| match task {
                 Task::Walk { at, .. } => ("walk", at),
@@ -3208,6 +3214,47 @@ fn a_panic_of_the_run_s_own_stops_it() {
     assert!(ran.is_err());
 }
 
+/// Scratch whose first spill fails and whose next panics.
+struct Faltering(AtomicUsize);
+
+impl Scratch for Faltering {
+    fn spill(&self, _: &[u8]) -> io::Result<Box<dyn Spilled>> {
+        match self.0.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(io::Error::other("scratch full")),
+            _ => panic!("scratch panicked"),
+        }
+    }
+}
+
+/// The run's own panic in one family's hour is not lost to its failure another family's hour
+/// met first: the run panics.
+#[test]
+fn a_run_s_panic_outranks_its_failure_in_the_same_hour() {
+    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS)]);
+    let (first, second) = (Probes::new(anywhere), Probes::new(anywhere));
+    let (mut first_seen, mut second_seen) = (Vec::new(), Vec::new());
+    let scratch = Faltering(AtomicUsize::new(0));
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(
+            &file,
+            &Settings {
+                output_bytes: 0,
+                chunk_bytes: 1,
+                ..settings(1, 1)
+            },
+            &scratch,
+            &Cancellation::default(),
+            vec![
+                probing("first", &first, &mut first_seen),
+                probing("second", &second, &mut second_seen),
+            ],
+        )
+    }));
+    assert!(ran.is_err());
+    // Both families' hours ran: the first spill failed, the next panicked.
+    assert_eq!(scratch.0.load(Ordering::SeqCst), 2);
+}
+
 /// Scratch that cannot keep anything: the run's own failure.
 struct Full;
 
@@ -3871,4 +3918,58 @@ fn a_walk_s_lanes_share_one_world_built_for_the_walk() {
         }
     }
     assert_eq!(at, first.len());
+}
+
+#[test]
+fn a_lane_payload_policy_dates_emit_refusals_but_keeps_undated_family_failures() {
+    let file = opened(&[(1, 0, 2 * UNIT_ORDINALS), (2, 50_000, UNIT_ORDINALS)]);
+    for family in [false, true] {
+        let probes = Probes::new(anywhere);
+        let mut seen = Vec::new();
+        let lane = Lane::new(
+            "refusing",
+            |segment: &Segment| probes.make(segment),
+            |chunk: Chunk<'_, Seen>| {
+                for item in chunk.items {
+                    if item.saw.0 == 1 {
+                        let error = io::Error::other("synthetic emit refusal");
+                        return Err(if family { family_failure(error) } else { error });
+                    }
+                    seen.push(item.saw);
+                }
+                Ok(())
+            },
+        )
+        .refuses(|_| true);
+        let ran = run(
+            &file,
+            &settings(2, 2),
+            &Memory::default(),
+            &Cancellation::default(),
+            vec![lane],
+        )
+        .unwrap();
+        let outcome = &ran.outcomes[0];
+        assert_eq!(outcome.failure.is_some(), family);
+        if family {
+            assert!(seen.is_empty());
+            assert!(outcome.ended.is_empty());
+        } else {
+            assert_eq!(
+                seen,
+                expected(&file, anywhere)
+                    .into_iter()
+                    .filter(|saw| saw.0 == 2)
+                    .collect::<Vec<_>>()
+            );
+            assert!(matches!(
+                &outcome.ended[..],
+                [Ended {
+                    branch: 1,
+                    ending: Ending::Refused { hour: 0, .. },
+                    ..
+                }]
+            ));
+        }
+    }
 }

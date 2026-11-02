@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { playbackRows } from '../../charts/playbackIntervals.ts';
+import { choicePlaybackBounds } from './eventChoicesData.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import type { EventFeedItem, EventFeedKind, EventFeedRow, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
@@ -27,6 +30,22 @@ const authored: EventFeedItem = { token: 'mod_events.1', name: 'A modded crisis'
 const page = (occurrences: ScriptOccurrence[], items: EventFeedItem[] = [authored]) => validateScriptPage({
   reply: { branchId: '1', firstHour: START, lastHour: END, occurrences, items, unavailable: [], warnings: [] }, nextCursor: null });
 const all: ChoiceFilter = { kinds: new Set(EVENT_KINDS.map(kind => kind.kind)), country: () => true, allCountries: true, firstHour: null };
+test('choice playback retains cards between visible day and edge changes, including backward seeks', () => {
+  const opened = day(3, 3), chosen = opened + 60;
+  const reply = deepFreeze(page([occurrence([fire(opened), choose(chosen, 0)])]).reply);
+  const prepared = deepFreeze(prepareChoices(reply, deepFreeze({ ...all, kinds: new Set(all.kinds) })));
+  const at = (hour: number) => prepared.flatMap(row => { const shown = choiceAt(row, hour, [], false); return shown ? [shown] : []; });
+  const playback = playbackRows([opened, chosen], at, choicePlaybackBounds);
+  for (const hour of [opened - 1, opened, opened + 22, opened + 23, opened + 47, chosen, chosen + 50, opened + 1]) {
+    const actual = playback.at(hour), expected = at(hour);
+    assert.deepEqual(actual.map(row => ({ ...row, item: { ...row.item, hour } })), expected);
+    assert.deepEqual(actual.filter(row => isOpen(row.item)).map(row => awaitingText(row.item)),
+      expected.filter(row => isOpen(row.item)).map(row => awaitingText(row.item)));
+  }
+  assert.equal(playback.at(opened), playback.at(opened + 22));
+  assert.notEqual(playback.at(opened + 22), playback.at(opened + 23));
+  assert.equal(playback.at(chosen), playback.at(chosen + 50));
+});
 const name = (tag: string) => tag.replace('mod | ', '');
 const shown = (rows: ReturnType<typeof prepareChoices>, hour: number, breaks = [] as ReturnType<typeof recordingBreaks>, awaiting = false) =>
   rows.flatMap(row => { const at = choiceAt(row, hour, breaks, awaiting); return at ? [at] : []; });

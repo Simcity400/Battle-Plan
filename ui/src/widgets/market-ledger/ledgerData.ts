@@ -93,8 +93,13 @@ export interface LedgerItem {
   equipment: string | null;
 }
 
-export function ledgerRows(reply: MarketLedgerReply, page: number): LogRow<LedgerItem>[] {
-  return reply.rows.map(row => {
+const pageRows = new WeakMap<MarketLedgerReply, Map<number, ReadonlyArray<LogRow<LedgerItem>>>>();
+export function ledgerRows(reply: MarketLedgerReply, page: number): ReadonlyArray<LogRow<LedgerItem>> {
+  let pages = pageRows.get(reply);
+  if (!pages) pageRows.set(reply, pages = new Map());
+  const held = pages.get(page);
+  if (held) return held;
+  const rows = reply.rows.map(row => {
     // A party's tag at the row's hour is known only where that hour's identities were read.
     const identified = reply.identified.some(span => span.firstHour <= row.hour && row.hour <= span.lastHour);
     const party = (holder: string | null) => holder === null || !identified ? null : tagAt(reply.holders[holder], row.hour);
@@ -102,6 +107,8 @@ export function ledgerRows(reply: MarketLedgerReply, page: number): LogRow<Ledge
       row, seller: party(row.seller), buyer: party(row.buyer), parties: partiesOf(reply.holders, [row.seller, row.buyer]),
       equipment: row.variant === '0' ? null : variantNameAt(reply.variants[row.variant], row.hour) } };
   });
+  pages.set(page, rows);
+  return rows;
 }
 
 /** The cursor of each page a ledger can ask for: page 0 has
@@ -116,7 +123,7 @@ export function ledgerCursors(first: MarketLedgerReply, next: readonly string[])
 /** The log's page for each cursor: its loaded rows, or a window to wait for. A page
  * not loaded ends where the loaded page before it starts, so it never sorts above it. */
 export function ledgerPages(first: MarketLedgerReply, length: number, page: (index: number) => MarketLedgerReply | undefined,
-  errors: ReadonlyMap<number, string>, hour: number | null, branchStart: number): LogPage<LedgerItem>[] {
+  errors: ReadonlyMap<number, Error>, hour: number | null, branchStart: number): LogPage<LedgerItem>[] {
   const total = first.total == null ? null : Number(first.total);
   let bound = hour ?? branchStart;
   return Array.from({ length }, (_, index) => {

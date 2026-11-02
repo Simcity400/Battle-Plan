@@ -17,7 +17,7 @@ export interface ParityPreparation {
   id?: string;
   prepare: () => void;
   ready: () => boolean;
-  error?: () => string | null;
+  error?: () => Error | null;
 }
 type ParityProvider = (() => ParityList) & Partial<ParityPreparation> & { id: string };
 

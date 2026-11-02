@@ -33,7 +33,7 @@ fn panicking_recording_requests_report_errors_and_leave_loaders_running() {
         );
         assert!(matches!(
             receive.recv_timeout(HANG_GUARD).unwrap(),
-            DataEvent::Error { id: failed, message } if failed == id && message.contains("Dashboard request failed")
+            DataEvent::Error { id: failed, error: message } if failed == id && message.to_string().contains("Dashboard request failed")
         ));
         assert!(!service.inner.closed.load(Ordering::Acquire));
     }
@@ -321,8 +321,11 @@ fn completed_replies_still_occupy_admission_until_delivery() {
         .collect();
     assert!(pending.begin("over-capacity".into()).is_none());
     let (rejection, message) = pending.errors.pop_front().unwrap();
-    assert_eq!(message, crate::transport::CAPACITY_REACHED);
-    assert!(crate::transport::transient_error(&message));
+    assert_eq!(
+        message,
+        crate::QueryError::from(crate::transport::CAPACITY_REACHED)
+    );
+    assert!(crate::transport::transient_error(&message.to_string()));
     drop(pending.finish(&rejection, false));
     drop(pending.finish(&requests[0], true));
     assert!(pending.begin("replacement".into()).is_some());
@@ -427,13 +430,13 @@ fn unknown_products_and_unleased_sources_fail_before_loading() {
     let mut errors = Vec::new();
     for _ in 0..2 {
         match receive.recv_timeout(HANG_GUARD).unwrap() {
-            DataEvent::Error { id, message } => errors.push((id, message)),
+            DataEvent::Error { id, error: message } => errors.push((id, message)),
             other => panic!("unexpected event {other:?}"),
         }
     }
-    errors.sort();
-    assert!(errors[0].1.contains("unavailable or changed"));
-    assert!(errors[1].1.contains("Unknown data product"));
+    errors.sort_by(|left, right| left.0.cmp(&right.0));
+    assert!(errors[0].1.to_string().contains("unavailable or changed"));
+    assert!(errors[1].1.to_string().contains("Unknown data product"));
     service.shutdown();
 }
 
@@ -501,7 +504,7 @@ fn preparation_commands_preserve_lease_identity_and_exact_progress_counts() {
         action: crate::prepared::Action::Cancel,
     });
     assert!(matches!(receive.recv_timeout(HANG_GUARD).unwrap(),
-        DataEvent::Error { id, message } if id == "stale-cancel" && message.contains("unavailable or changed")));
+        DataEvent::Error { id, error: message } if id == "stale-cancel" && message.to_string().contains("unavailable or changed")));
     assert!(
         !source
             .state::<crate::prepared::Progress>()
@@ -521,7 +524,7 @@ fn preparation_commands_preserve_lease_identity_and_exact_progress_counts() {
         },
     });
     assert!(matches!(receive.recv_timeout(HANG_GUARD).unwrap(),
-        DataEvent::Error { id, message } if id == "stale-page" && message.contains("unavailable or changed")));
+        DataEvent::Error { id, error: message } if id == "stale-page" && message.to_string().contains("unavailable or changed")));
     service.shutdown();
 }
 
@@ -1494,8 +1497,13 @@ fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
         );
         let mut refused = false;
         for _ in 0..=CYCLES {
-            if let DataEvent::Error { id, message } = receive.recv_timeout(HANG_GUARD).unwrap() {
-                assert_eq!(message, crate::transport::CAPACITY_REACHED);
+            if let DataEvent::Error { id, error: message } =
+                receive.recv_timeout(HANG_GUARD).unwrap()
+            {
+                assert_eq!(
+                    message,
+                    crate::QueryError::from(crate::transport::CAPACITY_REACHED)
+                );
                 if id == "lane-full" {
                     refused = true;
                     break;
@@ -2018,8 +2026,8 @@ fn production_detail_and_breakdown_routes_keep_unprepared_history_pending() {
             request: request(product, params),
         });
         assert!(matches!(receive.recv_timeout(HANG_GUARD).unwrap(),
-            DataEvent::Error { id: received, message }
-            if received == id && message == format!("{product} is served by prepared queries")));
+            DataEvent::Error { id: received, error: message }
+            if received == id && message == crate::QueryError::from(format!("{product} is served by prepared queries"))));
     }
     pending(query("cold-detail", "production-line-detail", detail(0)));
     pending(query(
@@ -3715,7 +3723,10 @@ fn a_restart_deferred_by_a_full_history_queue_is_queued_once_it_has_room() {
     drop(hold);
     let started = std::time::Instant::now();
     while deferred(&service) {
-        assert!(started.elapsed() < HANG_GUARD, "the deferred restart was never queued");
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "the deferred restart was never queued"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     service.shutdown();
@@ -3755,9 +3766,54 @@ fn a_restart_after_a_cancel_still_ending_leaves_it_cancelled() {
     drop(hold);
     let started = std::time::Instant::now();
     while job(&source).0 {
-        assert!(started.elapsed() < HANG_GUARD, "the cancelled job never ended");
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "the cancelled job never ended"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(state(&source), crate::prepared::State::Cancelled);
+    service.shutdown();
+}
+
+#[test]
+fn typed_query_failures_survive_service_delivery_and_wire_serialization() {
+    let (sent, received) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let path = folder.0.join("typed-refusals.battleplan");
+    std::fs::write(&path, source().replay_ref().bytes()).unwrap();
+    let source = service
+        .inner
+        .open(&path, None, &AtomicBool::new(false))
+        .unwrap();
+    let refused = dashboard_base::prepared::query::native::unprepared("Synthetic product");
+    assert_eq!(
+        crate::refusal(&refused),
+        Some("Synthetic product is not prepared from native recordings yet")
+    );
+    let invalid = (products::find("country-flags").unwrap().load)(
+        &source,
+        "lease",
+        serde_json::json!({"invalid": true}),
+        &products::LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap_err();
+    for (id, error, kind) in [
+        ("refused", crate::QueryError::from(refused), "refused"),
+        ("failed", invalid, "failed"),
+    ] {
+        let request = service.inner.begin(id.into()).unwrap();
+        service.inner.complete(request, Err(error.clone()));
+        let event = received.recv_timeout(HANG_GUARD).unwrap();
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["error"]["kind"], kind);
+        let wire: DataEvent = serde_json::from_value(json).unwrap();
+        assert!(
+            matches!(wire, DataEvent::Error { id: delivered, error: delivered_error }
+            if delivered == id && delivered_error == error)
+        );
+    }
     service.shutdown();
 }

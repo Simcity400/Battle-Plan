@@ -85,19 +85,19 @@ fn start() -> Vec<State> {
 }
 
 #[test]
-fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words() {
+fn anchored_frames_must_reproduce_their_witness_and_proven_anchors_their_words() {
     let content = content();
     let states = start();
     let mut simulation = Simulation::new(HOUR, 1, states.clone());
     simulation.advance(&content, Some(7)).unwrap();
     let after_one = simulation.clone();
     simulation.advance(&content, Some(8)).unwrap();
-    let pass = |anchor, hours: Vec<Option<u32>>, anchor_seed, cursor, checksum| TemperaturePass {
+    let pass = |anchor, hours: Vec<Option<u32>>, anchor_seed, cursor, witness| TemperaturePass {
         anchor,
         cursor,
         anchor_seed,
         hours,
-        checksum,
+        witness: replay_data::rows::TemperatureWitness::new(witness),
     };
     let frames = [
         frame(
@@ -109,7 +109,7 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
                     vec![],
                     None,
                     1,
-                    temperature::checksum(states.iter().map(|s| s.temperature)),
+                    temperature::witness(states.iter().map(|s| s.temperature)),
                 ),
             ),
         ),
@@ -117,7 +117,7 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
             HOUR + 1,
             anchored(
                 &states,
-                pass(HOUR, vec![Some(7)], None, 1, after_one.checksum()),
+                pass(HOUR, vec![Some(7)], None, 1, after_one.witness()),
             ),
         ),
         // A periodic anchor proven by the hour before: its words are the pass's.
@@ -130,7 +130,7 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
                     vec![],
                     Some(8),
                     simulation.cursor,
-                    simulation.checksum(),
+                    simulation.witness(),
                 ),
             ),
         ),
@@ -143,7 +143,7 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
     assert_eq!(
         (
             stats.anchored_hours,
-            stats.checksum_equal,
+            stats.witness_equal,
             stats.anchors_compared
         ),
         (3, 3, 1)
@@ -151,7 +151,7 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
     assert_eq!((stats.anchor_rows_equal, stats.mismatches()), (4, 0));
     // The first frame's anchor has no hour before it.
     assert_eq!(stats.anchors_unproven, 1);
-    // A wrong checksum and an anchor that differs from the pass are mismatches.
+    // A wrong witness and an anchor that differs from the pass are mismatches.
     let mut wrong = frames.clone();
     let mut differing = simulation.states.clone();
     differing[2].drift += 1;
@@ -167,9 +167,9 @@ fn anchored_frames_must_reproduce_their_checksum_and_proven_anchors_their_words(
     for frame in &wrong {
         checker.observe(frame);
     }
-    // The hour before the second anchor failed its checksum, so that anchor is unproven
+    // The hour before the second anchor failed its witness, so that anchor is unproven
     // like the first frame's.
-    assert_eq!(checker.stats.checksum_mismatches, 2);
+    assert_eq!(checker.stats.witness_mismatches, 2);
     assert_eq!(checker.stats.anchors_unproven, 2);
     let mut checker = Checker::new(Ok(content));
     wrong[1] = frames[1].clone();

@@ -109,13 +109,13 @@ const preparedSeriesQuery = (...args) => query(...args, globalThis.__scoreboardH
     assert.equal(render(departed, other).index, owned);
     const incomplete = { id: 'incomplete', revision: '3' } as DashboardSource;
     render(departed, incomplete); await settle(); state = render(departed, incomplete);
-    assert.match(state.error, /did not supply/);
+    assert.match(state.error?.message ?? '', /did not supply/);
     assert.equal(state.pending, false);
     const stopped = queries.length;
     for (let count = 0; count < 20; count++) { render(departed, incomplete); await settle(); }
     assert.equal(queries.length, stopped, 'an incomplete successful reply must stop until an explicit retry');
     state.retry(); render(departed, incomplete); await settle(); state = render(departed, incomplete);
-    assert.match(state.error, /did not supply/);
+    assert.match(state.error?.message ?? '', /did not supply/);
     assert.equal(queries.length, stopped + 2, 'an explicit retry issues one index and one cell request');
 
     let through = -1, cellReads = 0, refreshes = 0;
@@ -135,7 +135,7 @@ const preparedSeriesQuery = (...args) => query(...args, globalThis.__scoreboardH
     visible = [];
     const draw = () => render(request, preparing, preparingClient);
     draw(); await settle(); state = draw();
-    assert.match(state.error, /Cells failed/);
+    assert.match(state.error?.message ?? '', /Cells failed/);
     assert.equal(cellReads, 1);
     const advance = async (lastHour: number) => {
       if (!statuses.length) await new Promise<void>(resolve => { notifyStatus = resolve; });
@@ -150,27 +150,27 @@ const preparedSeriesQuery = (...args) => query(...args, globalThis.__scoreboardH
     };
     for (const lastHour of [3, 6, 9]) {
       await advance(lastHour);
-      assert.match(state.error, /Cells failed/, 'index publications retain the failed cell request');
+      assert.match(state.error?.message ?? '', /Cells failed/, 'index publications retain the failed cell request');
       assert.equal(cellReads, 1, 'preparation progress cannot retry failed cells');
     }
     state.retry(); draw(); await settle(); state = draw();
     assert.equal(cellReads, 2, 'Retry permits one new cell request');
-    assert.match(state.error, /Cells failed/);
+    assert.match(state.error?.message ?? '', /Cells failed/);
     visible = preparedScoreboardRows(state.index, undefined, 'factories', true).slice(10, 12);
     draw(); await settle(); state = draw();
     assert.equal(cellReads, 3, 'different wanted cells start a new request');
-    assert.match(state.error, /Cells failed/);
+    assert.match(state.error?.message ?? '', /Cells failed/);
     visible = [...visible].reverse();
     draw(); await settle(); state = draw();
     assert.equal(cellReads, 3, 'reordering the same wanted set does not retry');
     const changedHour = { ...request, hour: 11 };
     render(changedHour, preparing, preparingClient); await settle(); state = render(changedHour, preparing, preparingClient);
     assert.equal(cellReads, 4, 'a different hour starts a new cell request');
-    assert.match(state.error, /Cells failed/);
+    assert.match(state.error?.message ?? '', /Cells failed/);
     const changedSource = { ...preparing, revision: '2' };
     render(changedHour, changedSource, preparingClient); await settle(); state = render(changedHour, changedSource, preparingClient);
     assert.equal(cellReads, 5, 'a different source revision starts a new cell request');
-    assert.match(state.error, /Cells failed/);
+    assert.match(state.error?.message ?? '', /Cells failed/);
   } finally {
     for (const cleanup of cleanups) cleanup?.();
     await vite.close(); delete globals.__scoreboardHookFixture;

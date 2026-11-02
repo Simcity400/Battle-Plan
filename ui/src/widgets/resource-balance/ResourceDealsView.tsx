@@ -41,7 +41,7 @@ export default function ResourceDeals({ deals, pool, decimals, hour, direction, 
           const share = pool ? `${Number(BigInt(deal.deliveredRaw) * 1000n / pool) / 10}%` : '—';
           return <li key={deal.deal} aria-setsize={deals.length} aria-posinset={range.start + offset + 1}
             style={{ top: (range.start + offset) * ROW_HEIGHT, height: ROW_HEIGHT }}>
-            <span className="drill-part-label"><CountryFlagUrl className="resource-deal-flag" url={partner.flag} reason={partner.flagReason} pending={partner.flagPending} />{partner.name}</span>
+            <span className="drill-part-label"><CountryFlagUrl className="resource-deal-flag" url={partner.flag} detail={partner.flagDetail} reason={partner.flagReason} pending={partner.flagPending} />{partner.name}</span>
             <span className="drill-part-bar" aria-hidden="true"><i style={{ width: `${accounting.widest ? Math.abs(Number(deal.deliveredRaw)) / Number(accounting.widest) * 100 : 0}%`,
               background: value < 0 ? 'var(--error)' : 'var(--positive)' }} /></span>
             <b className={value < 0 ? 'is-negative' : undefined}>{formatAmount(BigInt(deal.deliveredRaw), decimals, decimals)}</b><small>{share}</small>

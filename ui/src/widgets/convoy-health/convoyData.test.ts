@@ -6,7 +6,7 @@ import { convoyPending, convoyRows, dayPeriods, exportersAt, heatRows, labelDate
 
 const base = { branchId: '1', lastHour: 95, tag: 'IMP', scale: 100000, warnings: [], known: [[[0, 95, '1']], [[0, 95, '1']], [[0, 95, '1']]], holders: { '1': [{ hour: 0, tag: 'IMP' }], '2': [{ hour: 0, tag: 'EXP' }] },
   coverage: { firstHour: 0, lastHour: 95, complete: true }, pending: [] };
-const names = { country: (tag: string | null) => tag ?? '?' };
+const names = { country: (tag: string | null) => ({ name: tag ?? '?' }) };
 
 test('days read their last recorded hour and a day the recording missed is a gap', () => {
   const periods = dayPeriods([0, 95], [{ firstHour: 20, lastHour: 47 }]);
@@ -63,7 +63,7 @@ test('labels ask names at the dates they show', () => {
     leases: [{ handle: '9', giver: [[24, 60, '2']], bad: [], convoys: [[], []] }] });
   assert.deepEqual(labelDates(reply), { wanted: [{ hour: 95, tag: 'EXP' }, { hour: 60, tag: 'EXP' }], maxHours: MAX_NAME_HOURS });
   const asked: [string | null, number][] = [];
-  convoyRows(reply, { country: (tag, hour) => { asked.push([tag, hour]); return tag ?? '?'; } });
+  convoyRows(reply, { country: (tag, hour) => { asked.push([tag, hour]); return { name: tag ?? '?' }; } });
   assert.deepEqual(asked, [['EXP', 95], ['EXP', 60]]);
 });
 
@@ -143,8 +143,17 @@ test('a past day names its exporter as it was then, not as it was last read', ()
     holders: { ...base.holders, '2': [{ hour: 0, tag: 'OLD' }, { hour: 50, tag: 'NEW' }] },
     deals: [{ id: '1', exporter: [[0, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }] });
   assert.deepEqual(exportersAt(reply, 30), [{ hour: 30, tag: 'OLD' }]);
-  const [deal] = convoyRows(reply, { country: (tag, hour) => `${tag} at ${hour}` });
+  const [deal] = convoyRows(reply, { country: (tag, hour) => ({ name: `${tag} at ${hour}` }) });
   assert.equal(deal.label.startsWith('NEW at 95'), true, 'the row is labelled as last read');
   assert.equal(deal.detail(30).find(row => row.label === 'Exporter')?.value, 'OLD at 30');
   assert.equal(deal.detail(60).find(row => row.label === 'Exporter')?.value, 'NEW at 60');
+});
+
+test('convoy row labels and dated exporter tooltip facts retain name failure details', () => {
+  const failure = new Error('Synthetic convoy name decoder failure');
+  const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [], leases: [],
+    deals: [{ id: '1', exporter: [[0, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }] });
+  const [deal] = convoyRows(reply, { country: () => ({ name: 'Couldn’t load country name.', nameFailure: failure }) });
+  assert.equal(deal.nameDetail, failure.message);
+  assert.equal(deal.detail(30).find(row => row.label === 'Exporter')?.detail, failure.message);
 });

@@ -1,3 +1,4 @@
+import { type Failure, failureText } from '../../dashboard/queryError.ts';
 import type { NavalBattleDetail, NavalBattleDetailsReply } from '../../generated/dashboard';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
@@ -29,8 +30,8 @@ export function navalFleetDescription(detail: NavalBattleDetail | undefined): st
   return detail.fleets.map(side => side.names.length ? side.names.join(', ') + (side.unknown ? ' + unavailable' : '')
     : side.unknown ? 'Fleet names not recorded' : 'No fleet recorded').join(' v ');
 }
-export function navalDetailTooltip(detail: NavalBattleDetail | undefined, error?: string): TooltipRow[] {
-  if (!detail) return [{ label: error ? 'Couldn’t load battle details.' : 'Loading battle details…', tone: 'muted', divider: true }];
+export function navalDetailTooltip(detail: NavalBattleDetail | undefined, error?: Failure): TooltipRow[] {
+  if (!detail) return [{ detail: error?.message, label: error ? failureText(error, 'Couldn’t load battle details.') : 'Loading battle details…', tone: 'muted', divider: true }];
   const rows: TooltipRow[] = [];
   for (const [index, side] of detail.fleets.entries()) {
     rows.push({ label: `${index === 0 ? 'Attacking' : 'Defending'} fleets`, strong: true, divider: true });

@@ -8,6 +8,7 @@ import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 import { countryIdentityIndex } from './countryIdentity.ts';
 import type { CountryIdentityIndex } from './countryIdentity.ts';
 import { finalPreparedReply, preparedPrefix } from './preparedPrefix.ts';
+import { PlaybackIntervals, spanChanges } from '../charts/playbackIntervals.ts';
 
 /** Smart country groups, resolved from the recording's own history: human players,
  * any recorded faction (including ones founded or dissolved partway through),
@@ -180,13 +181,13 @@ function choiceSettled(selection: CountrySelection, groups: CountryGroupReply | 
 }
 
 export interface WorldFilter {
-  tags: ReadonlySet<string> | null;
-  reason: string | null;
+  readonly tags: ReadonlySet<string> | null;
+  readonly reason: string | null;
   /** Whether the countries are known at the hour asked (`MembershipKnown`). While not,
    * `reason` is null and the countries are those read so far: an empty set is loading. */
-  known: boolean;
+  readonly known: boolean;
   /** Native identity keys resolved at the hours membership counts. */
-  countryIds?: ReadonlySet<string> | null;
+  readonly countryIds?: ReadonlySet<string> | null;
 }
 
 function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIdentityIndex | null | undefined): CountryIdentityIndex | null {
@@ -200,7 +201,7 @@ function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIden
  * says why the set is empty or not known: a membership not recorded at the hour it is
  * counted is unknown, never an empty group. Native keys resolve smart members at
  * the counted dates; manual picks include all holders ever carrying their tags. */
-export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+function readWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
   const identities = identitiesFor(groups, index);
   const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, identities);
@@ -214,6 +215,62 @@ export function worldFilter(selection: CountrySelection, fallback: readonly stri
 
 const CHOOSE = 'Choose a country in the widget settings.';
 const UNAVAILABLE = 'This group is unavailable in this campaign.';
+
+type FilterQueries = Map<string, PlaybackIntervals<WorldFilter>>;
+const groupFilters = new WeakMap<CountryGroupReply, Map<CountryIdentityIndex | null, FilterQueries>>();
+const identityFilters = new WeakMap<CountryIdentityIndex, FilterQueries>();
+const unrecordedFilters: FilterQueries = new Map();
+const filterHours = new WeakMap<CountryGroupReply, ReadonlyArray<number>>();
+
+function worldFilterHours(groups: CountryGroupReply): ReadonlyArray<number> {
+  let hours = filterHours.get(groups);
+  if (!hours) {
+    const prefix = preparedPrefix(groups);
+    hours = [...spanChanges([...groups.humans, ...groups.wars, ...groups.factions.flatMap(faction => [...faction.members, ...faction.incomplete ?? []]),
+      ...groups.unobserved.humans, ...groups.unobserved.factions, ...groups.unobserved.wars,
+      ...prefix?.pending ?? [], ...(prefix ? [prefix.coverage] : [])])];
+    filterHours.set(groups, hours);
+  }
+  return hours;
+}
+
+export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+  hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
+  return worldFilterQuery(selection, fallback, groups, lastHour, index).at(hour);
+}
+
+export function worldFilterQuery(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+  lastHour: number, index?: CountryIdentityIndex | null): PlaybackIntervals<WorldFilter> {
+  const identities = identitiesFor(groups, index);
+  let queries: FilterQueries;
+  if (groups) {
+    let byIndex = groupFilters.get(groups);
+    if (!byIndex) groupFilters.set(groups, byIndex = new Map());
+    queries = byIndex.get(identities) ?? new Map();
+    byIndex.set(identities, queries);
+  } else if (identities) {
+    queries = identityFilters.get(identities) ?? new Map();
+    identityFilters.set(identities, queries);
+  } else queries = unrecordedFilters;
+  const key = JSON.stringify([selection, fallback, lastHour]);
+  let intervals = queries.get(key);
+  if (!intervals) {
+    const sets = new Map<string, ReadonlySet<string>>();
+    const intern = (set: ReadonlySet<string> | null | undefined) => {
+      if (set == null) return set;
+      const key = JSON.stringify([...set].sort(compareTags));
+      const held = sets.get(key);
+      if (held) return held;
+      sets.set(key, set); return set;
+    };
+    intervals = new PlaybackIntervals<WorldFilter>([...(groups ? worldFilterHours(groups) : []), ...identities?.changeHours ?? []], at => {
+      const filter = readWorldFilter(selection, fallback, groups, at, lastHour, identities);
+      return { ...filter, tags: intern(filter.tags) ?? null, ...(filter.countryIds === undefined ? {} : { countryIds: intern(filter.countryIds) }) };
+    });
+    queries.set(key, intervals);
+  }
+  return intervals;
+}
 
 function settledWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number, identities: CountryIdentityIndex | null): Omit<WorldFilter, 'known'> {
@@ -252,7 +309,18 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
  * over the hours it shows before it says that no row matches. */
 export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; known: MembershipKnown; reason: string | null }
 
+const matchChanges = new WeakMap<CountryMatch['matches'], ReadonlyArray<number>>();
+export const countryMatchChangeHours = (matches: CountryMatch['matches']) => matchChanges.get(matches);
+
 export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
+  index?: CountryIdentityIndex | null): CountryMatch {
+  const result = readCountryMatch(selection, fallback, groups, lastHour, index);
+  const identities = identitiesFor(groups, index);
+  matchChanges.set(result.matches, [...(groups ? worldFilterHours(groups) : []), ...identities?.changeHours ?? []]);
+  return result;
+}
+
+function readCountryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
   index?: CountryIdentityIndex | null): CountryMatch {
   if (selection.kind === 'all') return { ready: true, matches: () => true, known: ALWAYS, reason: null };
   const identities = identitiesFor(groups, index);

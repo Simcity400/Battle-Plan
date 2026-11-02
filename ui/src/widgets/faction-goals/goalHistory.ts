@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -40,7 +41,7 @@ export function useGoalHistory(client: DashboardClient, track: BoundTrack | unde
       void loadProduct<FactionGoalsReply>(client, request, controller.signal, undefined, track.source, attempt > 0, publish).then(publish, error => {
         if (controller.signal.aborted) return;
         running.delete(key);
-        const message = error instanceof Error ? error.message : String(error);
+        const message = asFailure(error);
         change(item => splitPart(item, message, track.branch) ?? [{ ...item, error: message }]);
       });
     }

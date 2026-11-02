@@ -1,3 +1,4 @@
+import type { Failure } from '../../dashboard/queryError';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
 import type { Artwork, CountryGroupReply, FactionGroup, FocusEntry, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
@@ -25,7 +26,7 @@ export interface MarkerSources {
   /** The branch's first and last hour: a span starting or ending there is not an event. */
   branch: readonly [number, number];
   /** Another country's name as the game showed it at an event's hour. */
-  countryName: (tag: string, hour: number) => string;
+  countryName: (tag: string, hour: number) => string | Failure;
   /** Whether the country is in the widget's group at an hour; its events outside it are left out. */
   member?: (hour: number) => boolean;
   groups?: CountryGroupReply;
@@ -35,7 +36,7 @@ export interface MarkerSources {
   parties?: PartyHistoryReply;
   focus?: FocusMarks;
   /** Scoped titles at each completion's observation hour: null when none, undefined while reading. */
-  focusName?: (token: string, hour: number) => string | null | undefined;
+  focusName?: (token: string, hour: number) => string | null | undefined | Failure;
 }
 
 /** A country's completed focuses, each as an order listed it, and their static text: the focus
@@ -50,13 +51,23 @@ const inSpans = (spans: readonly HourSpan[], hour: number) => spans.some(span =>
 
 /** The markers of the kinds shown, in hour order. */
 export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<MarkerKind>): EventBadge[] {
-  const { tag, extent, branch, countryName } = sources;
+  const { tag, extent, branch } = sources;
+  let nameFailure: Failure | undefined;
+  const countryName = (tag: string, hour: number) => {
+    const name = sources.countryName(tag, hour);
+    if (name instanceof Error) nameFailure = name;
+    return contentTitle(name, tag, 'Country name unavailable', false, 'Couldn’t load country name.');
+  };
   const within = (hour: number) => hour >= extent[0] && hour <= extent[1] && (sources.member?.(hour) ?? true);
   const badges: EventBadge[] = [];
   // A label is built only for an event shown, so only those ask for names.
-  const push = (kind: MarkerKind, hour: number, label: string | (() => string), estimated = false) => {
-    if (kinds.has(kind) && within(hour)) badges.push({ hour, glyph: MARKER_GLYPHS[kind], label: typeof label === 'string' ? label : label(),
-      ...(estimated || kind === 'wars' && provisionalGroupEvent(sources.groups, hour) ? { approximate: true } : {}) });
+  const push = (kind: MarkerKind, hour: number, label: string | (() => string | Pick<EventBadge, 'label' | 'failure'>), estimated = false) => {
+    if (kinds.has(kind) && within(hour)) {
+      nameFailure = undefined;
+      const text = typeof label === 'string' ? label : label();
+      badges.push({ hour, glyph: MARKER_GLYPHS[kind], ...(typeof text === 'string' ? { label: text } : text), ...(nameFailure ? { failure: nameFailure } : {}),
+        ...(estimated || kind === 'wars' && provisionalGroupEvent(sources.groups, hour) ? { approximate: true } : {}) });
+    }
   };
   const groups = sources.groups;
   if (groups && kinds.has('wars')) {
@@ -184,7 +195,8 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
         const known = names.get(entry.token) ?? null;
         const read = known === null ? sources.focusName?.(entry.token, hour) : undefined;
         const name = known ?? read;
-        return `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', known === null && read === undefined && sources.focusName !== undefined)} (completed by then)`;
+        return { label: `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', known === null && read === undefined && sources.focusName !== undefined, 'Couldn’t load focus name.')} (completed by then)`,
+          ...(name instanceof Error ? { failure: name } : {}) };
       });
     }
   }

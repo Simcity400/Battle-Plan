@@ -1,3 +1,5 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import { failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -119,9 +121,9 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const headerWanted = useMemo(() => pinned && countrySlot && headerAlias ? [{ tag: headerAlias, hour: drillAt }] : [],
     [pinned, countrySlot, headerAlias, drillAt]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && !!countrySlot && pinned);
-  const header = pinned && countrySlot && createPortal(<DatedCountryChip
+  const header = pinned && countrySlot && createPortal(<DatedCountryChip failure={drillError}
     label={headerAlias ? headerLabels.labelAt(drillAt)(headerAlias) : null} hour={window ? drillAt : null}
-    reason={drillError ? 'Couldn’t load the breakdown.' : (!headerSelection ? 'Saved country selection unavailable. Choose it again.'
+    reason={drillError ? failureText(drillError, 'Couldn’t load the breakdown.') : (!headerSelection ? 'Saved country selection unavailable. Choose it again.'
       : !headerAlias ? 'Country unavailable at this time.' : null)} />, countrySlot);
   const looks = useCountryLooks(runtime.client, track, currentAlias ? [currentAlias] : [], drillAt, active,
     (tag, hour) => drillData?.series.find(series => series.tag === tag)?.segments.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour ?? null);
@@ -176,7 +178,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     onSummaryView={drillReply.onSummaryView} onReachHour={drillReply.onReachHour} navigation={drillReply.navigation}
     pickOwner={drillPickOwner}
     segmentAt={(tag, hour) => nuclearSegmentAt(drillModel, tag, hour)}
-    state={drillError ? <WidgetState kind="error" detail={drillError} onRetry={drillReply.retry} />
+    state={drillError ? <WidgetState kind="error" failure={drillError} onRetry={drillReply.retry} />
       : drillTag && !drillModel ? <WidgetState kind="loading" label="Loading nuke types…" /> : undefined}
     tooltip={() => null}
     timeTooltip={hour => {
@@ -186,7 +188,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
       hover.ask(hour, [alias]);
       const forms = nuclearTooltip(drillModel, drillTag, hour, hover.labelAt(hour)(alias).name, colours, formatDateTime(hour));
       const at = nuclearDrillAt(drillModel, drillTag, hour);
-      return forms?.map(form => ({ ...form, rows: [...form.rows.slice(0, -1), ...(at?.remainder ? [{
+      return forms?.map(form => ({ ...form, ...countryNameDetails({ nameDetail: form.detail }, hover.labelAt(hour)(alias)), rows: [...form.rows.slice(0, -1), ...(at?.remainder ? [{
         label: UNATTRIBUTED_PART.label, value: formatNukes(at.remainder), swatch: colours.get(''),
       }] : []), ...form.rows.slice(-1)] })) ?? null;
     }}
@@ -204,11 +206,11 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     </div>}
     onPick={drillTag ? hour => dispatchDrill(pinned ? { type: 'open', breakdown: drillTag, hour, playing: false, playhead: null }
       : { type: 'pick', hour }) : undefined} />;
-  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (pinned) return <>{header}{groupNotice}<div className="parts-race-drill">{breakdown}</div></>;
   const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
-  const overviewState = error ? <WidgetState kind="error" detail={error} onRetry={retry} />
-    : groups.error && !groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+  const overviewState = error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    : groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
       : resolved.reason ? <WidgetState kind="empty" icon="target" message={resolved.reason} />
         // A group with no member found yet asks for nothing, so no reply will come.
         : none ? <NoMembersState reason={none.reason} icon="target" />

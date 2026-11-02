@@ -42,7 +42,7 @@ import { entryAt } from '../../dashboard/reads';
 import type { LossesParams } from '../../generated/dashboard';
 import { DETAIL, OPTIONS } from './definition';
 import { LEVELS, coverageLegend, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
-  lossWindow, lossKey, unknownCauses } from './lossesData';
+  lossWindow, lossKey, unknownCauses } from './lossesData.ts';
 import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses, readLossSelection } from './lossDrill';
 import type { LossRow } from './lossDrill';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -157,8 +157,8 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
       : selection === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
         : (hasSavedCountry && !savedCountry) || (catalogue.data && (!selectedCountry || !actorSpans))
           ? <WidgetState kind="unavailable" message={actorReason!} />
-          : catalogue.error && !catalogue.data ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
-            : productError ? <WidgetState kind="error" detail={productError} onRetry={product.retry} />
+          : catalogue.error && !catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
+            : productError ? <WidgetState kind="error" failure={productError} onRetry={product.retry} />
               : !data ? <><PreparedLogCoverage coverage={request ? null : undefined} />
                 <WidgetState kind="loading" label="Loading equipment losses..." /></> : null;
   if (import.meta.env.MODE === 'parity') {
@@ -168,7 +168,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
       complete: unavailable === null && !!track && !!tag && !!view && !!data,
     }));
   }
-  const catalogueNotice = catalogue.error && catalogue.data ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} /> : null;
+  const catalogueNotice = catalogue.error && catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} /> : null;
   if (unavailable || !track || !tag || !view || !data) return <>{countryHeader}{catalogueNotice}{unavailable}</>;
   const openRows = (keys: readonly string[] | null) => { setPicked(keys); setDrill(state => reduceDrill(state, { type: 'open', breakdown: DETAIL.id,
     hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null })); };

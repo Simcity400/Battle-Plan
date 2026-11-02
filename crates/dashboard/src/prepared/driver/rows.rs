@@ -93,7 +93,7 @@ pub(super) fn prepare(
                         (*name).to_owned(),
                         Refusal {
                             hour: first,
-                            error: why.clone(),
+                            error: crate::QueryError::Refused { text: why.clone() },
                             from: None,
                         },
                     )]),
@@ -144,7 +144,10 @@ fn accepted(refused: &[(&'static str, String)], bytes: u64) -> Accepted {
                 state: State::Failed,
                 done: "0".to_owned(),
                 total: None,
-                error: Some(why.get(name).map_or_else(|| reason(label), |why| (*why).clone())),
+                error: Some(
+                    why.get(name)
+                        .map_or_else(|| reason(label), |why| (*why).clone()),
+                ),
             }
         })
         .collect();

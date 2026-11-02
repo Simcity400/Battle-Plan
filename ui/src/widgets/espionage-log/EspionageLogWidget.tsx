@@ -1,3 +1,4 @@
+import { asFailure, failureText } from '../../dashboard/queryError.ts';
 import { preparedPrefix, pendingAt } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
@@ -26,7 +27,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useParityRows } from '../../dashboard/parityRows';
 import { parityWindowCoverage, parityWindowIndices, useParityPreparation } from '../../dashboard/parityPreparation';
 import { OPTIONS } from './definition';
-import { operationChoices, operationJumpHours, operationName, windowedOperationRows, operationWindowIndex, operationWindows, operationState, operationTooltip, operationWording, operationProgress, operationOutcome } from './espionageData';
+import { espionagePlayback, operationChoices, operationJumpHours, operationName, operationWindowIndex, operationWindows, operationState, operationTooltip, operationWording, operationProgress, operationOutcome } from './espionageData.ts';
 import type { OperationAt } from './espionageData';
 import { useEspionageLog, useEspionageWindows } from './useEspionageLog';
 import './espionageLog.css';
@@ -73,9 +74,10 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const wantedWindows = parity?.requested ? completeWindows : operationWindows(data, hour ?? 0, live,
     [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], from ?? -Infinity);
   const history = useEspionageWindows(track, runtime, wantedWindows, active && !!data);
-  const rows = useMemo(() => inBranch && shownHour != null && match.ready
-    ? windowedOperationRows(history.data, shownHour, { types: contentSet(types).map(contentKey), role, country: match.matches, from, live, runningOrder, includeUnknownCountries }) : NO_ROWS,
-  [history.data, inBranch, shownHour, match, types, role, from, live, runningOrder, includeUnknownCountries]);
+  const rowPlayback = useMemo(() => match.ready
+    ? espionagePlayback(history.data, { types: contentSet(types).map(contentKey), role, country: match.matches, from, live, runningOrder, includeUnknownCountries }) : null,
+  [history.data, match, types, role, from, live, runningOrder, includeUnknownCountries]);
+  const rows = inBranch && shownHour != null ? rowPlayback?.at(shownHour) ?? NO_ROWS : NO_ROWS;
   const [visible, setVisible] = useState<readonly LogRow<OperationAt>[]>(NO_ROWS);
   const currentRows = useMemo(() => new Map(rows.map(row => [row.id, row])), [rows]);
   const drawn = useMemo(() => visible.flatMap(row => { const current = currentRows.get(row.id); return current ? [current] : []; }), [visible, currentRows]);
@@ -113,7 +115,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
         if (!controller.signal.aborted) setDescription({ reference: descriptionRef, text: result.text });
       })
       .catch(error => { if (!controller.signal.aborted) setDescription({ reference: descriptionRef,
-        text: 'Couldn’t load description.', detail: error instanceof Error ? error.message : String(error) }); });
+        text: failureText(asFailure(error), 'Couldn’t load description.'), detail: asFailure(error).message }); });
     return () => controller.abort();
   }, [active, runtime.client, descriptionRef, descriptionSource, branchId, descriptionLanguage]);
   // Names and flags belong to the endpoints' supplying read, including an ending's upper bound.
@@ -155,9 +157,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its espionage operations." />;
   const windowError = history.errors.values().next().value;
-  if (windowError) return <WidgetState kind="error" detail={windowError} onRetry={history.retry} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (windowError) return <WidgetState kind="error" failure={asFailure(windowError)} onRetry={history.retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || (needsGroups && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading espionage operations…" /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
@@ -188,9 +190,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     return <>
       <span className="log-art" aria-hidden="true">{type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="target" />}</span>
       <span className="log-text">
-        {at.ownerTag !== null && <CountryFlagUrl className="log-flag" url={owner.flag} reason={owner.flagReason} pending={owner.flagPending} />}<b>{owner.name}</b>
+        {at.ownerTag !== null && <CountryFlagUrl className="log-flag" url={owner.flag} detail={owner.flagDetail} reason={owner.flagReason} pending={owner.flagPending} />}<b>{owner.name}</b>
         <span className="espionage-muted">{wording.action}</span>{operationName(type)}<span className="espionage-muted"> against </span>
-        {at.targetTag !== null && <CountryFlagUrl className="log-flag" url={target.flag} reason={target.flagReason} pending={target.flagPending} />}<b>{target.name}</b><span className="espionage-muted">{wording.afterTarget}</span>
+        {at.targetTag !== null && <CountryFlagUrl className="log-flag" url={target.flag} detail={target.flagDetail} reason={target.flagReason} pending={target.flagPending} />}<b>{target.name}</b><span className="espionage-muted">{wording.afterTarget}</span>
         {at.startHour !== null && <span className="espionage-muted"> · started {formatDateTime(at.startHour)}</span>}
         {!meter && outcome && <span className="espionage-muted"> · {outcome}</span>}
       </span>
@@ -213,8 +215,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       animate={log.animate && live && shownHour === hour} columns={row => drawsMeter(row.item, live) ? METER_COLUMNS : COLUMNS} renderRow={renderRow}
       describe={row => `${labels(row, row.item.ownerTag).name}${operationWording(row.item).action}${operationName(row.item.typeKey === null ? undefined : byType.get(row.item.typeKey))} against ${labels(row, row.item.targetTag).name}${operationWording(row.item).afterTarget}. ${operationState(row.item)}.`}
       onTooltip={onTooltip}
-      tooltip={row => operationTooltip(data, row, tag => labels(row, tag),
-        description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.text : undefined)}
+      tooltip={row => ({ ...operationTooltip(data, row, tag => labels(row, tag),
+        description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.text : undefined),
+        detail: description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.detail : undefined })}
       menu={row => operationJumpHours(row.item, shownHour ?? hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
       empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? hour) ? "This range is still being prepared." : unread ? "Operations unavailable at this time." : !match.known(from ?? track.branch.firstHour, shownHour ?? hour) ? "This range is still being prepared." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
   </div>;

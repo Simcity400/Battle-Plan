@@ -15,7 +15,7 @@ export interface BattleLabels {
   place: string; date: string; start: string; end: string; winner: string;
   ongoing: string; unknownPlace: string; unknownStart: string;
 }
-export type BattleCountryLabel = (tag: string, hour: number) => { name: string; flag?: string; flagReason?: string; flagPending?: boolean };
+export type BattleCountryLabel = (tag: string, hour: number) => { name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
 export type BattleLossFormatter<T extends BattleRow = BattleRow> = (value: BattleValue, row: T, side: number, tooltip: boolean) => string;
 export interface BattleMeasure<T extends BattleRow = BattleRow> {
   /** The caller's count/loss label is the stable key, never its array index. */
@@ -95,7 +95,7 @@ export function battleMeasure(row: BattleRow, label: string, unknown: string): B
   return missing.size ? { label, value: null, unknown: [...missing].join('; ') } : { label, value, atLeast };
 }
 
-export function battleLogRows<T extends BattleRow>(rows: readonly T[], live: boolean): LogRow<T>[] {
+export function battleLogRows<T extends BattleRow>(rows: readonly T[], live: boolean): ReadonlyArray<LogRow<T>> {
   return rows.map(item => ({ key: item.id, id: item.id, hour: battleHour(item),
     by: (item.end && 'hour' in item.end ? item.end : item.start)?.bound === 'by', item }))
     .sort((a, b) => (live ? Number(b.item.end === null) - Number(a.item.end === null) : 0)

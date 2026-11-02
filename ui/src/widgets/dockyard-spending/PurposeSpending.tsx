@@ -108,7 +108,7 @@ export function PurposeSpendingWidget<R extends ProductionSpendingReply & { mont
   const read = data && (data.reads.length > 0 || kind.read?.(data) === true);
   let body: ReactNode;
   if (!track || !tag) body = <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
-  else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
+  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
   else if (!data) body = <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
   else if (!read && preparedPrefix(data)?.pending.length) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (!read) body = <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;

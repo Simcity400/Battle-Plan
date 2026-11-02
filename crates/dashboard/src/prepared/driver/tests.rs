@@ -87,7 +87,7 @@ fn every_section_has_one_exact_owner() {
             Some(Owner::Job("production-lines")),
         ),
         ("event_feed-continuation-1", Some(family("event_feed"))),
-        ("production-facts-v2/7", Some(family("production"))),
+        ("production-facts-v3/7", Some(family("production"))),
         (
             "production-lines-state-v2-1-0",
             Some(Owner::Job("production-lines")),

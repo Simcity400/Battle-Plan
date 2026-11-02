@@ -147,7 +147,6 @@ fn an_update_stages_every_window_province_before_committing_any() {
         simulation.states[4],
         state(1_276_493, 120_000, 1_276_493, 120_000)
     );
-    assert_eq!(simulation.checksum(), 0xc02c_c1f6_239a_6700);
 }
 
 #[test]
@@ -184,9 +183,23 @@ fn unsettled_content_refuses_only_where_the_pass_reads_it() {
 }
 
 #[test]
-fn the_checksum_is_fnv_over_little_endian_temperatures() {
-    assert_eq!(checksum([]), 0xcbf2_9ce4_8422_2325);
-    assert_ne!(checksum([1, 0]), checksum([0, 1]));
+fn the_witness_sums_each_slots_term() {
+    // The recorded definition: collectors and readers must agree on every bit.
+    assert_eq!(witness([]), 0);
+    assert_eq!(witness([0]), 0x4821_8226_ff3c_d4bf);
+    assert_eq!(witness([0, 100_000, -1]), 0x6c78_0239_d499_3e98);
+    assert_eq!(province_witness(13_412, -2_000_000), 0xd331_14c6_035a_7339);
+    assert_ne!(witness([1, 0]), witness([0, 1]));
+    // A changed slot moves the witness by its own two terms.
+    let before = [5, -6, 7_000_000, 0];
+    let mut after = before;
+    after[2] = -7_000_000;
+    assert_eq!(
+        witness(after),
+        witness(before)
+            .wrapping_sub(province_witness(2, 7_000_000))
+            .wrapping_add(province_witness(2, -7_000_000))
+    );
 }
 
 fn rows(states: &[State], pass: Option<crate::rows::TemperaturePass>) -> Vec<WeatherProvinceRow> {
@@ -203,7 +216,7 @@ fn rows(states: &[State], pass: Option<crate::rows::TemperaturePass>) -> Vec<Wea
 }
 
 #[test]
-fn frames_derive_from_their_anchor_and_must_match_the_recorded_checksum() {
+fn frames_derive_from_their_anchor_and_must_match_the_recorded_witness() {
     let content = content();
     let hour = date(1936, 100, 7);
     let anchored = [
@@ -215,17 +228,17 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_checksum() {
     ];
     let seed = 0x9e37_79b9_u32;
     let derived = [0, 1_157_465, 618_397, -50_000, 2_000_000];
-    let pass = |hours: Vec<Option<u32>>, checksum| crate::rows::TemperaturePass {
+    let pass = |hours: Vec<Option<u32>>, witness| crate::rows::TemperaturePass {
         anchor: hour - 1,
         cursor: 1,
         anchor_seed: None,
         hours,
-        checksum,
+        witness: crate::rows::TemperatureWitness::new(witness),
     };
     let mut memo = Memo::default();
     let frame = rows(
         &anchored,
-        Some(pass(vec![Some(seed)], super::checksum(derived))),
+        Some(pass(vec![Some(seed)], super::witness(derived))),
     );
     let states = memo.states(1, hour, &frame, Ok(&content)).unwrap();
     assert_eq!(
@@ -236,23 +249,23 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_checksum() {
     // hour changes nothing.
     let frame = rows(
         &anchored,
-        Some(pass(vec![Some(seed), None], super::checksum(derived))),
+        Some(pass(vec![Some(seed), None], super::witness(derived))),
     );
     memo.states(1, hour + 1, &frame, Ok(&content)).unwrap();
     assert_eq!(memo.simulation().unwrap().hour, hour + 1);
-    // A wrong checksum, a pass that does not reach the frame, a refused pass and missing
+    // A wrong witness, a pass that does not reach the frame, a refused pass and missing
     // content each refuse every temperature of the frame.
     let wrong = rows(
         &anchored,
-        Some(pass(vec![Some(seed ^ 1)], super::checksum(derived))),
+        Some(pass(vec![Some(seed ^ 1)], super::witness(derived))),
     );
     assert!(
         Memo::default()
             .states(1, hour, &wrong, Ok(&content))
             .unwrap_err()
-            .contains("checksum")
+            .contains("differ from the recorded witness")
     );
-    let short = rows(&anchored, Some(pass(vec![], super::checksum(derived))));
+    let short = rows(&anchored, Some(pass(vec![], super::witness(derived))));
     assert!(
         Memo::default()
             .states(1, hour, &short, Ok(&content))
@@ -266,7 +279,7 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_checksum() {
     );
     let frame = rows(
         &anchored,
-        Some(pass(vec![Some(seed)], super::checksum(derived))),
+        Some(pass(vec![Some(seed)], super::witness(derived))),
     );
     assert!(
         Memo::default()
@@ -275,7 +288,7 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_checksum() {
     );
     // At its anchor a frame's temperatures are its rows' own.
     let at_anchor = rows(&anchored, Some(pass(vec![], 0)));
-    let mut anchor_pass = pass(vec![], super::checksum(anchored.map(|s| s.temperature)));
+    let mut anchor_pass = pass(vec![], super::witness(anchored.map(|s| s.temperature)));
     anchor_pass.anchor = hour;
     let at_anchor = rows(&anchored, Some(anchor_pass))
         .into_iter()
@@ -286,6 +299,31 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_checksum() {
             .states(1, hour, &at_anchor, Ok(&content))
             .unwrap(),
         anchored
+    );
+}
+
+/// A pass recorded before the witness certifies nothing, whatever its words and content.
+#[test]
+fn passes_without_a_witness_refuse_by_name() {
+    let content = content();
+    let hour = date(1936, 100, 7);
+    let anchored = [state(0, 0, 0, 0); 5];
+    let frame = rows(
+        &anchored,
+        Some(crate::rows::TemperaturePass {
+            anchor: hour,
+            cursor: 1,
+            anchor_seed: None,
+            hours: vec![],
+            witness: crate::rows::TemperatureWitness::default(),
+        }),
+    );
+    let reason = Memo::default()
+        .states(1, hour, &frame, Ok(&content))
+        .unwrap_err();
+    assert!(
+        reason.contains("predates the province temperature witness"),
+        "{reason}"
     );
 }
 
@@ -345,7 +383,7 @@ fn held_derivations_resume_exactly_in_any_order() {
         next.advance(&content, seed).unwrap();
         reference.push(next);
     }
-    let frame = |steps: usize, checksum: u64| {
+    let frame = |steps: usize, witness: u64| {
         rows(
             &anchored,
             Some(crate::rows::TemperaturePass {
@@ -353,15 +391,15 @@ fn held_derivations_resume_exactly_in_any_order() {
                 cursor: 1,
                 anchor_seed: None,
                 hours: seeds[..steps].to_vec(),
-                checksum,
+                witness: crate::rows::TemperatureWitness::new(witness),
             }),
         )
     };
-    let derive = |memo: &mut Memo, steps: usize, checksum: u64| {
+    let derive = |memo: &mut Memo, steps: usize, witness: u64| {
         memo.states(
             1,
             anchor + steps as i32,
-            &frame(steps, checksum),
+            &frame(steps, witness),
             Ok(&content),
         )
         .map(<[State]>::to_vec)
@@ -369,7 +407,7 @@ fn held_derivations_resume_exactly_in_any_order() {
     // A default memo holds nothing on an in-order walk, and stays exact out of order.
     let mut plain = Memo::default();
     for steps in (0..=12).chain([5, 12, 0]) {
-        let right = reference[steps].checksum();
+        let right = reference[steps].witness();
         assert_eq!(
             derive(&mut plain, steps, right),
             Ok(reference[steps].states.clone())
@@ -378,11 +416,11 @@ fn held_derivations_resume_exactly_in_any_order() {
     }
     let mut memo = Memo::holding();
     for steps in [3, 10, 7, 12, 0, 1, 11, 6, 6, 5, 9, 2] {
-        let right = reference[steps].checksum();
+        let right = reference[steps].witness();
         let expected = Ok(reference[steps].states.clone());
         assert_eq!(derive(&mut memo, steps, right), expected, "{steps}");
         assert_eq!(derive(&mut Memo::default(), steps, right), expected);
-        // A wrong checksum refuses alike and leaves the derivations exact.
+        // A wrong witness refuses alike and leaves the derivations exact.
         let wrong = right ^ 1;
         assert_eq!(
             derive(&mut memo, steps, wrong),
@@ -394,7 +432,7 @@ fn held_derivations_resume_exactly_in_any_order() {
     assert!(memo.held.iter().all(|held| (held.hour - anchor) % 2 == 0));
     let window = 3;
     for steps in (0..=12).rev().chain(0..=12) {
-        let right = reference[steps].checksum();
+        let right = reference[steps].witness();
         assert_eq!(
             derive(&mut memo, steps, right),
             Ok(reference[steps].states.clone())
@@ -411,7 +449,7 @@ fn held_derivations_resume_exactly_in_any_order() {
     assert_eq!((memo.held(), memo.held_bytes()), (0, 0));
     assert_eq!(memo.simulation(), reference.last());
     // Another branch and missing content refuse or start again exactly as a fresh memo.
-    let right = reference[4].checksum();
+    let right = reference[4].witness();
     let other = memo
         .states(2, anchor + 4, &frame(4, right), Ok(&content))
         .map(<[State]>::to_vec);
@@ -431,7 +469,7 @@ fn held_derivations_resume_exactly_in_any_order() {
             scope.spawn(move || {
                 for steps in (first..13).step_by(4).rev() {
                     let mut memo = shared.lock().unwrap();
-                    let right = reference[steps].checksum();
+                    let right = reference[steps].witness();
                     assert_eq!(
                         derive(&mut memo, steps, right),
                         Ok(reference[steps].states.clone())
@@ -471,7 +509,7 @@ fn held_derivations_require_the_same_branch_anchor_cursor_words_and_seed_prefix(
                 cursor,
                 anchor_seed: None,
                 hours: hours.to_vec(),
-                checksum: reference.checksum(),
+                witness: crate::rows::TemperatureWitness::new(reference.witness()),
             }),
         );
         assert_eq!(
@@ -503,7 +541,9 @@ fn an_advance_refusal_clears_held_derivations_and_allows_a_fresh_retry() {
             cursor: 1,
             anchor_seed: None,
             hours: vec![],
-            checksum: checksum(anchored.iter().map(|state| state.temperature)),
+            witness: crate::rows::TemperatureWitness::new(witness(
+                anchored.iter().map(|state| state.temperature),
+            )),
         }),
     );
     memo.states(1, anchor, &initial, Ok(&content)).unwrap();
@@ -517,7 +557,7 @@ fn an_advance_refusal_clears_held_derivations_and_allows_a_fresh_retry() {
             cursor: 1,
             anchor_seed: None,
             hours: vec![Some(10)],
-            checksum: 0,
+            witness: crate::rows::TemperatureWitness::new(0),
         }),
     );
     let mut reference = Simulation::new(anchor, 1, anchored.clone());
@@ -535,7 +575,7 @@ fn an_advance_refusal_clears_held_derivations_and_allows_a_fresh_retry() {
 }
 
 #[test]
-fn certified_anchor_changes_match_full_validation_and_keep_checksum_refusals() {
+fn certified_anchor_changes_match_full_validation_and_keep_witness_refusals() {
     let content = content();
     let anchor = date(1936, 100, 7);
     let original = vec![
@@ -578,7 +618,9 @@ fn certified_anchor_changes_match_full_validation_and_keep_checksum_refusals() {
                 cursor: 1,
                 anchor_seed: None,
                 hours: seeds[..step].to_vec(),
-                checksum: expected.checksum() ^ u64::from(corrupt),
+                witness: crate::rows::TemperatureWitness::new(
+                    expected.witness() ^ u64::from(corrupt),
+                ),
             }),
         );
         let hour = anchor + step as i32;
@@ -702,4 +744,132 @@ fn minimum_signed_window_admits_every_committed_edit_before_native_update() {
     }
     drop(memo);
     assert_eq!(budget.used(), 0);
+}
+
+/// The planned pass stages, commits and refuses exactly as the content's own, refusals in the
+/// content's words, and the memo's moved witness is the whole one at every hour.
+#[test]
+fn the_planned_pass_and_moved_witness_match_the_content_pass() {
+    let base = content();
+    let mut variants = vec![base.clone()];
+    let mut refused_periods = base.clone();
+    refused_periods
+        .periods
+        .insert(20, Err("synthetic periods".into()));
+    variants.push(refused_periods);
+    let mut no_template = base.clone();
+    no_template.periods.remove(&30);
+    variants.push(no_template);
+    let mut refused_terrain = base.clone();
+    refused_terrain.provinces[2].terrain = Err("synthetic terrain".into());
+    variants.push(refused_terrain);
+    let mut broken = base.clone();
+    broken.provinces[4].neighbours.push(9);
+    variants.push(broken);
+    let mut wide = base.clone();
+    wide.settings.provinces_per_update = i32::MIN;
+    variants.push(wide);
+    let anchored = vec![
+        state(0, 0, 0, 0),
+        state(1_234_567, 250_000, 1_234_567, 250_000),
+        state(800_000, -120_000, 800_000, -120_000),
+        state(-50_000, 600_000, 999, 7),
+        state(2_000_000, 10, 1_500_000, -40_000),
+    ];
+    let anchor = date(1936, 100, 7);
+    let seeds: Vec<Option<u32>> = (0..9u32)
+        .map(|at| (at % 3 != 1).then_some(at.wrapping_mul(0x9e37_79b9)))
+        .collect();
+    for (variant, content) in variants.iter().enumerate() {
+        let plan = Plan::new(content);
+        let planned = Planned::new(content, &plan);
+        let mut whole = Simulation::new(anchor, 1, anchored.clone());
+        let mut fast = whole.clone();
+        let mut staged = Vec::new();
+        for &seed in &seeds {
+            let expected = whole.advance(content, seed);
+            let actual = fast.advance_with(&planned, seed, &mut staged, None, &mut None);
+            assert_eq!(actual, expected, "variant {variant}");
+            assert_eq!(fast, whole, "variant {variant}");
+            if expected.is_err() {
+                break;
+            }
+        }
+        let mut reference = Memo::default();
+        let mut memo = Memo::default();
+        let mut derivation = Simulation::new(anchor, 1, anchored.clone());
+        for step in 0..=seeds.len() {
+            let failed = step > 0 && derivation.advance(content, seeds[step - 1]).is_err();
+            let frame = rows(
+                &anchored,
+                Some(crate::rows::TemperaturePass {
+                    anchor,
+                    cursor: 1,
+                    anchor_seed: None,
+                    hours: seeds[..step].to_vec(),
+                    witness: crate::rows::TemperatureWitness::new(if failed {
+                        0
+                    } else {
+                        derivation.witness()
+                    }),
+                }),
+            );
+            let hour = anchor + step as i32;
+            let changed = (step > 0).then_some(&[0_u128][..]);
+            let expected = reference
+                .states_changed(1, hour, &frame, Ok(content), changed)
+                .map(<[State]>::to_vec);
+            let actual = memo
+                .states_changed(1, hour, &frame, Ok(&planned), changed)
+                .map(<[State]>::to_vec);
+            assert_eq!(actual, expected, "variant {variant}, step {step}");
+            assert_eq!(
+                memo.changes(),
+                reference.changes(),
+                "variant {variant}, step {step}"
+            );
+            if failed {
+                break;
+            }
+        }
+    }
+}
+
+/// Dividing by a count's reciprocal gives the guarded division's quotient, on both sides of
+/// the reciprocal's range.
+#[test]
+fn reciprocal_averages_are_the_guarded_division() {
+    let edge = (1_i64 << 31) - 1;
+    let mut sums = vec![
+        0,
+        1,
+        -1,
+        7,
+        -7,
+        99_999,
+        -100_001,
+        edge,
+        -edge,
+        edge + 1,
+        -edge - 1,
+    ];
+    sums.extend([i64::MAX, i64::MIN, i64::MIN + 1, 1 << 40, -(1 << 40)]);
+    let mut x = 0x9e37_79b9_7f4a_7c15_u64;
+    for _ in 0..4_000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        sums.push((x as i64) >> (x % 40));
+    }
+    for count in (1..=64).chain([100, 1_000, 65_535, 1 << 20]) {
+        let divisor = reciprocal(count);
+        for &sum in &sums {
+            assert_eq!(
+                average_by(sum, count as i32, divisor),
+                average(sum, count as i32),
+                "{sum} over {count}"
+            );
+        }
+    }
+    assert_eq!(reciprocal(0), (0, 0));
 }

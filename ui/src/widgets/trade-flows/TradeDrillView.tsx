@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { useTradeFlows } from './useTradeFlows';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
@@ -60,6 +61,10 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
     };
     return `${name('seller')} → ${name('buyer')} · ${resourceName(flow.resource)}`;
   }, [labels.labelAt, factHour]);
+  const nameDetails = useCallback((flow: Flow, at: number, exact = false) => countryNameDetails(...(['seller', 'buyer'] as const).map(side => {
+    const fact = flowCountryAt(flow, side, at);
+    return fact ? labels.labelAt(factHour(fact, exact))(fact.tag) : undefined;
+  })), [labels.labelAt, factHour]);
   const ask = useCallback((at: number, selected: readonly Flow[]) => {
     const key = JSON.stringify([at, selected.map(flow => flow.key)]);
     if (key === hoverKey.current) return;
@@ -75,14 +80,14 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
   const scale = 10 ** trade.reply.decimals;
   const parts = useMemo<DrillPart[]>(() => amounts.map(({ flow, raw }) => {
     const seller = visibleSet.has(flow.key) ? flowCountryAt(flow, 'seller', hour!) : null;
-    return { id: flow.key,
+    return { ...nameDetails(flow, hour!), id: flow.key,
     label: named(flow, hour!), value: raw == null ? null : Number(raw) / scale, raw,
     text: raw == null ? 'Not recorded' : formatAmount(raw, trade.reply.decimals, trade.reply.decimals),
     shareText: raw == null || total == null || total === 0n ? '—'
       : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`,
     color: colours.get(flow.resource.id) ?? tokens.muted,
     countryFlag: seller ? labels.labelAt(factHour(seller, false))(seller.tag) : undefined,
-  }; }), [amounts, named, hour, scale, trade.reply.decimals, total, colours, tokens.muted, visibleSet, labels.labelAt, factHour]);
+  }; }), [amounts, named, nameDetails, hour, scale, trade.reply.decimals, total, colours, tokens.muted, visibleSet, labels.labelAt, factHour]);
   const dense = useMemo(() => preparedContributionStack(flows), [flows]);
   const stack = useMemo(() => measure === 'current' ? compactStack(flows.map(flow => contributionHistory(flow, known))) : null, [flows, known, measure]);
   const measured = useMemo(() => measure === 'current' || cumulativePending ? null : contributionMeasureModel(flows, measure, from, known),
@@ -143,7 +148,7 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
           });
           const listed = values.slice(0, TOOLTIP_LIMIT);
           ask(at, listed.map(item => item.flow));
-          return { title: dayLabel(at), rows: [...listed.map(({ flow, raw }) => ({ label: named(flow, at, true),
+          return { title: dayLabel(at), rows: [...listed.map(({ flow, raw }) => ({ ...nameDetails(flow, at, true), label: named(flow, at, true),
             icon: flow.resource.icon ?? undefined, swatch: colours.get(flow.resource.id), value: formatAmount(raw!, trade.reply.decimals, trade.reply.decimals), short: true })),
           { label: measure === 'total' ? 'Delivered total' : measure === 'average' ? 'Average per trading day' : 'Total per day',
             value: formatAmount(measureAmount(flows, measure, from, at), trade.reply.decimals, trade.reply.decimals), strong: true }],

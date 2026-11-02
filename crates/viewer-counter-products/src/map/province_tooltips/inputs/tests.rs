@@ -45,7 +45,9 @@ fn weather(hours: &[Option<u32>], expected: &[i64; 3]) -> Arc<DecodedFrame> {
                         cursor: 1,
                         anchor_seed: None,
                         hours: hours.to_vec(),
-                        checksum: temperature::checksum(*expected),
+                        witness: replay_data::rows::TemperatureWitness::new(temperature::witness(
+                            *expected,
+                        )),
                     })),
                     ..Default::default()
                 })
@@ -125,7 +127,7 @@ fn certified_temperature_inputs_match_fixed_neighbor_passes_and_synchronous_fall
 }
 
 #[test]
-fn certified_temperature_checksum_failures_remain_refusals_even_after_a_success() {
+fn certified_temperature_witness_failures_remain_refusals_even_after_a_success() {
     let content = temperature_content();
     let inputs = TemperaturesByFrame::default();
     let good = weather(&[Some(10)], &[0, 200, 300]);
@@ -133,12 +135,12 @@ fn certified_temperature_checksum_failures_remain_refusals_even_after_a_success(
     let bad = weather(&[Some(10)], &[0, 201, 300]);
     assert!(inputs.ready(&bad).is_none());
     inputs.prepare(&bad, Ok(&content));
-    let reason = Err("derived temperatures at hour 101 differ from the recorded checksum".into());
+    let reason = Err("derived temperatures at hour 101 differ from the recorded witness".into());
     let rows = bad.complete::<tables::WeatherProvinces>().unwrap();
     assert_eq!(inputs.at(&bad, rows, Ok(&content), 1), reason);
     let fresh = TemperaturesByFrame::default();
     assert_eq!(fresh.at(&bad, rows, Ok(&content), 1), reason);
-    // A checksum failure must not poison a different immutable frame's result.
+    // A witness failure must not poison a different immutable frame's result.
     assert_eq!(
         inputs.at(
             &good,

@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
@@ -30,7 +31,7 @@ export function usePreparedProduction(client: DashboardClient, source: Dashboard
   const requestKey = JSON.stringify(request);
   const rangeKey = JSON.stringify([request?.offset, request?.limit]);
   const [attempt, setAttempt] = useState(0);
-  const [stored, setStored] = useState<{ client: DashboardClient; owner: string; rangeKey?: string; data?: ProductionSelection; hour?: number; pending: boolean; unavailable?: boolean; error?: string }>();
+  const [stored, setStored] = useState<{ client: DashboardClient; owner: string; rangeKey?: string; data?: ProductionSelection; hour?: number; pending: boolean; unavailable?: boolean; error?: Failure }>();
   const owned = stored?.client === client && stored.owner === owner ? stored : undefined;
   const covered = request != null && owned?.rangeKey === rangeKey && owned.data != null && owned.data.firstHour <= request.hour && request.hour <= owned.data.lastHour;
   useEffect(() => {
@@ -72,12 +73,12 @@ export function usePreparedProduction(client: DashboardClient, source: Dashboard
             if (gateMoved(status, gate, request.selection.branchId, prefix.coverage)) { void query(); return; }
             timer = setTimeout(() => { void follow(); }, 500);
           } catch (error) {
-            if (!controller.signal.aborted) setStored({ client, owner, pending: false, error: error instanceof Error ? error.message : String(error) });
+            if (!controller.signal.aborted) setStored({ client, owner, pending: false, error: asFailure(error) });
           }
         };
         timer = setTimeout(() => { void follow(); }, 500);
       } catch (error) {
-        if (!controller.signal.aborted) setStored({ client, owner, pending: false, error: error instanceof Error ? error.message : String(error) });
+        if (!controller.signal.aborted) setStored({ client, owner, pending: false, error: asFailure(error) });
       }
     };
     void query();

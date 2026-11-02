@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
@@ -51,7 +52,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const [point, setPoint] = useState<{ key: string; hour: number | null }>();
   const [detail, setDetail] = useState<{ key: string; hour: number | null }>();
   const [keyboard, setKeyboard] = useState<{ key: string; hour: number | null; revision: number }>();
-  const [navigationError, setNavigationError] = useState<{ key: string; error: string }>();
+  const [navigationError, setNavigationError] = useState<{ key: string; error: Failure }>();
   const navigation = useRef<AbortController | null>(null);
   useEffect(() => () => navigation.current?.abort(), [key, active]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
@@ -135,7 +136,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
       op: 'navigate', key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal)
       .then(value => { if (!controller.signal.aborted) { const hour = (value as { hour: number | null }).hour;
         onHover(hour); setKeyboard(before => ({ key, hour, revision: (before?.revision ?? 0) + 1 })); } })
-      .catch(error => { if (!controller.signal.aborted) setNavigationError({ key, error: String(error) }); });
+      .catch(error => { if (!controller.signal.aborted) setNavigationError({ key, error: asFailure(error) }); });
   }, [runtime.client, key, track, tags, selection, active, onHover]);
   const scope = useMemo(() => data ? tradeScope(decodeTrade(data), widget.countries, resolved, groups.data, lastHour,
     widget.options?.between === 'between') : null, [data, widget.countries, widget.options?.between, resolved, groups.data, lastHour]);

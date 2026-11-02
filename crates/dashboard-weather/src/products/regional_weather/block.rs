@@ -3,7 +3,7 @@
 
 use super::admission;
 use dashboard_base::prepared::{facts::Credit, prepass::HeldBytes};
-use dashboard_keyed::{Delta, Values};
+use dashboard_keyed::{Delta, Values, delta::Names};
 use replay::container::TableFields;
 use replay_data::{
     format::FormatVersion,
@@ -38,6 +38,7 @@ impl Observer {
 
     /// Bind once per source/content binding before folding a branch, including
     /// after restoring its catalogue. Content failures refuse temperature only.
+    #[cfg(test)]
     pub fn bind(
         &mut self,
         source: &dashboard_base::Source,
@@ -46,22 +47,6 @@ impl Observer {
     ) -> io::Result<()> {
         self.previous = None;
         let result = self.temperature.bind(source, options, cancelled);
-        if result.is_err() {
-            self.retire();
-        }
-        result
-    }
-
-    /// The same binding hook for a preparation driver that supplies a check
-    /// callback rather than a cancellation flag. Call before fold and fallback.
-    pub fn bind_checked(
-        &mut self,
-        source: &dashboard_base::Source,
-        options: Option<&dashboard_core::config::ContentOptions>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.previous = None;
-        let result = self.temperature.bind_checked(source, options, check);
         if result.is_err() {
             self.retire();
         }
@@ -96,6 +81,8 @@ const MEASURES: [&str; 14] = [
 
 struct Regional {
     names: [String; 14],
+    /// The key the scan numbered each name with, once learnt.
+    keys: [Option<u64>; 14],
     values: [Option<i128>; 14],
     _credit: Credit,
 }
@@ -115,9 +102,22 @@ impl Regional {
         }
         Ok(Self {
             names,
+            keys: [None; 14],
             values,
             _credit: credit,
         })
+    }
+
+    /// Pushes each value it holds, by key where the scan numbered its name.
+    fn push(&self, values: &mut Values) {
+        for at in 0..MEASURES.len() {
+            if let Some(value) = self.values[at] {
+                match self.keys[at] {
+                    Some(key) => values.push_key(key, value),
+                    None => values.push(self.names[at].clone(), value),
+                }
+            }
+        }
     }
 }
 
@@ -170,17 +170,31 @@ impl Observer {
         &mut self,
         id: u32,
         now: Option<&WeatherRegionRow>,
+        names: &Names<'_>,
         delta: &mut Delta,
     ) -> io::Result<()> {
-        self.update_values(id, now.map(regional), delta)
+        self.update_values(id, now.map(regional), names, delta)
     }
 
     fn update_values(
         &mut self,
         id: u32,
         now: Option<[Option<i128>; 14]>,
+        names: &Names<'_>,
         delta: &mut Delta,
     ) -> io::Result<()> {
+        // A name the scan numbered changes by key; one it never numbered holds no value to end.
+        let change = |held: &mut Regional, at: usize, value: Option<i128>, delta: &mut Delta| {
+            if held.keys[at].is_none() {
+                held.keys[at] = names.key(&held.names[at]);
+            }
+            match (held.keys[at], value) {
+                (Some(key), Some(value)) => delta.set_key(key, value),
+                (Some(key), None) => delta.remove_key(key),
+                (None, Some(value)) => delta.set(held.names[at].clone(), value),
+                (None, None) => {}
+            }
+        };
         match now {
             Some(values) => {
                 if let std::collections::btree_map::Entry::Vacant(entry) = self.regions.entry(id) {
@@ -189,19 +203,16 @@ impl Observer {
                 let held = self.regions.get_mut(&id).unwrap();
                 for (at, &value) in values.iter().enumerate() {
                     if held.values[at] != value {
-                        match value {
-                            Some(value) => delta.set(held.names[at].clone(), value),
-                            None => delta.remove(held.names[at].clone()),
-                        }
+                        change(&mut *held, at, value, &mut *delta);
                     }
                 }
                 held.values = values;
             }
             None => {
-                if let Some(held) = self.regions.remove(&id) {
-                    for (name, value) in held.names.into_iter().zip(held.values) {
-                        if value.is_some() {
-                            delta.remove(name);
+                if let Some(mut held) = self.regions.remove(&id) {
+                    for at in 0..MEASURES.len() {
+                        if held.values[at].is_some() {
+                            change(&mut held, at, None, &mut *delta);
                         }
                     }
                 }
@@ -223,13 +234,23 @@ impl dashboard_keyed::Observer for Observer {
         Some(Box::new(segment::Keeper::default()))
     }
 
-    fn bind(
-        &mut self,
+    type Content = super::temperature::Resolved;
+
+    fn content(
         source: &dashboard_base::Source,
-        content: Option<&dashboard_core::config::ContentOptions>,
+        options: Option<&dashboard_core::config::ContentOptions>,
         check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.bind_checked(source, content, check)
+    ) -> io::Result<Self::Content> {
+        super::temperature::resolve(source, options, check)
+    }
+
+    fn bind(&mut self, content: &std::sync::Arc<Self::Content>) -> io::Result<()> {
+        self.previous = None;
+        let result = self.temperature.bind_resolved(content);
+        if result.is_err() {
+            self.retire();
+        }
+        result
     }
 
     fn fields() -> io::Result<Vec<TableFields>> {
@@ -341,7 +362,7 @@ impl dashboard_keyed::Observer for Observer {
         &mut self,
         _: FormatVersion,
         frame: &DecodedFrame,
-        _: &dashboard_keyed::delta::Names<'_>,
+        names: &Names<'_>,
         delta: &mut Delta,
     ) -> io::Result<Option<bool>> {
         if self.previous.is_none() {
@@ -360,10 +381,10 @@ impl dashboard_keyed::Observer for Observer {
                 .filter(|id| rows.binary_search_by_key(id, |row| row.id).is_err()),
         );
         for id in ended {
-            self.update_region(id, None, delta)?;
+            self.update_region(id, None, names, delta)?;
         }
         for row in rows {
-            self.update_region(row.id, Some(row), delta)?;
+            self.update_region(row.id, Some(row), names, delta)?;
         }
         self.regional_known = regional_known;
         Ok(Some(regional_known || temperature_known))

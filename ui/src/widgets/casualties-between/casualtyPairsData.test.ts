@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { casualtyPairsAt, casualtyPairWindows, pairAmount, validateCasualtyPairs } from './casualtyPairsData.ts';
+import { CasualtyPairsCursor, casualtyPairsAt, casualtyPairWindows, pairAmount, validateCasualtyPairs as validate } from './casualtyPairsData.ts';
+import { deepFreeze } from '../../testFrozen.ts';
+
+const validateCasualtyPairs = (value: unknown) => validate(deepFreeze(value));
 
 function fixture() {
   return { branchId: '1', available: true, windows: [{ firstHour: 100, lastHour: 120 }, { firstHour: 121, lastHour: 150 }],
@@ -12,7 +15,7 @@ function fixture() {
     ] }] };
 }
 test('country-pair flows preserve direction, wide signed values and known zero', () => {
-  const reply = validateCasualtyPairs(fixture());
+  const reply = validateCasualtyPairs(deepFreeze(fixture()));
   const at = casualtyPairsAt(reply, 105);
   assert.equal(at.flows[0].from, 'mod attacker');
   assert.equal(at.flows[0].to, 'mod victim');
@@ -38,6 +41,74 @@ test('country-pair windows come from the recording and prefetch only during play
   assert.deepEqual(casualtyPairWindows(reply, 150, true), [1]);
   assert.deepEqual(casualtyPairWindows(reply, 99, true), []);
 });
+
+test('snapshot cursors hold immutable runs and filter identities, updating reads, gaps and new replies', () => {
+  const reply = validateCasualtyPairs(deepFreeze(fixture()));
+  const cursor = new CasualtyPairsCursor();
+  const tags: ReadonlySet<string> = deepFreeze(new Set(['mod attacker']));
+  const first = cursor.at(reply, 111, tags);
+  assert.equal(cursor.at(reply, 119, tags), first);
+  assert.throws(() => Object.assign(reply.pairs[0].runs[2], { secondTaken: '99' }), TypeError);
+  assert.throws(() => (tags as Set<string>).add('changed'), TypeError);
+  assert.deepEqual(first, casualtyPairsAt(reply, 119, tag => tags.has(tag)));
+  const changed: ReadonlySet<string> = deepFreeze(new Set(['not a participant']));
+  assert.deepEqual(cursor.at(reply, 119, changed), { countries: [], flows: [] });
+  assert.equal(cursor.at(reply, 119, tags).flows.length, 2);
+  assert.deepEqual(cursor.at(reply, 119, tags, true), { countries: [], flows: [] });
+  assert.deepEqual(cursor.at(reply, 108), { countries: [], flows: [] });
+  const hourly = cursor.at(reply, 100);
+  const later = cursor.at(reply, 101);
+  assert.equal(later.countries, hourly.countries);
+  assert.equal(later.flows[0].readHour, 101);
+  assert.notEqual(later.flows, hourly.flows);
+  const replacement = fixture();
+  replacement.pairs[0].runs[2].secondTaken = '20';
+  const updated = cursor.at(validateCasualtyPairs(deepFreeze(replacement)), 115);
+  assert.equal(updated.flows[0].value, 20n);
+  assert.deepEqual(cursor.at(reply, 121), { countries: [], flows: [] });
+});
+
+test('snapshot lookup inside a held interval does not visit pair runs again', () => {
+  const data = fixture();
+  let reads = 0;
+  const runs = data.pairs[0].runs;
+  Object.defineProperty(data.pairs[0], 'runs', { get() { reads++; return runs; } });
+  const reply = validateCasualtyPairs(deepFreeze(data));
+  const cursor = new CasualtyPairsCursor();
+  const first = cursor.at(reply, 111);
+  reads = 0;
+  for (let hour = 112; hour <= 120; hour++) assert.equal(cursor.at(reply, hour), first);
+  assert.equal(reads, 0);
+});
+
+test('filtered cursors ignore excluded hourly changes but retain selected boundaries and observation gaps', () => {
+  const span = { firstHour: 100, lastHour: 120 }, run = { ...span, readHour: 100, hourly: false,
+    firstTaken: '12', secondTaken: '20', incomplete: false };
+  let excludedReads = 0;
+  const excluded = deepFreeze(Array.from({ length: 21 }, (_, index) => ({ ...run,
+    firstHour: 100 + index, lastHour: 100 + index, readHour: 100 + index, secondTaken: String(index) })));
+  const selected = deepFreeze(new Set(['source', 'target']));
+  const reply = validateCasualtyPairs({ branchId: '1', available: true, windows: [span], window: 0, hasGap: false, observed: [span], warnings: [],
+    pairs: [{ identity: 'selected', firstCountry: 'source', secondCountry: 'target', runs: [run] },
+      { identity: 'excluded', firstCountry: 'other', secondCountry: 'unselected', get runs() { excludedReads++; return excluded; } },
+      { identity: 'one endpoint', firstCountry: 'source', secondCountry: 'other', runs: excluded }] });
+  const cursor = new CasualtyPairsCursor();
+  excludedReads = 0;
+  const first = cursor.at(reply, 100, selected, true);
+  for (let hour = 101; hour <= 120; hour++) assert.equal(cursor.at(reply, hour, selected, true), first);
+  assert.equal(excludedReads, 0);
+  assert.deepEqual(first, casualtyPairsAt(reply, 120, tag => selected.has(tag), true));
+  assert.equal(cursor.at(reply, 121, selected, true).flows.length, 0);
+  const either = new CasualtyPairsCursor(), oneEndpoint = deepFreeze(new Set(['target']));
+  const eitherFirst = either.at(reply, 100, oneEndpoint);
+  assert.equal(either.at(reply, 120, oneEndpoint), eitherFirst);
+  assert.equal(either.at(reply, 120, selected).flows.length, 4);
+  assert.equal(either.at(reply, 120, selected).flows[2].value, 20n);
+  const gapReply = validateCasualtyPairs(fixture()), gapCursor = new CasualtyPairsCursor();
+  assert.equal(gapCursor.at(gapReply, 105).flows.length, 2);
+  assert.equal(gapCursor.at(gapReply, 106).flows.length, 0);
+  assert.equal(gapCursor.at(gapReply, 110).flows[0].value, 3n);
+});
 test('directed pair IDs follow native holders through renames and refuse overlapping aliases', () => {
   const data = fixture();
   data.pairs[0].runs = [data.pairs[0].runs[0]];
@@ -45,14 +116,15 @@ test('directed pair IDs follow native holders through renames and refuse overlap
     { ...data.pairs[0].runs[0], firstHour: 110, lastHour: 120, readHour: 110 },
   ] };
   data.pairs.push(alias);
-  const reply = validateCasualtyPairs(data);
+  const reply = validateCasualtyPairs(deepFreeze(data));
   const before = casualtyPairsAt(reply, 105).flows[0];
   const after = casualtyPairsAt(reply, 115).flows[0];
   assert.equal(before.id, after.id);
   assert.notEqual(before.from, after.from);
   assert.notEqual(before.id, casualtyPairsAt(validateCasualtyPairs({ ...data, pairs: [{ ...alias, identity: '1:11|2:20' }] }), 115).flows[0].id);
-  alias.runs[0].firstHour = 105; alias.runs[0].lastHour = 105; alias.runs[0].readHour = 105;
-  assert.throws(() => validateCasualtyPairs(data), /malformed/, 'two simultaneous aliases cannot supply one native pair');
+  const overlapping = deepFreeze({ ...data, pairs: [data.pairs[0], { ...alias,
+    runs: [{ ...alias.runs[0], firstHour: 105, lastHour: 105, readHour: 105 }] }] });
+  assert.throws(() => validateCasualtyPairs(overlapping), /malformed/, 'two simultaneous aliases cannot supply one native pair');
 });
 test('malformed country-pair replies refuse, including overlapping tag holders', () => {
   const acrossGap = fixture(); acrossGap.pairs[0].runs[0].lastHour = 110;

@@ -1,3 +1,4 @@
+import { RefusedError } from './queryError.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, FactRequests, HourStore, MAX_READING, nameKey, readFacts, RETRY_MOST_MS, retryDelay } from './countryFacts.ts';
@@ -321,7 +322,7 @@ test('flags at the same source and hour are requested again after configuring fo
   assert.equal(calls, 1);
   assert.equal(store.answered(100, 'ABC'), false);
   assert.equal(store.pickRead(at(['ABC'])).has(nameKey(100, 'ABC')), false);
-  assert.equal(requests.pickRead(at(['ABC'])).get(nameKey(100, 'ABC')), FAILED_FACT);
+  assert.ok(requests.pickRead(at(['ABC'])).get(nameKey(100, 'ABC')) instanceof Error);
   assert.equal(timers.length, 0);
   configured = true;
   assert.equal(requests.retry(), 1);
@@ -548,7 +549,7 @@ test('a reply after its read was cancelled is ignored, and chunks a read never t
 
 test('a chunk answered in part keeps its answers and fails only its unanswered countries', async () => {
   const read: FactRead<string> = async (plan, _signal, onChunk) => {
-    for (const [hour, tags] of plan) onChunk(hour, tags, new Map([['A', 'A here']]), undefined, new Map([['B', false]]));
+    for (const [hour, tags] of plan) onChunk(hour, tags, new Map([['A', 'A here']]), undefined, new Map([['B', { error: FAILED_FACT, retryable: false }]]));
   };
   const requests = new FactRequests(new HourStore<string>(64), read, () => {});
   const wanted = [{ hour: 7, tag: 'A' }, { hour: 7, tag: 'B' }];
@@ -559,4 +560,30 @@ test('a chunk answered in part keeps its answers and fails only its unanswered c
   assert.equal(found.get(nameKey(7, 'B')), FAILED_FACT);
   // The failure was not one to retry by itself: nothing more is asked.
   assert.equal(requests.want(wanted, Infinity, Infinity, 'time', true), 0);
+});
+
+
+test('shared and independent fact reads retain each failure and its retry policy', async () => {
+  for (const shared of [false, true]) {
+    const refusal = new RefusedError('Synthetic focus artwork was not recorded');
+    const failure = new Error('Synthetic decoder failure');
+    const client = { product: async (request: { params: { tags: string[] } }) => {
+      throw request.params.tags[0] === 'A' ? refusal : failure;
+    } } as unknown as DashboardClient;
+    const spec = { product: 'synthetic-facts', shared, perRequest: 1,
+      params: (_branch: string, _hour: number, tags: readonly string[]) => ({ tags }), extract: () => new Map<string, string>() };
+    const store = new HourStore<string>(2);
+    const reads: Promise<void>[] = [];
+    const requests = new FactRequests(store, (plan, signal, onChunk) => {
+      const read = readFacts(client, { sourceId: 'synthetic', revision: '1', branchId: '1' }, spec, plan, signal, onChunk);
+      reads.push(read); return read;
+    }, () => {});
+    const wanted = [{ hour: 10, tag: 'A' }, { hour: 10, tag: 'B' }];
+    requests.want(wanted, 2, 1);
+    await Promise.all(reads);
+    const found = requests.pickRead(wanted);
+    assert.equal(found.get(nameKey(10, 'A')), refusal);
+    assert.equal(found.get(nameKey(10, 'B')), failure);
+    requests.cancel();
+  }
 });

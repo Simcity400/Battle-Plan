@@ -4,6 +4,7 @@ import { moveIndex, revealRow, visibleRange } from '../components/countryList';
 import { movingRowClass, useRowMotion } from './useRowMotion';
 import type { MovingRow } from './rowMotion';
 import { useParityRows } from '../dashboard/parityRows';
+import { useMemoRows } from './memoRows.tsx';
 
 /** An unchanged viewport keeps its state, so measuring and scrolling never re-render for nothing. */
 const viewAt = (top: number, height: number) => (before: { top: number; height: number }) =>
@@ -23,6 +24,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
   const [focus, setFocus] = useState<{ at: number; backwards: boolean } | null>(null);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const moving = useRowMotion(items);
+  const memoRow = useMemoRows();
   if (import.meta.env.MODE === 'parity') {
   useParityRows(root, () => ({ kind: 'windowed', label, complete: true, total: items.length,
     rows: items.map(({ key, item }, index) => ({ key, index, item })) }));
@@ -96,7 +98,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     onScroll={event => { setView(viewAt(event.currentTarget.scrollTop, event.currentTarget.clientHeight)); }}>
     {!moving.length && empty}
     <div className="windowed-rows-body" style={{ height: padding * 2 + count * rowHeight }}>
-      {visible.map(row => <div key={row.key}
+      {visible.map(row => memoRow(row.key, <div
         className={movingRowClass(row)} style={{ height: rowHeight, transform: `translateY(${padding + row.slot * rowHeight}px)` }}
         role="listitem" aria-hidden={row.phase === 'leaving' || undefined} inert={row.phase === 'leaving' || undefined}
         aria-setsize={items.length} aria-posinset={row.slot + 1} data-row-index={row.slot}
@@ -113,7 +115,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
           if (next < 0 || next >= items.length) return;
           event.preventDefault();
           seek(next, tab && event.shiftKey);
-        }}>{children(row)}</div>)}
+        }}>{children(row)}</div>))}
     </div>
   </div>;
 }

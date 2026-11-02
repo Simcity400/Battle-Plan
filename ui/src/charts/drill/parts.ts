@@ -1,7 +1,7 @@
 import type { TooltipRow } from '../tooltip';
 
 /** Shared part rows keep unknown values separate from exact zero and corrections. */
-export interface DrillPart { id: string; label: string; value: number | null; raw?: bigint | null; shareText?: string; color?: string; text?: string; icon?: string; countryFlag?: TooltipRow['countryFlag']; muted?: boolean; selectable?: boolean }
+export interface DrillPart { id: string; label: string; detail?: string; value: number | null; raw?: bigint | null; shareText?: string; color?: string; text?: string; icon?: string; countryFlag?: TooltipRow['countryFlag']; muted?: boolean; selectable?: boolean }
 
 export function orderedDrillParts(parts: readonly DrillPart[]): DrillPart[] {
   return [...parts].sort((a, b) => {

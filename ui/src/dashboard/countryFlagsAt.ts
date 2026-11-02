@@ -1,18 +1,14 @@
-import { useCallback, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import type { CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { FAILED_FACT } from './countryFacts.ts';
+import { isFailedFact } from './countryFacts.ts';
+import { CountryLabelIndex } from './countryLabelData.ts';
 import type { NameAt } from './countryFacts';
-import { nameKey, useCountryNamesRead } from './countryNamesAt.ts';
+import { useCountryNamesAt } from './countryNamesAt.ts';
 import { useCountryFlagsRead } from './countryFlags.ts';
-import type { FlagRead } from './countryFlags';
 import type { BoundTrack } from './model';
 
-/** Preserve the supplying read's pending, missing and failure states. */
-export function flagReadMetadata(read: FlagRead | null | undefined | typeof FAILED_FACT): { flag?: string; flagPending: boolean; flagReason?: string } {
-  return { flag: read && read !== FAILED_FACT ? read.url : undefined, flagPending: read === undefined,
-    flagReason: read === FAILED_FACT ? 'The flag request failed.' : read?.reason ?? (read === null ? 'No readable flag was returned for this country at this hour.' : undefined) };
-}
+export { flagReadMetadata } from './countryLabelData.ts';
 
 /** Country flags as preparation chose them at the given hours, as image URLs keyed by
  * `nameKey` (`useCountryFlagsRead`). A flag the recording does not give at its hour, or not
@@ -22,7 +18,7 @@ export function useCountryFlagsAt(client: DashboardClient, track: Pick<BoundTrac
   const flags = useCountryFlagsRead(client, track, wanted, active, size);
   return useMemo(() => {
     const urls = new Map<string, string>();
-    for (const [key, flag] of flags) if (flag && flag !== FAILED_FACT && flag.url) urls.set(key, flag.url);
+    for (const [key, flag] of flags) if (flag && !isFailedFact(flag) && flag.url) urls.set(key, flag.url);
     return urls;
   }, [flags]);
 }
@@ -30,7 +26,7 @@ export function useCountryFlagsAt(client: DashboardClient, track: Pick<BoundTrac
 /** A country as a tooltip row shows it: its name and flag as recorded at an hour.
  * `known` is absent while pending; false when the name is missing or its read
  * failed. `nameFailed` distinguishes a failed read from a completed missing name. */
-export type CountryLabel = (tag: string) => { name: string; flag?: string; known?: boolean; nameFailed?: boolean; flagPending?: boolean; flagReason?: string };
+export type { CountryLabel } from './countryLabelData';
 
 /** Countries named and flagged as the recording showed them at their hours (such as
  * a trade partner at the read behind a tooltip), never a later identity. Only the
@@ -40,13 +36,13 @@ export type CountryLabel = (tag: string) => { name: string; flag?: string; known
  * changes as names and flags arrive, for a chart to redraw. */
 export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   maxHours = Infinity) {
-  const names = useCountryNamesRead(client, track, wanted, active, maxHours);
+  const names = useCountryNamesAt(client, track, wanted, active, maxHours);
   const flags = useCountryFlagsRead(client, track, wanted, active);
-  const labelAt = useCallback((hour: number): CountryLabel => tag => {
-    const name = names.get(nameKey(hour, tag));
-    const flag = flags.get(nameKey(hour, tag));
-    return { name: typeof name === 'string' ? name : name === undefined ? 'Loading name…' : 'Country name unavailable', ...flagReadMetadata(flag),
-      known: name === undefined ? undefined : typeof name === 'string', nameFailed: name === FAILED_FACT };
-  }, [names, flags]);
-  return { labelAt, revision: names.size + flags.size };
+  const first = track?.branch.firstHour, last = track?.branch.lastHour;
+  const index = useMemo(() => new CountryLabelIndex(active && first !== undefined && last !== undefined ? [first, last] : null),
+    [client, track?.source?.id, track?.source?.revision, track?.branch.id, active, first, last]);
+  const labelAt = useMemo(() => index.at(names, flags), [index, names, flags]);
+  const version = useRef({ labelAt, revision: 0 });
+  if (version.current.labelAt !== labelAt) version.current = { labelAt, revision: version.current.revision + 1 };
+  return { labelAt, revision: version.current.revision };
 }

@@ -1,3 +1,4 @@
+import { failureText, type Failure } from '../../dashboard/queryError.ts';
 import ArtFallback from '../../components/ArtFallback';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import type { ComponentProps, CSSProperties } from 'react';
@@ -31,7 +32,7 @@ import { readAt } from '../../dashboard/reads';
 import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { approximateWithin, bandScale, wantedDetailWindows, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
-  organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData';
+  organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData.ts';
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
 import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
 import ProductionDrill from './ProductionDrill';
@@ -122,7 +123,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     : actor.reason ?? (headerTag ? null : 'Country unavailable at this time.');
   const header = useCountryLabelsAt(runtime.client, track, pinned && countrySlot && headerTag && !headerReason && breakdownHour !== null
     ? [{ tag: headerTag, hour: breakdownHour }] : [], active);
-  const pinnedHeader = pinned && countrySlot ? createPortal(<DatedCountryChip hour={missingSavedDate ? null : breakdownHour} reason={headerReason}
+  const pinnedHeader = pinned && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={missingSavedDate ? null : breakdownHour} reason={headerReason}
     label={headerTag && !headerReason && breakdownHour !== null ? header.labelAt(breakdownHour)(headerTag) : null} />, countrySlot) : null;
   const openBreakdown = (key: string, part: 'efficiency' | 'output', hour: number) => {
     if (currentData.current !== data || ownerRef.current.owner !== owner || !ownerRef.current.active) return;
@@ -148,7 +149,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   if (missingSavedDate) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
   if (!pinned && drill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   if (!pinned && drill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (!pinned && drill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (!pinned && drill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!pinned && drill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading production lines…" /></>;
   if (!pinned && drill.breakdown === null && data && !data.reads.length && data.approximate.length) return <>{pinnedHeader}<WidgetState kind="loading" label="Preparing this country’s earlier production history…" /></>;
   if (!pinned && drill.breakdown === null && data && !data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Production lines weren’t recorded for this country." /></>;
@@ -163,19 +164,19 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     const detail = windows.data.get(window);
     const failed = windows.errors.get(window);
     // A window is answered once the published history reaches its last hour.
-    if (!detail) return failed ? <WidgetState kind="error" detail={failed} onRetry={windows.retry} />
+    if (!detail) return failed ? <WidgetState kind="error" failure={failed} onRetry={windows.retry} />
       : <WidgetState kind="loading" label={approximateWithin(data, window * data.detailHours, (window + 1) * data.detailHours - 1)
         ? 'This range is still being prepared.' : 'Loading production lines…'} />;
     return <LiveTable data={data} detail={detail} hour={hour} order={options.order as LineOrder} more={options.columns === 'more'} owner={`production-lines:${widget.id}`}
       windows={{ client: runtime.client, source: { sourceId: track.source.id, revision: track.source.revision }, branchId: track.branch.id, onDiagnostics: setWindowNotes }}
       active={active} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={jump} onBreakdown={openBreakdown} />;
   };
-  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.retry} /> : null;
+  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.retry} /> : null;
   const drillView = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
+    : actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
         : !key ? <p className="drill-empty">Choose a production line in the widget settings.</p>
-    : breakdown.error ? <WidgetState kind="error" what="the breakdown" detail={breakdown.error} onRetry={breakdown.retry} />
+    : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
         : <ProductionDrill key={`${key}:${selected}`} data={breakdown.data} selected={shownFactor}
           onFactor={value => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setFactor(value); if (pinned) setOption?.('factor', value); }} hour={breakdownHour} extent={extent}
@@ -323,7 +324,7 @@ function LiveTable({ data, detail, hour, order, more, owner, windows, active, ho
  * variant and factories until it arrives. */
 function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu, windows, failed, hovered, onWant }: {
   data: ProductionLinesReply; tag: string; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number | undefined;
-  onMenu: (hour: number, x: number, y: number, key?: string) => void; windows: ReadonlyMap<number, ProductionLineDetailReply>; failed: ReadonlyMap<number, string>;
+  onMenu: (hour: number, x: number, y: number, key?: string) => void; windows: ReadonlyMap<number, ProductionLineDetailReply>; failed: ReadonlyMap<number, Failure>;
   hovered: number | null; onWant: (window: number) => void;
 }) {
   const until = extent[1];
@@ -362,8 +363,8 @@ function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu,
         const lineDetail = detailOf(detail, line.key);
         const run = lineDetail && runAt(lineDetail.runs, hour);
         if (!run) {
-          const why = failed.has(window) ? 'Couldn’t load line details.' : detail ? 'Its other values are not recorded at this hour.' : 'Loading its other values…';
-          return fitted(stepTooltip(data, step, hour, head, why), height, full);
+          const why = failed.has(window) ? failureText(failed.get(window), 'Couldn’t load line details.') : detail ? 'Its other values are not recorded at this hour.' : 'Loading its other values…';
+          return fitted(stepTooltip(data, step, hour, head, why).map(form => ({ ...form, detail: failed.get(window)?.message })), height, full);
         }
         // Its bars (which the keyboard steps through) carry the final count once the view is past its end.
         return fitted(lineTooltip(data, line, lineDetail, run, hour, head, dayLabel, until), height, full);

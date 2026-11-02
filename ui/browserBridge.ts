@@ -1,3 +1,4 @@
+import { asFailure, failureWire, queryFailure } from './src/dashboard/queryError.ts';
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
@@ -157,7 +158,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
         const event = JSON.parse(line);
         const entry = pending.get(event.id);
         if (!entry) return;
-        if (event.type === 'error') { clearTimeout(entry.timer); pending.delete(event.id); entry.reject(new Error(event.message)); return; }
+        if (event.type === 'error') { clearTimeout(entry.timer); pending.delete(event.id); entry.reject(queryFailure(event.error)); return; }
         if (event.type !== 'chunk' || event.sequence !== entry.sequence++ || typeof event.fragment !== 'string') throw new Error('Invalid bridge response');
         entry.bytes += Buffer.byteLength(event.fragment);
         if (entry.bytes > 32 * 1024 * 1024 || [...pending.values()].reduce((bytes, item) => bytes + item.bytes, 0) > 64 * 1024 * 1024) throw new Error('Bridge response budget exceeded');
@@ -374,7 +375,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           response.end(JSON.stringify(await send(command, controller.signal)));
         } catch (error) {
           response.statusCode = 400;
-          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+          response.end(JSON.stringify({ error: failureWire(asFailure(error)) }));
         }
       });
     },

@@ -1,3 +1,5 @@
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import { nameReadText, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -10,7 +12,7 @@ import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -90,10 +92,14 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   // Any country recorded at the hour reads the variants' pictures; all countries or a group name none.
   const artTag = fallback[0] ?? visible.find(row => !row.ended && row.giver !== null)?.giver ?? null;
   const art = useVariantArt(runtime, track, artTag, hour, useMemo(() => visible.flatMap(row => row.items[0]?.variant ? [row.items[0].variant] : []), [visible]), active);
-  const name = useCallback((tag: string | null, at: number) => tag === null ? 'Country name unavailable' : names.get(nameKey(at, tag)) ?? tag, [names]);
+  const name = useCallback((tag: string | null, at: number) => tag === null ? 'Country name unavailable' : nameReadText(names.get(nameKey(at, tag))), [names]);
   // Titles read the shown rows' labels; sorting keeps the tag order until every name has arrived.
-  const title = useCallback((tag: string | null, at: number) => tag === null ? 'Country name unavailable' : names.get(nameKey(at, tag)) ?? labelAt(at)(tag).name,
-    [names, labelAt]);
+  const countryLabel = useCallback((tag: string | null, at: number) => {
+    if (tag === null) return nameReadMetadata(undefined);
+    const read = names.get(nameKey(at, tag));
+    return read ? { ...labelAt(at)(tag), ...nameReadMetadata(read) } : labelAt(at)(tag);
+  }, [names, labelAt]);
+  const title = useCallback((tag: string | null, at: number) => countryLabel(tag, at).name, [countryLabel]);
   const columns = useMemo<readonly TableColumn<AgreementRow>[]>(() => {
     const country = (tag: string | null, at: number) => tag === null ? 'Country name unavailable' : <CountryCell {...labelAt(at)(tag)} />;
     const header = several ? 'From → to' : direction === 'sent' ? 'Sent to' : 'Received from';
@@ -123,20 +129,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
         value: row => row.since, text: row => row.since === null ? '—' : dayLabel(row.since), render: row => row.since === null ? '—' : dayLabel(row.since) },
     ];
   }, [several, direction, name, title, labelAt, art]);
-  const tooltip = useCallback((row: AgreementRow) => {
-    const lines: TooltipRow[] = [];
-    for (const item of row.items) {
-      lines.push({ label: item.name ?? 'Equipment name unavailable', strong: true, lookupKey: item.variant ?? undefined });
-      if (item.schedule) lines.push({ label: 'Schedule', value: item.schedule });
-      lines.push({ label: 'Delivered', value: amountOf(row, item.delivered) }, { label: 'Lost', value: amountOf(row, item.lost) });
-      if (item.delivered !== null && item.lost !== null && item.delivered + item.lost > 0n)
-        lines.push({ label: 'Share lost', value: `${(Number(item.lost * 10000n / (item.delivered + item.lost)) / 100).toFixed(2)}%`, tone: 'muted' });
-    }
-    if (row.since !== null) lines.push({ label: 'Active since', value: dayLabel(row.since) });
-    if (row.last !== null) lines.push({ label: 'Last delivery', value: dayLabel(row.last) });
-    if (row.ended) lines.push({ label: `Last recorded ${dayLabel(row.at)}`, tone: 'muted' });
-    return fitTooltip([{ title: `${title(row.giver, row.at)} → ${title(row.receiver, row.at)}`, rows: lines }], viewport);
-  }, [title, viewport]);
+  const tooltip = useCallback((row: AgreementRow) => agreementTooltip(row, countryLabel, viewport), [countryLabel, viewport]);
   const menu = useCallback((row: AgreementRow) => track ? [row.since, row.last, row.ended ? row.at : null]
     .flatMap(at => at === null ? [] : [jumpItem(runtime, track.id, at)]) : [], [runtime, track]);
   const playing = runtime.clock.getSnapshot().playing;
@@ -153,8 +146,8 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see lend-lease." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading lend-lease…" /></>;
@@ -190,4 +183,20 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
         : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}
     </DrillHost>
   </div>;
+}
+
+export function agreementTooltip(row: AgreementRow, countryLabel: (tag: string | null, at: number) => ReturnType<CountryLabel>, viewport: number) {
+  const lines: TooltipRow[] = [];
+  for (const item of row.items) {
+    lines.push({ label: item.name ?? 'Equipment name unavailable', strong: true, lookupKey: item.variant ?? undefined });
+    if (item.schedule) lines.push({ label: 'Schedule', value: item.schedule });
+    lines.push({ label: 'Delivered', value: amountOf(row, item.delivered) }, { label: 'Lost', value: amountOf(row, item.lost) });
+    if (item.delivered !== null && item.lost !== null && item.delivered + item.lost > 0n)
+      lines.push({ label: 'Share lost', value: `${(Number(item.lost * 10000n / (item.delivered + item.lost)) / 100).toFixed(2)}%`, tone: 'muted' });
+  }
+  if (row.since !== null) lines.push({ label: 'Active since', value: dayLabel(row.since) });
+  if (row.last !== null) lines.push({ label: 'Last delivery', value: dayLabel(row.last) });
+  if (row.ended) lines.push({ label: `Last recorded ${dayLabel(row.at)}`, tone: 'muted' });
+  const giver = countryLabel(row.giver, row.at), receiver = countryLabel(row.receiver, row.at);
+  return fitTooltip([{ title: `${giver.name} → ${receiver.name}`, ...countryNameDetails(giver, receiver), rows: lines }], viewport);
 }

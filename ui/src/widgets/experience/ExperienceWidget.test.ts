@@ -35,8 +35,8 @@ test('actual Experience keeps holder aliases, dated reached events and one end p
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryLooks.ts': `export const lookPlan = (_branch, tags, hour) => ({wanted: tags.map(tag => ({tag, hour})), maxHours: 16});
       export const useCountryLooks = (_client, _track, tags) => { globalThis.__experienceIdentity.looks = tags; return { color: () => [20, 50, 80], warnings: [] }; };`,
-    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = (_client, _track, wanted) =>
-      new Map(wanted.map(row => [nameKey(row.hour, row.tag), row.tag]));`,
+    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = (_client, _track, wanted) =>
+      new Map(wanted.map(row => [nameKey(row.hour, row.tag), { kind: 'value', value: row.tag }]));`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__experienceIdentity.wanted = wanted;
       return { revision: 0, labelAt: hour => tag => { const state = globalThis.__experienceIdentity; state.names.push({tag, hour});
         return state.labels.get(JSON.stringify([hour, tag])) ?? {name: tag, known: true}; } }; };`,

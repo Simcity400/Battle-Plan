@@ -110,7 +110,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings] : null);
   if (!track) return <WidgetState kind="empty" icon="sun" message="Load a campaign to see weather." />;
   if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading weather…" />;
   const caption = <div className="weather-caption">
     <div className="air-pattern-key" aria-label="Data states">

@@ -57,7 +57,9 @@ regions={0={region=0 temperature=-90071992547.40993
             temperature_pass: replay_data::rows::Recorded::Value(Some(
                 replay_data::rows::TemperaturePass {
                     anchor: hour,
-                    checksum: replay_data::temperature::checksum([100_000]),
+                    witness: replay_data::rows::TemperatureWitness::new(
+                        replay_data::temperature::witness([100_000]),
+                    ),
                     ..Default::default()
                 },
             )),
@@ -224,7 +226,9 @@ regions={0={region=0 temperature=-90071992547.40993
     rows[0].temperature_pass =
         replay_data::rows::Recorded::Value(Some(replay_data::rows::TemperaturePass {
             anchor: hour,
-            checksum: replay_data::temperature::checksum([99_999]),
+            witness: replay_data::rows::TemperatureWitness::new(replay_data::temperature::witness(
+                [99_999],
+            )),
             ..Default::default()
         }));
     rows[0].raw_mud = replay_data::rows::Recorded::Value(0);
@@ -259,7 +263,9 @@ regions={0={region=0 temperature=-90071992547.40993
     rows[0].temperature_pass =
         replay_data::rows::Recorded::Value(Some(replay_data::rows::TemperaturePass {
             anchor: hour,
-            checksum: replay_data::temperature::checksum([0]),
+            witness: replay_data::rows::TemperatureWitness::new(replay_data::temperature::witness(
+                [0],
+            )),
             ..Default::default()
         }));
     rows[0].raw_mud = replay_data::rows::Recorded::Value(7);
@@ -343,9 +349,9 @@ regions={0={region=0}}
         temperature: 100_000,
         ..Default::default()
     };
-    let pass = |checksum| replay_data::rows::TemperaturePass {
+    let pass = |witness| replay_data::rows::TemperaturePass {
         anchor: hour,
-        checksum,
+        witness: replay_data::rows::TemperatureWitness::new(witness),
         ..Default::default()
     };
     let frame = |pass| {
@@ -380,10 +386,10 @@ regions={0={region=0}}
         }],
         ..Default::default()
     };
-    let checksum = replay_data::temperature::checksum([100_000]);
+    let witness = replay_data::temperature::witness([100_000]);
     let mut report = Report::default();
     compare(
-        &frame(Some(pass(checksum))),
+        &frame(Some(pass(witness))),
         &saved,
         Ok(&content),
         Err("outside this fixture".into()),
@@ -401,7 +407,7 @@ regions={0={region=0}}
     // coverage is incomplete and the run fails.
     let mut report = Report::default();
     compare(
-        &frame(Some(pass(checksum ^ 1))),
+        &frame(Some(pass(witness ^ 1))),
         &saved,
         Ok(&content),
         Err("outside this fixture".into()),
@@ -418,7 +424,8 @@ regions={0={region=0}}
     );
     assert!(
         report.failed_comparisons["WeatherProvinces.temperature"].contains("temperature refused")
-            && report.failed_comparisons["WeatherProvinces.temperature"].contains("checksum")
+            && report.failed_comparisons["WeatherProvinces.temperature"]
+                .contains("differ from the recorded witness")
     );
     assert!(report.coverage_line().contains(": incomplete;"));
     assert!(report.outcome().is_err());

@@ -112,6 +112,11 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
     let track = recording('recording-a');
     const wanted = [{ hour: 100, tag: '8' }];
     const render = () => { cursor = 0; return useCountryFactsAt(client, track, wanted, true, specAt(edge)); };
+    const portrait = () => {
+      const read = render().get('[100,"8"]');
+      assert.ok(read && !(read instanceof Error));
+      return read;
+    };
     assert.equal(render().size, 0); fixture.commit(); await settle();
     assert.deepEqual(render().get('[100,"8"]'), { ...fixture.reply.portraits[0], warnings: fixture.reply.warnings });
     fixture.commit(); await settle();
@@ -119,7 +124,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
     edge = 118;
     assert.equal(render().size, 0, 'the career edge cannot inherit the leaderboard refusal');
     fixture.commit(); await settle();
-    assert.equal(render().get('[100,"8"]')?.missing, 'Synthetic portrait refusal');
+    assert.equal(portrait().missing, 'Synthetic portrait refusal');
     assert.deepEqual(fixture.calls.map(call => call.params), [
       { branchId: '1', hour: 100, references: ['8'], edge: 86 },
       { branchId: '1', hour: 100, references: ['8'], edge: 118 },
@@ -128,7 +133,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
     fixture.reply = { portraits: [{ reference: '8', image: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', missing: null }], warnings: [] };
     assert.equal(render().size, 0, 'a reused reference in another recording starts pending');
     fixture.commit(); await settle();
-    assert.equal(render().get('[100,"8"]')?.missing, null);
+    assert.equal(portrait().missing, null);
     assert.equal(fixture.calls.at(-1)?.sourceId, 'recording-b');
     track = { ...track, source: { ...track.source, revision: '2', metadata: { ...track.source.metadata, revision: '2' } } };
     assert.equal(render().size, 0); fixture.commit(); await settle();
@@ -136,7 +141,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
     fixture.content++;
     assert.equal(render().size, 0, 'changed content cannot retain a prior portrait or refusal');
     fixture.commit(); await settle();
-    assert.equal(render().get('[100,"8"]')?.image, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
+    assert.equal(portrait().image, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(fixture.calls.length, 5);
   } finally { fixture.unmount(); await vite.close(); delete host.__portraitFacts; }
 });

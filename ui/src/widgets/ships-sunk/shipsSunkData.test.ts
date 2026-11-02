@@ -223,10 +223,10 @@ test('duplicate unknown class choices stay distinct without showing campaign tok
 });
 
 test('battle-title failures qualify only pending hostile titles and never expose the request reason', () => {
-  const data = fixture(), error = 'Synthetic malformed battle title request';
+  const data = fixture(), error = new Error('Synthetic malformed battle title request');
   const failed = shipTooltip(data, row(), 'Victim', 'Attacker', undefined, error);
   assert.ok(failed.rows.some(row => row.label === 'Couldn’t load the battle title.'));
-  assert.ok(!JSON.stringify(failed).includes(error));
+  assert.ok(!JSON.stringify(failed).includes(error.message));
   const absent: ShipBattleTitle = { index: 0, hour: 110, name: null, missing: null };
   for (const tooltip of [shipTooltip(data, row({ cause: 'cause' }), 'Victim', 'Attacker', undefined, error),
     shipTooltip(data, row(), 'Victim', 'Attacker', absent, error)])

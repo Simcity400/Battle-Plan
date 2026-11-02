@@ -1,3 +1,4 @@
+import { asFailure, type Failure } from '../dashboard/queryError.ts';
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { validateProductReply } from '../dashboard/client';
@@ -23,7 +24,6 @@ const clientNumber = (client: DashboardClient) => {
   return number;
 };
 
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export interface GameWindowProps {
   client: DashboardClient;
@@ -52,7 +52,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   const lists = scroll.identity === identity ? scroll.lists : NO_SCROLL;
   const key = JSON.stringify([identity, hour, lists]);
   const [shown, setShown] = useState<{ identity: string; key: string; reply: GameWindowReply } | null>(null);
-  const [failure, setFailure] = useState<{ key: string; detail: string } | null>(null);
+  const [failure, setFailure] = useState<{ key: string; error: Failure } | null>(null);
   const [attempt, retry] = useReducer((count: number) => count + 1, 0);
   const shownKey = useRef<string | null>(null);
   shownKey.current = shown?.key ?? null;
@@ -77,7 +77,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
       setFailure(null);
       if (pending.current.identity === identity) acknowledgeScroll(pending.current.offsets, lists);
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setFailure({ key, detail: message(error) });
+      if (!controller.signal.aborted) setFailure({ key, error: asFailure(error) });
     });
     return () => controller.abort();
   // The target and lists are read through `identity` and `key`.
@@ -86,7 +86,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   // A reply of another window or recording is never shown; one of an earlier hour or scroll is, until its successor
   // arrives or fails.
   const drawn = shown?.identity === identity ? shown.reply : null;
-  const failed = failure?.key === key ? failure.detail : null;
+  const failed = failure?.key === key ? failure.error : null;
   const reply = failed ? null : drawn;
   const scene = reply?.scene ?? null;
 
@@ -118,7 +118,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   const frame = (body: ReactNode, size?: readonly [number, number]) => <div ref={fit} className="game-window"
     style={size ? { '--game-window-width': `${size[0]}px`, '--game-window-height': `${size[1]}px` } as CSSProperties : undefined}>{body}</div>;
 
-  if (!reply) return frame(failed ? <WidgetState kind="error" what="this window" detail={failed} onRetry={retry} />
+  if (!reply) return frame(failed ? <WidgetState kind="error" what="this window" failure={failed} onRetry={retry} />
     : <WidgetState kind="loading" label="Loading window…" />);
   if (!scene) return frame(<WidgetState kind="unavailable" message={reply.refused.length ? reply.refused.join(' ') : undefined} />);
   return frame(<SceneView scene={scene} title={title} zoom={fitZoom(scene.size, available)} offsetOf={offsetOf} onScroll={onScroll} />, scene.size);

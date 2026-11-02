@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { fieldPreparing } from '../../dashboard/preparedPrefix.ts';
 import { runAt, runIndexAt } from '../../charts/series.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -165,8 +166,8 @@ export function operativeTooltip(reply: OperativeRosterReply, row: OperativeRow,
   const countryRow = (label: string, tag: string | null): TooltipRow => {
     if (tag === null) return { label, value: 'Unknown' };
     const value = country(tag, labelHour);
-    return { label, value: value.name, countryFlag: {
-      flag: value.flag, flagReason: value.flagReason, flagPending: value.flagPending,
+    return { ...countryNameDetails(value), label, value: value.name, countryFlag: {
+      flag: value.flag, flagReason: value.flagReason, ...(value.flagDetail !== undefined ? { flagDetail: value.flagDetail } : {}), flagPending: value.flagPending,
     } };
   };
   const rows: TooltipRow[] = [

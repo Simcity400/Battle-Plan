@@ -34,14 +34,14 @@ export function matchesWidget(query: string, ...texts: (string | undefined)[]): 
 
 type Options = Readonly<Record<string, unknown>>;
 interface Preset { key: string; initial: { title?: string; options?: Options } }
-interface Presets { presets: readonly Preset[]; reason: string | null }
+interface Presets { presets: readonly Preset[]; reason: string | null; detail?: string }
 interface Catalogued extends Categorised { options?: readonly OptionField[]; variants?: readonly Preset[] }
 /** A catalogue card: a widget, one of its views (`variant`), or one of its content presets, with the
  * title and options it starts with. `match` holds the option values a placed copy has when it
  * shows this card's view. `note` says why a content-derived widget has no presets yet. */
 export interface CatalogueEntry<T> {
   key: string; definition: T; group: WidgetGroup<T>; title: string;
-  initial?: { title?: string; options?: Options }; match: Options; variant: boolean; note: string | null;
+  initial?: { title?: string; options?: Options }; match: Options; variant: boolean; note: string | null; detail?: string;
 }
 
 /** Each group's cards: a widget's own (or one per content preset in its place while it has any),
@@ -56,7 +56,7 @@ export function catalogueEntries<T extends Catalogued>(groups: readonly WidgetGr
     // The widget's own card shows the default of every option its views change.
     const keys = new Set(variants.flatMap(item => Object.keys(item.match)));
     const match = Object.fromEntries((definition.options ?? []).filter(field => keys.has(field.key)).map(field => [field.key, field.default]));
-    return [{ key: definition.kind, definition, group, title: definition.title, match, variant: false, note: own?.reason ?? null }, ...variants];
+    return [{ key: definition.kind, definition, group, title: definition.title, match, variant: false, note: own?.reason ?? null, detail: own?.detail }, ...variants];
   }));
 }
 

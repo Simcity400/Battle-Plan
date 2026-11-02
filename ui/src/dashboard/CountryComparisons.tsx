@@ -57,8 +57,8 @@ export default function CountryComparisons({ component: Component, ...props }: W
   useDiagnostics(onDiagnostics, diagnostics);
   // Each mounted panel keeps its widget while this one re-renders, so its own hooks do not re-run.
   const panels = useMemo(() => new Map(shown.map(tag => [tag, { ...widget, countries: { kind: 'tags' as const, tags: [tag] } }])), [widget, shown]);
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const refreshNotice = refreshError && <WidgetState kind="error" detail={refreshError} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const refreshNotice = refreshError && <WidgetState kind="error" failure={refreshError} onRetry={retry} />;
   if (pending) return <WidgetState kind="loading" label="Loading countries…" />;
   if (countries.reason) return <>{refreshNotice}<WidgetState kind="empty" message={countries.reason} /></>;
   // A group's members at hours still being prepared are not known yet: no country is not proof of none.
@@ -69,7 +69,7 @@ export default function CountryComparisons({ component: Component, ...props }: W
     {shown.map(tag => {
       const label = labels.labelAt(hour)(tag);
       return <section key={tag} className="country-comparison" aria-label={label.name} style={multiple ? { flex: `0 0 ${panelWidth}px` } : undefined}>
-        {countries.tags.length > 1 && <p className="country-comparison-name"><CountryFlagUrl className="country-comparison-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} />{label.name}</p>}
+        {countries.tags.length > 1 && <p className="country-comparison-name"><CountryFlagUrl className="country-comparison-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />{label.name}</p>}
         <Component {...props} within={countries.membership?.get(tag)} onDiagnostics={handlers.get(tag)!}
           widget={panels.get(tag)!} />
       </section>;

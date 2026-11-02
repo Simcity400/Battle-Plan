@@ -85,8 +85,8 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   useEffect(() => { onDiagnostics(data?.warnings ?? NO_WARNINGS); return () => onDiagnostics(NO_WARNINGS); }, [data, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its decryption races." />;
   if (!window || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !selection.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decryption…" /></>;
   if (pendingAt(preparedPrefix(data), hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
@@ -121,8 +121,8 @@ function RaceCell({ row, labels, active, leaving, rowProps, descriptionId, conte
       && previous.decryptor.flagReason === decryptor.flagReason && previous.target.flagReason === target.flagReason
       && previous.decryptor.flagPending === decryptor.flagPending && previous.target.flagPending === target.flagPending
       ? previous : {
-        decryptor: { name: decryptor.name, flag: decryptor.flag, flagReason: decryptor.flagReason, flagPending: decryptor.flagPending },
-        target: { name: target.name, flag: target.flag, flagReason: target.flagReason, flagPending: target.flagPending },
+        decryptor: { name: decryptor.name, flag: decryptor.flag, flagReason: decryptor.flagReason, ...(decryptor.flagDetail !== undefined ? { flagDetail: decryptor.flagDetail } : {}), flagPending: decryptor.flagPending },
+        target: { name: target.name, flag: target.flag, flagReason: target.flagReason, ...(target.flagDetail !== undefined ? { flagDetail: target.flagDetail } : {}), flagPending: target.flagPending },
       });
   }, [leaving, decryptor.name, decryptor.flag, decryptor.flagReason, decryptor.flagPending, target.name, target.flag, target.flagReason, target.flagPending]);
   // A fading row keeps its last displayed names and flags from the same look.
@@ -133,9 +133,9 @@ function RaceCell({ row, labels, active, leaving, rowProps, descriptionId, conte
   return <div className="decryption-row" {...rowProps} tabIndex={leaving ? -1 : 0}>
     {content && <span id={descriptionId} className="sr-only">{tooltipText(content)}</span>}
     <div className="decryption-pair">
-      <span className="decryption-flag">{row.tags.ownerTag !== null && <CountryFlagUrl url={shown.decryptor.flag} reason={shown.decryptor.flagReason} pending={shown.decryptor.flagPending} />}</span>
+      <span className="decryption-flag">{row.tags.ownerTag !== null && <CountryFlagUrl url={shown.decryptor.flag} detail={shown.decryptor.flagDetail} reason={shown.decryptor.flagReason} pending={shown.decryptor.flagPending} />}</span>
       <small aria-hidden="true">→</small>
-      <span className="decryption-flag">{row.tags.targetTag !== null && <CountryFlagUrl url={shown.target.flag} reason={shown.target.flagReason} pending={shown.target.flagPending} />}</span>
+      <span className="decryption-flag">{row.tags.targetTag !== null && <CountryFlagUrl url={shown.target.flag} detail={shown.target.flagDetail} reason={shown.target.flagReason} pending={shown.target.flagPending} />}</span>
       <small className="decryption-target">{shown.target.name}</small>
     </div>
     <div className="decryption-progress" aria-hidden="true">

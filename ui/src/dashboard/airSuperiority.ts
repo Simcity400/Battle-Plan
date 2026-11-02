@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../charts/tooltip.ts';
 import type { AirCell, AirReply as WireAirReply, AirSide, AirSpan } from '../generated/dashboard';
 import type { HeatPeriod, HeatRow } from '../charts/heat/layout';
 import type { TooltipContent } from '../charts/tooltip';
@@ -296,7 +297,9 @@ const AIR_MISSING_REASONS: Readonly<Record<string, string>> = {
   'identity-not-recorded': 'Countries unavailable.',
   'theatres-not-recorded': 'Air groups unavailable.',
 };
-export function airTooltip(region: { name: string }, view: AirView, viewpoint: boolean, country: CountryLabel, filtered: boolean, factionNames?: ReadonlyMap<string, string | null>): TooltipContent {
+export function airTooltip(region: { name: string }, view: AirView, viewpoint: boolean, countryLabel: CountryLabel, filtered: boolean, factionNames?: ReadonlyMap<string, string | null>): TooltipContent {
+  const named: ReturnType<CountryLabel>[] = [];
+  const country: CountryLabel = tag => { const label = countryLabel(tag); named.push(label); return label; };
   const parts = [...view.parts].sort((a, b) => a.score === b.score ? 0 : a.score > b.score ? -1 : 1);
   const sideLabel = (side: AirSide) => airSideName(side, tag => country(tag).name, factionNames);
   const friendly = parts.find(part => part.id === 'friendly');
@@ -306,7 +309,7 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
   const overflows = friendly && (BigInt.asIntN(64, view.total) !== view.total || BigInt.asIntN(64, friendly.score * BigInt(view.scale)) !== friendly.score * BigInt(view.scale));
   const thresholds = `Above ${airPercent(BigInt(view.goodAbove), BigInt(view.scale))}: air superiority; below ${airPercent(BigInt(view.badBelow), BigInt(view.scale))}: enemy superiority; otherwise contested.`;
   const viewpointNote = `${overflows ? 'Game status differs from the displayed shares. ' : ''}${thresholds}`;
-  return { title: region.name, rows: [
+  const content: TooltipContent = { title: region.name, rows: [
     ...parts.map(part => ({ label: part.id === 'enemy' ? `Enemies of ${viewpointName}` : part.side ? `${sideLabel(part.side)}${part.id === 'friendly' ? ' (friendly)' : ''}` : part.tag ? `${country(part.tag).name}${part.id === 'friendly' ? ' (friendly)' : ''}` : part.label,
       countryFlag: part.tag ? country(part.tag) : undefined, swatch: part.color, value: `${view.state === 'unknown' ? 'Share unknown' : airPercent(part.score, view.total)} · ${airScore(part.score, view.scale)} score` })),
     ...parts.flatMap(part => part.side && part.side.coBelligerents ? [{ label: `${sideLabel(part.side)} with ${part.side.coBelligerents} co-belligerents`, value: part.tag ? `Viewpoint: ${country(part.tag).name}` : 'Leader not recorded', indent: true }] : []),
@@ -319,6 +322,7 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
     ...(view.wings == null ? [] : [{ label: 'Air wings assigned to the region', value: `${view.wings}` }]),
   ], note: [viewpoint ? viewpointNote : '', filtered ? 'Shares use only the selected sides.' : '',
     view.reason && view.state === 'unknown' ? AIR_MISSING_REASONS[view.reason] ?? 'The required data was not recorded.' : ''].filter(Boolean).join(' ') || undefined };
+  return { ...content, ...countryNameDetails(...named) };
 }
 
 /** The compact hover keeps shares, missing-side counts and assigned wings. */

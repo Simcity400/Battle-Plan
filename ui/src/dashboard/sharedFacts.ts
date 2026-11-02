@@ -3,16 +3,19 @@
  * is kept for the next to want it, so widgets on a page, and pages shown in turn, ask only for
  * what none has asked for. Kept apart from the product cache, bounded by hours. */
 import type { DashboardClient } from './client';
+import type { Failure } from './queryError';
+
+export interface FactFailure { error: Failure; retryable: boolean }
 
 /** What a request told: each country's value (a country it lacks has none), or that it failed,
  * and whether it may be tried again. */
-export type Told<V> = ReadonlyMap<string, V> | { failed: boolean };
+export type Told<V> = ReadonlyMap<string, V> | { failed: FactFailure };
 
 /** Asks for countries at an hour; never rejects. */
 export type Ask<V> = (hour: number, tags: readonly string[], signal: AbortSignal) => Promise<Told<V>>;
 
 /** What one read found: the countries told, with or without a value, and those failed. */
-export interface SharedRead<V> { found: Map<string, V>; failed: Map<string, boolean> }
+export interface SharedRead<V> { found: Map<string, V>; failed: Map<string, FactFailure> }
 
 /** One request for countries at an hour, shared by every read waiting on it. */
 interface Asking<V> {
@@ -65,7 +68,7 @@ export class SharedFacts<V> {
       }
     }
     if (!results || signal.aborted) return null;
-    const found = new Map<string, V>(), failed = new Map<string, boolean>();
+    const found = new Map<string, V>(), failed = new Map<string, FactFailure>();
     for (const tag of tags) {
       const each = waits.get(tag);
       const result = each ? results.get(each)! : undefined;
@@ -78,8 +81,8 @@ export class SharedFacts<V> {
 
   private start(hour: number, known: Map<string, Entry<V>>, tags: readonly string[]): void {
     const controller = new AbortController();
-    const each: Asking<V> = { tags, controller, told: Promise.resolve({ failed: true }), waiting: 0, settled: false };
-    each.told = this.ask(hour, tags, controller.signal).then(result => {
+    const each: Asking<V> = { tags, controller, told: this.ask(hour, tags, controller.signal), waiting: 0, settled: false };
+    each.told = each.told.then(result => {
       each.settled = true;
       const held = this.hours.get(hour);
       for (const tag of tags) {

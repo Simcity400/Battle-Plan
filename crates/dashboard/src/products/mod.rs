@@ -31,7 +31,6 @@ pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
 pub use dashboard_country_fuel::products::country_fuel;
 pub use dashboard_country_nukes::products::country_nukes;
-pub use dashboard_ideas::products::ideas;
 pub use dashboard_diplomacy::products::diplomacy_state;
 pub use dashboard_doctrine_mastery::products::doctrine_mastery;
 pub use dashboard_economy::products::{
@@ -42,14 +41,15 @@ pub use dashboard_equipment_stockpile::products::equipment_stockpile;
 pub use dashboard_factions::products::faction_state;
 pub use dashboard_forces::products::air_force;
 pub use dashboard_forces::products::army_size;
-pub use dashboard_forces::products::naval_management;
-pub use dashboard_forces::products::navy;
 #[cfg(test)]
 pub use dashboard_forces::products::force_fixtures;
+pub use dashboard_forces::products::naval_management;
+pub use dashboard_forces::products::navy;
 pub use dashboard_forces::products::supply_health;
 pub use dashboard_forces::products::volunteers_expeditionaries;
 pub use dashboard_game_score::products::game_score;
 pub use dashboard_game_window::products::game_window;
+pub use dashboard_ideas::products::ideas;
 pub use dashboard_intelligence::products::agency_comparison;
 pub use dashboard_intelligence::products::decryption;
 pub use dashboard_intelligence::products::espionage_log;
@@ -122,8 +122,13 @@ pub struct Registered {
     pub key: &'static str,
     pub content_dependent: bool,
     pub interactive: bool,
-    pub load:
-        fn(&Source, &str, serde_json::Value, &LoadContext, &AtomicBool) -> Result<String, String>,
+    pub load: fn(
+        &Source,
+        &str,
+        serde_json::Value,
+        &LoadContext,
+        &AtomicBool,
+    ) -> Result<String, dashboard_core::QueryError>,
     #[cfg(any(test, feature = "export-types"))]
     pub types: fn() -> Vec<String>,
     /// Answered only by prepared queries: its product route refuses, while its
@@ -161,8 +166,8 @@ fn refuse<P: Product>(
     _params: serde_json::Value,
     _context: &LoadContext,
     _cancelled: &AtomicBool,
-) -> Result<String, String> {
-    Err(prepared_only(P::KEY))
+) -> Result<String, dashboard_core::QueryError> {
+    Err(prepared_only(P::KEY).into())
 }
 
 /// How long an interactive reply must take to compute to be kept between sessions: one read
@@ -207,22 +212,22 @@ fn load_json<P: Product>(
     params: serde_json::Value,
     context: &LoadContext,
     cancelled: &AtomicBool,
-) -> Result<String, String> {
+) -> Result<String, dashboard_core::QueryError> {
     let request = params;
     let params = P::Params::deserialize(&request)
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
-    crate::metadata::check_cancel(cancelled).map_err(|error| error.to_string())?;
+    crate::metadata::check_cancel(cancelled).map_err(dashboard_core::QueryError::from)?;
     let prepared = production_lines::PREPARED_PRODUCTS
         .contains(&P::KEY)
         .then(|| crate::prepared::files(source, context.content.as_ref()))
         .transpose()
-        .map_err(|error| error.to_string())?;
+        .map_err(dashboard_core::QueryError::from)?;
     let _scope = prepared
         .as_ref()
         .map(|(store, key)| store.scope(key))
         .transpose()
-        .map_err(|error| error.to_string())?;
+        .map_err(dashboard_core::QueryError::from)?;
     // A content reply holds its folders' content while it runs, so its reads, its diagnostics
     // and whether it is kept all follow one read set, whatever the source binds meanwhile.
     let held = context
@@ -269,7 +274,7 @@ fn load_json<P: Product>(
                 P::load(source, &params, context, cancelled)
             });
             let computing = started.elapsed();
-            let mut data = data.map_err(|error| error.to_string())?;
+            let mut data = data.map_err(dashboard_core::QueryError::from)?;
             if P::CONTENT_DEPENDENT {
                 source.append_reply_warnings(data.warnings_mut(), context.content.as_ref());
             } else {
@@ -491,9 +496,9 @@ mod recording_tests;
 #[cfg(test)]
 mod casualty_route_tests;
 #[cfg(test)]
-mod own_refusal_tests;
-#[cfg(test)]
 mod kept_reply_tests;
+#[cfg(test)]
+mod own_refusal_tests;
 #[cfg(test)]
 mod presentation_tests;
 #[cfg(test)]
@@ -590,7 +595,7 @@ mod tests {
                 &context,
                 &cancelled
             ),
-            Err(refusal.to_owned())
+            Err(refusal.into())
         );
         let params = BranchParams {
             branch_id: "1".into(),

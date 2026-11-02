@@ -1,8 +1,9 @@
 //! A keyed family on a native recording whose publication is the walk's scan itself, its runs
-//! on the series engine. A segment's operator ([`segment::Operator`] of [`Native`]) keeps, at
-//! each hour its observer observes, the views of the observer's tables as the world holds them
-//! then, copied where the hour changed them, with the hour's metrics and change facts; every
-//! other hour is quiet. An observer with a [`Keeper`] keeps its own operands of each such hour
+//! on the series engine. A segment's operator ([`segment::Operator`] of [`Native`]) hands on, at
+//! each hour its observer observes, what the hour changed of each of the observer's tables
+//! ([`hand::Hand`]: the rows it wrote and the keys it deleted, the table whole only where the
+//! hour restated it), with the hour's metrics and change facts; every other hour is quiet. The
+//! emit holds the one copy of each table and applies each hour's hands to it. An observer with a [`Keeper`] keeps its own operands of each such hour
 //! instead, from what the hour changed. The branch's [`Emit`] gives those hours in order to its
 //! one [`Scan`], whose observer observes them as the walk's does, and writes the runs the walk's
 //! accumulator would hold.
@@ -25,17 +26,20 @@ use dashboard_series::{
     carry::Carry,
     family::{Actors, Directory, Place},
 };
-use replay::{columnar_frames::view_heap_bytes, container::TableFields};
+use replay::container::TableFields;
 use replay_data::{
+    codec::{Decoder, put_bytes64, put_varint},
     format::FormatVersion,
-    rows::{RowCodec, RowsPairVisit, TableId},
+    rows::{Field, RowCodec, RowsPairVisit, RowsVisit, TableId, TableRows},
+    scope::CaptureMode,
 };
 use replay_frame::frame::{
-    DecodedFrame, Metrics, SharedView, TableView, ViewIdentity, not_selected,
+    DecodedFrame, Metrics, TableView, not_selected,
 };
 use serde::{Deserialize, Serialize};
 use std::{io, marker::PhantomData, sync::atomic::AtomicBool};
 
+mod hand;
 #[cfg(test)]
 mod tests;
 #[cfg(any(test, feature = "test-support"))]
@@ -75,15 +79,39 @@ impl<O: Observer> Segmented for Native<O> {
     fn reader(format: FormatVersion) -> Box<dyn Reader<Self>> {
         Box::new(Keep::<O> {
             format,
-            copies: Vec::new(),
             keeper: O::native_keeper(),
         })
+    }
+}
+
+impl<O: Observer> Native<O> {
+    /// A segment's operator, its observer's keeper bound to the recording's content as the
+    /// branch's emit binds its observer ([`Emit::bind`]).
+    pub fn operator(
+        format: FormatVersion,
+        content: &std::sync::Arc<O::Content>,
+    ) -> io::Result<segment::Operator<Self>> {
+        let mut keeper = O::native_keeper();
+        if let Some(keeper) = &mut keeper {
+            keeper.bind(content)?;
+        }
+        segment::Operator::with_reader(
+            format,
+            Box::new(Keep::<O> { format, keeper }),
+        )
     }
 }
 
 /// A segment's keeper of an observer's own operands ([`Observer::native_keeper`]), given the
 /// hours it observes in order from the segment's first.
 pub trait Keeper<O: Observer>: Send {
+    /// Binds what it keeps from the recording's content, as [`Observer::bind`] binds the
+    /// observer; most keepers need nothing.
+    fn bind(&mut self, content: &std::sync::Arc<O::Content>) -> io::Result<()> {
+        let _ = content;
+        Ok(())
+    }
+
     /// The operands of an hour the observer observes, from `frame`, its tables as the world
     /// lends them, and what the hour changed of each; and the bytes they hold that the hours
     /// kept before do not.
@@ -102,22 +130,19 @@ pub struct Kept<O: Observer> {
 }
 
 enum Held<O: Observer> {
-    /// Its tables' views in [`Observer::TABLES`] order, whether the hour gave each whole, and
-    /// its metrics.
-    Views {
-        views: Box<[SharedView]>,
-        restated: Box<[bool]>,
+    /// What the hour changed of each of its tables, in [`Observer::TABLES`] order, and its
+    /// metrics.
+    Tables {
+        hands: Box<[hand::Hand]>,
         metrics: Box<Metrics>,
     },
     /// What the observer's keeper kept.
     Operands(Box<dyn Operands<O>>),
 }
 
-/// A segment's reader: each table's view as the world lent it last, and its own copy of it; or
-/// the observer's keeper.
+/// A segment's reader, or the observer's keeper.
 struct Keep<O: Observer> {
     format: FormatVersion,
-    copies: Vec<(ViewIdentity, SharedView)>,
     keeper: Option<Box<dyn Keeper<O>>>,
 }
 
@@ -138,36 +163,18 @@ impl<O: Observer> Reader<Native<O>> for Keep<O> {
                 bytes + size_of::<FrameChanges>(),
             ));
         }
-        let mut bytes = size_of::<Metrics>()
-            + size_of::<FrameChanges>()
-            + O::TABLES.len() * size_of::<SharedView>();
-        let mut views = Vec::with_capacity(O::TABLES.len());
-        for (at, table) in O::TABLES.iter().enumerate() {
-            let lent = &frame.tables[table.index()];
-            // The world's views are never kept: an hour that changed one keeps a copy.
-            let copy = match self.copies.get(at) {
-                Some((identity, copy)) if identity.is(lent) => copy.clone(),
-                _ => {
-                    let copy = SharedView::from((**lent).clone());
-                    bytes += view_heap_bytes(&copy);
-                    let held = (lent.identity(), copy.clone());
-                    match self.copies.get_mut(at) {
-                        Some(slot) => *slot = held,
-                        None => self.copies.push(held),
-                    }
-                    copy
-                }
-            };
-            views.push(copy.with_sampled_at(lent.sampled_at()));
+        let mut bytes =
+            size_of::<Metrics>() + size_of::<FrameChanges>() + O::TABLES.len() * hand::Hand::BYTES;
+        let mut hands = Vec::with_capacity(O::TABLES.len());
+        for &table in O::TABLES {
+            let (hand, held) = hand::Hand::of(&frame.tables[table.index()], touched.of(table))?;
+            bytes += held;
+            hands.push(hand);
         }
         Ok((
             Kept {
-                held: Held::Views {
-                    views: views.into_boxed_slice(),
-                    restated: O::TABLES
-                        .iter()
-                        .map(|&table| touched.of(table).restated)
-                        .collect(),
+                held: Held::Tables {
+                    hands: hands.into_boxed_slice(),
                     metrics: Box::new(frame.metrics.clone()),
                 },
                 changes: Box::new(kept_changes(changes)),
@@ -204,6 +211,7 @@ pub struct Emit<O: Observer> {
     scan: Scan<O, Calls>,
     /// The frame the observer reads: the views of the last hour kept.
     frame: DecodedFrame,
+    restored: Vec<Option<Restored>>,
     actors: Actors,
     /// Each scan key's series key: READ, KNOWN, then each name's.
     keys: Vec<KeyHandle>,
@@ -213,6 +221,10 @@ pub struct Emit<O: Observer> {
     last: Option<i32>,
     /// Whether the observer changed since the last cut.
     stale: bool,
+}
+
+struct Restored {
+    bytes: Box<[u8]>,
 }
 
 impl<O: Observer> Emit<O> {
@@ -238,6 +250,7 @@ impl<O: Observer> Emit<O> {
                 tables: std::array::from_fn(|_| not_selected()),
                 metrics: Metrics::default(),
             },
+            restored: (0..O::TABLES.len()).map(|_| None).collect(),
             actors: Actors::new(SCHEMA),
             keys: Vec::new(),
             carry: Carry::default(),
@@ -248,13 +261,8 @@ impl<O: Observer> Emit<O> {
     }
 
     /// Binds its observer to the recording's content ([`Observer::bind`]).
-    pub fn bind(
-        &mut self,
-        source: &dashboard_base::Source,
-        content: Option<&dashboard_core::config::ContentOptions>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.scan.observer.bind(source, content, check)
+    pub fn bind(&mut self, content: &std::sync::Arc<O::Content>) -> io::Result<()> {
+        self.scan.observer.bind(content)
     }
 
     /// One hour, after the last one given.
@@ -274,25 +282,38 @@ impl<O: Observer> Emit<O> {
             None => self.scan.prepare_quiet(at, hour.dated)?,
             Some(Kept { held, mut changes }) => {
                 let operands = match held {
-                    Held::Views {
-                        views,
-                        restated,
-                        metrics,
-                    } => {
-                        for (at, (&table, view)) in
-                            O::TABLES.iter().zip(views.into_vec()).enumerate()
+                    Held::Tables { hands, metrics } => {
+                        for (at, (&table, hand)) in
+                            O::TABLES.iter().zip(hands.into_vec()).enumerate()
                         {
                             let index = table.index();
-                            let held = &self.frame.tables[index];
-                            // A segment's first hour gives every table whole: one as it was is
-                            // unchanged.
-                            if restated[at] && same(&view, held, self.fields[at]) {
-                                changes.rows_changed[index] = false;
-                                self.frame.tables[index] =
-                                    held.clone().with_sampled_at(view.sampled_at());
-                            } else {
-                                self.frame.tables[index] = view;
-                            }
+                            let held =
+                                std::mem::replace(&mut self.frame.tables[index], not_selected());
+                            let restored = self.restored[at].take();
+                            self.frame.tables[index] = match hand {
+                                // A segment's first hour gives every table whole: one as it was
+                                // is unchanged.
+                                hand::Hand::Whole(view) => {
+                                    let unchanged = match &restored {
+                                        Some(saved) => same(
+                                            &view,
+                                            &restore_comparison(&saved.bytes, self.fields[at])?,
+                                            self.fields[at],
+                                        ),
+                                        None => same(&view, &held, self.fields[at]),
+                                    };
+                                    if unchanged {
+                                        changes.rows_changed[index] = false;
+                                    }
+                                    // An unchanged live view stays the one the observer holds; a restored one never does.
+                                    if unchanged && restored.is_none() {
+                                        held.with_sampled_at(view.sampled_at())
+                                    } else {
+                                        view
+                                    }
+                                }
+                                hand => hand.apply(held)?,
+                            };
                         }
                         self.frame.hour = at;
                         self.frame.metrics = *metrics;
@@ -314,6 +335,9 @@ impl<O: Observer> Emit<O> {
                 };
                 if !O::changed(&changes) && self.scan.continues_to(at) {
                     // Nothing it reads moved: the hour is quiet, refused hours staying refused.
+                    if let Some(operands) = &operands {
+                        operands.skipped(&mut self.scan.observer)?;
+                    }
                     self.scan
                         .prepare_quiet(at, changes.slot_read[O::READ.index()])?;
                 } else {
@@ -410,11 +434,23 @@ impl<O: Observer> Emit<O> {
         Ok(())
     }
 
-    /// What it goes on with after a cut: the scan, then the open runs.
+    /// What it goes on with after a cut: the scan, table comparisons and open runs.
     pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
         let saved = serde_json::to_vec(&(&self.scan, self.last))?;
         out.extend_from_slice(&(saved.len() as u64).to_le_bytes());
         out.extend_from_slice(&saved);
+        for (at, &table) in O::TABLES.iter().enumerate() {
+            match &self.restored[at] {
+                Some(restored) => put_bytes64(out, &restored.bytes)?,
+                None => {
+                    let start = out.len();
+                    out.extend_from_slice(&[0; 8]);
+                    comparison(&self.frame.tables[table.index()], self.fields[at], out)?;
+                    let length = (out.len() - start - 8) as u64;
+                    out[start..start + 8].copy_from_slice(&length.to_le_bytes());
+                }
+            }
+        }
         self.carry.save(out)
     }
 
@@ -425,19 +461,23 @@ impl<O: Observer> Emit<O> {
         directory: &Directory,
         bytes: &[u8],
     ) -> io::Result<Self> {
-        let (length, rest) = bytes
-            .split_first_chunk::<8>()
-            .ok_or_else(|| invalid("A saved keyed emit is truncated"))?;
-        let length = usize::try_from(u64::from_le_bytes(*length))
-            .ok()
-            .filter(|&length| length <= rest.len())
-            .ok_or_else(|| invalid("A saved keyed emit is truncated"))?;
-        let (saved, carry) = rest.split_at(length);
-        let (scan, last): (Scan<O, Calls>, Option<i32>) = serde_json::from_slice(saved)?;
+        let mut input = Decoder::new(bytes);
+        let length = input.count64(1)?;
+        let (scan, last): (Scan<O, Calls>, Option<i32>) =
+            serde_json::from_slice(input.take(length)?)?;
         let mut emit = Self::new(format, branch)?;
+        for (at, restored) in emit.restored.iter_mut().enumerate() {
+            let bytes = input.bytes64()?.into_boxed_slice();
+            let mut header = Decoder::new(&bytes);
+            if header.u8()? == 0 {
+                header.u16()?;
+                comparison_fields(&mut header, emit.fields[at])?;
+            }
+            *restored = Some(Restored { bytes });
+        }
         emit.keys = keys(directory, &scan)?;
         emit.actors = Actors::resume(SCHEMA, directory)?;
-        emit.carry = Carry::load(carry)?;
+        emit.carry = Carry::load(input.rest())?;
         emit.scan = scan;
         emit.last = last;
         emit.stale = false;
@@ -445,8 +485,6 @@ impl<O: Observer> Emit<O> {
     }
 }
 
-/// Whether `view` holds what `held` holds in `fields`: the same status, and complete rows of
-/// the same keys whose `fields` agree.
 fn same(view: &TableView, held: &TableView, fields: u64) -> bool {
     match (view, held) {
         (TableView::Complete(rows), TableView::Complete(old)) => {
@@ -469,6 +507,171 @@ impl RowsPairVisit for Agree {
                 .zip(held)
                 .all(|(row, held)| row.key() == held.key() && row.differing_fields(held) & self.0 == 0)
     }
+}
+
+fn comparison(view: &TableView, fields: u64, out: &mut Vec<u8>) -> io::Result<()> {
+    match view {
+        TableView::Complete(rows) => {
+            out.push(0);
+            out.extend_from_slice(&(rows.table().index() as u16).to_le_bytes());
+            out.extend_from_slice(&fields.to_le_bytes());
+            rows.visit(SavedRows { out, fields })?;
+        }
+        TableView::Truncated { rows, missing } => {
+            out.push(1);
+            out.extend_from_slice(&(rows.table().index() as u16).to_le_bytes());
+            out.extend_from_slice(&missing.to_le_bytes());
+            rows.visit(SavedRows {
+                out,
+                fields: rows.table().full_mask(),
+            })?;
+        }
+        TableView::Unavailable { reason } => {
+            out.push(2);
+            out.extend_from_slice(reason.as_bytes());
+        }
+        TableView::NotRecorded { mode } => {
+            out.extend_from_slice(&[3, mode.byte()]);
+        }
+    }
+    Ok(())
+}
+
+struct SavedRows<'a> {
+    out: &'a mut Vec<u8>,
+    fields: u64,
+}
+
+impl RowsVisit for SavedRows<'_> {
+    type Output = io::Result<()>;
+
+    fn rows<R: RowCodec>(self, rows: &[R]) -> io::Result<()> {
+        put_varint(self.out, rows.len() as u128);
+        for row in rows {
+            put_varint(self.out, row.key());
+            row.visit_wire(&mut |index, field| {
+                if self.fields & (1 << index) != 0 {
+                    let recorded = !matches!(field, Field::NotRecorded);
+                    self.out.push(u8::from(recorded));
+                    if recorded {
+                        field.encode(self.out)?;
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+}
+
+struct DefaultFields(u64);
+
+impl RowsVisit for DefaultFields {
+    type Output = io::Result<Vec<u8>>;
+
+    fn rows<R: RowCodec>(self, _: &[R]) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        R::default().visit_wire(&mut |index, field| {
+            if self.0 & (1 << index) == 0 {
+                field.encode(&mut bytes)?;
+            }
+            Ok(())
+        })?;
+        Ok(bytes)
+    }
+}
+
+fn comparison_fields(input: &mut Decoder<'_>, fields: u64) -> io::Result<u64> {
+    if input.u64()? != fields {
+        return Err(invalid("Keyed comparison field selection changed"));
+    }
+    Ok(fields)
+}
+
+fn restore_comparison(bytes: &[u8], fields: u64) -> io::Result<TableView> {
+    let mut input = Decoder::new(bytes);
+    let view = match input.u8()? {
+        status @ (0 | 1) => {
+            let table = TableId::ALL
+                .get(usize::from(input.u16()?))
+                .copied()
+                .ok_or_else(|| invalid("Unknown keyed comparison table"))?;
+            let fields = if status == 0 {
+                comparison_fields(&mut input, fields)?
+            } else {
+                table.full_mask()
+            };
+            let missing = if status == 1 {
+                Some(input.u32()?)
+            } else {
+                None
+            };
+            let count = usize::try_from(input.varint()?)
+                .map_err(|_| invalid("Keyed comparison row count exceeds address space"))?;
+            let schema = table.schema();
+            if count > input.remaining() / (1 + (fields & table.full_mask()).count_ones() as usize)
+            {
+                return Err(invalid("Keyed comparison rows exceed remaining payload"));
+            }
+            let mut keys = Vec::with_capacity(count);
+            let mut wire = Decoder::new(input.rest());
+            for _ in 0..count {
+                keys.push(input.varint()?);
+                for (index, &kind) in schema.iter().enumerate() {
+                    if fields & (1 << index) != 0 && input.bool()? {
+                        kind.decode(&mut input)?;
+                    }
+                }
+            }
+            // Row construction needs every key first, but visits each row's fields together.
+            // visit_wire lends temporary fields, so encode defaults once and share their decoded borrows.
+            let defaults = TableRows::empty(table).visit(DefaultFields(fields))?;
+            let mut defaults = Decoder::new(&defaults);
+            let mut row_fields = schema
+                .iter()
+                .enumerate()
+                .map(|(index, &kind)| {
+                    if fields & (1 << index) == 0 {
+                        kind.decode(&mut defaults)
+                    } else {
+                        Ok(Field::NotRecorded)
+                    }
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            defaults.finish()?;
+            let mut decoded = None;
+            let rows = table.rows_from_wire(&keys, &mut |row, field| {
+                if decoded != Some(row) {
+                    wire.varint()?;
+                    for (index, (field, &kind)) in row_fields.iter_mut().zip(schema).enumerate() {
+                        if fields & (1 << index) != 0 {
+                            *field = if wire.bool()? {
+                                kind.decode(&mut wire)?
+                            } else {
+                                Field::NotRecorded
+                            };
+                        }
+                    }
+                    decoded = Some(row);
+                }
+                Ok(row_fields[field])
+            })?;
+            match missing {
+                Some(missing) => TableView::Truncated { rows, missing },
+                None => TableView::Complete(rows),
+            }
+        }
+        2 => TableView::Unavailable {
+            reason: String::from_utf8(input.take(input.remaining())?.to_vec())
+                .map_err(|_| invalid("Keyed comparison reason is not text"))?,
+        },
+        3 => TableView::NotRecorded {
+            mode: CaptureMode::from_byte(input.u8()?)?,
+        },
+        _ => return Err(invalid("Unknown keyed comparison status")),
+    };
+    input.finish()?;
+    Ok(view)
 }
 
 /// Each key `scan` numbered, as `directory` holds it, READ and KNOWN first: as far as it holds
@@ -498,27 +701,15 @@ fn keys<O: Observer, B: Batch>(
 
 /// A keyed family's publication on a branch, as a reply reads it.
 pub(crate) struct Opened {
-    opened: published::Opened,
+    pub(crate) opened: published::Opened,
     /// Each scan key's series key, by scan key.
-    keys: Vec<KeyHandle>,
-}
-
-/// `O`'s publication on `branch` and the scan it catalogues; None before its first.
-pub(crate) fn open<O: Observer>(
-    source: &dashboard_base::Source,
-    content: Option<&dashboard_core::config::ContentOptions>,
-    branch: u64,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<(Scan<O>, Opened)>> {
-    let Some(opened) = published::open(source, content, O::NAME, SCHEMA, branch)? else {
-        return Ok(None);
-    };
-    let (scan, keys) = opened.read(cancelled, |_, directory| catalogued(directory))?;
-    Ok(Some((scan, Opened { opened, keys })))
+    pub(crate) keys: Vec<KeyHandle>,
 }
 
 /// The scan `directory` catalogues, its observer and names alone, and each of its keys.
-fn catalogued<O: Observer>(directory: &Directory) -> io::Result<(Scan<O>, Vec<KeyHandle>)> {
+pub(crate) fn catalogued<O: Observer>(
+    directory: &Directory,
+) -> io::Result<(Scan<O>, Vec<KeyHandle>)> {
     let observer = match directory.scalar(OBSERVER).and_then(|scalar| scalar.text()) {
         Some(json) => serde_json::from_slice(json)?,
         None => O::default(),
@@ -596,18 +787,27 @@ fn changes<P: PageRead>(
                 return Ok(changes);
             };
             let runs = engine::runs(snapshot, handle, first, last)?;
-            let mut runs = runs.iter().peekable();
             let mut held = None;
-            for (at, &hour) in hours.iter().enumerate() {
-                while runs.next_if(|run| run.span.last < hour).is_some() {}
-                let now = runs
-                    .peek()
-                    .filter(|run| run.span.first <= hour)
-                    .map(|run| run.value);
+            let mut end = 0;
+            for run in runs {
+                let lo = hours.partition_point(|&hour| hour < run.span.first);
+                let hi = hours.partition_point(|&hour| hour <= run.span.last);
+                if lo == hi {
+                    continue;
+                }
+                if lo > end && held.is_some() {
+                    changes.push((end, None));
+                    held = None;
+                }
+                let now = Some(run.value);
                 if now != held {
-                    changes.push((at, now));
+                    changes.push((lo, now));
                 }
                 held = now;
+                end = hi;
+            }
+            if end < hours.len() && held.is_some() {
+                changes.push((end, None));
             }
             Ok(changes)
         })

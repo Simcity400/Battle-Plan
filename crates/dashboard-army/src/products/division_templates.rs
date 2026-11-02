@@ -147,7 +147,7 @@ impl Product for DivisionTemplates {
             cancelled,
             || {
                 let frame = native::frame_at(source, branch, p.hour, &TABLES, cancelled)?
-                    .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
+                    .ok_or_else(|| dashboard_core::refused("This hour is not recorded"))?;
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;
                 let mut reply = build(

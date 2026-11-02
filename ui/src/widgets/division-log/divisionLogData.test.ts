@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
 import type { DivisionLogEntry, DivisionLogReply } from '../../generated/dashboard';
 import { divisionRows, divisionStatus, divisionTooltip, selectedTemplates, templateToken, validateDivisionLog,
   validateDivisionManifest, validateDivisionTotals } from './divisionLogData.ts';
@@ -15,6 +16,19 @@ const entry = (id = '1'): DivisionLogEntry => ({ id, division: id, readHour: 12,
 const reply = (rows = [entry()], window = 0): DivisionLogReply => ({ window, interval: { firstHour: 10, lastHour: 20 }, rows, warnings: [], contentWarnings: [] });
 const rows = (at = 12, first = 10, events = 'both', templates: string[] | null = null, all = true) =>
   divisionRows(new Map([[0, reply()]]), at, first, events, templates, () => false, all);
+
+test('division rows and objects persist between supplying reads and replacement replies are picked up', () => {
+  const data = deepFreeze(reply([entry(), { ...entry('2'), hour: 18, readHour: 20 }]));
+  const windows = deepFreeze(new Map([[0, data]])), matches = () => true;
+  const at = (hour: number) => divisionRows(windows, hour, 10, 'both', null, matches, true);
+  const first = at(12);
+  assert.equal(at(19), first);
+  const crossed = at(20);
+  assert.equal(crossed.length, 2);
+  assert.equal(crossed[1], first[0]);
+  const replacement = deepFreeze(new Map([[0, { ...data, rows: data.rows.map(row => ({ ...row, name: 'Replacement' })) }]]));
+  assert.equal(divisionRows(replacement, 20, 10, 'both', null, matches, true)[0].item.name, 'Replacement');
+});
 
 test('death dates do not make their later captured read visible early', () => {
   assert.equal(rows(11).length, 0);

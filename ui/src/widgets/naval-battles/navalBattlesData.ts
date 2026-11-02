@@ -1,3 +1,6 @@
+import type { PlaybackIntervals } from '../../charts/playbackIntervals';
+import { playbackRows, spanChanges } from '../../charts/playbackIntervals.ts';
+import { countryMatchChangeHours } from '../../dashboard/groups.ts';
 import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import type { BattleRow, BattleSide, BattleValue, BattleWindow, NavalBattleHistory, NavalBattleRun, NavalBattlesReply,
   NavalBattlesManifestReply, NavalBattlesRankingReply } from '../../generated/dashboard';
@@ -81,8 +84,41 @@ export function navalBattleMeasureText(value: BattleValue, row: NavalBattleRow):
 }
 
 /** Merge loaded reads in recording order; prefetched future windows cannot backfill facts. */
-export function navalBattleRows(windows: ReadonlyMap<number, NavalBattlesReply>, at: number,
-  matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null = null): NavalBattleRow[] {
+type Windows = ReadonlyMap<number, NavalBattlesReply>;
+type CountryMatch = (tag: string, hour: number) => boolean;
+const rowPlaybacks = new WeakMap<Windows, WeakMap<CountryMatch, Map<string, PlaybackIntervals<ReadonlyArray<NavalBattleRow>>>>>();
+const matchAll: CountryMatch = () => true;
+const rankedWindows = new WeakMap<NavalBattlesRankingReply, Windows>();
+
+export function navalBattleRows(windows: Windows, at: number, matches: CountryMatch, all: boolean, from: number | null = null): ReadonlyArray<NavalBattleRow> {
+  let byMatch = rowPlaybacks.get(windows);
+  if (!byMatch) rowPlaybacks.set(windows, byMatch = new WeakMap());
+  let bySettings = byMatch.get(matches);
+  if (!bySettings) byMatch.set(matches, bySettings = new Map());
+  const key = JSON.stringify([all, from]);
+  let playback = bySettings.get(key);
+  if (!playback) {
+    const matchingHours = countryMatchChangeHours(matches);
+    function* changes() {
+      yield* matchingHours ?? [];
+      if (from !== null) yield from;
+      for (const window of windows.values()) {
+        yield window.interval.firstHour;
+        for (const history of window.rows) {
+          yield* spanChanges(history.runs);
+        }
+      }
+    }
+    playback = playbackRows(changes(), hour => readNavalBattleRows(windows, hour, matches, all, from), (rows, hour) =>
+      !all && matchingHours === undefined || rows.some(row => row.observedHour === hour)
+        ? { first: hour, end: hour + 1 } : { first: -Infinity, end: Infinity });
+    bySettings.set(key, playback);
+  }
+  return playback.at(at);
+}
+
+function readNavalBattleRows(windows: ReadonlyMap<number, NavalBattlesReply>, at: number,
+  matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null = null): ReadonlyArray<NavalBattleRow> {
   const histories = new Map<string, { history: NavalBattleHistory; index: number }>();
   for (const [index, window] of [...windows].sort(([a], [b]) => a - b)) {
     if (window.interval.firstHour > at) continue;
@@ -104,7 +140,14 @@ export function navalBattleRows(windows: ReadonlyMap<number, NavalBattlesReply>,
   }
   return rows;
 }
-export function rankedNavalBattleRows(data: NavalBattlesRankingReply | undefined, at: number): NavalBattleRow[] {
-  return data ? navalBattleRows(new Map([[-1, { window: 0, interval: { firstHour: at, lastHour: at }, rows: data.rows, observed: [], warnings: [], contentWarnings: data.contentWarnings }]]), at, () => true, true) : [];
+export function rankedNavalBattleRows(data: NavalBattlesRankingReply | undefined, at: number): ReadonlyArray<NavalBattleRow> {
+  if (!data) return [];
+  let windows = rankedWindows.get(data);
+  if (!windows) {
+    windows = new Map([[-1, { window: 0, interval: { firstHour: -Infinity, lastHour: Infinity }, rows: data.rows,
+      observed: [], warnings: [], contentWarnings: data.contentWarnings }]]);
+    rankedWindows.set(data, windows);
+  }
+  return navalBattleRows(windows, at, matchAll, true);
 }
 export { battleWarnings as navalBattleWarnings, shownBattleCensusHour as shownNavalCensusHour } from '../battles/battleRows.ts';

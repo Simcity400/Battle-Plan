@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useState } from 'react';
 import { drawableIcon } from '../../dashboard/artwork';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -14,7 +15,7 @@ export function useStockpileArtwork(runtime: WidgetRuntime, track: BoundTrack | 
   const request = track && hour !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'stockpile-artwork',
     params: { branchId: track.branch.id, tag, hour, variants } } : null;
   const key = JSON.stringify([request, revision]);
-  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: StockpileArtworkReply; error?: string }>();
+  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: StockpileArtworkReply; error?: Failure }>();
   useEffect(() => {
     if (!active || !request) return;
     const controller = new AbortController();
@@ -29,7 +30,7 @@ export function useStockpileArtwork(runtime: WidgetRuntime, track: BoundTrack | 
         || !Array.isArray(data.warnings) || !data.warnings.every(note => typeof note === 'string')) throw new Error('The stockpile artwork reply is malformed.');
       for (const entry of data.entries) entry.icon = drawableIcon(entry.icon);
       setState({ client: runtime.client, key, data });
-    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) }); });
+    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) }); });
     return () => controller.abort();
     // The key includes country, exact read, variant rows and content revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps

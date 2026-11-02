@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -8,7 +9,7 @@ import Timeline from '../../charts/timeline/Timeline';
 import { playbackDomain } from '../../charts/view';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -18,7 +19,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { careerCountryFacts, careerLanes, leaderAt, leaderName, careerEmptyEntry, recordedSince } from '../generals/generalsData';
-import { LeaderIdentity } from '../generals/LeaderIdentity';
+import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps } from '../generals/LeaderIdentity.tsx';
 import { useLeaderPortraits } from '../generals/portraits';
 import { useLeaders } from '../generals/useLeaders';
 import { OPTIONS } from './definition';
@@ -27,7 +28,7 @@ import { experienceText, experienceFactorText } from '../generals/experience';
 
 /** One view for the leaderboard drill and the standalone career widget. */
 export default function CareerView({ reference, hour, onPick, caption, widget, runtime, active, onDiagnostics }: WidgetProps & {
-  reference: string; hour: number; onPick?: (hour: number) => void; caption?: string;
+  reference: string; hour: number; onPick?: (hour: number) => void; caption?: ReactNode;
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -63,7 +64,7 @@ export default function CareerView({ reference, hour, onPick, caption, widget, r
     const command = lane.id === 'commands' && span ? leader.commands.find(c => `command:${c.formation}:${c.firstHour}` === span.id) : undefined;
     const unknownName = command && (command.nameReadHour == null || h < command.nameReadHour || command.nameUnknown.some(r => r.firstHour <= h && h <= r.lastHour));
     const entry = unknownName ? `Unnamed ${command.kind === 'fleet' ? 'fleet' : 'formation'}` : span?.label;
-    const content = { title: hovered ? leaderName(hovered) : 'Leader not recorded', subtitle: `${country.name} · ${formatDateTime(h)}`,
+    const content = { ...countryNameDetails(country), title: hovered ? leaderName(hovered) : 'Leader not recorded', subtitle: `${country.name} · ${formatDateTime(h)}`,
       rows: [{ label: lane.label, value: entry ?? careerEmptyEntry(data, leader, lane.id, h) }],
       note: lane.id === 'battles' && !leader.battleWon && !span ? 'Battle results are not in this recording'
         : lane.id === 'commands' && hovered?.value.kind === 2 ? data.navyCommandsMissing ? 'Fleet command history is incomplete.' : undefined : undefined };
@@ -74,14 +75,14 @@ export default function CareerView({ reference, hour, onPick, caption, widget, r
     total: lanes.length, rows: [...lanes], hour, leader: leader ?? null, current: row ?? null }),
     { ready: () => !!data, error: () => error ?? null });
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading leader career…" />;
   if (!leader && preparing) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!leader) return <WidgetState kind="unavailable" message="Career unavailable for this leader." />;
   const country = row?.value.owner ? labelAt(hour)(row.value.owner) : { name: 'Owner not recorded' };
   return <div className="general-career" ref={parityRoot}>
     {caption && <p className="career-subject">{caption}</p>}
-    {row ? <div className="career-top"><LeaderIdentity art={portraits.at(row)} row={row} country={country} showCountry />
+    {row ? <div className="career-top"><LeaderIdentity {...leaderIdentityProps(row, country)} {...leaderPortraitProps(portraits.at(row))} showCountry />
       <div className="career-stats">
         <span><strong>{row.preparing ? 'Still being prepared' : row.fought}</strong>fought</span>
         {row.won == null ? null

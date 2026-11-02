@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import { useEffect, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -65,8 +66,8 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
   const moment = JSON.stringify(request);
   const [attempt, setAttempt] = useState(0);
   const [all, setAll] = useState(false);
-  const [state, setState] = useState<{ client: DashboardClient; owner: string; index?: ScoreboardPreparedReply; page?: ScoreboardPreparedReply; pending: boolean; error?: string }>();
-  const [cellFailure, setCellFailure] = useState<{ client: DashboardClient; owner: string; key: string; attempt: number; error: string }>();
+  const [state, setState] = useState<{ client: DashboardClient; owner: string; index?: ScoreboardPreparedReply; page?: ScoreboardPreparedReply; pending: boolean; error?: Failure }>();
+  const [cellFailure, setCellFailure] = useState<{ client: DashboardClient; owner: string; key: string; attempt: number; error: Failure }>();
   const owned = state?.client === client && state.owner === owner ? state : undefined;
   useEffect(() => {
     if (!active || !source || !request) return;
@@ -76,7 +77,7 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
     void queryScoreboard(client, source, request, controller.signal, attempt > 0, index => {
       if (!controller.signal.aborted) setState(previous => ({ client, owner, index,
         page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: false }));
-    }).catch(error => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: String(error) })); });
+    }).catch(error => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: asFailure(error) })); });
     return () => controller.abort();
   }, [client, source?.id, source?.revision, owner, moment, active, attempt]);
   const shown = owned?.index;
@@ -103,7 +104,7 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
     const page = scoreboardCellPage({ ...request, hour: shown.hour }, wanted);
     void queryScoreboard(client, source, page, controller.signal, attempt > 0, page => {
       if (!controller.signal.aborted) setState(previous => previous?.client === client && previous.owner === owner && previous.index === shown ? { ...previous, page } : previous);
-    }).catch(error => { if (!controller.signal.aborted) setCellFailure({ client, owner, key: cellKey, attempt, error: String(error) }); });
+    }).catch(error => { if (!controller.signal.aborted) setCellFailure({ client, owner, key: cellKey, attempt, error: asFailure(error) }); });
     return () => controller.abort();
   }, [client, owner, shown, cellKey, active, covered, owned?.pending, owned?.error, cellError, attempt]);
   return { index: shown, page: supplied, pending: owned?.pending ?? (active && !!request), error: owned?.error ?? cellError,

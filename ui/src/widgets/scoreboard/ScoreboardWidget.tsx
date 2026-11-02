@@ -1,3 +1,5 @@
+import { nameReadText } from '../../dashboard/nameReads.ts';
+import { asFailure } from '../../dashboard/queryError.ts';
 import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -7,7 +9,7 @@ import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -75,7 +77,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const columns = useMemo<readonly TableColumn<ScoreboardRow>[]>(() => [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-country-min), 2fr)',
       hint: resolved.top != null ? 'Top countries, sorted by name.' : undefined,
-      value: row => names.get(nameKey(row.hour, row.tag)) ?? null, renderMissing: true,
+      value: row => nameReadText(names.get(nameKey(row.hour, row.tag))), text: row => labelAt(row.hour)(row.tag).name, renderMissing: true,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
     ...shown.map((column, index) => ({ key: column.key, header: column.label, label: column.label, numeric: true, renderMissing: true, width: 'max-content',
       priority: index + 1, inTooltip: true, bar: BigInt(result.index?.maxima[column.key] ?? '0'),
@@ -89,7 +91,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const tooltip = useCallback((row: ScoreboardRow) => {
     const content = scoreboardTooltip(row, shown, labelAt(row.hour)(row.tag).name);
     const preparing = new Set(shown.filter(column => fieldPreparing(result.page, column.key)).map(column => column.label));
-    return fitTooltip([{ ...content, rows: content.rows.map(part => preparing.has(part.label) ? { ...part, value: 'Still being prepared' } : part) }], viewport);
+    return fitTooltip([{ ...content, ...countryNameDetails(labelAt(row.hour)(row.tag)), rows: content.rows.map(part => preparing.has(part.label) ? { ...part, value: 'Still being prepared' } : part) }], viewport);
   }, [shown, labelAt, viewport, result.page]);
   const setTableOption = useCallback<NonNullable<WidgetProps['setOption']>>((key, value) => {
     if (key === 'tableSort') {
@@ -110,9 +112,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
 
   if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (registryResult.error) return <WidgetState kind="error" detail={registryResult.error} onRetry={registryResult.retry} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = grouped && groups.error ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (registryResult.error) return <WidgetState kind="error" failure={asFailure(registryResult.error)} onRetry={registryResult.retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (resolved.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
   if (registryResult.data && !shown.length) return <>{groupFailure}<WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." /></>;

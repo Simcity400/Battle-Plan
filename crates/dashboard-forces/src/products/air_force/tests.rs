@@ -399,8 +399,11 @@ fn air_force_unsupported_country_tags_are_named_and_counted() {
         |_, _, _, _, _| panic!("undisplayable native tags must refuse before visiting"),
     )
     .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert!(error.to_string().contains("[255]: 1"));
+    assert!(
+        dashboard_core::refusal(&error)
+            .unwrap()
+            .contains("[255]: 1")
+    );
 }
 
 #[test]

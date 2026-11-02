@@ -110,7 +110,7 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   if (!tag) return <WidgetState kind="empty" message="Choose a country in the widget settings." />;
   // Another recording's playback can run past this one: nothing is shown outside its branch.
   if (at < track.branch.firstHour || at > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the balance of power…" />;
   if (pinnedWeekly) return <div className="balance-of-power is-pinned">
     <p className="chart-line-key">{dayLabel(details.hour ?? at)}</p>

@@ -19,8 +19,8 @@ test('members ever, known so far but not yet all found, leave a moment with no v
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });
       export const flagReadMetadata = () => null;`,
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = () => new Map();',
-    '/dashboard/holderLooks.ts': 'export const nameReadText = () => "Country"; export const useHolderLooks = () => ({ color: () => "#123456" });',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
+    '/dashboard/holderLooks.ts': 'export const useHolderLooks = () => ({ color: () => "#123456" });',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123'], muted: '#888', surface: '#000', text: '#fff' });`,
     '/charts/flow/FlowDiagram.tsx': `import { createElement } from 'react'; export default ({ message }) => createElement('p', null, message ?? 'links drawn');`,
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',

@@ -193,7 +193,7 @@ pub(super) fn authenticated<'a>(
     reads.get(&params.hour).and_then(|rows| rows.get(&params.tag))
         .filter(|row| row.country==reference
             && matches!(row.country_instance,replay_data::rows::Recorded::Value(Some(value)) if value==params.country_instance))
-        .ok_or_else(|| dashboard_core::invalid("Fuel actor identity changed or supplying read is not recorded (carried display hours are not reads)"))
+        .ok_or_else(|| dashboard_core::refused("Fuel actor identity changed or supplying read is not recorded (carried display hours are not reads)"))
 }
 
 /// The reads of window `window` at `hours`, its supplying reads a selection asks: one window is
@@ -377,9 +377,9 @@ impl Product for CountryFuelAwardHistory {
             country_instance: params.country_instance,
         };
         let (read, awards) = query::basis_awards(source, &basis_params, context, cancelled)?;
-        let (_, recipients) = awards.map_err(dashboard_core::invalid)?;
+        let (_, recipients) = awards.map_err(dashboard_core::refused)?;
         let continuity = read.continuity_start_hour.ok_or_else(|| {
-            dashboard_core::invalid("Fuel receipt continuity boundary not recorded")
+            dashboard_core::refused("Fuel receipt continuity boundary not recorded")
         })?;
         let parts = recipients_of(&recipients, cancelled, |_| Ok(String::new()))?;
         if !parts.iter().any(|part| part.key == params.recipient_key) {

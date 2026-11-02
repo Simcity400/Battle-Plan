@@ -1,3 +1,5 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -25,7 +27,7 @@ import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { useParityPreparation } from '../../dashboard/parityPreparation';
 import type { LogListProps } from '../../charts/log/LogList';
 import { OPTIONS, PROJECT_CHOICES } from './definition';
-import { buildingChoices, describeRow, jumpHours, levelsLabel, logComplete, logRows, placeTitle, projectTooltip, projectType, rowCountryRequests, rowFactories, statusLabel, statusTone, typeName } from './constructionData';
+import { buildingChoices, constructionPlayback, describeRow, jumpHours, levelsLabel, logComplete, placeTitle, projectTooltip, projectType, rowCountryRequests, rowFactories, statusLabel, statusTone, typeName } from './constructionData.ts';
 import type { ProjectAt } from './constructionData';
 import { useConstructionLog } from './useConstructionLog';
 import './constructionLog.css';
@@ -67,9 +69,10 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const projects = options.projects === 'new' || options.projects === 'repair' ? options.projects : 'all';
   const queue = options.queue === true;
   const order = options.order === 'start' ? 'start' : 'change';
-  const rows = useMemo(() => log && hour != null && match.ready
-    ? logRows(log, hour, { types: contentSet(types), projects, queue, country: match.matches, from }, order) : NO_ROWS,
-  [log, hour, match, types, projects, queue, from, order]);
+  const rowPlayback = useMemo(() => log && match.ready
+    ? constructionPlayback(log, { types: contentSet(types), projects, queue, country: match.matches, from }, order) : null,
+  [log, match, types, projects, queue, from, order]);
+  const rows = hour != null ? rowPlayback?.at(hour) ?? NO_ROWS : NO_ROWS;
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
@@ -101,8 +104,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   useDiagnostics(onDiagnostics, warnings);
 
   if (!track) return <WidgetState kind="empty" icon="hammer" message="Load a campaign to see its construction." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!manifest || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading the construction log…" /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
@@ -123,7 +126,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     // A name still being read shows a placeholder; a missing or failed one says so.
     const named = (placeholder: string): ReactNode => label.known === undefined
       ? <span className={`skeleton ${placeholder}`} aria-hidden="true" /> : <span className="construction-ellipsis">{label.name}</span>;
-    const flag = <CountryFlagUrl className="log-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} />;
+    const flag = <CountryFlagUrl className="log-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />;
     return <>
       <span className="log-art" aria-hidden="true">
         {type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="factory" />}
@@ -154,7 +157,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     : chosen.length || projects !== 'all' || queue || from != null
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.'
       : oneCountry ? 'No construction by this country yet.' : 'No construction by these countries yet.';
-  return <div className={`log-widget construction-log${oneCountry ? ' is-one-country' : ''}`}>{groupFailure}
+  return <div data-detail={failureDetails(wantedStates.map(read => stateAt(read.hour, read.state).failure))} className={`log-widget construction-log${oneCountry ? ' is-one-country' : ''}`}>{groupFailure}
     {settings.chips && <div className="log-chips construction-filters">
       <ChipSet label="Projects" chips={PROJECT_CHOICES} selected={[projects]} max={1} full={false} onToggle={value => setOption?.('projects', value)} />
       <ChipSet label="Queue" chips={QUEUE_CHIP} selected={queue ? ['queue'] : []} max={1} full={false} onToggle={() => setOption?.('queue', !queue)} />
@@ -165,7 +168,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
       {...import.meta.env.MODE === 'parity' ? { parityHistoryComplete: logComplete(log, from), paritySemantic } : {}}
       animate={settings.animate && live} renderRow={renderRow}
       describe={row => describeRow(log, row, country(row.item).name, hour, stateAt)}
-      tooltip={row => projectTooltip(log, row.item, hour, country(row.item).name, stateAt)}
+      tooltip={row => projectTooltip(log, row.item, hour, country(row.item).name, stateAt).map(form => ({ ...form, ...countryNameDetails({ nameDetail: form.detail }, country(row.item)) }))}
       menu={menu} empty={empty} onVisible={onVisible} />
   </div>;
 }

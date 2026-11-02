@@ -54,7 +54,7 @@ test('late status cannot undo Clear or cross source/request identity', async () 
   assert.equal(f.controller.getSnapshot().reply?.state, 'idle');
   f.client.preparationStatus = async query => ({ ...reply(query, 'ready'), revision: 'wrong' });
   await f.controller.command('status');
-  assert.match(f.controller.getSnapshot().error!, /does not match/);
+  assert.match(f.controller.getSnapshot().error!.message, /does not match/);
   assert.equal(f.controller.getSnapshot().reply?.state, 'idle'); f.controller.stop();
 });
 test('source opened after panel closes is released and never queried', async () => {
@@ -136,7 +136,7 @@ test('Refresh and Prepare reopen a source whose first open failed', async () => 
   try {
     await f.controller.start(source.path, null);
     assert.equal(f.controller.getSnapshot().source, null);
-    assert.match(f.controller.getSnapshot().error ?? '', /recording unavailable/);
+    assert.match(f.controller.getSnapshot().error?.message ?? '', /recording unavailable/);
     await f.controller.command('status');
     assert.deepEqual(f.calls, ['open failed', 'open failed'], 'Refresh retries the open while it still fails');
     failing = false;

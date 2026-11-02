@@ -11,7 +11,7 @@ import { FAILED_FACT } from './countryFacts.ts';
 // guard, held-look merge and current pending/failure semantics remain.
 test('visible sampled flags retain backend reasons, clear current failures and never decode the whole country inventory', async () => {
   const state = { slots: [] as { value: unknown; deps?: readonly unknown[] }[], cursor: 0, content: '',
-    flags: new Map<string, FlagRead | null | typeof FAILED_FACT>(), current: undefined as CountryLooks | undefined,
+    styleFailure: undefined as Error | undefined, flags: new Map<string, FlagRead | null | typeof FAILED_FACT>(), current: undefined as CountryLooks | undefined,
     requests: [] as { product: string; tags: string[]; hours: number[]; batch: number }[] };
   const host = globalThis as typeof globalThis & { __lookFlags?: typeof state;
     __lookHook?: (kind: string, ...args: unknown[]) => unknown };
@@ -50,7 +50,7 @@ test('visible sampled flags retain backend reasons, clear current failures and n
               warnings: ['native_4999: Synthetic mod name refusal'],
             });
             return new Map(wanted.flatMap(row => {
-              const value = styles.get(row.tag);
+              const value = state.styleFailure ?? styles.get(row.tag);
               return value === undefined ? [] : [[nameKey(row.hour, row.tag), value]];
             }));
           };`;
@@ -71,6 +71,16 @@ test('visible sampled flags retain backend reasons, clear current failures and n
     assert.equal(state.requests.find(row => row.product === 'country-styles')!.tags.length, 5000);
     assert.equal(state.requests.find(row => row.product === 'country-styles')!.batch, 64);
     assert.deepEqual(look.warnings, ['native_4999: Synthetic mod name refusal']);
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('./queryError.ts');
+    const refusal = new RefusedError('Synthetic country styles are not recorded');
+    for (const error of [refusal, new Error('Synthetic styles decoder failed')]) {
+      state.styleFailure = error; look = render();
+      assert.equal(look.name('native_0', hour), error === refusal ? refusal.text : 'Couldn’t load country name.');
+      assert.equal(look.nameFailure?.('native_0', hour), error);
+      assert.ok(look.warnings?.includes(error.message));
+    }
+    state.styleFailure = undefined; look = render();
+
     const flags = state.requests.find(row => row.product === 'country-flags')!;
     assert.deepEqual(flags.tags, visible);
     assert.deepEqual(flags.hours, [100, 100]);

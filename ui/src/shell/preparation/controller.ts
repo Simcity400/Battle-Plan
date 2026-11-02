@@ -1,10 +1,11 @@
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client.ts';
 import { newId } from '../ids.ts';
 import { preparationActive, validatePreparationReply } from './contract.ts';
 import type { PreparationAction, PreparationReply } from './contract.ts';
 /** Paused work resumes without a notification, so its panel checks back slowly. */
 export const PAUSED_POLL_MS = 5000;
-export interface PreparationState { source: DashboardSource | null; reply: PreparationReply | null; loading: boolean; pending: boolean; error: string | null }
+export interface PreparationState { source: DashboardSource | null; reply: PreparationReply | null; loading: boolean; pending: boolean; error: Failure | null }
 /** One visible campaign, one pending request, no retained campaign histories. */
 export class PreparationController {
   private state: PreparationState = { source: null, reply: null, loading: true, pending: false, error: null };
@@ -31,7 +32,7 @@ export class PreparationController {
       this.owned = !source;
       this.update({ ...this.state, source: opened });
       await this.command('status');
-    } catch (error) { if (this.active && !opening.signal.aborted) this.update({ ...this.state, loading: false, error: String(error) }); }
+    } catch (error) { if (this.active && !opening.signal.aborted) this.update({ ...this.state, loading: false, error: asFailure(error) }); }
   }
   async command(action: PreparationAction) {
     const source = this.state.source;
@@ -56,7 +57,7 @@ export class PreparationController {
       if (preparationActive(reply)) this.timer = setTimeout(() => { void this.command('status'); }, 500);
       else if (reply.state === 'paused') this.timer = setTimeout(() => { void this.command('status'); }, PAUSED_POLL_MS);
     } catch (error) {
-      if (!request.signal.aborted && this.active) this.update({ ...this.state, loading: false, pending: false, error: String(error) });
+      if (!request.signal.aborted && this.active) this.update({ ...this.state, loading: false, pending: false, error: asFailure(error) });
     }
   }
   stop() {

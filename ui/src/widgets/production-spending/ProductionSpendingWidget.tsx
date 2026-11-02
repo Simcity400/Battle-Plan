@@ -81,7 +81,7 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
 
   let body: ReactNode;
   if (!track || !tag) body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
-  else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
+  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading production spending…" />;
   else if (!data.reads.length && preparedPrefix(data)?.pending.length) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (!data.reads.length) body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;

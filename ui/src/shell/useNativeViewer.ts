@@ -6,7 +6,7 @@ import {
   getDesktopState,
   onViewerState,
   setMapView,
-} from './api';
+} from './api.ts';
 import type { DesktopState, MapBounds, MapView } from './api';
 
 export function useDesktopState(retry: number) {

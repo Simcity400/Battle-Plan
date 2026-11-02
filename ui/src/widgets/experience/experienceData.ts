@@ -1,5 +1,4 @@
 import type { CountryIdentityRun, ExperienceRead, ExperienceReply } from '../../generated/dashboard';
-import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { clipToSpans, lineEndHour, runAt } from '../../charts/series.ts';
@@ -8,7 +7,7 @@ import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount, formatSigned, rescale } from '../../charts/valueAxis.ts';
 import { object, opaqueTag, signed32, signed64 } from '../../dashboard/validation.ts';
-import { FAILED_FACT } from '../../dashboard/countryFacts.ts';
+import { nameReadText, type NameRead } from '../../dashboard/nameReads.ts';
 import { countryIdentityKey, validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 
 /** Aliases expand manual picks; group rosters retain their literal dated tags. */
@@ -86,10 +85,10 @@ export const formatExperience = (raw: string, scale: number, measure: Experience
   ? formatSigned(rescale(raw, scale, DECIMALS), DECIMALS, DECIMALS)
   : formatAmount(rescale(raw, scale, DECIMALS), DECIMALS, DECIMALS);
 
-export type ExperienceNameRead = string | null | undefined | typeof FAILED_FACT;
+export type ExperienceNameRead = NameRead | undefined;
 /** Names belong to their dated read; unresolved titles use neutral labels. */
-export function experienceName(tag: string, name: ExperienceNameRead): string {
-  return contentTitle(typeof name === 'string' ? name : null, tag, 'Country name unavailable', name === undefined);
+export function experienceName(_tag: string, name: ExperienceNameRead): string {
+  return nameReadText(name);
 }
 
 /** Date an end label to the actual last drawn value, including an earlier holder

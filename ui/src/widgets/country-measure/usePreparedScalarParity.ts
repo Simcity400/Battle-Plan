@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -15,7 +16,7 @@ export function usePreparedScalarParity(client: DashboardClient, source: Dashboa
   const { requested, prepare } = useParityPreparation();
   const { label, family, measures } = config;
   const key = JSON.stringify([source?.id, source?.revision, branchId, tags, extent, within && [...within], config]);
-  const [answer, setAnswer] = useState<{ key: string; client: DashboardClient; model?: ParityList; error?: string }>();
+  const [answer, setAnswer] = useState<{ key: string; client: DashboardClient; model?: ParityList; error?: Failure }>();
   useEffect(() => {
     if (!requested || !source || !branchId || !client.preparedQuery) return;
     const controller = new AbortController();
@@ -32,7 +33,7 @@ export function usePreparedScalarParity(client: DashboardClient, source: Dashboa
         }
       }
       if (!controller.signal.aborted) setAnswer({ key, client, model: { kind: 'chart', label, complete: true, total: rows.length, rows } });
-    })().catch(error => { if (!controller.signal.aborted) setAnswer({ key, client, error: String(error) }); });
+    })().catch(error => { if (!controller.signal.aborted) setAnswer({ key, client, error: asFailure(error) }); });
     return () => controller.abort();
   }, [requested, key, client]);
   const current = answer?.key === key && answer.client === client ? answer : undefined;

@@ -8,7 +8,7 @@ import { formatAxisValue } from './valueAxis';
 import type { TooltipContent } from './tooltip';
 
 /** One held line: exact runs of one name, in hour order. */
-export interface RunLine { id: string; label: string; color: string; runs: readonly Run[]; format?: (value: number) => string }
+export interface RunLine { nameFailure?: Error; id: string; label: string; color: string; runs: readonly Run[]; format?: (value: number) => string }
 
 /** Held-step lines of exact runs over the shared time chart: each line holds its value
  * from a run's first hour to its last, gaps stay open, and hours outside `known` are
@@ -50,7 +50,7 @@ export default function RunLines({ label, extent, branchStart, playhead, hour, l
     const recorded = !known || known.some(span => span.firstHour <= at && at <= span.lastHour);
     const rows = lines.flatMap(line => {
       const run = runAt(line.runs, Math.floor(at));
-      return run ? [{ label: line.label, swatch: line.color, value: (line.format ?? formatValue ?? String)(run.value) }] : [];
+      return run ? [{ ...(line.nameFailure ? { detail: line.nameFailure.message } : {}), label: line.label, swatch: line.color, value: (line.format ?? formatValue ?? String)(run.value) }] : [];
     });
     return { title: dayLabel(Math.floor(at)), rows: !recorded ? [{ label: 'Not recorded' }] : rows.length ? rows : [{ label: empty ?? 'Nothing recorded' }] };
   };

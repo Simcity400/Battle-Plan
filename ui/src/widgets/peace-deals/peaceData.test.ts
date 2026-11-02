@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { peacePlayback } from './peaceData.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -40,6 +42,17 @@ function capturedAction(state = 4): PeaceCapturedAction {
     giver: 2, giverTag: 'loser:opaque', negotiator: 1, negotiatorTag: 'winner/opaque', status: 1, cost: 10, form: 1,
     state, flags: null, countryOperand: null, countryOperandTag: null, puppetAuxiliary: null, ship: null, ratio: null };
 }
+
+test('peace playback retains visible content until another deal or capture refusal becomes visible', () => {
+  const first = Object.assign(deal('first', 20), { captureUnavailable: 'Capture unavailable', captureUnavailableHour: 25 });
+  const log = deepFreeze(preparePeaceLog(deepFreeze(reply([first, deal('next', 30)])))), playback = peacePlayback(log, -Infinity);
+  for (const hour of [19, 20, 24, 25, 29, 30, 50, 24]) assert.deepEqual(playback.at(hour), peaceRowsAt(log, hour));
+  const visible = playback.at(20);
+  assert.equal(playback.at(24), visible);
+  assert.notEqual(playback.at(25), visible);
+  assert.equal(playback.at(25), playback.at(29));
+  assert.equal(playback.at(30), playback.at(50));
+});
 
 test('one card per conference newest first, Live cutoff, whole campaign and honest dates', () => {
   const data = reply([deal('old', 10), deal('new', 30)]);

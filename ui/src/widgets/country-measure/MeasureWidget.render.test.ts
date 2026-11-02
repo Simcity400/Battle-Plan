@@ -20,7 +20,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__measurePending.groups, retry() {} });',
     '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => ({ known: new Map(), data: { warnings: [] } });',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }), revision: 0 });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ flag() {}, flagPending: () => false, flagReason() {} });',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['#123'], muted: '#888', surface: '#000', countryColours: 'game', lineWidth: { series: 2 } }); export const useViewportHeight = () => 1000;",

@@ -57,8 +57,8 @@ export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowRep
   validateManifest: (data: unknown) => ManifestReply;
   validateWindow: (data: unknown) => Window;
   validateRanking: (data: unknown) => Ranking;
-  rows: (windows: ReadonlyMap<number, Window>, hour: number, matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null) => Row[];
-  rankedRows: (data: Ranking | undefined, hour: number) => Row[];
+  rows: (windows: ReadonlyMap<number, Window>, hour: number, matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null) => ReadonlyArray<Row>;
+  rankedRows: (data: Ranking | undefined, hour: number) => ReadonlyArray<Row>;
   labels: BattleLabels;
   measures: readonly BattleMeasure<Row>[];
   resultMeasure?: BattleMeasure<Row>;
@@ -192,8 +192,8 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
 
   if (!track) return <WidgetState kind="empty" icon={adapter.definition.icon} message={`Load a campaign to see its ${adapter.definition.title.toLowerCase()}.`} />;
   if (!window || !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
-  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!manifest.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label={`Loading ${adapter.definition.title.toLowerCase()}…`} /></>;
@@ -204,7 +204,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   if (!manifest.data.available) return <>{groupFailure}<WidgetState kind="unavailable" message="Battles were not recorded." /></>;
   const required = view === 'log' && browseIndex >= 0 ? [browseIndex] : [];
   const failed = view === 'biggest' ? ranking.error : required.map(index => history.errors.get(index)).find(Boolean);
-  if (failed) return <>{groupFailure}<WidgetState kind="error" detail={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} /></>;
+  if (failed) return <>{groupFailure}<WidgetState kind="error" failure={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} /></>;
   const pending = view === 'biggest' ? !ranking.data : required.some(index => !history.data.has(index));
   if (pending) return <>{groupFailure}{coverageNote}<WidgetState kind="loading" label={prefix?.pending.length ? 'This range is still being prepared.' : 'Loading battles...'} /></>;
   const censusHour = view === 'biggest' ? ranking.data?.censusHour ?? null : shownBattleCensusHour(history.data, shownHour!);

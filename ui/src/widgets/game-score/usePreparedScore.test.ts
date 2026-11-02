@@ -114,7 +114,7 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
     const idle = render(track, idleClient);
     assert.equal(idle.data?.reply.countries.length, 5000);
     assert.equal(idle.data?.approximate, true);
-    assert.match(idle.error!, /Background preparation is off/);
+    assert.match(idle.error!.message, /Background preparation is off/);
     assert.deepEqual({ idleQueries, idleStatuses }, { idleQueries: 2, idleStatuses: 1 });
     assert.throws(() => validatePreparedScore({ ...partial, approximate: 'true' }), /malformed/);
     const cold = { ...partial, coverage: { ...partial.coverage, lastHour: 99 } };

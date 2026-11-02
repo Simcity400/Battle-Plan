@@ -6,7 +6,7 @@
 //! a row shows it to the hour none does; a table not complete, or the countries' identities not
 //! read, ends its values; an hour not walked ends every value, and the next observes each again.
 //! Each occurrence is kept once, at the read that supplied it, in chunks of at most [`CHUNK`].
-//! The family's scalars hold each refusal with the walked hours it held, the most hours an
+//! The family's scalars hold each refusal with its observed hours, the most hours an
 //! occurrence lagged its read, the hours whose identities were read, each holder's tags and
 //! each named variant's naming reads.
 
@@ -30,7 +30,7 @@ use std::{
 };
 
 /// The family's keys are spelled under it.
-pub const SCHEMA: u64 = 1;
+pub const SCHEMA: u64 = 2;
 /// Each key's measure: its actor's field.
 pub const VALUE: u64 = 0;
 /// Family scalars: the refusals (`[[Text reason, Unsigned hours]…]`), the lag (`Integer`) and
@@ -178,11 +178,8 @@ pub struct Emit {
     sequence: u64,
     lag: i32,
     identified: Vec<(i32, i32)>,
-    /// Each refusal's walked hours, and the refusals holding from `holding` on, each with the
-    /// times it counts an hour.
+    /// Each refusal's calls across observed hours.
     refusals: BTreeMap<String, u64>,
-    active: Vec<(String, u64)>,
-    holding: i32,
     /// Whether the Identified flag is off for an occurrence of an hour before, until the next
     /// hour the row preparation observed.
     unproved: bool,
@@ -221,8 +218,6 @@ impl Emit {
             lag: 0,
             identified: Vec::new(),
             refusals: BTreeMap::new(),
-            active: Vec::new(),
-            holding: 0,
             unproved: false,
             catalogue: VariantCatalogue::default(),
             named: BTreeMap::new(),
@@ -264,28 +259,12 @@ impl Emit {
         }
     }
 
-    /// Counts the refusals holding from `holding` through `through`.
-    fn settle(&mut self, through: i32) {
-        let hours = i64::from(through) - i64::from(self.holding) + 1;
-        if hours > 0 {
-            for (reason, times) in std::mem::take(&mut self.active) {
-                *self.refusals.entry(reason.clone()).or_default() += times * hours as u64;
-                self.active.push((reason, times));
-            }
-        }
-        self.holding = through.saturating_add(1);
-    }
-
-    /// The refusals holding from an observed hour on.
-    fn hold(&mut self, at: i32) {
-        let mut active: Vec<(String, u64)> = Vec::new();
+    /// Counts each refusal once per call the row preparation makes at an observed hour.
+    fn count_refusals(&mut self) {
+        let refusals = &mut self.refusals;
         let mut add = |reason: String, times: u64| {
-            if times == 0 {
-                return;
-            }
-            match active.iter_mut().find(|(held, _)| *held == reason) {
-                Some(held) => held.1 += times,
-                None => active.push((reason, times)),
+            if times != 0 {
+                *refusals.entry(reason).or_default() += times;
             }
         };
         match &self.identities {
@@ -304,8 +283,6 @@ impl Emit {
         if let Some(Err(refusal)) = &self.events {
             add(format!("market occurrences unavailable: {refusal}"), 1);
         }
-        self.active = active;
-        self.holding = at;
     }
 
     fn name(&mut self, variant: u64) {
@@ -379,9 +356,6 @@ impl Emit {
         woke: bool,
         facts: facts::Facts,
     ) -> io::Result<()> {
-        if !anew {
-            self.settle(at - 1);
-        }
         let facts::Facts {
             identities,
             tags,
@@ -451,7 +425,9 @@ impl Emit {
             self.unproved = read && !proved;
             self.flag(writer, Field::Identified, at, shown)?;
         }
-        self.hold(at);
+        if anew || woke {
+            self.count_refusals();
+        }
         Ok(())
     }
 
@@ -703,8 +679,6 @@ impl Emit {
 
     /// Ends every value after `last`, the hour before one not walked.
     fn close(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
-        self.settle(last);
-        self.active.clear();
         self.unproved = false;
         self.carry.close(writer, last)?;
         self.domain(writer, last)
@@ -715,7 +689,6 @@ impl Emit {
     pub fn cut(&mut self, writer: &mut Writer<'_>, last: i32) -> io::Result<()> {
         self.carry.cut(writer, last)?;
         self.domain(writer, last)?;
-        self.settle(last);
         let refusals = Scalar::List(
             self.refusals
                 .iter()
@@ -835,8 +808,6 @@ impl Emit {
                 .iter()
                 .map(|(reason, hours)| (reason.clone(), *hours))
                 .collect(),
-            active: self.active.clone(),
-            holding: self.holding,
             unproved: self.unproved,
             catalogue: Cow::Borrowed(&self.catalogue),
             named: named.into_iter().map(|(_, id)| id).collect(),
@@ -906,8 +877,6 @@ impl Emit {
         emit.lag = saved.lag;
         emit.identified = saved.identified;
         emit.refusals = saved.refusals.into_iter().collect();
-        emit.active = saved.active;
-        emit.holding = saved.holding;
         emit.unproved = saved.unproved;
         emit.catalogue = saved.catalogue.into_owned();
         emit.named = saved
@@ -941,8 +910,6 @@ struct Saved<'a> {
     lag: i32,
     identified: Vec<(i32, i32)>,
     refusals: Vec<(String, u64)>,
-    active: Vec<(String, u64)>,
-    holding: i32,
     unproved: bool,
     catalogue: Cow<'a, VariantCatalogue>,
     named: Vec<u64>,

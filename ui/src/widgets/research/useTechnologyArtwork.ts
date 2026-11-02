@@ -1,8 +1,9 @@
+import type { Failure } from '../../dashboard/queryError';
 import { useMemo } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { useCountryFactsRead } from '../../dashboard/countryNamesAt';
-import { FAILED_FACT } from '../../dashboard/countryFacts';
+import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt.ts';
+import { isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { FactSpec } from '../../dashboard/countryFacts';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork';
 import type { Artwork, TechnologyArtworkParams, TechnologyArtworkReply } from '../../generated/dashboard';
@@ -49,18 +50,19 @@ export function useTechnologyArtwork(client: DashboardClient, track: BoundTrack 
   const wanted = useMemo(() => tokens.map(token => ({ tag: artworkTag(token, recorded?.get(token)), hour: 0 })), [tokens, recorded]);
   const read = useCountryFactsRead(client, track, wanted, active, SPEC, 1);
   return useMemo(() => {
-    const artwork = new Map<string, Artwork>(), warnings = new Set<string>();
-    let failed = 0, missing = 0;
-    for (const value of read.values()) {
-      if (value === FAILED_FACT) failed++;
+    const artwork = new Map<string, Artwork>(), failures = new Map<string, Failure>(), warnings = new Set<string>();
+    let missing = 0;
+    for (const { hour, tag } of wanted) {
+      const value = read.get(nameKey(hour, tag));
+      if (value === undefined) continue;
+      if (isFailedFact(value)) { failures.set(artworkRequest(tag)[0], value); warnings.add(value.message); }
       else if (value === null) missing++;
       else {
         artwork.set(value.token, value);
         for (const warning of value.warnings) warnings.add(warning);
       }
     }
-    if (failed) warnings.add(`Technology artwork request failed for ${failed} ${failed === 1 ? 'technology' : 'technologies'}.`);
     if (missing) warnings.add(`Technology artwork was not returned for ${missing} ${missing === 1 ? 'technology' : 'technologies'}.`);
-    return { artwork, warnings: [...warnings] };
-  }, [read]);
+    return { artwork, failures, warnings: [...warnings] };
+  }, [read, wanted]);
 }

@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -179,7 +180,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
     : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)
       ? <WidgetState kind="unavailable" message="This time is outside the recording." />
-    : groupError || error ? <WidgetState kind="error" detail={groupError ?? error!} onRetry={groupError ? retryGroups : retry} />
+    : groupError || error ? <WidgetState kind="error" failure={groupError ?? error!} onRetry={groupError ? retryGroups : retry} />
       : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
         : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
           : pending || !data ? <WidgetState kind="loading" label="Loading fuel…" />
@@ -241,22 +242,22 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || (saved.id === 'consumption' && options.fuelConsumption && (!savedConsumption || wrongSavedConsumption))
     || (saved.id === 'consumption' && options.fuelConsumptionLevel && (!savedLevel || !selectedConsumption && chosen && savedLevel.tag !== chosen.tag))
     || (options.fuelCountry && !savedCountry) || (options.fuelExtent && !heldExtent));
-  const actorState = selectedCountry ? catalogue.error && !identityNumbers ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
+  const actorState = selectedCountry ? catalogue.error && !identityNumbers ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
     : !identityNumbers ? <WidgetState kind="loading" label="Loading country…" />
       : !actorSpans ? <WidgetState kind="unavailable" message="Choose a country again." />
-        : actorError ? <WidgetState kind="error" detail={actorError} onRetry={actorProduct.retry} />
+        : actorError ? <WidgetState kind="error" failure={actorError} onRetry={actorProduct.retry} />
           : !actorData ? <WidgetState kind="loading" label="Loading the selected country's fuel…" /> : undefined : undefined;
   const headerReason = invalidSaved ? 'Choose a country again.'
-    : (catalogue.error && !identityNumbers ? 'Couldn’t load country.' : null) ?? (!selectedCountry ? 'Country unavailable at this time.'
+    : (catalogue.error && !identityNumbers ? failureText(catalogue.error, 'Couldn’t load country.') : null) ?? (!selectedCountry ? 'Country unavailable at this time.'
       : !identityNumbers ? 'Loading country…'
         : !actorSpans ? 'Choose a country again.'
           : !shownTag ? 'Country unavailable at this time.'
-            : (actorError ? 'Couldn’t load fuel data.' : null) ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
+            : (actorError ? failureText(actorError, 'Couldn’t load fuel data.') : null) ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
               ? 'The selected country’s fuel is not recorded at this moment.' : null));
   const headerReady = !!saved && !!options.fuelCountry && !!countrySlot && active && headerReason === null && at !== null && !!shownTag;
   const headerWanted = useMemo(() => headerReady && shownTag && at !== null ? [{ tag: shownTag, hour: at }] : [], [headerReady, shownTag, at]);
   const { labelAt: headerLabelAt } = useCountryLabelsAt(runtime.client, track, headerWanted, headerReady);
-  const pinnedHeader = saved && options.fuelCountry && countrySlot ? createPortal(<DatedCountryChip
+  const pinnedHeader = saved && options.fuelCountry && countrySlot ? createPortal(<DatedCountryChip failure={(!identityNumbers ? catalogue.error : null) ?? actorError}
     label={headerReady && shownTag && at !== null ? headerLabelAt(at)(shownTag) : null} hour={at} reason={headerReason} />, countrySlot) : null;
   const chart = track && chosen ? {
     active: active && (!!saved || drill.breakdown !== null), pickOwner: detailPickOwner, extent,
@@ -277,8 +278,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
         measure={drillMeasure} hour={detailHour} tokens={tokens} runtime={runtime} track={track}
         selection={selectedRecipient} onSelection={setRecipient} digits={digits} {...chart} />}</>
     : <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>);
-  const refreshNotices = <>{groupRefreshError && <WidgetState kind="error" detail={groupRefreshError} onRetry={retryGroups} />}
-    {selectedCountry && catalogue.error && identityNumbers ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} /> : null}</>;
+  const refreshNotices = <>{groupRefreshError && <WidgetState kind="error" failure={groupRefreshError} onRetry={retryGroups} />}
+    {selectedCountry && catalogue.error && identityNumbers ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} /> : null}</>;
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}
     {refreshNotices}

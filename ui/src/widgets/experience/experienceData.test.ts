@@ -7,6 +7,7 @@ import { tooltipText } from '../../charts/tooltip.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { BRANCHES, experienceHolderAt, experienceHolderCount, experienceHolderEnd, experienceHolders, experienceLineEnd, experienceMembership, experienceName, experienceRaw, experienceRuns, experienceSelection, experienceTooltip, formatExperience, validateExperienceReply } from './experienceData.ts';
+import { nameReadFrom } from '../../dashboard/nameReads.ts';
 import { FAILED_FACT } from '../../dashboard/countryFacts.ts';
 import type { ExperienceTooltipCountry } from './experienceData';
 
@@ -158,7 +159,7 @@ test('experience end names belong to the last drawn holder and never a later nam
   const reads = REPLY.series[0].reads;
   const runs = experienceRuns(reads, Q, 'army', 'banked');
   const requests: number[] = [];
-  const named = (hour: number) => { requests.push(hour); return hour < 196 ? 'Earlier holder' : 'Later holder'; };
+  const named = (hour: number) => { requests.push(hour); return nameReadFrom(hour < 196 ? 'Earlier holder' : 'Later holder', true); };
   const ended = experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 100, 160, named)!;
   assert.equal(ended.hour, 147);
   assert.equal(ended.name, 'Earlier holder');
@@ -167,13 +168,13 @@ test('experience end names belong to the last drawn holder and never a later nam
   assert.equal(replaced.name, 'Later holder');
   assert.equal(experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 150, 160, named), null);
   for (const value of [undefined, null, FAILED_FACT] as const) {
-    const unavailable = experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 100, 160, () => value)!;
-    assert.equal(unavailable.name, value === undefined ? 'Loading name…' : 'Country name unavailable');
-    assert.equal(experienceName('opaque!tag', value), unavailable.name);
+    const unavailable = experienceLineEnd('opaque!tag', reads, runs, 'army', 'banked', 100, 160, () => nameReadFrom(value, true))!;
+    assert.equal(unavailable.name, value === undefined ? 'Loading name…' : value === FAILED_FACT ? 'Couldn’t load country name.' : 'Country name unavailable');
+    assert.equal(experienceName('opaque!tag', nameReadFrom(value, true)), unavailable.name);
     assert.equal(unavailable.raw, '0');
   }
-  assert.equal(experienceName('opaque!tag', ''), '');
-  assert.equal(experienceName('opaque!tag', 'opaque!tag'), 'opaque!tag');
+  assert.equal(experienceName('opaque!tag', nameReadFrom('', true)), '');
+  assert.equal(experienceName('opaque!tag', nameReadFrom('opaque!tag', true)), 'opaque!tag');
 });
 
 test('experience tooltip keeps dated flag state without name-status notes', () => {
@@ -236,7 +237,7 @@ test('one renamed holder has one tooltip and one end per branch, with the dated 
   assert.equal(tip.rows[0].value, '1');
   const endAt = (branch: typeof BRANCHES[number], to: number) => experienceHolderEnd(
     holders[0].parts.map(country => ({ country, runs: experienceRuns(country.reads, Q, branch, 'banked') })),
-    branch, 'banked', 0, to, (_hour, tag) => tag);
+    branch, 'banked', 0, to, (_hour, tag) => nameReadFrom(tag, true));
   const ends = BRANCHES.map(branch => endAt(branch, 23)!);
   assert.equal(ends.length, 3);
   assert.ok(ends.every(end => end.tag === 'B' && end.hour === 23));

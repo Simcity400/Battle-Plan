@@ -2332,7 +2332,9 @@ fn behind_other_windows(viewport: eframe::egui::ViewportBuilder) -> eframe::egui
 }
 
 fn main() -> std::process::ExitCode {
+    viewer_foundation::frame_writer::initialize(Instant::now());
     let result = run();
+    viewer_foundation::frame_writer::flush();
     // Profiling lines are written by a thread of their own; every mode waits
     // for them, a headless dump included.
     profile_flush();

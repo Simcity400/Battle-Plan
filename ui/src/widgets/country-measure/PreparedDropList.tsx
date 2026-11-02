@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -29,7 +30,7 @@ export default function PreparedDropList({ client, source, branchId, measure, ta
   const [position, setPosition] = useState({ tag: initialTag, first: rangeFirst });
   const first = position.tag === tag ? position.first : rangeFirst;
   const owner = JSON.stringify([source.id, source.revision, branchId, measure, tag, first.toString(), end?.toString(), Math.floor(visibleThrough)]);
-  const [reply, setReply] = useState<{ owner: string; data?: MeasureDrops; error?: string }>();
+  const [reply, setReply] = useState<{ owner: string; data?: MeasureDrops; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const query = client.preparedQuery;
@@ -40,7 +41,7 @@ export default function PreparedDropList({ client, source, branchId, measure, ta
       value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
       .then(value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
       // Only this page's own earlier reply is kept beside its failure, never another page's rows.
-      .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: String(error) } : { owner, error: String(error) }); });
+      .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: asFailure(error) } : { owner, error: asFailure(error) }); });
     return () => controller.abort();
   }, [client, owner, attempt]);
   const data = reply?.owner === owner ? reply.data : undefined;
@@ -56,8 +57,8 @@ export default function PreparedDropList({ client, source, branchId, measure, ta
       {tags.length > 1 && <Select label="Country for balance changes" value={tag} options={tags.map(tag => ({ value: tag, label: label(tag) }))} onChange={setTag} />}
       <button type="button" className="button small" onClick={onClose}>Close</button></div>
     <PreparedLogCoverage coverage={data?.coverage} />
-    {reply?.owner === owner && reply.error && data && <WidgetState kind="error" detail={reply.error} onRetry={() => setAttempt(before => before + 1)} />}
-    {reply?.owner === owner && reply.error && !data ? <WidgetState kind="error" detail={reply.error} onRetry={() => setAttempt(before => before + 1)} />
+    {reply?.owner === owner && reply.error && data && <WidgetState kind="error" failure={reply.error} onRetry={() => setAttempt(before => before + 1)} />}
+    {reply?.owner === owner && reply.error && !data ? <WidgetState kind="error" failure={reply.error} onRetry={() => setAttempt(before => before + 1)} />
       : !data ? <WidgetState kind="loading" label="Loading balance changes…" />
         : <WindowedRows label="Recorded balance changes" items={rows} rowHeight={28} empty={<p>No recorded balance changes.</p>}>
           {row => <button type="button" className="country-measure-change" onClick={() => onPick(tag, row.item.hour)}>

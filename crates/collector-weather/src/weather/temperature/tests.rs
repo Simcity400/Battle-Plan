@@ -52,7 +52,7 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
             cursor: 4,
             anchor_seed: None,
             hours: Vec::new(),
-            checksum: checksum([0, 10, 20, 30, 40]),
+            witness: replay_data::rows::TemperatureWitness::new(witness([0, 10, 20, 30, 40])),
         }
     );
     // The pass from cursor 4 visits slots 4 and 0 and leaves the cursor at 1.
@@ -60,7 +60,10 @@ fn proven_hours_extend_the_anchor_and_anything_else_starts_a_new_one() {
     let (anchor, pass) = observe(&mut tracker, 101, Some((words(1, 9, CLEAR), &second))).unwrap();
     assert_eq!(anchor, [0, 10, 20, 30, 40]);
     assert_eq!(pass.hours, [Some(9)]);
-    assert_eq!(pass.checksum, checksum([1, 10, 20, 30, 41]));
+    assert_eq!(
+        pass.witness,
+        replay_data::rows::TemperatureWitness::new(witness([1, 10, 20, 30, 41]))
+    );
     // A suspended hour moves nothing and records no seed.
     let (_, pass) = observe(
         &mut tracker,
@@ -132,7 +135,7 @@ fn an_anchor_lasts_two_keyframe_intervals_and_keeps_its_proven_pass() {
 }
 
 /// Hours of the game's pass, as the port computes them, read by the tracker and derived again
-/// from what the rows record: every frame reproduces its read checksum, across suspended hours,
+/// from what the rows record: every frame reproduces its read witness, across suspended hours,
 /// a reinitialization and periodic anchors.
 #[test]
 fn recorded_passes_derive_every_read_hour_on_playback() {

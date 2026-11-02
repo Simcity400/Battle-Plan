@@ -189,6 +189,16 @@ pub static FAMILY: Family = dashboard_keyed::block::family::<AirMissionsObserver
 );
 
 impl Observer for AirMissionsObserver {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "air-missions";
     const TABLES: &'static [TableId] = &[
         TableId::AirWings,

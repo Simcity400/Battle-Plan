@@ -1200,7 +1200,25 @@ impl DashboardMaps {
             .collect()
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &eframe::Frame,
+        recording: Option<viewer_foundation::frame_writer::Pass<'_>>,
+    ) {
+        if recording.is_some() {
+            self.ui_pass::<true>(ui, frame, recording);
+        } else {
+            self.ui_pass::<false>(ui, frame, None);
+        }
+    }
+
+    fn ui_pass<const RECORDING: bool>(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &eframe::Frame,
+        recording: Option<viewer_foundation::frame_writer::Pass<'_>>,
+    ) {
         self.poll(ui.ctx());
         self.apply_visual_fallback(frame);
         let scale = ui.ctx().pixels_per_point();
@@ -1228,6 +1246,7 @@ impl DashboardMaps {
             }
         }
         let mut interacted = None;
+        let mut recorded = false;
         for id in &self.order {
             let Some(view) = self.views.get_mut(id) else {
                 continue;
@@ -1243,6 +1262,9 @@ impl DashboardMaps {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             map_ui.set_clip_rect(clip);
+            if RECORDING {
+                view.viewer.reset_drawn_frame();
+            }
             if let Some(error) = view.admission_error.as_ref().or(view.error.as_ref()) {
                 map_ui.centered_and_justified(|ui| {
                     ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -1275,6 +1297,14 @@ impl DashboardMaps {
                 });
             }
             let state = view.state();
+            if RECORDING {
+                recording.expect("recording pass").record(
+                    state.hour.zip(state.fraction),
+                    view.viewer.drew_frame(),
+                    state.id,
+                );
+                recorded = true;
+            }
             // Diagnostics show only when the user turned them on; the loading
             // status always shows.
             let diagnostics = view.viewer.diagnostics && view.viewer.has_map();
@@ -1319,6 +1349,9 @@ impl DashboardMaps {
         }
         if interacted.is_some() {
             self.audio_owner = interacted;
+        }
+        if RECORDING && !recorded {
+            recording.expect("recording pass").record(None, false, "-");
         }
     }
 }

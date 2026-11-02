@@ -79,8 +79,8 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__powerFlags.clock;',
     '/dashboard/useCountryLineStyles.ts': `export const useCountryLineStyles = () => ({known: new Map(globalThis.__powerFlagData.series.map(row => [row.tag,
       {tag: row.tag, name: row.tag, color: [20, 50, 80]}])), data: {warnings: []}});`,
-    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = (_client, _track, wanted) =>
-      new Map(wanted.map(row => [nameKey(row.hour, row.tag), row.tag]));`,
+    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = (_client, _track, wanted) =>
+      new Map(wanted.map(row => [nameKey(row.hour, row.tag), { kind: 'value', value: row.tag }]));`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted) => {
       globalThis.__powerFlags.wanted.push(...wanted); return {labelAt: () => tag => ({name: tag, flag: globalThis.__powerFlags.flag,
         flagPending: globalThis.__powerFlags.flagPending, flagReason: globalThis.__powerFlags.flagReason, known: true}), revision: 0}; };`,

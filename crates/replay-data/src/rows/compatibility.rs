@@ -79,6 +79,11 @@ pub const MARKET_AUTOMATION_FORMAT: u16 = 126;
 /// Exact combat base stats, accumulators and individual modifier values.
 pub const EXACT_COMBAT_FORMAT: u16 = 127;
 pub const PLAYER_COMMANDS_FORMAT: u16 = 131;
+/// Owner-approved: WeatherProvinces' temperature pass (field 13) ends with the province
+/// temperature witness, a sum of per-slot terms ([`crate::temperature::witness`]), where earlier
+/// formats hold an order-dependent checksum in the same eight bytes. Those decode as no witness
+/// ([`super::TemperatureWitness`]): their derived temperatures are refused by name.
+pub const PROVINCE_WITNESS_FORMAT: u16 = 132;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -1738,8 +1743,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: AIR_MAP_FORMAT,
         },
     ];
-    history[TableId::WeatherProvinces.index()].format = AIR_MAP_FORMAT;
-    history[TableId::WeatherProvinces.index()].commit = "perf/temperature";
+    history[TableId::WeatherProvinces.index()].format = PROVINCE_WITNESS_FORMAT;
+    history[TableId::WeatherProvinces.index()].commit = "t3/weather-province-witness";
     history[TableId::StateFlags.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::StateFlags.index()].appended = &[
         AppendedField {
@@ -4813,7 +4818,8 @@ mod tests {
                 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127
             ],
         );
-        assert_eq!(FORMAT_VERSION, PLAYER_COMMANDS_FORMAT);
+        assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
+        assert_eq!(FORMAT_VERSION, PROVINCE_WITNESS_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

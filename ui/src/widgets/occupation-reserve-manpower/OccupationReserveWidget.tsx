@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import * as requests from '../../dashboard/batch5Requests';
 import WidgetState from '../../components/WidgetState';
@@ -51,10 +52,11 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const moment = Math.floor(playhead ?? extent[1]);
+  const all = widget.countries.kind === 'all';
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const manual = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
-  // Chosen countries need the identity history too: each native holder follows its renames.
-  const groups = useCountryGroups(runtime, track, active && (grouped || manual));
+  // Native identities distinguish real holders from unused slots and follow renames.
+  const groups = useCountryGroups(runtime, track, active && (all || grouped || manual || drill.breakdown !== null || widget.options?.show === 'breakdown'));
   const fallback = defaultCountryTag(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
@@ -67,17 +69,20 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const asked = widget.countries.kind !== 'tags' ? undefined : identities ? counted.tags : groups.error ? widget.countries.tags : null;
   const { options, data, error, retry } = useOccupationReserve(widget, runtime, active, asked);
   const at = useMemo(() => data ? reservesAt(data, moment) : null, [data, moment]);
+  const readHour = at?.readHour ?? moment;
   const shown = useMemo(() => {
     if (!at) return [];
     // Admitted holders and any with a recorded entry stay reachable, proven zeros included.
     const ranked = [...at.holders].filter(holder => holder.admitted || holder.entries.length > 0)
       .sort((a, b) => a.positive > b.positive ? -1 : a.positive < b.positive ? 1 : a.tag.localeCompare(b.tag));
-    if (widget.countries.kind === 'all') return ranked;
+    if (all) return ranked.filter(holder => {
+      const identity = identities?.keyAt(holder.tag, readHour);
+      return identity != null && (JSON.parse(identity) as [number, number])[0] === countryPart(holder.holder)?.slot;
+    });
     const candidates = new Set(rankedCandidates(counted, moment, ranked.map(holder => holder.tag)));
     const kept = ranked.filter(holder => candidates.has(holder.tag));
     return resolved.top != null ? kept.slice(0, resolved.top) : kept;
-  }, [at, widget.countries.kind, counted, resolved.top, moment]);
-  const readHour = at?.readHour ?? moment;
+  }, [at, all, identities, readHour, counted, resolved.top, moment]);
   const sources = useMemo(() => [...new Set(shown.flatMap(holder => holder.entries.map(entry => entry.source ?? UNRESOLVED)))], [shown]);
   const sourceTags = useMemo(() => sources.flatMap(source => source === UNRESOLVED ? [] : [countryPart(source)!.tag]), [sources]);
   const holderTags = useMemo(() => shown.map(holder => holder.tag), [shown]);
@@ -103,19 +108,23 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   // Playback in this campaign's hours, within its branch.
   const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(playbackHour) + track.axisOffset, track.branch.lastHour)) : moment;
   const drillAt = pinned ? moment : drillHour(drill, clockHour);
+  const drilledPart = drilled ? countryPart(drilled) : null;
+  const drilledAliases = identities && drilledPart ? identities.holderAliases(drilledPart.tag, drilledPart.slot) : null;
+  const drilledTag = drilledAliases ? drilledAliases.find(run => drillAt !== null && run.firstHour <= drillAt && drillAt <= run.lastHour)?.tag ?? null : drilledPart?.tag ?? null;
+  const drilledNames = useCountryLabelsAt(runtime.client, track, drilledTag && drillAt !== null ? [{ tag: drilledTag, hour: drillAt }] : [], active);
   const none = grouped ? noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0) : null;
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...groups.data?.warnings ?? []] : null);
   if (!track) return <WidgetState kind="empty" icon="flag" message="Load a campaign to see occupation manpower." />;
   if (!window && widget.time.mode !== 'campaign') return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (pinned) return <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = grouped && groups.error ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={asFailure(error)} onRetry={retry} />;
+  const groupFailure = (all || grouped) && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (resolved.reason && widget.countries.kind !== 'all') return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
   // A group with no member found at the moment says why once that moment is read, and loads until then.
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="flag" /></>;
-  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
-  if (pendingReplyAt(data, moment)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!data || (all || grouped) && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
+  if (pendingReplyAt(data, moment) || all && pendingReplyAt(groups.data, readHour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (!at) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." /></>;
   const tooltip = (tag: string, _hour: number, name: string): TooltipContent[] | null => {
     const reserve = byTag.get(tag);
@@ -133,7 +142,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   return <div ref={anchor} className="parts-race occupation-reserve">{groupFailure}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drilled !== null}
-      title={drilled ? looks.name(countryPart(drilled)?.tag ?? drilled, readHour) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)}
+      title={drilledTag && drillAt !== null ? drilledNames.labelAt(drillAt)(drilledTag).name : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)}
       following={drill.follow} canFollow onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
       onPin={drilled ? () => {
         const pin = pinnedBreakdown(widget, BREAKDOWN, track.id);
@@ -185,7 +194,6 @@ function HolderSources({ widget, runtime, active, holder: chosen, hour, extent, 
   // Resolved sources, then one band for amounts whose source does not resolve.
   const drill = useMemo(() => data && holder && holderKeys ? holderSourceBands(data, holderKeys) : { sources: [] as (string | null)[], bands: [] }, [data, holder, holderKeys]);
   const sources = drill.sources;
-  const tags = useMemo(() => sources.flatMap(source => source === null ? [] : [countryPart(source)!.tag]), [sources]);
   const holderTag = holder ? countryPart(holder)?.tag ?? holder : null;
   // Named at the reserve read that proves the holder, never a sampled earlier hour.
   const readAt = data ? reservesAt(data, hour)?.readHour ?? Math.floor(hour) : Math.floor(hour);
@@ -208,8 +216,16 @@ function HolderSources({ widget, runtime, active, holder: chosen, hour, extent, 
   [holderTag, bands, sources, at, sourceLooks, aliasSpans, tagAt]);
   // A history tooltip names its sources as they were at the read it shows; swatches are the bands' colours.
   const [reached, setReached] = useState<number | null>(null);
-  const tipRead = useMemo(() => data && reached !== null ? reservesAt(data, reached)?.readHour ?? reached : null, [data, reached]);
-  const dated = useCountryLabelsAt(runtime.client, track, useMemo(() => tipRead === null ? [] : tags.map(tag => ({ tag, hour: tipRead })), [tags, tipRead]), active);
+  const datedWanted = useMemo(() => {
+    const reads = [{ reserve: at, hour: readAt }];
+    if (data && reached !== null && holderKeys !== null) {
+      const read = reservesAt(data, reached), key = holderKeyAt(holderKeys, reached);
+      reads.push({ reserve: read?.holders.find(item => item.holder === key) ?? null, hour: read?.readHour ?? Math.floor(reached) });
+    }
+    return reads.flatMap(({ reserve, hour }) => [...new Set(reserve?.entries.flatMap(entry => entry.source === null ? [] : [countryPart(entry.source)!.tag]))]
+      .map(tag => ({ tag, hour })));
+  }, [at, readAt, data, reached, holderKeys]);
+  const dated = useCountryLabelsAt(runtime.client, track, datedWanted, active);
   const tooltip = (_tag: string, hourAt: number, name: string): TooltipContent[] | null => {
     const read = data && holder ? reservesAt(data, hourAt) : null;
     const key = holderKeys === null ? null : holderKeyAt(holderKeys, hourAt);
@@ -221,7 +237,7 @@ function HolderSources({ widget, runtime, active, holder: chosen, hour, extent, 
   };
   if (!track) return null;
   if (!holder) return <WidgetState kind="empty" icon="flag" message="Choose a holder: click its bar in the race." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading this holder's reserve…" />;
   if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   const negative = at?.negative ?? [];

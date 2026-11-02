@@ -52,6 +52,58 @@ fn pinned<'s>(
 }
 
 impl Opened {
+    pub fn from_snapshot(
+        snapshot: store::Snapshot,
+        section: String,
+        root: u64,
+        identity: Identity,
+        schema: u64,
+        through: Option<i32>,
+    ) -> io::Result<Option<Self>> {
+        let range = snapshot
+            .read(&section, root)?
+            .ok_or_else(|| crate::invalid("A family's root range is missing"))?
+            .id()
+            .cache_key();
+        let store = StoreRead {
+            snapshot: &snapshot,
+            section: &section,
+        };
+        let Some(mut series) = pinned(store, root, identity, through)? else {
+            return Ok(None);
+        };
+        let held = (range, series.publication().generation, schema);
+        let kept = DIRECTORIES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .get(&held)
+            .cloned();
+        let directory = match kept {
+            Some(directory) => directory,
+            None => {
+                let directory = Arc::new(Directory::read(&mut series, schema)?);
+                let mut kept = DIRECTORIES.lock().unwrap_or_else(PoisonError::into_inner);
+                if kept.1 + directory.bytes() > DIRECTORY_BYTES {
+                    *kept = Default::default();
+                }
+                kept.1 += directory.bytes();
+                kept.0.insert(held, Arc::clone(&directory));
+                directory
+            }
+        };
+        drop(series);
+        Ok(Some(Self {
+            snapshot,
+            section,
+            root,
+            identity,
+            through,
+            directory,
+            stamp: (held.0, held.1),
+        }))
+    }
+
     /// What identifies the publication read: equal stamps, equal publications.
     pub fn stamp(&self) -> ([u64; 3], u64) {
         self.stamp
@@ -112,46 +164,12 @@ pub fn open_through(
         (Some(hole), Some(limit)) => Some(hole.min(limit)),
         (hole, limit) => hole.or(limit),
     };
-    let range = snapshot
-        .read(&section, published.root)?
-        .ok_or_else(|| crate::invalid("A family's root range is missing"))?
-        .id()
-        .cache_key();
-    let store = StoreRead {
-        snapshot: &snapshot,
-        section: &section,
-    };
-    let Some(mut series) = pinned(store, published.root, published.identity, through)? else {
-        return Ok(None);
-    };
-    let held = (range, series.publication().generation, schema);
-    let kept = DIRECTORIES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .0
-        .get(&held)
-        .cloned();
-    let directory = match kept {
-        Some(directory) => directory,
-        None => {
-            let directory = Arc::new(Directory::read(&mut series, schema)?);
-            let mut kept = DIRECTORIES.lock().unwrap_or_else(PoisonError::into_inner);
-            if kept.1 + directory.bytes() > DIRECTORY_BYTES {
-                *kept = Default::default();
-            }
-            kept.1 += directory.bytes();
-            kept.0.insert(held, Arc::clone(&directory));
-            directory
-        }
-    };
-    drop(series);
-    Ok(Some(Opened {
+    Opened::from_snapshot(
         snapshot,
         section,
-        root: published.root,
-        identity: published.identity,
+        published.root,
+        published.identity,
+        schema,
         through,
-        directory,
-        stamp: (held.0, held.1),
-    }))
+    )
 }

@@ -56,7 +56,7 @@ function findButton(node: ReactNode, label: string): ReactElement<{ onClick: () 
 
 test('the mounted Fuel country chooser pins its original actor and restores Follow and complete alias history', async () => {
   const state = { hooks: [] as unknown[], cursor: 0, changed: false, effects: [] as (() => void)[], hour: 105, pending: false, groups: catalogue as CountryGroupReply | undefined,
-    groupError: undefined as string | undefined, requests: [] as ProductRequest[], added: [] as WidgetSpec[], headerReads: [] as { tag: string; hour: number }[],
+    groupError: undefined as Error | undefined, requests: [] as ProductRequest[], added: [] as WidgetSpec[], headerReads: [] as { tag: string; hour: number }[],
     slot: { id: 'country-a' } as unknown as HTMLElement, summarySlot: { id: 'summary' } as unknown as HTMLElement,
     bodyHeaderSlot: null as HTMLElement | null, bodyCountrySlot: null as HTMLElement | null,
     portals: [] as { slot: HTMLElement; chip: ReactElement<{ label?: { name: string } | null; hour?: number | null; reason?: string | null }> }[],
@@ -359,7 +359,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     state.groups = { ...catalogue, branchId: 'other' }; unmount();
     assert.match(render(), /Choose a country again/);
     assert.doesNotMatch(header(), /DEFAULT_COUNTRY_CHIP/); assert.deepEqual(state.headerReads, []);
-    state.groups = catalogue; state.groupError = 'Synthetic native catalogue refusal'; unmount();
+    state.groups = catalogue; state.groupError = new Error('Synthetic native catalogue refusal'); unmount();
     const refreshFailed = render();
     assert.match(refreshFailed, /Synthetic native catalogue refusal/);
     assert.match(refreshFailed, />Retry</);

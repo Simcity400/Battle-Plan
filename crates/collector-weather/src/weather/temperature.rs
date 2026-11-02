@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use engine_allocation as allocation;
 use replay_data::{
-    rows::TemperaturePass, temperature::State, temperature::checksum, temperature::window_span,
+    rows::{TemperaturePass, TemperatureWitness},
+    temperature::{State, window_span, witness},
 };
 use replay_frame::KEYFRAME_INTERVAL;
 
@@ -91,11 +92,12 @@ impl Tracker {
                 // The anchor hour's own ordinary pass, when the hour before proves it.
                 anchor_seed: proven.flatten(),
                 hours: Vec::new(),
-                checksum: 0,
+                witness: TemperatureWitness::default(),
             });
         }
         let pass = self.pass.as_mut().expect("extended or anchored");
-        pass.checksum = checksum(states.iter().map(|state| state.temperature));
+        pass.witness =
+            TemperatureWitness::new(witness(states.iter().map(|state| state.temperature)));
         let previous = self.previous.get_or_insert_with(Read::default);
         previous.hour = hour;
         previous.words = Some(words);

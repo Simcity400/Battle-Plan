@@ -137,7 +137,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
       <div className="faction-hero-text">
         <h3>{name}</h3>
         <p>{founded != null && <span>{startUnseen(founded, track.branch.firstHour, gaps) ? `Founded before ${dayLabel(founded)}` : `Founded ${dayLabel(founded)}`}</span>}
-          {leaderLabel && <span className="faction-leader">led by <CountryFlagUrl className="faction-flag" url={leaderLabel.flag} reason={leaderLabel.flagReason} pending={leaderLabel.flagPending} />
+          {leaderLabel && <span className="faction-leader">led by <CountryFlagUrl className="faction-flag" url={leaderLabel.flag} detail={leaderLabel.flagDetail} reason={leaderLabel.flagReason} pending={leaderLabel.flagPending} />
             <b>{leaderLabel.name}</b>{formerLeader && leaderRun && <> since {dayLabel(leaderRun.firstHour)}</>}</span>}</p>
         {formerLeader && <p className="faction-former">Previously led by {labelAt(formerLeaderHour)(formerLeader).name}</p>}
         {formerName && <p className="faction-former">Formerly {formerName.name}, renamed {dayLabel(nameRuns.at(-1)!.firstHour)}</p>}
@@ -151,7 +151,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
       <Section title="Members" note="joined over time">
         <MemberChart view={view} from={from} at={at} events={events} memberLabel={memberLabel} rowProps={rowProps} hover={hover} leaders={leaders} />
       </Section>
-      {product.error ? <WidgetState kind="error" detail={product.error} onRetry={product.retry} />
+      {product.error ? <WidgetState kind="error" failure={product.error} onRetry={product.retry} />
         : !data ? <WidgetState kind="loading" label="Loading faction details…" /> : <>
           <div className="faction-drill-columns">
             <div>
@@ -250,7 +250,7 @@ function MemberChart({ view, from, at, events, memberLabel, rowProps, hover, lea
           const country = memberLabel(member);
           const current = member.stretches.some(stretch => stretch.firstHour <= at && at <= stretch.lastHour);
           return <span key={member.key} className={`faction-growth-flag${current ? '' : ' is-former'}`} {...rowProps(`member:${member.key}`)}>
-            <CountryFlagUrl className="faction-flag" url={country?.flag} reason={country?.flagReason} pending={country?.flagPending} />{hover(`member:${member.key}`)}</span>;
+            <CountryFlagUrl className="faction-flag" url={country?.flag} detail={country?.flagDetail} reason={country?.flagReason} pending={country?.flagPending} />{hover(`member:${member.key}`)}</span>;
         })}
       </span>)}
     </div>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { cloneElement, useCallback, useMemo } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
@@ -59,12 +59,12 @@ export interface BattleLogProps<T extends BattleRow> {
   placePending?: (row: T) => boolean;
 }
 
-function Side<T extends BattleRow>({ row, index, country, formatLoss }: { row: T; index: number; country: BattleCountryLabel; formatLoss?: BattleLossFormatter<T> }) {
+function sideCell<T extends BattleRow>(row: T, index: number, country: BattleCountryLabel, formatLoss: BattleLossFormatter<T> | undefined) {
   const side = row.sides[index];
   return <span className="battle-side"><b>{side.label}</b>{' '}
     {side.countries.map((part: BattleCountry) => { const named = country(part.tag, part.hour);
       return <span className="battle-country" key={JSON.stringify([part.hour, part.tag])} title={named.name}>
-        <CountryFlagUrl className="log-flag" url={named.flag} reason={named.flagReason} pending={named.flagPending} />
+        <CountryFlagUrl className="log-flag" url={named.flag} detail={named.flagDetail} reason={named.flagReason} pending={named.flagPending} fixedSize />
       </span>; })}
     {side.countriesUnknown && <span className="battle-muted">Countries unknown</span>}
     {side.counts.map((value: BattleValue) => <span className="battle-count" key={value.label}>{battleValueText(value)} {value.label}</span>)}
@@ -83,7 +83,7 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
   }, [labels, country, measures, note, formatLoss, tooltipRows]);
   const visibleLogs = useCallback((drawn: readonly LogRow<T>[]) => onVisibleRows(drawn.map(row => row.item)), [onVisibleRows]);
   const sides = (row: T) => compactSides ? <BattleSides row={row} country={country} summary={compactSides} compact={view === 'biggest'} />
-    : <span className="battle-sides">{row.sides.map((_: BattleSide, index: number) => <Side key={index} row={row} index={index} country={country} formatLoss={formatLoss} />)}</span>;
+    : <span className="battle-sides">{row.sides.map((_: BattleSide, index: number) => cloneElement(sideCell(row, index, country, formatLoss), { key: index }))}</span>;
   const place = (row: T, logRow: boolean) => {
     const text = row.place.name ?? (placePending?.(row) ? 'Loading…' : labels.unknownPlace);
     const name = logRow ? <b className="log-text" title={text}>{text}</b> : <span className="battle-place" title={text}>{text}</span>;

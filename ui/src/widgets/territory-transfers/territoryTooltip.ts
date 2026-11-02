@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
@@ -8,7 +9,7 @@ import type { CountryBalance, Counterpart, TransferOccurrence, TransferSide } fr
 
 export interface TransferStateAt { hour: number; state: number }
 export interface TransferTipRequest { countries: NameAt[]; states: TransferStateAt[] }
-type Label = { name: string; flag?: string; flagPending?: boolean; flagReason?: string };
+type Label = { nameFailure?: Error; nameDetail?: string; name: string; flag?: string; flagPending?: boolean; flagReason?: string };
 export interface TransferLabels {
   country: (side: TransferSide) => Label;
   /** The country's dated name for a tag at an hour, such as an overlord. */
@@ -72,6 +73,7 @@ export function transferTooltip(occurrence: TransferOccurrence, deal: PeaceDeal 
     ...(howText ? [{ label: 'How', value: howText }] : []),
     { label: 'Victory points', value: victoryPoints, ...(occurrence.victoryPoints == null ? { tone: 'muted' as const } : {}) },
   ];
-  return { title: labels.state(occurrence), subtitle: `${giver} → ${taker}`, rows,
+  return { ...countryNameDetails(occurrence.from ? labels.country(occurrence.from) : null, labels.country(occurrence.to),
+    how.subjectOf == null ? null : labels.tag(how.subjectOf, occurrence.afterHour)), title: labels.state(occurrence), subtitle: `${giver} → ${taker}`, rows,
     description: by ? `It changed hands after ${formatDateTime(occurrence.beforeHour)}; the exact hour was not recorded.` : undefined };
 }

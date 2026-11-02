@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -24,8 +25,8 @@ import { occurrenceCountryRequests, recordingBreaks, scriptNotRecorded } from '.
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import { useScriptOccurrences } from '../event-feed/useScriptOccurrences';
 import { OPTIONS } from './definition';
-import { activeCount, costText, decisionAt, decisionDescription, decisionDiagnostics, decisionJumps, decisionName, decisionTooltip,
-  lifecycleLine, prepareDecisions, STATUS_CHOICES, statusLabel, statusTone } from './decisionsData';
+import { activeCount, costText, decisionAt, decisionPlaybackBounds, decisionDescription, decisionDiagnostics, decisionJumps, decisionName, decisionTooltip,
+  lifecycleLine, prepareDecisions, STATUS_CHOICES, statusLabel, statusTone } from './decisionsData.ts';
 import type { DecisionAt, DecisionFilter } from './decisionsData';
 import '../event-feed/eventFeed.css';
 import '../construction-log/constructionLog.css';
@@ -67,7 +68,7 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
   const at = useCallback((row: LogRow<DecisionAt>, at: number) => decisionAt(row, at, breaks, statuses), [breaks, statuses]);
   const filterKey = JSON.stringify([widget.countries, fallback, from]);
   const feed = useScriptOccurrences(runtime, track, active && match.ready && inBranch, hour, 'decisions', NO_KINDS, from, filterKey,
-    prepare, at, activeCount);
+    prepare, at, activeCount, breaks, decisionPlaybackBounds);
   const [visible, setVisible] = useState<readonly LogRow<DecisionAt>[]>(NO_ROWS);
   const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
@@ -84,9 +85,9 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
   const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see decisions." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
+  if (feedError) return <>{groupFailure}<WidgetState kind="error" failure={feedError} onRetry={feed.retry} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!feed.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decisions…" /></>;
 
@@ -96,7 +97,7 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
     const tone = statusTone(decision);
     const cost = costText(decision);
     const found = card.country === null ? null : label(nameHour(row), card.country);
-    const flag = found && <CountryFlagUrl className="log-flag" url={found.flag} reason={found.flagReason} pending={found.flagPending} />;
+    const flag = found && <CountryFlagUrl className="log-flag" url={found.flag} detail={found.flagDetail} reason={found.flagReason} pending={found.flagPending} />;
     const named = (placeholder: string): ReactNode => !found ? <span className="construction-ellipsis">A country not identified</span>
       : found.known === undefined ? <span className={`skeleton ${placeholder}`} aria-hidden="true" /> : <span className="construction-ellipsis">{found.name}</span>;
     return <>
@@ -122,8 +123,11 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
     {log.chips && <div className="log-chips"><ChipSet label="Decision status" chips={STATUS_CHOICES} selected={[...statuses]} max={STATUS_CHOICES.length}
       onToggle={key => setOption?.(key, !statuses.has(key))} /></div>}
     <LogList key={feed.identity} pages={feed.pages} label="Decisions" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}
+      {...import.meta.env.MODE === 'parity' ? { paritySemantic: { complete: true, reads: undefined,
+        item: (row: LogRow<DecisionAt>) => ({ ...row.item, hour: feed.shownHour }) } } : {}}
       animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
-      renderRow={renderRow} describe={row => decisionDescription(row.item, name(row))} tooltip={row => decisionTooltip(row.item, name(row))}
+      renderRow={renderRow} describe={row => decisionDescription(row.item, name(row))} tooltip={row => decisionTooltip(row.item, name(row)).map(form => ({ ...form,
+        ...countryNameDetails(...[row.item.card.country, row.item.card.target].map(tag => tag === null ? null : label(nameHour(row), tag))) }))}
       menu={row => decisionJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded decisions match these settings." : MEMBERSHIP_PREPARING} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some decisions couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;

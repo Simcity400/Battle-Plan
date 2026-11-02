@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { useEffect, useState } from 'react';
 import { useContentRevision } from './contentRevision';
 import type { CountryGroupReply } from '../generated/dashboard';
@@ -13,7 +14,7 @@ export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: 
   const { client } = runtime;
   const content = useContentRevision(client);
   const key = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : '';
-  const [state, setState] = useState<{ client: typeof client; key: string; data?: CountryGroupReply; complete?: boolean; error?: string }>();
+  const [state, setState] = useState<{ client: typeof client; key: string; data?: CountryGroupReply; complete?: boolean; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !track) return;
@@ -23,7 +24,7 @@ export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: 
       publish(true),
       error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
         ...(previous?.client === client && previous.key === key ? { data: previous.data, complete: previous.complete } : {}),
-        error: error instanceof Error ? error.message : String(error) })); },
+        error: asFailure(error) })); },
     );
     return () => controller.abort();
     // The structured key owns source, branch and content revision.

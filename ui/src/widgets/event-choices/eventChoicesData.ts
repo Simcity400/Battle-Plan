@@ -1,5 +1,6 @@
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
+import type { PlaybackBounds } from '../../charts/playbackIntervals';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence, ScriptOccurrenceReply } from '../../generated/dashboard';
@@ -49,7 +50,7 @@ const cardEdge = (occurrence: ScriptOccurrence): ScriptEdge | null =>
 
 /** Each page's cards once per filter, newest first by firing date. A choice
  * whose firing was not recorded is its own card. */
-export function prepareChoices(reply: ScriptOccurrenceReply, filter: ChoiceFilter): LogRow<ChoiceAt>[] {
+export function prepareChoices(reply: ScriptOccurrenceReply, filter: ChoiceFilter): ReadonlyArray<LogRow<ChoiceAt>> {
   return newestFirst(reply.occurrences.flatMap(occurrence => {
     const first = cardEdge(occurrence);
     if (!first) return [];
@@ -79,6 +80,15 @@ export function choiceAt(row: LogRow<ChoiceAt>, hour: number, breaks: readonly R
 }
 
 export const isOpen = (at: ChoiceAt) => !at.choice && !at.pause;
+export function choicePlaybackBounds(rows: ReadonlyArray<LogRow<ChoiceAt>>, hour: number): PlaybackBounds {
+  let first = -Infinity, end = Infinity;
+  for (const row of rows) if (isOpen(row.item)) {
+    const start = (Math.floor(row.item.card.first.row.hour / 24) + 1) * 24;
+    if (hour < start) end = Math.min(end, start);
+    else { first = Math.floor(hour / 24) * 24; end = Math.min(end, first + 24); }
+  }
+  return { first, end };
+}
 export const choiceTitle = (card: ChoiceCard) => card.item?.name ?? TITLE_UNAVAILABLE;
 
 /** "A", "B", … "Z", "AA": an option's place in the game's order. */

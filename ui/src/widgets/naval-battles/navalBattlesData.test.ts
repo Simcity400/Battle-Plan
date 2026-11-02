@@ -1,6 +1,7 @@
 import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
 import type { NavalBattleHistory, NavalBattleRun, NavalBattlesReply, NavalBattlesManifestReply, NavalBattlesRankingReply } from '../../generated/dashboard';
 import { navalBattleMeasureText, navalBattleRows, navalBattleSize, navalBattleWarnings, navalBattleWindows,
   rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
@@ -45,6 +46,17 @@ function reply(rows = [history(), history('result:800', true)], firstHour = 100,
   return { window: 0, interval: { firstHour, lastHour }, rows, observed: [[firstHour, lastHour]], warnings: [], contentWarnings: [] };
 }
 function rows(data: NavalBattlesReply, at = 109) { return navalBattleRows(new Map([[data.window, data]]), at, () => true, true); }
+test('naval playback retains settled rows and preserves ongoing reads, range admission and disappearance', () => {
+  const data = deepFreeze(reply()), windows = deepFreeze(new Map([[0, data]])), matches = () => true;
+  const at = (hour: number, from: number | null = null) => navalBattleRows(windows, hour, matches, true, from);
+  for (const hour of [99, 100, 105, 109, 110, 120, 105]) assert.deepEqual(at(hour), rows(data, hour));
+  assert.notEqual(at(105), at(106));
+  assert.equal(at(110), at(120));
+  assert.equal(at(104, 105).length, 0);
+  assert.equal(at(105, 105).length, 1);
+  const ranking = deepFreeze({ rows: data.rows, censusHour: 120, effectiveMeasure: 'Length', warnings: [], contentWarnings: [] });
+  assert.equal(rankedNavalBattleRows(ranking, 110), rankedNavalBattleRows(ranking, 120));
+});
 function rejects(edit: (v: any) => void) { const data = reply(); edit(data); assert.throws(() => validateNavalBattlesReply(data)); }
 
 test('window contract requires overlapping runs and all three wire measures; arbitrary labels remain valid', () => {

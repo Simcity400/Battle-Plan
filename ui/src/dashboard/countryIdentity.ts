@@ -74,6 +74,7 @@ export function overlayCountryIdentities(rough: readonly CountryIdentityHistory[
 
 /** One index of the native catalogue; missing hours never acquire a holder. */
 export class CountryIdentityIndex {
+  readonly changeHours: ReadonlyArray<number>;
   private readonly byTag = new Map<string, KeyRun[]>();
   private readonly byKey = new Map<string, Map<string, CountryIdentityRun[]>>();
   private readonly order = new Map<string, number>();
@@ -81,9 +82,11 @@ export class CountryIdentityIndex {
 
   constructor(histories: readonly IdentityHistory[]) {
     if (!validCountryIdentityHistories(histories)) throw new Error('The native country identity catalogue is malformed.');
+    const hours = new Set<number>();
     for (const history of histories) {
       this.order.set(history.tag, this.order.size);
       this.byTag.set(history.tag, history.identities.map(identity => {
+        hours.add(identity.firstHour); hours.add(identity.lastHour + 1);
         const key = countryIdentityKey(identity);
         let aliases = this.byKey.get(key);
         if (!aliases) { aliases = new Map(); this.byKey.set(key, aliases); }
@@ -92,6 +95,7 @@ export class CountryIdentityIndex {
         return { firstHour: identity.firstHour, lastHour: identity.lastHour, key };
       }));
     }
+    this.changeHours = [...hours].sort((a, b) => a - b);
   }
 
   keyAt(tag: string, hour: number): string | null { return runAt(this.byTag.get(tag) ?? [], hour)?.key ?? null; }

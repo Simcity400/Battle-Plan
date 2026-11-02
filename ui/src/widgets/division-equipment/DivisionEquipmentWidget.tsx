@@ -36,11 +36,11 @@ const MISSING_SORT = { column: 'missing', direction: 'descending' } as const;
 const FILL_SORT = { column: 'fill', direction: 'ascending' } as const;
 const big = (raw: string | null) => raw === null ? null : BigInt(raw);
 
-function Ratio({ ratio, label, bars }: { ratio: number | null; label: string; bars: boolean }) {
+function ratioCell({ ratio, label, bars }: { ratio: number | null; label: string; bars: boolean }) {
   return ratio === null ? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span>
     : <CellBar value={bars ? ratio : null} maximum={1}><span aria-label={label}>{percent(ratio)}</span></CellBar>;
 }
-function Missing({ raw }: { raw: string | null }) {
+export function missingCell(raw: string | null) {
   if (raw === null) return <span className="division-equipment-missing" data-tooltip="Not recorded">—</span>;
   return BigInt(raw) > 0n ? <b className="division-equipment-short">{items(raw)}</b> : <>{items(raw)}</>;
 }
@@ -53,7 +53,9 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
-  const countryName = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryName = countryLabel.name;
+  const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'template' ? 'template' : 'equipment';
   const countFor = options.countFor === 'host' ? 'host' : 'owner';
@@ -63,7 +65,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   // Only an hour the prepared history does not hold is asked of the reached product.
   const history = useDivisionEquipmentHistory(runtime.client, track, tag, countFor, active);
   const part = partAt(history.parts, hour);
-  const { held, asked } = useMemo(() => historyAnswer(history.prepared, part ?? { error: 'no range' }, hour), [history.prepared, part, hour]);
+  const { held, asked } = useMemo(() => historyAnswer(history.prepared, part ?? { error: new Error('no range') }, hour), [history.prepared, part, hour]);
   const state = useReachedProduct(runtime.client, track?.source, base && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor } },
     subject, active && asked, validateDivisionEquipment);
   // The last reply drawn for this client, recording, content and subject stays while the next hour's loads.
@@ -92,10 +94,10 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
     { key: 'needed', header: 'Needed', label: 'Needed', numeric: true, width: 'max-content', priority: 2, value: row => big(row.neededRaw), renderMissing: true,
       text: row => items(row.neededRaw) ?? 'Not recorded', render: row => items(row.neededRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
     { key: 'missing', header: 'Missing', label: 'Missing', numeric: true, width: 'max-content', value: row => big(row.missingRaw), renderMissing: true,
-      text: row => items(row.missingRaw) ?? 'Not recorded', render: row => <Missing raw={row.missingRaw} /> },
+      text: row => items(row.missingRaw) ?? 'Not recorded', render: row => missingCell(row.missingRaw) },
     { key: 'fill', header: 'Fill', label: 'Fill', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: typeFill, renderMissing: true,
       text: row => { const ratio = typeFill(row); return ratio === null ? 'Not recorded' : percent(ratio); },
-      render: row => <Ratio ratio={typeFill(row)} label="Fill" bars={bars} /> },
+      render: row => ratioCell({ ratio: typeFill(row), label: 'Fill', bars }) },
     { key: 'short', header: 'Divisions short', label: 'Divisions short', numeric: true, width: 'max-content', priority: 1, value: row => row.divisionsShort },
   ], [bars]);
   const templateColumns = useMemo<readonly TableColumn<EquipmentTemplate>[]>(() => [
@@ -103,22 +105,22 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
       render: row => <span className="division-equipment-name" title={templateName(row)}>{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}<span>{templateName(row)}</span></span> },
     { key: 'divisions', header: 'Divisions', label: 'Divisions', numeric: true, width: 'max-content', priority: 3, value: row => row.divisions },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, value: row => share(row.manpower, row.manpowerRequired), renderMissing: true,
-      text: row => row.manpower === null ? 'Not recorded' : usNumber.format(Number(row.manpower)), render: row => <Ratio ratio={share(row.manpower, row.manpowerRequired)} label="Manpower" bars={bars} /> },
+      text: row => row.manpower === null ? 'Not recorded' : usNumber.format(Number(row.manpower)), render: row => ratioCell({ ratio: share(row.manpower, row.manpowerRequired), label: 'Manpower', bars }) },
     { key: 'strength', header: 'Strength', label: 'Strength', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 4, value: row => share(row.hpRaw, row.hpMaxRaw), renderMissing: true,
-      render: row => <Ratio ratio={share(row.hpRaw, row.hpMaxRaw)} label="Strength" bars={bars} /> },
+      render: row => ratioCell({ ratio: share(row.hpRaw, row.hpMaxRaw), label: 'Strength', bars }) },
     { key: 'fill', header: 'Equipment fill', label: 'Equipment fill', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: row => fill(row.heldRaw, row.neededRaw), renderMissing: true,
-      render: row => <Ratio ratio={fill(row.heldRaw, row.neededRaw)} label="Equipment fill" bars={bars} /> },
+      render: row => ratioCell({ ratio: fill(row.heldRaw, row.neededRaw), label: 'Equipment fill', bars }) },
     { key: 'short', header: 'Types short', label: 'Types short', numeric: true, width: 'max-content', priority: 1, value: row => row.typesShort },
   ], [bars]);
   const divisionColumns = useMemo<readonly TableColumn<EquipmentDivision>[]>(() => [
     { key: 'division', header: 'Division', label: 'Division', width: 'minmax(var(--table-name-min), 2fr)', value: divisionName,
       render: row => <span className="division-equipment-name" title={divisionName(row)}><span>{divisionName(row)}</span></span> },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, value: row => share(row.manpower, row.manpowerRequired), renderMissing: true,
-      render: row => <Ratio ratio={share(row.manpower, row.manpowerRequired)} label="Manpower" bars={bars} /> },
+      render: row => ratioCell({ ratio: share(row.manpower, row.manpowerRequired), label: 'Manpower', bars }) },
     { key: 'strength', header: 'Strength', label: 'Strength', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 3, value: row => share(row.hpRaw, row.hpMaxRaw), renderMissing: true,
-      render: row => <Ratio ratio={share(row.hpRaw, row.hpMaxRaw)} label="Strength" bars={bars} /> },
+      render: row => ratioCell({ ratio: share(row.hpRaw, row.hpMaxRaw), label: 'Strength', bars }) },
     { key: 'fill', header: 'Equipment fill', label: 'Equipment fill', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: row => row.poolKnown ? fill(row.heldRaw, row.neededRaw) : null, renderMissing: true,
-      render: row => <Ratio ratio={row.poolKnown ? fill(row.heldRaw, row.neededRaw) : null} label="Equipment fill" bars={bars} /> },
+      render: row => ratioCell({ ratio: row.poolKnown ? fill(row.heldRaw, row.neededRaw) : null, label: 'Equipment fill', bars }) },
     { key: 'short', header: 'Types short', label: 'Types short', numeric: true, width: 'max-content', priority: 1, value: row => row.typesShort },
   ], [bars]);
   const poolColumns = useMemo<readonly TableColumn<DivisionPoolType>[]>(() => [
@@ -127,7 +129,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
       render: row => items(row.heldRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
     { key: 'needed', header: 'Needed', label: 'Needed', numeric: true, width: 'max-content', priority: 1, value: row => big(row.neededRaw), renderMissing: true,
       render: row => items(row.neededRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
-    { key: 'missing', header: 'Missing', label: 'Missing', numeric: true, width: 'max-content', value: row => big(row.missingRaw), renderMissing: true, render: row => <Missing raw={row.missingRaw} /> },
+    { key: 'missing', header: 'Missing', label: 'Missing', numeric: true, width: 'max-content', value: row => big(row.missingRaw), renderMissing: true, render: row => missingCell(row.missingRaw) },
   ], []);
   const typeTip = useCallback((row: EquipmentType) => data ? fitTooltip([typeTooltip(row, data)], viewportHeight) : { title: typeName(row), rows: [] }, [data, viewportHeight]);
   const templateTip = useCallback((row: EquipmentTemplate) => data ? fitTooltip([templateTooltip(row, data)], viewportHeight) : { title: templateName(row), rows: [] }, [data, viewportHeight]);
@@ -142,15 +144,15 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see division equipment." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its division equipment." />;
-  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
+  else if (country.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (!tag) main = <WidgetState kind="loading" label="Loading division equipment…" />;
-  else if (!held && state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  else if (!held && state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading division equipment…" />;
-  else if (data.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
-  else if (!data.divisions) main = <WidgetState kind="empty" message={`${countryName} has no divisions at this date.`} />;
+  else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
+  else if (!data.divisions) main = <WidgetState kind="empty" message={nameDetail ? 'No divisions at this date.' : `${countryName} has no divisions at this date.`} detail={nameDetail} />;
   else main = <>{data.poolHour !== null && <p className="division-equipment-caption">Equipment as of {formatDateTime(data.poolHour)}{data.unknownDivisions > 0
       ? ` · ${usNumber.format(data.unknownDivisions)} ${data.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : ''}</p>}
     {view === 'equipment'
@@ -173,7 +175,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
       { key: 'held', header: 'In divisions', label: 'In divisions', numeric: true, width: 'max-content', bar: 'visible', value: row => BigInt(row.heldRaw), render: row => items(row.heldRaw) },
     ]} rowKey={row => row.variant} sort={{ column: 'held', direction: 'descending' }} cellBars={bars} narrow={narrowTableOf(options)} menu={menu} /></div>
     : <WidgetState kind="unavailable" message="This equipment type is not held at this date." />;
-  else if (drill && detail.error) body = <WidgetState kind="error" detail={detail.error} onRetry={detail.retry} />;
+  else if (drill && detail.error) body = <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />;
   else if (drill && !drillData) body = <WidgetState kind="loading" label="Loading…" />;
   else if (drill?.kind === 'template' && drillData) body = <div className="division-equipment-drill">
     <Table label="Divisions of this template" rows={drillData.divisionRows ?? []} columns={divisionColumns} rowKey={divisionKey} sort={FILL_SORT}
@@ -192,9 +194,9 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
         tooltip={row => ({ title: typeName(row), rows: row.variants.map(variant => ({ label: variant.name ?? 'Design name unavailable', value: items(variant.heldRaw) ?? '—' })) })} />}</div>
     : <WidgetState kind="unavailable" message="This division is not in service at this date." />;
   const back = drill?.kind === 'division' && drill.template ? { kind: 'template' as const, template: drill.template } : null;
-  return <div ref={anchor} className="division-equipment">{header}
+  return <div ref={anchor} className="division-equipment" data-detail={countryLabel.nameFailure?.message}>{header}
     {/* Outside the drill, so an open breakdown never hides a later failure. */}
-    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
+    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill !== null}
       title={drill?.kind === 'type' ? type ? typeName(type) : 'Equipment' : drill?.kind === 'template'
         ? templateName(drillData?.templates.find(row => row.template === drill.template) ?? data?.templates.find(row => row.template === drill.template) ?? { name: null }) : 'Division'}

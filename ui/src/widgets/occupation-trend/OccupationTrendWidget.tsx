@@ -18,7 +18,7 @@ import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { OPTIONS } from './definition';
 import { measureName, occupationEntries, occupationHolderMix, occupationLines, occupationLineTooltip, occupationModel, occupationRequest, occupationSegmentAt,
-  occupationTooltip, occupationTooltipTags, rankingMeasure } from './occupationTrendData';
+  occupationTooltip, occupationTooltipTags, rankingMeasure } from './occupationTrendData.ts';
 import type { OccupationMeasure, ShownMeasure } from './occupationTrendData';
 
 const NO_WARNINGS: string[] = [];
@@ -96,8 +96,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const none = all ? null : noMembersAt(widget.countries, resolved, groups.data, shownMoment, track?.branch.lastHour ?? 0);
   const state = !track ? <WidgetState kind="empty" icon="globe" message="Load a campaign to see occupation trends." />
     : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />
-    : error ? <WidgetState kind="error" detail={error} onRetry={retry} />
-    : grouped && groups.error && !groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+    : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    : grouped && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : requested.reason ? <WidgetState kind="empty" icon="globe" message={requested.reason} />
     // A group with no member found yet asks for nothing, so no reply will come.
     : none ? <NoMembersState reason={none.reason} icon="globe" />
@@ -112,7 +112,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
       if (!active || state || chooserRef.current !== chooserOwner || !tag || !mixCandidates.includes(tag) || occupationSegmentAt(model, tag, shownMoment) === null) return;
       setChoice({ scope: mixScope, tag, hour: shownMoment });
     }} /> : null;
-  return <div ref={parityRoot}>{grouped && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}<CountryRaceView pending={data?.pending} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
+  return <div ref={parityRoot}>{grouped && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}<CountryRaceView pending={data?.pending} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
     onReachHour={prepared.onReachHour} navigation={prepared.navigation} runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={shownMoment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
     presentation={{ exact: false, held: false }}

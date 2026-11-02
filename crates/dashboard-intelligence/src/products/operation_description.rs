@@ -161,7 +161,7 @@ fn load(
                 && reference.hour <= block.last_hour
         })
         .ok_or_else(|| {
-            dashboard_core::invalid("Operation description supplying hour was not recorded")
+            dashboard_core::refused("Operation description supplying hour was not recorded")
         })?;
     let mut decoder = FrameDecoder::for_tables(&selected);
     for frame in replay.read_block_selected(block, &selected)? {
@@ -187,7 +187,7 @@ fn load(
         if let Some(sequence) = sequence {
             let row = decoded.complete::<tables::OperationCompletions>()?.iter()
                 .find(|row| row.owner == reference.owner && row.sequence == sequence && row.id == id)
-                .ok_or_else(|| dashboard_core::invalid("Operation completion description identity was not recorded at its drain hour"))?;
+                .ok_or_else(|| dashboard_core::refused("Operation completion description identity was not recorded at its drain hour"))?;
             return chunk(
                 params,
                 language,
@@ -201,17 +201,17 @@ fn load(
             .iter()
             .find(|row| row.owner == reference.owner && row.id == id)
             .ok_or_else(|| {
-                dashboard_core::invalid(
+                dashboard_core::refused(
                     "Visible operation description identity was not recorded at its read hour",
                 )
             })?;
         let bytes = row
             .effect_description
             .require("Operations.effect_description")
-            .map_err(dashboard_core::invalid)?;
+            .map_err(dashboard_core::refused)?;
         return chunk(params, language, bytes, bytes.len() as u64, None);
     }
-    Err(dashboard_core::invalid(
+    Err(dashboard_core::refused(
         "Operation description supplying hour was not recorded",
     ))
 }

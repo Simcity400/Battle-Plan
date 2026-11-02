@@ -35,7 +35,7 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
   return <div className="dash-map-widget">
     <div className="dash-map-surface" ref={body}>
       <div className="dash-map-placeholder" role={state?.error ? undefined : 'status'}>{state?.error
-        ? <WidgetState kind="error" detail={state.error} onRetry={() => runtime.maps.retry(widget.id)} />
+        ? <WidgetState kind="error" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />
         : state?.pending
         ? <WidgetState kind="empty" icon="clock" message="Map not indexed yet" detail={state.pending} />
         : <><span className="empty-icon">{state?.loading || (desired && !matched && !nativeUnavailable && !runtime.nativeHidden) ? <span className="spinner" /> : <Icon name="map" />}</span>

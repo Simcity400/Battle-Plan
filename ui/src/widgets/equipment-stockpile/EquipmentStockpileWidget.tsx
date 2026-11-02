@@ -38,7 +38,7 @@ import { useParityRows } from '../../dashboard/parityRows';
 import type { EquipmentStockpileReply, StockpileCatalogueReply, StockpileHolder } from '../../generated/dashboard';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
-  SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt, chartDrawable } from './stockpileData';
+  SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt, chartDrawable } from './stockpileData.ts';
 import { useStockpileChart } from './useStockpileChart';
 import { groupIn, servedHour, stockpileGroupKey } from './stockpileCatalogue';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
@@ -123,7 +123,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     : 'The original country choice was not saved. Select a stockpile breakdown again.'
     : actor.reason ?? (headerTag ? null : 'Country unavailable at this time.');
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && headerTag && !headerReason ? [{ tag: headerTag, hour: at }] : [], active);
-  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={missingSavedDate ? null : at} reason={headerReason}
+  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={missingSavedDate ? null : at} reason={headerReason}
     label={headerTag && !headerReason ? header.labelAt(at)(headerTag) : null} />, countrySlot) : null;
   const detailPickOwner = useMemo(() => ({ pickOwner, selectedCountry }), [pickOwner, selectedCountry]);
   const showingDetail = saved || shownDrill.breakdown !== null;
@@ -146,7 +146,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its equipment stockpile." /></>;
   if (!saved && shownDrill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   if (shownDrill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!saved && shownDrill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading the stockpile…" /></>;
   // Whatever was recorded shows (production without a stockpile read, say); each value
   // not recorded says so.
@@ -170,9 +170,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
-  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.identityRetry} /> : null;
+  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
+    : actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
         : picked && detailData ? <StockpileDrill data={detailData} catalogue={actor.catalogue} holders={actor.holders} included={included} group={picked}
     hour={servedHour(detailData, at)}
@@ -280,7 +280,7 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const endLabels = options.endLabels !== false;
   const caption = shareMode ? 'Surplus / shortage (% of need)' : 'In stock';
   return <>
-    {incoming.error && <WidgetState kind="error" detail={incoming.error} onRetry={incoming.retry} />}
+    {incoming.error && <WidgetState kind="error" failure={incoming.error} onRetry={incoming.retry} />}
     {setOption && <div className="stockpile-caption-line"><span>Types shown</span>
       <ContentSetPicker label="Types shown over time" automatic="Main types"
         choices={drawable.map(group => ({ value: setToken(group.key), label: labelAt(group, grouping, head) }))}

@@ -1,11 +1,12 @@
+import type { Failure } from './queryError';
 /** Which look (name, map colour, flag) a chart shows for a country while looks are
  * read near the moment shown. Pure, for `useCountryLooks`. */
-import { FAILED_FACT } from './countryFacts.ts';
+import { FAILED_FACT, isFailedFact } from './countryFacts.ts';
 
 /** What is known of a country's look: each part as last read, null when its read
  * gave nothing (the recording has none, or it cannot be had, such as flags without
  * the game folders). */
-export interface Look { name: string | null; color: [number, number, number] | null; flag: string | null }
+export interface Look { name: string | null; color: [number, number, number] | null; flag: string | null; nameFailure?: Failure; flagFailure?: Failure }
 
 /** The reads of one country at the hour wanted, each part on its own: its value;
  * null once the read completed without it; undefined while pending; `FAILED_FACT`
@@ -28,8 +29,15 @@ export function nextLooks(shown: ReadonlyMap<string, Look>, tags: readonly strin
     const { style, flag } = read(tag);
     if (style === undefined && flag === undefined) continue;
     const look = { ...(shown.get(tag) ?? NOTHING) };
-    if (style !== undefined) { look.name = style === FAILED_FACT ? null : style?.name ?? null; look.color = style === FAILED_FACT ? null : style?.color ?? null; }
-    if (flag !== undefined) look.flag = flag === FAILED_FACT ? null : flag;
+    if (style !== undefined) {
+      look.name = isFailedFact(style) ? null : style?.name ?? null;
+      look.color = isFailedFact(style) ? null : style?.color ?? null;
+      if (isFailedFact(style)) look.nameFailure = style; else delete look.nameFailure;
+    }
+    if (flag !== undefined) {
+      look.flag = isFailedFact(flag) ? null : flag;
+      if (isFailedFact(flag)) look.flagFailure = flag; else delete look.flagFailure;
+    }
     next.set(tag, look);
   }
   return next;

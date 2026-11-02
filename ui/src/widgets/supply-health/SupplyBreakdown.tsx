@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -24,7 +25,7 @@ import { NumericReply } from '../../dashboard/numericReply';
 import { usePreparedSupply } from './preparedSupply';
 import type { SupplyHealthReply } from '../../generated/dashboard';
 import { STATES, STATE_LABELS, formatShare, supplyDrillHistories, supplyDrillNumbers, supplyDrillRuns, supplyShareRuns,
-  supplyTooltip, totalDivisions } from './supplyHealthData';
+  supplyTooltip, totalDivisions } from './supplyHealthData.ts';
 import type { supplyCountrySelection } from './SupplyCountryChip';
 
 export default function SupplyBreakdown({ runtime, track, active, options, countrySlot, headerSelection, extent, playhead, tag, hour, originHour,
@@ -63,8 +64,8 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
   const headerActor = !error && incoming.data && headerSelection?.tag === tag && headerSelection?.hour === originHour
     && runAt(incoming.data.series.find(series => series.tag === tag)?.identities ?? [], originHour) ? actor : null;
-  const header = countrySlot && createPortal(<DatedCountryChip label={headerActor ? labels.labelAt(hour)(headerActor) : null} hour={hour}
-    reason={error ? 'Couldn’t load the country.' : !headerActor ? 'Selected country unavailable.' : null} />, countrySlot);
+  const header = countrySlot && createPortal(<DatedCountryChip failure={error} label={headerActor ? labels.labelAt(hour)(headerActor) : null} hour={hour}
+    reason={error ? failureText(error, 'Couldn’t load the country.') : !headerActor ? 'Selected country unavailable.' : null} />, countrySlot);
   useEffect(() => { if (!active) setTipHour(null); }, [active]);
   const at = actor ? runAt(runs, hour) : null;
   const total = at ? totalDivisions(at) : null;
@@ -73,7 +74,7 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
     alpha: state === 'inSupply' ? 0.85 : 1 })), [colors]);
   const keyHours = useMemo(() => runs.map(run => run.firstHour), [runs]);
   if (!track || !tag) return <>{header}<WidgetState kind="empty" message="Choose a country for the supply classification." /></>;
-  if (error) return <>{header}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (error) return <>{header}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!data) return <>{header}<WidgetState kind="loading" label="Loading supply classification…" /></>;
   if (!data.available) return <>{header}<WidgetState kind="unavailable" message="Supply data is not in this recording." /></>;
   return <>{header}<div className="supply-health-breakdown">

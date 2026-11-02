@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/columns';
-import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { nameReadText, useHolderLooks } from '../../dashboard/holderLooks';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
+import { useHolderLooks } from '../../dashboard/holderLooks.ts';
+import { nameReadText, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -69,7 +70,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const pickedHour = drill.hour ?? dataHour;
   const pickedHolder = useMemo(() => picked ? [{ key: 'picked', tag: picked, hour: pickedHour }] : [], [picked, pickedHour]);
   const pickedLook = useHolderLooks(runtime.client, track, pickedHolder, active, tokens);
-  const names = useCountryNamesRead(runtime.client, track, useMemo(() => tags.map(tag => ({ hour: dataHour, tag })), [tags, dataHour]), active);
+  const names = useCountryNamesAt(runtime.client, track, useMemo(() => tags.map(tag => ({ hour: dataHour, tag })), [tags, dataHour]), active);
   // Flags for the manpower rows the mounted list shows; leaving the list releases them.
   const listed = pool === 'manpower' && members.length > 0;
   const [visibleTags, setVisibleTags] = useState<readonly string[]>([]);
@@ -78,7 +79,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const researchTags = pool === 'research' ? data?.researchCountries ?? null : null;
   const flags = useCountryLabelsAt(runtime.client, track, useMemo(() => (listed ? visibleTags : researchTags ?? []).map(tag => ({ hour: dataHour, tag })),
     [listed, visibleTags, researchTags, dataHour]), active);
-  const label = useCallback((tag: string) => ({ ...flags.labelAt(dataHour)(tag), name: nameReadText(names.get(nameKey(dataHour, tag))) }), [flags, names, dataHour]);
+  const label = useCallback((tag: string) => ({ ...flags.labelAt(dataHour)(tag), ...(names.has(nameKey(dataHour, tag)) ? nameReadMetadata(names.get(nameKey(dataHour, tag))) : {}) }), [flags, names, dataHour]);
   const diagnostics = useMemo(() => !data ? (details.error ? [details.error] : NO_WARNINGS)
     : [...data.warnings, ...data.refusals.map(refusal => `${refusal.fact} (${refusal.count}): ${refusal.reason}`),
       ...((data.resources ?? []).filter(entry => entry.reason).length ? [`${(data.resources ?? []).filter(entry => entry.reason).length} pooled resource names are unavailable.`] : [])],
@@ -113,8 +114,8 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const anchor = useRef<HTMLDivElement>(null);
   const open = (tag: string | null) => { if (tag) { setOpenedFor(drillOwner); dispatch({ type: 'open', breakdown: tag, hour: dataHour, playing: false, playhead: null }); } };
   const manpowerColumns = useMemo<readonly TableColumn<MemberAmount>[]>(() => [
-    { key: 'member', header: 'Member', label: 'Member', width: 'minmax(var(--table-name-min), 2fr)', value: entry => { const name = entry.tag ? names.get(nameKey(dataHour, entry.tag)) : null; return typeof name === 'string' ? name : null; },
-      renderMissing: true, render: entry => entry.tag ? <CountryCell {...label(entry.tag)} /> : 'Country unavailable' },
+    { key: 'member', header: 'Member', label: 'Member', width: 'minmax(var(--table-name-min), 2fr)', value: entry => { const name = entry.tag ? names.get(nameKey(dataHour, entry.tag)) : undefined; return nameReadText(name); },
+      text: entry => entry.tag ? label(entry.tag).name : null, renderMissing: true, render: entry => entry.tag ? <CountryCell {...label(entry.tag)} /> : 'Country unavailable' },
     { key: 'manpower', header: 'Manpower', label: 'Manpower contributed', numeric: true, width: 'max-content', bar: 'visible', value: entry => entry.value,
       render: entry => usNumber.format(entry.value) },
     { key: 'share', header: 'Share', label: 'Share of the pool', numeric: true, width: 'max-content', priority: 1,
@@ -124,11 +125,11 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const header = headerSlot && data && pool && createPortal(<span className="pill">{poolHeading(data, pool)}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see faction pools." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction pools…" /></>;
   if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="layers" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
-  if (details.error) return <>{groupFailure}<WidgetState kind="error" detail={details.error} onRetry={details.retry} /></>;
+  if (details.error) return <>{groupFailure}<WidgetState kind="error" failure={details.error} onRetry={details.retry} /></>;
   if (!data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction pools…" /></>;
   if (!pool) return <>{groupFailure}<WidgetState kind="unavailable" message="This faction’s pools were not recorded at this time." /></>;
   const row = (key: string, name: ReactNode, track: ReactNode, value: ReactNode, pick?: () => void) => <li key={key} {...tips.rowProps(key)}

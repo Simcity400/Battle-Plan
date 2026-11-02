@@ -1397,6 +1397,16 @@ fn the_native_publication_holds_what_the_walks_scan_holds() {
 struct Viewed(DoctrineMasteryObserver);
 
 impl Observer for Viewed {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = <DoctrineMasteryObserver as Observer>::NAME;
     const TABLES: &'static [TableId] = <DoctrineMasteryObserver as Observer>::TABLES;
     const READ: TableId = <DoctrineMasteryObserver as Observer>::READ;
@@ -1520,9 +1530,9 @@ fn native_publication<O: Observer>(
     cuts: &[i32],
     resume: Option<i32>,
 ) -> (Vec<String>, KeyedWindow, Value) {
-    use dashboard_keyed::native::testing::{operate, publish_hours};
+    use dashboard_keyed::native::testing::{operate, publish_hours, resuming};
     let (from, to) = (frames[0].hour, frames[frames.len() - 1].hour);
-    let hours = operate::<O>(frames, starts, native_tables);
+    let hours = operate::<O>(frames, &resuming(frames, starts, resume), native_tables);
     let published = publish_hours::<O>(hours, frames[0].branch, cuts, resume);
     let (scan, window) = published.read::<O>(from, to, None);
     let observer = serde_json::to_value(&scan.observer).unwrap();

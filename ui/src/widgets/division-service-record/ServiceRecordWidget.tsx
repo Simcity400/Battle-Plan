@@ -45,14 +45,15 @@ function TopDivisionRecord({ widget, ...record }: Omit<ComponentProps<typeof Rec
   const data = state.data;
   const top = useMemo(() => data ? topDivision(data.divisions) : null, [data]);
   const country = useCountryNameAt(runtime.client, track, tag, data?.hour ?? hour, active);
+  const nameDetail = dashboard && country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : undefined;
   if (dashboard && !tag) return <WidgetState kind="empty" message="Choose a dashboard country or a division in the widget settings." />;
-  if (selection.group.error) return <WidgetState kind="error" detail={selection.group.error} onRetry={selection.group.retry} />;
+  if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
   if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
-  if (state.error) return <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  if (state.error) return <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading divisions…" />;
-  if (data.missing) return <WidgetState kind="unavailable" message="Divisions weren’t recorded at this time." />;
-  if (top) return <RecordView {...record} hour={data.hour} division={top.division} caption={dashboard ? `Following ${country}’s most decorated division.` : 'Following the most decorated division of these countries.'} />;
+  if (data.missing) return <WidgetState kind="unavailable" message="Divisions weren’t recorded at this time." detail={nameDetail} />;
+  if (top) return <RecordView {...record} hour={data.hour} division={top.division} caption={dashboard ? country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : `Following ${country.name}’s most decorated division.` : 'Following the most decorated division of these countries.'} />;
   if (!selection.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (data.divisions.some(row => row.facts.medals === null)) return <WidgetState kind="unavailable" message="Some divisions’ medals weren’t recorded at this time." />;
-  return <WidgetState kind="empty" message={dashboard ? `${country} has no decorated divisions yet.` : 'These countries have no decorated divisions yet.'} />;
+  if (data.divisions.some(row => row.facts.medals === null)) return <WidgetState kind="unavailable" message="Some divisions’ medals weren’t recorded at this time." detail={nameDetail} />;
+  return <WidgetState kind="empty" message={nameDetail ? 'No decorated divisions yet.' : dashboard ? `${country.name} has no decorated divisions yet.` : 'These countries have no decorated divisions yet.'} detail={nameDetail} />;
 }

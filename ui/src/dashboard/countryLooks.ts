@@ -1,10 +1,11 @@
+import { failureText, type Failure } from './queryError.ts';
 import { useMemo, useRef } from 'react';
 import type { CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import { flagReadMetadata } from './countryFlagsAt.ts';
 import { useCountryFlagsRead } from './countryFlags.ts';
 import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
-import { FAILED_FACT, MAX_NAME_HOURS } from './countryFacts.ts';
+import { MAX_NAME_HOURS, isFailedFact } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import { matchesLookSegment, sampledLooks } from './looks.ts';
 import { useContentRevision } from './contentRevision.ts';
@@ -71,12 +72,14 @@ export interface CountryLooks {
   /** The localized name at the sample hour, else an unavailable-name label. */
   name: (tag: string, hour?: number) => string;
   /** The recorded map colour as sRGB bytes, or null when not known. */
+  nameFailure?: (tag: string, hour?: number) => Failure | undefined;
   color: (tag: string, hour?: number) => [number, number, number] | null;
   /** The flag as an image URL, or undefined when not known. */
   flag: (tag: string, hour?: number) => string | undefined;
   /** Status of the current sampled read, apart from any held same-segment URL. */
   flagPending: (tag: string, hour?: number) => boolean;
   flagReason: (tag: string, hour?: number) => string | undefined;
+  flagDetail?: (tag: string, hour?: number) => string | undefined;
   /** Whether this look's bound matches an hour being drawn before React replans. */
   matches?: (tag: string, hour: number) => boolean;
   /** Changes as looks arrive, for a chart to redraw. */
@@ -109,8 +112,8 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
   const flagKeys = useMemo(() => new Map(flagWanted.map(item => [item.tag, nameKey(item.hour, item.tag)])), [flagWanted]);
   const flags = useCountryFlagsRead(client, track, flagWanted, active);
   const heldKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : '';
-  const shown = useRef<{ key: string; client: DashboardClient; looks: Map<string, Look>; segments: Map<string, number> }>({ key: heldKey, client, looks: new Map(), segments: new Map() });
-  if (shown.current.key !== heldKey || shown.current.client !== client) shown.current = { key: heldKey, client, looks: new Map(), segments: new Map() };
+  const shown = useRef<{ key: string; client: DashboardClient; looks: Map<string, Look>; segments: Map<string, number>; revision: number }>({ key: heldKey, client, looks: new Map(), segments: new Map(), revision: 0 });
+  if (shown.current.key !== heldKey || shown.current.client !== client) shown.current = { key: heldKey, client, looks: new Map(), segments: new Map(), revision: 0 };
   const held = shown.current;
   // Rows fading out of a race still use their look. Retain them only while their
   // identity is known to be unchanged, without requesting countries no longer shown.
@@ -128,7 +131,7 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
     const next = sampledLooks(held, samples, sample => {
       const key = nameKey(sample.hour, sample.tag);
       const flag = flags.get(key);
-      return { style: styles.get(key), flag: flag === undefined ? undefined : flag && flag !== FAILED_FACT ? flag.url ?? null : null };
+      return { style: styles.get(key), flag: flag === undefined ? undefined : isFailedFact(flag) ? flag : flag?.url ?? null };
     }, segments);
     held.looks = next.looks;
     held.segments = next.segments;
@@ -140,19 +143,21 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
       const key = sample ? nameKey(sample.hour, tag) : undefined;
       return key === flagKeys.get(tag) ? key : undefined;
     };
-    const warningReplies = new Set([...styles.values()].flatMap(style => style && style !== FAILED_FACT && style.warnings ? [style.warnings] : []));
+    const warningReplies = new Set([...styles.values()].flatMap(style => style && !isFailedFact(style) && style.warnings ? [style.warnings] : []));
     const sampleKeys = new Map(samples.map(sample => [sample.tag, nameKey(sample.hour, sample.tag)]));
     // A name whose read has not answered yet is loading, not unavailable.
-    const reading = (tag: string, at?: number) => (at === undefined || matches(tag, at)) && sampleKeys.has(tag) && !styles.has(sampleKeys.get(tag)!);
+    const reading = (tag: string, at?: number) => active && !!track && (at === undefined || matches(tag, at)) && sampleKeys.has(tag) && !styles.has(sampleKeys.get(tag)!);
     return {
-      warnings: [...new Set([...warningReplies].flat())],
-      name: (tag, at) => look(tag, at)?.name ?? (reading(tag, at) ? NAME_LOADING : 'Country name unavailable'),
+      warnings: [...new Set([...warningReplies].flat().concat([...styles.values(), ...flags.values(), ...[...looks.values()].flatMap(look => [look.nameFailure, look.flagFailure])].filter(isFailedFact).map(error => error.message)))],
+      name: (tag, at) => look(tag, at)?.name ?? (look(tag, at)?.nameFailure ? failureText(look(tag, at)?.nameFailure, 'Couldn’t load country name.') : reading(tag, at) ? NAME_LOADING : 'Country name unavailable'),
+      nameFailure: (tag, at) => look(tag, at)?.nameFailure,
       color: (tag, at) => look(tag, at)?.color ?? null,
       flag: (tag, at) => look(tag, at)?.flag ?? undefined,
-      flagPending: (tag, at) => { const key = flagKeyAt(tag, at); return key !== undefined && flagReadMetadata(flags.get(key)).flagPending; },
+      flagPending: (tag, at) => { const key = flagKeyAt(tag, at); return active && !!track && key !== undefined && flagReadMetadata(flags.get(key)).flagPending; },
+      flagDetail: (tag, at) => { const key = flagKeyAt(tag, at); return flagReadMetadata(key === undefined ? undefined : flags.get(key)).flagDetail; },
       flagReason: (tag, at) => { const key = flagKeyAt(tag, at); return flagReadMetadata(key === undefined ? undefined : flags.get(key)).flagReason; },
       matches,
-      revision: styles.size + flags.size * 1000 + looks.size * 1_000_000,
+      revision: ++held.revision,
     };
-  }, [samples, styles, flags, flagKeys, held, segments, track, segmentAt, matches]);
+  }, [samples, styles, flags, flagKeys, held, segments, track, segmentAt, matches, active]);
 }

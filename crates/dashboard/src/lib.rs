@@ -22,7 +22,10 @@ pub use dashboard_base::{
     ranking, read_runs, research_dto::*, source,
 };
 pub(crate) use dashboard_core::invalid;
-pub use dashboard_core::{blocks, config, dto::*, map_display, map_settings, protocol, transport};
+pub use dashboard_core::{
+    QueryError, blocks, config, dto::*, map_display, map_settings, protocol, refusal, refused,
+    transport,
+};
 pub(crate) use dashboard_text::party_names;
 pub use dashboard_text::{
     artwork, character_scope, cryptology, effect_description, flag_choices, identity, metadata,
@@ -45,6 +48,7 @@ pub use source::{Source, SourceKey};
 pub fn typescript_contract() -> String {
     use ts_rs::TS;
     let mut declarations = vec![
+        QueryError::decl(),
         ReplayMetadata::decl(),
         CaptureMode::decl(),
         PartialRecording::decl(),

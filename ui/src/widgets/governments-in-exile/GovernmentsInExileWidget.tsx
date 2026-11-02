@@ -1,3 +1,5 @@
+import { nameReadText } from '../../dashboard/nameReads.ts';
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -41,9 +43,9 @@ export function exileColumns(sortName: (tag: string) => string, label: CountryLa
   airOf: (row: ExileRow) => number | null | undefined): TableColumn<ExileRow>[] {
   return [
     { key: 'exile', header: 'Exile', label: 'Exile', width: 'minmax(var(--table-name-min), 2fr)',
-      value: row => sortName(row.tag), render: row => <CountryCell {...label(row.tag)} /> },
+      value: row => sortName(row.tag), text: row => label(row.tag).name, render: row => <CountryCell {...label(row.tag)} /> },
     { key: 'host', header: 'Host', label: 'Host', width: 'minmax(var(--table-name-min), 2fr)', renderMissing: true, priority: 1, inTooltip: true,
-      value: row => row.host === null ? null : sortName(row.host),
+      value: row => row.host === null ? null : sortName(row.host), text: row => row.host === null ? null : label(row.host).name,
       render: row => row.host === null ? 'Not recorded' : <CountryCell {...label(row.host)} /> },
     { key: 'legitimacy', header: 'Legitimacy', label: 'Legitimacy', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, inTooltip: true,
       value: EXILE_VALUES.legitimacy,
@@ -64,7 +66,7 @@ function useDeployedAir(runtime: WidgetProps['runtime'], track: BoundTrack | und
   const request = track && enabled ? { sourceId: track.source.id, revision: track.source.revision, product: 'politics-state',
     params: { branchId: track.branch.id, hour, view: 'exiles' } } : null;
   const key = JSON.stringify([request, revision]);
-  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: PoliticsStateReply; error?: string }>();
+  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: PoliticsStateReply; error?: Failure }>();
   useEffect(() => {
     if (!request) return;
     const controller = new AbortController();
@@ -72,7 +74,7 @@ function useDeployedAir(runtime: WidgetProps['runtime'], track: BoundTrack | und
       const data = validateExileDetails(reply, hour);
       if (!controller.signal.aborted) setState({ client: runtime.client, key, data });
     }).catch(error => {
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) });
+      if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) });
     });
     return () => controller.abort();
     // Identity includes the hour, branch, source revision and content binding.
@@ -122,7 +124,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const sortingNames = useMemo(() => sort.column === 'exile' ? rows.map(row => ({ hour, tag: row.tag }))
     : sort.column === 'host' ? rows.flatMap(row => row.host === null ? [] : [{ hour, tag: row.host }]) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const columns = useMemo(() => exileColumns(tag => names.get(nameKey(hour, tag)) ?? 'Country name unavailable', labelAt(hour), options.cellBars === true, airOf),
+  const columns = useMemo(() => exileColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true, airOf),
     [names, labelAt, hour, options.cellBars, airOf]);
   const tooltip = useCallback((row: ExileRow) => fitTooltip([exileTooltip(row, hour, labelAt(hour)(row.tag),
     row.host === null ? null : labelAt(hour)(row.host), airOf(row))], viewport), [labelAt, hour, viewport, airOf]);
@@ -135,8 +137,8 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   let body;
   if (!track) body = <WidgetState kind="empty" icon="flag" message="Load a campaign to see governments in exile." />;
   else if (!window || !inside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
-  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
+  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading governments in exile…" />;
   else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -149,7 +151,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
     tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
   return <div className="governments-in-exile">
     {headerSlot && view && createPortal(<span className="pill exile-header-count">{usNumber.format(rows.length)} in exile</span>, headerSlot)}
-    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
+    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {body}
   </div>;
 }

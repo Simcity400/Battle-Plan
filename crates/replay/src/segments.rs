@@ -377,7 +377,7 @@ impl fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.error.source()
+        Some(&self.error)
     }
 }
 
@@ -399,6 +399,26 @@ pub fn fatal(error: io::Error) -> io::Error {
     io::Error::new(error.kind(), Fatal(error))
 }
 
+/// Keeps an undated error family-wide even when the lane recognises its payload.
+pub fn family_failure(error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), FamilyFailure(error))
+}
+
+#[derive(Debug)]
+struct FamilyFailure(io::Error);
+
+impl fmt::Display for FamilyFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for FamilyFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 /// The run's own failure, met in a family's code.
 #[derive(Debug)]
 struct Fatal(io::Error);
@@ -411,7 +431,7 @@ impl fmt::Display for Fatal {
 
 impl std::error::Error for Fatal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
+        Some(&self.0)
     }
 }
 
@@ -437,6 +457,7 @@ fn unfatal(error: io::Error) -> Result<io::Error, io::Error> {
 /// their worker.
 pub struct Lane<'a, W = ()> {
     erased: Box<dyn Erased<W> + 'a>,
+    refusal: Option<fn(&io::Error) -> bool>,
     /// The tables its operators read; None for every one.
     reads: Option<&'a [TableId]>,
     /// The branches it has nothing left to do on, in ascending order.
@@ -454,6 +475,7 @@ impl<'a, W: 'a> Lane<'a, W> {
     ) -> Self {
         Self {
             erased: Box::new(lane::Typed::new(name, Box::new(make), Box::new(emit))),
+            refusal: None,
             reads: None,
             passes: &[],
             resumes: &[],
@@ -472,6 +494,22 @@ impl<'a, W: 'a> Lane<'a, W> {
     /// What it does once it lost a segment of a branch; its branch ends there unless told.
     pub fn recovers(self, recovery: Recovery) -> Self {
         Self { recovery, ..self }
+    }
+
+    /// Recognises additional branch-local refusal payloads without changing their error kind.
+    pub fn refuses(self, refusal: fn(&io::Error) -> bool) -> Self {
+        Self {
+            refusal: Some(refusal),
+            ..self
+        }
+    }
+
+    fn is_refusal(&self, error: &io::Error) -> bool {
+        !error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<FamilyFailure>())
+            && (error.kind() == io::ErrorKind::InvalidData
+                || self.refusal.is_some_and(|refusal| refusal(error)))
     }
 
     /// Its family has nothing left to do on `branches`, in ascending order: no walk takes it
@@ -753,8 +791,7 @@ fn marked<T>(
     }
 }
 
-/// A run's schedule, and how its workers and its cancellation wake one another: a worker with
-/// nothing to pick waits on the board, helping the walks under way.
+/// A run's schedule, and the board its workers wait on, helping the walks under way.
 struct Signal {
     schedule: Mutex<Schedule>,
     board: Board,
@@ -915,8 +952,7 @@ struct Turn<'t, 'r, W> {
     called: Option<Called>,
 }
 
-/// What a call of a family's code on some worker came to: what it returned, or its panic, the
-/// family's own or that of the run's code it called back into.
+/// What a family's hour returned, or its panic, the family's own or the run's.
 enum Called {
     Returned(Result<(), Fault>),
     Panicked {
@@ -925,8 +961,7 @@ enum Called {
     },
 }
 
-/// The workers an hour of families whose last hours took `costs` keeps busy: their sum over the
-/// largest, rounded up; every family's before any has a cost.
+/// The workers families whose last hours took `costs` keep busy: sum over largest, rounded up.
 fn width(costs: impl Iterator<Item = u64>) -> usize {
     let (sum, most, count) = costs.fold((0_u64, 0_u64, 0_usize), |(sum, most, count), cost| {
         (sum.saturating_add(cost), most.max(cost), count + 1)
@@ -1064,8 +1099,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     {
                         return;
                     }
-                    // The earliest walk under way, while it has room, before any walk past it:
-                    // the emits wait for the segments in order.
+                    // The emits take segments in order, so the earliest walk is helped first.
                     let front = self.signal.board.front();
                     let picked = schedule.pick(
                         &self.plan,
@@ -1132,8 +1166,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         }
     }
 
-    /// Helps the walks under way, an hour at a time, until what the schedule may hand out
-    /// changed past `seen`.
+    /// Helps the walks under way until what the schedule may hand out changed past `seen`.
     fn help(&self, seen: u64) {
         loop {
             #[cfg(test)]
@@ -1195,7 +1228,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     gone.waste.push(Waste::Fault(fault));
                 }
                 Err(Fault::Error(Operation::Emit, error))
-                    if error.kind() == io::ErrorKind::InvalidData =>
+                    if self.lanes[lane].is_refusal(&error) =>
                 {
                     let (hour, error) = dated(error, planned.first);
                     let ending = Ending::Refused { hour, error };
@@ -1632,7 +1665,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 Fate::Lost(Loss::Damaged(Arc::new(error)))
             }
             Fault::Error(operation, error)
-                if reading(operation) && error.kind() == io::ErrorKind::InvalidData =>
+                if reading(operation) && self.lanes[attached.lane].is_refusal(&error) =>
             {
                 Fate::Refused {
                     hour,
@@ -1646,6 +1679,38 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 error,
             },
         })
+    }
+
+    /// Files what `attached`'s hour came to; the `first` family to panic hands its panic back.
+    fn settle(
+        &self,
+        attached: &mut Attached<'r, W>,
+        called: Called,
+        first: bool,
+        (when, hours): ((i32, u32), u32),
+    ) -> io::Result<Option<Box<dyn Any + Send>>> {
+        match called {
+            Called::Returned(called) => {
+                attached.through = hours + 1;
+                if let Some(fault) = attached.met(called) {
+                    attached.fate = Some(self.fate(fault, attached, when)?);
+                }
+                Ok(None)
+            }
+            // The run's own panic goes on as the run's.
+            Called::Panicked {
+                family: false,
+                payload,
+            } => resume_unwind(payload),
+            Called::Panicked { payload, .. } if first => Ok(Some(payload)),
+            // Another family panicking at the same hour fails there too.
+            Called::Panicked { payload, .. } => {
+                attached.through = hours + 1;
+                let fault = Fault::Panic(Operation::Hour, said(&*payload));
+                attached.fate = Some(self.fate(fault, attached, when)?);
+                Ok(None)
+            }
+        }
     }
 
     /// Family `lane` loses segment `at`, which its walk holds, for `loss`: the loss is filed
@@ -1974,8 +2039,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         }
                         noted = lost.len();
                     }
-                    // Families joining past the segment's first hour start, or take up their
-                    // carry, once the walk holds the hour before.
+                    // A family joining late decides once the walk holds the hour before.
                     for (index, attached) in walking.iter_mut().enumerate() {
                         if attached.fate.is_some()
                             || hours < attached.seen
@@ -2001,41 +2065,22 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             let result = attached.operator.start(restart, planned.branch, next);
                             culprit.set(None);
                             doing = Operation::Hour;
-                            let called =
-                                result.map_err(|error| Fault::of(Operation::Start, error));
+                            let called = result.map_err(|error| Fault::of(Operation::Start, error));
                             if let Some(fault) = attached.met(called) {
                                 let when = (next, ordinal + 1);
                                 attached.fate = Some(self.fate(fault, attached, when)?);
                             }
                         }
                     }
-                    let mut turns = engine_allocation::vec(walking.len())?;
-                    for (index, attached) in walking.iter_mut().enumerate() {
-                        if attached.fate.is_none()
+                    let due = |attached: &Attached<'r, W>| {
+                        attached.fate.is_none()
                             && hours >= attached.seen
                             && ordinal >= attached.joins
-                        {
-                            turns.push(Turn {
-                                index,
-                                attached,
-                                called: None,
-                            });
-                        }
-                    }
-                    // Helpers take the hour's families with this worker, the costliest last
-                    // hour first, as many of them as its costs keep busy.
-                    turns.sort_unstable_by_key(|turn| Reverse(turn.attached.cost));
-                    let width = width(turns.iter().map(|turn| turn.attached.cost));
-                    let mut slots =
-                        engine_allocation::collect_vec(turns.into_iter().map(Mutex::new))?;
+                    };
                     let (world, shared, reserved) = (&world, &self.shared, &reserved);
-                    let take = |slot: usize| {
-                        let mut turn = lock(&slots[slot]);
-                        let Turn {
-                            attached, called, ..
-                        } = &mut *turn;
+                    let hour_of = |attached: &Attached<'r, W>| {
                         let joining = ordinal == attached.joins && ordinal > segment.first;
-                        let hour = Hour {
+                        Hour {
                             branch: planned.branch,
                             hour: manifest.hour,
                             run: segment.run,
@@ -2046,63 +2091,73 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             state,
                             manifest,
                             world,
-                        };
-                        let began = Instant::now();
-                        *called = Some(hour_on(&mut *attached.operator, &hour, shared, reserved));
-                        attached.cost =
-                            u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
-                    };
-                    match &crew {
-                        Some(crew) if slots.len() > 1 => crew.hour(slots.len(), width, &take),
-                        _ => (0..slots.len()).for_each(take),
-                    }
-                    let turns = slots
-                        .iter_mut()
-                        .map(|slot| slot.get_mut().unwrap_or_else(PoisonError::into_inner));
-                    let mut turns: Vec<&mut Turn<'_, 'r, W>> = engine_allocation::collect_vec(turns)?;
-                    // The run's own panic goes on as the run's.
-                    for turn in turns.iter_mut() {
-                        if let Some(Called::Panicked { family: false, .. }) = turn.called {
-                            let Some(Called::Panicked { payload, .. }) = turn.called.take() else {
-                                unreachable!("the turn panicked");
-                            };
-                            resume_unwind(payload);
                         }
-                    }
-                    // The first family to panic, in lane order, begins the walk again as it would
-                    // have had the families walked the hour one after another.
-                    let first_panic = turns
-                        .iter()
-                        .filter(|turn| matches!(turn.called, Some(Called::Panicked { .. })))
-                        .map(|turn| turn.index)
-                        .min();
+                    };
+                    let when = (manifest.hour, ordinal);
                     let mut panicked = None;
-                    for turn in turns.iter_mut() {
-                        let when = (manifest.hour, ordinal);
-                        let attached = &mut *turn.attached;
-                        match turn.called.take() {
-                            Some(Called::Returned(called)) => {
-                                attached.through = hours + 1;
-                                if let Some(fault) = attached.met(called) {
-                                    attached.fate = Some(self.fate(fault, attached, when)?);
-                                }
+                    let shared_out = walking.iter().filter(|&attached| due(attached)).count() > 1;
+                    let crewed = crew.as_ref().filter(|_| shared_out);
+                    if let Some(crew) = crewed {
+                        let mut turns = engine_allocation::vec(walking.len())?;
+                        for (index, attached) in walking.iter_mut().enumerate() {
+                            if due(&*attached) {
+                                turns.push(Turn {
+                                    index,
+                                    attached,
+                                    called: None,
+                                });
                             }
-                            Some(Called::Panicked { payload, .. })
-                                if Some(turn.index) == first_panic =>
+                        }
+                        // The costliest last hour first, on as many workers as the costs keep busy.
+                        turns.sort_unstable_by_key(|turn| Reverse(turn.attached.cost));
+                        let width = width(turns.iter().map(|turn| turn.attached.cost));
+                        let mut slots =
+                            engine_allocation::collect_vec(turns.into_iter().map(Mutex::new))?;
+                        crew.hour(slots.len(), width, &|slot: usize| {
+                            let mut turn = lock(&slots[slot]);
+                            let Turn {
+                                attached, called, ..
+                            } = &mut *turn;
+                            let began = Instant::now();
+                            let hour = hour_of(&**attached);
+                            let operator = &mut *attached.operator;
+                            *called = Some(hour_on(operator, &hour, shared, reserved));
+                            attached.cost =
+                                u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                        });
+                        let mut turns: Vec<&mut Turn<'_, 'r, W>> = engine_allocation::collect_vec(
+                            slots
+                                .iter_mut()
+                                .map(|slot| slot.get_mut().unwrap_or_else(PoisonError::into_inner)),
+                        )?;
+                        // The run's own panic outranks anything a family's hour returned.
+                        for turn in &mut turns {
+                            if let Some(Called::Panicked { family: false, .. }) = turn.called
+                                && let Some(Called::Panicked { payload, .. }) = turn.called.take()
+                            {
+                                resume_unwind(payload);
+                            }
+                        }
+                        // In lane order, as run serially: the first panic begins the walk again.
+                        turns.sort_unstable_by_key(|turn| turn.index);
+                        for turn in turns {
+                            let called = turn.called.take().expect("every turn ran");
+                            let first = panicked.is_none();
+                            if let Some(payload) =
+                                self.settle(&mut *turn.attached, called, first, (when, hours))?
                             {
                                 panicked = Some((turn.index, payload));
                             }
-                            // Another family panicking at the same hour fails there too.
-                            Some(Called::Panicked { payload, .. }) => {
-                                attached.through = hours + 1;
-                                let fault = Fault::Panic(Operation::Hour, said(&*payload));
-                                attached.fate = Some(self.fate(fault, attached, when)?);
-                            }
-                            None => unreachable!("every turn ran"),
+                        }
+                    } else if let Some((index, attached)) =
+                        walking.iter_mut().enumerate().find(|(_, attached)| due(&**attached))
+                    {
+                        let hour = hour_of(&*attached);
+                        let called = hour_on(&mut *attached.operator, &hour, shared, reserved);
+                        if let Some(payload) = self.settle(attached, called, true, (when, hours))? {
+                            panicked = Some((index, payload));
                         }
                     }
-                    drop(turns);
-                    drop(slots);
                     if let Some((index, payload)) = panicked {
                         culprit.set(Some(index));
                         resume_unwind(payload);

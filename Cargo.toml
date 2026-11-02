@@ -338,13 +338,5 @@ codegen-units = 1
 [profile.release-lto.package.collector]
 debug = "line-tables-only"
 
-# Profiling aid while the ledger lane is measured: line tables name private functions; they
-# change no generated code.
-[profile.release.package.dashboard-politics-ledger]
-debug = "line-tables-only"
-
-[profile.release.package.dashboard-series]
-debug = "line-tables-only"
-
 [patch.crates-io]
 eframe = { path = "vendor/eframe" }

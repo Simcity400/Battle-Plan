@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { BattleSide } from '../../generated/dashboard';
 import { battleFlagCount } from './battleRows';
+import { defineCellWidth } from '../../charts/table/cellWidth.ts';
 import type { BattleCountryLabel, BattleRow, BattleSideSummary } from './battleRows';
 
 function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabel }) {
@@ -21,7 +22,7 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
     const observer = new ResizeObserver(measure);
     [element, probe.current!, more.current!].forEach(item => observer.observe(item));
     return () => observer.disconnect();
-  }, [count, side.countriesUnknown]);
+  }, [count]);
   const names = side.countries.map(part => country(part.tag, part.hour).name);
   const title = [side.label, ...names, side.countriesUnknown ? 'Countries unknown' : null].filter(Boolean).join(' · ');
   return <span ref={host} className="battle-flags" title={title} aria-label={title}>
@@ -29,7 +30,7 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
     {side.countries.slice(0, shown).map(part => {
       const named = country(part.tag, part.hour);
       return <span className="battle-country" key={JSON.stringify([part.tag, part.hour])} title={named.name}>
-        <CountryFlagUrl className="log-flag" url={named.flag} reason={named.flagReason} pending={named.flagPending} />
+        <CountryFlagUrl className="log-flag" url={named.flag} detail={named.flagDetail} reason={named.flagReason} pending={named.flagPending} fixedSize />
       </span>;
     })}
     {shown < count && <span className="battle-flags-more">+{count - shown}</span>}
@@ -48,10 +49,11 @@ export default function BattleSides({ row, country, summary, compact }: {
     ?? { label: summary.countLabel, value: null, unknown: summary.unknown });
   const fullText = counts.map(value => summary.formatCount(value, false)).join(` ${summary.separator} `);
   useLayoutEffect(() => {
+    if (compact) return;
     const element = host.current!;
     const measure = () => {
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
-      setFull(!compact && probe.current!.offsetWidth + flag.current!.offsetWidth * 2 + gap * 4 <= element.clientWidth);
+      setFull(probe.current!.offsetWidth + flag.current!.offsetWidth * 2 + gap * 4 <= element.clientWidth);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -61,7 +63,14 @@ export default function BattleSides({ row, country, summary, compact }: {
   return <span ref={host} className="battle-sides-summary" title={fullText}>
     <span className="battle-probe" aria-hidden="true"><span ref={probe}>{fullText}</span><i ref={flag} className="battle-flag-missing" /></span>
     {row.sides[0] && <Flags side={row.sides[0]} country={country} />}
-    <span className="battle-count">{full ? fullText : counts.map(value => summary.formatCount(value, true)).join(` ${summary.separator} `)}</span>
+    <span className="battle-count">{!compact && full ? fullText : counts.map(value => summary.formatCount(value, true)).join(` ${summary.separator} `)}</span>
     {row.sides.slice(1).map((side, index) => <Flags key={index} side={side} country={country} />)}
   </span>;
 }
+
+defineCellWidth(BattleSides, ({ row, summary, compact }) => <span className="battle-sides-summary">
+  <span className="battle-count">{row.sides.map(side => summary.formatCount(side.counts.find(value => value.label === summary.countLabel)
+    ?? { label: summary.countLabel, value: null, unknown: summary.unknown }, compact)).join(` ${summary.separator} `)}</span>
+  {row.sides.map((side, index) => <span key={index} className="battle-flags"><i className="battle-flag-missing" />
+    <span className="battle-flags-more">+{side.countries.length}</span></span>)}
+</span>);

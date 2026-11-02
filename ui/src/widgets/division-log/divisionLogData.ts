@@ -1,9 +1,11 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { fieldPreparing } from '../../dashboard/preparedPrefix.ts';
 import { isEngineHour, formatDateTime } from '../../dashboard/calendar.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { newestFirst } from '../../charts/log/logData.ts';
+import { LogPlayback } from '../../charts/log/logPlayback.ts';
 import type { LogRow } from '../../charts/log/logData';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
@@ -54,12 +56,30 @@ export function selectedTemplates(value: string, campaign: string, branch: strin
   return chosen.map(contentKey).filter(token => token.startsWith(prefix)).map(token => token.slice(prefix.length));
 }
 export interface DivisionLogItem extends DivisionLogEntry { windowIndex: number }
+type DivisionWindows = ReadonlyMap<number, DivisionLogReply>;
+type DivisionMatch = (tag: string, hour: number) => boolean;
+const playbacks = new WeakMap<DivisionWindows, WeakMap<DivisionMatch, Map<string, LogPlayback<DivisionLogItem>>>>();
 export function divisionRows(windows: ReadonlyMap<number, DivisionLogReply>, at: number, first: number,
-  events: string, templates: readonly string[] | null, matches: (tag: string, hour: number) => boolean, all: boolean): LogRow<DivisionLogItem>[] {
+  events: string, templates: readonly string[] | null, matches: (tag: string, hour: number) => boolean, all: boolean): ReadonlyArray<LogRow<DivisionLogItem>> {
+  let byMatch = playbacks.get(windows);
+  if (!byMatch) playbacks.set(windows, byMatch = new WeakMap());
+  let bySettings = byMatch.get(matches);
+  if (!bySettings) byMatch.set(matches, bySettings = new Map());
+  const key = JSON.stringify([first, events, templates, all]);
+  let playback = bySettings.get(key);
+  if (!playback) {
+    playback = new LogPlayback(prepareDivisionRows(windows, first, events, templates, matches, all), row => row.item.readHour);
+    bySettings.set(key, playback);
+  }
+  return playback.at(at);
+}
+
+function prepareDivisionRows(windows: DivisionWindows, first: number, events: string, templates: readonly string[] | null,
+  matches: DivisionMatch, all: boolean): ReadonlyArray<LogRow<DivisionLogItem>> {
   const selected = templates === null ? null : new Set(templates);
   const rows: LogRow<DivisionLogItem>[] = [];
   for (const [windowIndex, reply] of [...windows].sort(([a], [b]) => a - b)) for (const row of reply.rows) {
-    if (row.readHour > at || row.hour < first || events === 'created' && row.kind !== 'created' || events === 'lost' && row.kind === 'created'
+    if (row.hour < first || events === 'created' && row.kind !== 'created' || events === 'lost' && row.kind === 'created'
       || selected !== null && (row.template === null || !selected.has(row.template))
       || !all && (row.tag === null || !matches(row.tag, row.countryHour))) continue;
     rows.push({ key: row.id, hour: row.hour, by: row.by, item: { ...row, windowIndex } });
@@ -78,13 +98,13 @@ export function divisionStatus(row: DivisionLogEntry): string {
 export const divisionName = (row: DivisionLogEntry) => row.name ?? 'Division name not recorded';
 export function divisionTooltip(row: DivisionLogEntry, country: ReturnType<CountryLabel>, killer: ReturnType<CountryLabel>, place: string): TooltipContent {
   return { title: divisionName(row), icon: row.icon ?? undefined, subtitle: divisionStatus(row), rows: [
-    { label: 'Country', value: country.name, countryFlag: row.tag === null ? undefined
-      : { flag: country.flag, flagReason: country.flagReason, flagPending: country.flagPending } },
+    { ...countryNameDetails(country), label: 'Country', value: country.name, countryFlag: row.tag === null ? undefined
+      : { flag: country.flag, flagReason: country.flagReason, ...(country.flagDetail !== undefined ? { flagDetail: country.flagDetail } : {}), flagPending: country.flagPending } },
     { label: 'Template', value: row.templateName ?? 'Template name not recorded' },
     { label: row.placeAtEvent ? 'Location' : 'Last seen at', value: place },
     { label: 'When', value: `${row.by ? 'By ' : ''}${formatDateTime(row.hour)}` },
     ...(row.afterHour === null ? [] : [{ label: 'First appeared after', value: formatDateTime(row.afterHour) }]),
-    ...(row.kind === 'created' ? [] : [{ label: 'Killer', value: killer.name, countryFlag: row.killerTag === null ? undefined
-      : { flag: killer.flag, flagReason: killer.flagReason, flagPending: killer.flagPending } }]),
+    ...(row.kind === 'created' ? [] : [{ ...countryNameDetails(killer), label: 'Killer', value: killer.name, countryFlag: row.killerTag === null ? undefined
+      : { flag: killer.flag, flagReason: killer.flagReason, ...(killer.flagDetail !== undefined ? { flagDetail: killer.flagDetail } : {}), flagPending: killer.flagPending } }]),
   ] };
 }

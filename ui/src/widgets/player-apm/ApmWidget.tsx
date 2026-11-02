@@ -11,7 +11,7 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { dayLabel, drawLine, font } from '../../charts/draw';
 import { extentOfAll } from '../../charts/series';
 import { lineStyles, SECONDARY_DASH } from '../../charts/palette';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useHolderLooks } from '../../dashboard/holderLooks';
@@ -97,17 +97,17 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see eAPM." />;
   if (!query.window || first == null || last == null || first > last) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" detail={query.groups.error} onRetry={query.groups.retry} />;
+  if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" failure={query.groups.error} onRetry={query.groups.retry} />;
   if (query.reason) return <WidgetState kind="unavailable" message={query.reason} />;
-  if (players && registry.error) return <WidgetState kind="error" detail={registry.error} onRetry={registry.retry} />;
-  if (query.error) return <WidgetState kind="error" detail={query.error} onRetry={query.retry} />;
+  if (players && registry.error) return <WidgetState kind="error" failure={registry.error} onRetry={registry.retry} />;
+  if (query.error) return <WidgetState kind="error" failure={query.error} onRetry={query.retry} />;
   if (!data || (players && !registry.data) || !query.known || (!graph && query.pending)) return <WidgetState kind="loading" label="Loading eAPM…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Player orders were not recorded in this campaign." />;
   if (!rows.length && !graph) return <WidgetState kind="empty" message="No eAPM is available for these countries, players and dates." />;
   if (!graph) return <Table label="eAPM over the selected period" rows={rows} rowKey={rowKey} columns={columns}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} hoursPerSecond={motion}
-    onVisibleRows={setVisibleRows} tooltip={row => ({ title: players ? names.get(row.id)! : labels.labelAt(row.hour)(row.tag ?? '').name, subtitle: `${dayLabel(first)} – ${dayLabel(last)}`,
+    onVisibleRows={setVisibleRows} tooltip={row => ({ ...countryNameDetails(players ? null : labels.labelAt(row.hour)(row.tag ?? '')), title: players ? names.get(row.id)! : labels.labelAt(row.hour)(row.tag ?? '').name, subtitle: `${dayLabel(first)} – ${dayLabel(last)}`,
       rows: [{ label: 'eAPM', value: apmValueText(row.summary) }, { label: 'Unpaused orders', value: countText(row.summary.orders) },
         ...(paused ? [{ label: 'Paused orders', value: countText(row.summary.pausedOrders) }] : []),
         { label: 'Unpaused real minutes', value: apmText(row.summary.unpausedMinutes) }], note: valueNote(row.summary) })} />;
@@ -121,7 +121,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
       formatValue={value => `${apmText(value)} eAPM`}
       tooltip={at => {
         const points = lines.map(line => ({ line, point: pointAt(line.row, at) }));
-        return fitTooltip([{ title: dayLabel(at), rows: points.flatMap(({ line, point }) => [
+        return fitTooltip([{ ...countryNameDetails(...(players ? [] : points.map(({ line }) => ({ nameFailure: looks.nameFailure?.(line.row.id) })))), title: dayLabel(at), rows: points.flatMap(({ line, point }) => [
           { label: `${label(line.row)} · eAPM`, value: apmValueText(point?.value), swatch: line.color },
           ...(paused ? [{ label: `${label(line.row)} · paused orders`, value: countText(point?.value.pausedOrders), swatch: line.color }] : [])]),
         note: points.some(({ point }) => point?.value.gaps) ? `${APM_EXPLANATION} * ${GAPS_NOTE}` : APM_EXPLANATION }], viewport);

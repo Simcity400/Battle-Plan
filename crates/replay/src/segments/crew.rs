@@ -1,9 +1,4 @@
-//! Workers help the walks under way, an hour at a time. A walk carrying more than one family
-//! posts each hour's operators on the board ([`Board`]) with the workers they keep busy (its
-//! width): its own worker and up to that many less one helpers take them one at a time, and
-//! the hour ends once every one taken has run. A worker with no emit to run helps the earliest
-//! walk under way before it starts another, and one with nothing to pick helps any; a helper
-//! stays with a walk from hour to hour, and goes back to the schedule as soon as it changed.
+//! Workers helping a walk run its families' hours, the walk's worker among them.
 
 use std::{
     io,
@@ -18,14 +13,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where workers find the walks under way to help, and wait for an hour to help with or for
-/// the schedule to change.
+/// The walks under way, for workers to help.
 #[derive(Default)]
 pub(super) struct Board {
     crews: Mutex<Vec<Arc<Crew>>>,
     wake: Condvar,
-    /// Changes to what the schedule may hand out: read before a worker asks it, a change since
-    /// sends a waiting worker back to it.
+    /// Bumped on every change to what the schedule may hand out.
     changes: AtomicU64,
     /// Workers waiting on the board for any walk's hour.
     idle: AtomicUsize,
@@ -59,8 +52,7 @@ impl Board {
             .map(Arc::clone)
     }
 
-    /// An hour to help with, the earliest walk's first, waiting for one; None once the
-    /// schedule changed past `seen`.
+    /// Waits for the earliest walk with room; None once the schedule changed past `seen`.
     pub(super) fn next(&self, seen: u64) -> Option<Arc<Crew>> {
         let mut crews = lock(&self.crews);
         loop {
@@ -103,8 +95,7 @@ impl Board {
         Ok(Joined { board: self, crew })
     }
 
-    /// An hour with room for `room` helpers was posted: as many workers waiting on the board
-    /// come.
+    /// Wakes up to `room` workers waiting on the board.
     fn posted(&self, room: usize) {
         if room == 0 || self.idle.load(Ordering::SeqCst) == 0 {
             return;
@@ -116,8 +107,7 @@ impl Board {
     }
 }
 
-/// An hour's work as its walk posts it, its borrows' lifetime erased: the walk withdraws it,
-/// and waits for every helper that took it to leave, before those borrows end ([`Posted`]).
+/// An hour's work, its lifetime erased; [`Posted`] withdraws and drains it before the borrows end.
 #[derive(Clone, Copy)]
 struct Job(*const (dyn Fn(usize) + Sync));
 
@@ -143,8 +133,7 @@ pub(super) struct Crew {
     left: Condvar,
     /// An hour was posted, the walk ended, or the schedule changed.
     posted: Condvar,
-    /// The next of the open hour's operators to take, how many it has, and the helpers it
-    /// still has room for.
+    /// The open hour's next operator, its count, and the helpers it still has room for.
     next: AtomicUsize,
     count: AtomicUsize,
     room: AtomicUsize,
@@ -157,9 +146,7 @@ impl Crew {
             && self.next.load(Ordering::SeqCst) < self.count.load(Ordering::SeqCst)
     }
 
-    /// Takes the operators of the open hour, and of each hour after it the walk posts, while
-    /// an hour has room and something left for it, the walk goes on and the schedule did not
-    /// change past `seen`.
+    /// Helps hour after hour while each has room and work, until the schedule changes.
     pub(super) fn help(&self, board: &Board, seen: u64) {
         let mut open = lock(&self.hour);
         loop {
@@ -225,14 +212,11 @@ pub(super) struct Joined<'b> {
 }
 
 impl Joined<'_> {
-    /// Runs `job` once for each index below `count`, on this thread and on up to `width` less
-    /// one helpers, each taking the lowest index not yet taken: it returns once each has run.
-    /// `job` must not unwind.
+    /// Runs `job` for each index below `count` here and on up to `width` - 1 helpers.
     pub(super) fn hour(&self, count: usize, width: usize, job: &(dyn Fn(usize) + Sync)) {
         let crew = &*self.crew;
         let erased: *const (dyn Fn(usize) + Sync + '_) = job;
-        // SAFETY: only the lifetime changes; `Posted` withdraws the job, and waits for every
-        // helper that took it to leave, before this returns or unwinds.
+        // SAFETY: only the lifetime changes; `Posted` drains every helper before it ends.
         let erased = Job(unsafe {
             std::mem::transmute::<
                 *const (dyn Fn(usize) + Sync + '_),

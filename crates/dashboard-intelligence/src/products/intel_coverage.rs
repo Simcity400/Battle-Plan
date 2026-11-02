@@ -150,6 +150,16 @@ fn at(events: &[(i32, bool)], hour: i32) -> bool {
 }
 
 impl KeyedObserver for IntelCoverageObserver {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "intel-network-coverage";
     const TABLES: &'static [TableId] = &[
         TableId::IntelNetworkSummaries,

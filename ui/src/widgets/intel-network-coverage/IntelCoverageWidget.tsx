@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
@@ -11,6 +12,7 @@ import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { countryPart } from '../../dashboard/keyedHistory.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { intelShown } from '../../dashboard/widgetRequests';
@@ -62,7 +64,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const { labelAt, revision: labels } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const axis = useMemo<MatrixAxisItem[]>(() => countries.map(country => {
     const label = labelAt(readHour)(country.tag);
-    return { id: country.id, label: label.name, countryFlag: { flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason } };
+    return { id: country.id, label: label.name, countryFlag: { ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}), ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason } };
   }), [countries, labelAt, readHour]);
   const grey = mix(tokens.surface, tokens.text, 0.1);
   const highest = useMemo(() => {
@@ -79,21 +81,24 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   }, [at, countries, field, highest, grey, tokens.accent]);
   const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
   const tooltip = useCallback((row: number, column: number) => row === column ? null
-    : at ? pairTooltip(axis[row].label, axis[column].label, cellState(at, countries[row].id, countries[column].id), readDate) : null, [axis, at, countries, readDate]);
+    : at ? { ...pairTooltip(axis[row].label, axis[column].label, cellState(at, countries[row].id, countries[column].id), readDate),
+      ...countryNameDetails(axis[row].countryFlag, axis[column].countryFlag) } : null, [axis, at, countries, readDate]);
   const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
   // A pair's countries are one recording's TAG@slot identities in one branch: another one drops it.
   const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
-  const [choice, setPair] = useState<{ scope: object; owner: string; target: string } | null>(null);
+  const [choice, setPair] = useState<{ scope: object; owner: string; target: string; hour: number } | null>(null);
   const pair = choice?.scope === scope ? choice : null;
   const drill = pair ? savedDrill : CLOSED;
   const drillAt = drillHour(drill, hour);
+  const pairTags = useMemo(() => pair ? [pair.owner, pair.target].map(key => countryPart(key)!.tag) : [], [pair]);
+  const pairNames = useCountryLabelsAt(runtime.client, track, pair ? pairTags.map(tag => ({ tag, hour: pair.hour })) : [], active);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const saved = options.show === 'pair';
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (saved) return <PairHistory {...props} pair={null} hour={hour} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (grouped && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   if (grouped && !groups.data) return <WidgetState kind="loading" label="Loading intel networks…" />;
   const reason = roots?.reason ?? members?.reason ?? (chosen?.length === 0 ? 'Choose a country in the widget settings.' : null);
   if (reason) return <WidgetState kind="unavailable" message={reason} />;
@@ -113,17 +118,16 @@ export default function IntelCoverageWidget(props: WidgetProps) {
     : <HeatMatrix label="Intel network coverage" rows={axis} columns={axis} cell={cell} revision={`${hour}:${field}:${labels}:${highest}`} active={active} onVisible={onVisible}
       tooltip={tooltip} onSelect={(row, column) => {
         if (row === column) return;
-        setPair({ scope, owner: countries[row].id, target: countries[column].id });
+        setPair({ scope, owner: countries[row].id, target: countries[column].id, hour: readHour });
         dispatch({ type: 'open', breakdown: 'pair', hour, playing: widget.time.mode === 'follow', playhead: hour });
       }} menu={() => at.readHour === undefined ? [] : [jumpItem(runtime, track.id, at.readHour)]} />;
-  const names = pair ? [countries.findIndex(country => country.id === pair.owner), countries.findIndex(country => country.id === pair.target)] : [];
   return <div ref={anchor} className="intel-coverage">
     <div className="intel-coverage-caption">
       <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
       {setOption && <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />}
     </div>
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={pair ? `${axis[names[0]]?.label ?? 'Owner'} → ${axis[names[1]]?.label ?? 'Target'}` : 'Pair history'}
+      title={pair ? pairTags.map(tag => pairNames.labelAt(pair.hour)(tag).name).join(' → ') : 'Pair history'}
       day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
       onPin={pair ? () => {

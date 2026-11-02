@@ -18,6 +18,8 @@ use dashboard_special_projects::products::special_projects;
 use dashboard_text::{catalogue::Catalogue, metadata::Extents};
 use dashboard_unit_leaders::products::unit_leaders;
 use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, OnceLock, PoisonError, atomic::AtomicBool},
@@ -39,7 +41,10 @@ impl<T> Once<T> {
     pub(crate) fn get(&self, load: impl FnOnce() -> io::Result<T>) -> io::Result<&T> {
         match self.cell.get_or_init(|| load().map_err(Arc::new)) {
             Ok(value) => Ok(value),
-            Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
+            Err(error) => Err(match crate::refusal(error) {
+                Some(text) => crate::refused(text),
+                None => io::Error::new(error.kind(), error.to_string()),
+            }),
         }
     }
 }
@@ -54,6 +59,7 @@ pub(crate) struct Content<'s> {
     pub(crate) context: &'s LoadContext,
     /// Each branch's hours, as the native recording records them.
     pub(crate) extents: Extents,
+    keyed: Mutex<HashMap<TypeId, Arc<Once<Arc<dyn Any + Send + Sync>>>>>,
     leaders: Once<Arc<unit_leaders::Binding>>,
     supply: Once<supply_health::Configured>,
     styles: Once<style_runs::Configured>,
@@ -74,7 +80,11 @@ pub(crate) struct Content<'s> {
     divisions: Once<crate::products::division_log::Names>,
     navy: Once<Option<Arc<installed_content_core::unit_leader::SubUnits>>>,
     raids: Once<Option<Arc<crate::products::raids::Content>>>,
+    names: Once<Names>,
 }
+
+/// The localisation countries are named in, or why their names are their tags.
+pub(crate) type Names = Result<Arc<installed_content_localisation::localisation::Localisation>, String>;
 
 /// The catalogue land battles name equipment designs from, and why it is missing.
 pub(crate) type Land = (Option<Arc<Catalogue>>, Option<String>);
@@ -85,6 +95,7 @@ impl<'s> Content<'s> {
             source,
             context,
             extents,
+            keyed: Mutex::new(HashMap::new()),
             leaders: Once::new(),
             supply: Once::new(),
             styles: Once::new(),
@@ -105,7 +116,25 @@ impl<'s> Content<'s> {
             divisions: Once::new(),
             navy: Once::new(),
             raids: Once::new(),
+            names: Once::new(),
         }
+    }
+
+    pub(crate) fn keyed<O: dashboard_keyed::Observer>(&self) -> io::Result<Arc<O::Content>> {
+        let cell = self
+            .keyed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(TypeId::of::<O>())
+            .or_insert_with(|| Arc::new(Once::new()))
+            .clone();
+        let content = cell.get(|| {
+            O::content(self.source, self.context.content.as_ref(), &mut || Ok(()))
+                .map(|content| Arc::new(content) as Arc<dyn Any + Send + Sync>)
+        })?;
+        Arc::clone(content)
+            .downcast::<O::Content>()
+            .map_err(|_| io::Error::other("Keyed content type mismatch"))
     }
 
     /// The unit leaders' traits, names and portraits, with what of them could not be read.
@@ -346,6 +375,19 @@ impl Content<'_> {
                     .ok()
                     .and_then(|(content, _)| content),
             )
+        })
+    }
+}
+
+impl Content<'_> {
+    /// The user's game language's localisation of the recorded stack, which the land-owner
+    /// catalogue names countries in, or why it shows their tags.
+    pub(crate) fn names(&self) -> io::Result<&Names> {
+        self.names.get(|| {
+            Ok(dashboard_base::content::name_localisation(
+                self.source,
+                self.context.content.as_ref(),
+            ))
         })
     }
 }

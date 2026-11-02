@@ -1,3 +1,4 @@
+import type { Failure } from './queryError';
 import { contentTitle } from './contentTitles.ts';
 import type { TooltipContent, TooltipRow } from '../charts/tooltip';
 import type { EffectGroup, EffectLine, IdeaHistoryReply, IdeaInfo, ModifierFormat, TraitEffects } from '../generated/dashboard';
@@ -68,6 +69,8 @@ export interface IdeaTooltipSources {
   countryName: (tag: string) => string;
   /** A country's name as recorded at an hour, where the widget knows it. */
   nameAt?: (tag: string, hour: number) => string;
+  countryFailure?: (tag: string) => Failure | undefined;
+  failureAt?: (tag: string, hour: number) => Failure | undefined;
 }
 
 /** Country targets used by an idea or its traits, for dated names and flags. */
@@ -87,7 +90,7 @@ export function ideaTooltipSources(reply: Pick<IdeaHistoryReply, 'modifiers' | '
 /** The sources naming countries as they were at `hour`. */
 export function sourcesAt(sources: IdeaTooltipSources, hour: number | undefined): IdeaTooltipSources {
   const nameAt = sources.nameAt;
-  return hour == null || !nameAt ? sources : { ...sources, countryName: tag => nameAt(tag, hour) };
+  return hour == null || !nameAt ? sources : { ...sources, countryName: tag => nameAt(tag, hour), countryFailure: tag => sources.failureAt?.(tag, hour) };
 }
 
 /** Rows and whether any needs a game feature. */
@@ -131,10 +134,10 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
 }
 
 /** A section: its heading (if any) above its rows, set apart from what came before. */
-function section(heading: string | null, rows: readonly TooltipRow[]): TooltipRow[] {
+function section(heading: string | null, rows: readonly TooltipRow[], detail?: string): TooltipRow[] {
   if (!rows.length && heading == null) return [];
   const all: TooltipRow[] = heading == null ? [...rows] : [{ label: heading, strong: true }, ...rows];
-  return all.map((row, index) => index === 0 ? { ...row, divider: true } : row);
+  return all.map((row, index) => index === 0 ? { ...row, divider: true, ...(detail ? { detail } : {}) } : row);
 }
 
 /** A trait: its name, its modifiers and custom tooltips, then its targeted
@@ -153,7 +156,7 @@ function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section
 function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const lines = modifierRows(group.lines, sources);
   const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))];
-  return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows), featured: lines.featured };
+  return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows, group.target ? sources.countryFailure?.(group.target)?.message : undefined), featured: lines.featured };
 }
 
 /** An equipment bonus: its stats are named and formatted by an engine table the

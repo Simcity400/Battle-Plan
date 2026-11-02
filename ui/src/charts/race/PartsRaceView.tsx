@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import type { ComponentType } from 'react';
 import FollowControl from '../drill/FollowControl';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -11,7 +12,7 @@ import type { IconName } from '../../components/Icons';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { partsRaceAt, partsRaceLineRuns, partsRaceMixBands, partsRaceModel, partsRacePartName, partsRaceEntries, partsRaceSegmentAt,
-  partsRaceTooltips, formatPartsRaceValue, hasPartsRaceValues, rankPartsRace } from '../../dashboard/partsRace';
+  partsRaceTooltips, formatPartsRaceValue, hasPartsRaceValues, rankPartsRace } from '../../dashboard/partsRace.ts';
 import { countryMatchFilter, isMember, MEMBERSHIP_PREPARING, projectResolvedCountries, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { groupNumbers } from '../../dashboard/groupsReply';
@@ -236,8 +237,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable"
       message="Choose another time in widget settings." />;
-    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} />;
+    if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" what="country groups" failure={groupReply.error} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={config.icon} message={resolved.reason} />;
     // A group with no member found yet asks for nothing, so no reply will come.
     if (none) return <NoMembersState reason={none.reason} icon={config.icon} />;
@@ -325,7 +326,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     lineSummaries={undefined} onSummaryView={preparedDrill.onSummaryView} onReachHour={preparedDrill.onReachHour}
     navigation={preparedDrill.navigation}
     playhead={drillAt} countryTags={drillTag ? [drillTag] : []}
-    state={!track || missingPinnedDate ? state : drillReply.error ? <WidgetState kind="error" what="the breakdown" detail={drillReply.error} onRetry={drillReply.retry} />
+    state={!track || missingPinnedDate ? state : drillReply.error ? <WidgetState kind="error" what="the breakdown" failure={drillReply.error} onRetry={drillReply.retry} />
       : originTag && !drillModel ? <WidgetState kind="loading" label={`Loading ${partsLabel.toLowerCase()}…`} /> : undefined}
     parts={historyParts} selectedHour={drillAt} segmentAt={(_, hour) => binding?.data.segmentAt(originTag ?? '', hour) ?? null}
     countryLookHour={(tag, hour) => tag && binding?.tagAt(hour) === tag ? binding.data.readHour(tag, hour) : null}
@@ -371,7 +372,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     </div>}
     onPick={originTag ? hour => { if (currentDetail()) dispatchDrill({ type: 'open', breakdown: originTag, hour, playing: false,
       playhead: null, selection: selection ?? undefined, owner: contextOwner }); } : undefined} />;
-  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} /> : null;
+  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" what="country groups" failure={groupReply.error} onRetry={groupReply.retry} /> : null;
   if (pinned) return <div className="parts-race-drill">{header}{groupNotice}{breakdown}</div>;
   const drillOpen = choices != null || drill.breakdown != null;
   return <div className="parts-race" ref={drillAnchor}>{groupNotice}
@@ -466,7 +467,7 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const [hover, setHover] = useState<{ key: string; hour: number | null }>();
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
-  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: Failure }>();
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const base = (request?.params ?? {}) as Record<string, unknown>;
   const { branchId, tags, ...fields } = base;
@@ -538,7 +539,7 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
       if (controller.signal.aborted || alive.current !== owner) return;
       const hour = (reply as { hour: number | null }).hour;
       setHover({ key, hour }); setKeyboard(previous => ({ owner, hour, revision: (previous?.revision ?? 0) + 1 }));
-    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); })
+    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); })
       .finally(() => pending.current.delete(controller));
   }, [owner, active, enabled]);
   const navigationFailure = useHeldFailure(navigationError?.owner === owner ? navigationError.error : undefined,

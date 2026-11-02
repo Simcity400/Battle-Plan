@@ -16,7 +16,7 @@ const page = (fields: Partial<ProductionSelection> = {}): ProductionSelection =>
   countries: [{ tag: 'A', slot: 1, countryId: 2, segment: '1', total: '5', equipmentTotal: '5', readHour: 1990, observation: OBSERVATION,
     values: [{ key: '7', amount: '5', equipmentAmount: '5' }] }], ...fields });
 
-interface Answer { data?: ProductionSelection; hour?: number; pending: boolean; unavailable?: boolean; error?: string }
+interface Answer { data?: ProductionSelection; hour?: number; pending: boolean; unavailable?: boolean; error?: Error }
 interface Fixture { answer: (request: ProductionSelectionRequest) => Answer; prepared: ProductionSelectionRequest[]; history: unknown[]; view?: CountryRaceViewProps; tag: string | null }
 const host = globalThis as typeof globalThis & { __producedPath?: Fixture };
 const replacements: Record<string, string> = {

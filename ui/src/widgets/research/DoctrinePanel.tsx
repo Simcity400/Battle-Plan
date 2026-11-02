@@ -41,7 +41,7 @@ function DoctrinePanel({ widget, runtime, active, onDiagnostics }: WidgetProps) 
     <summary>Doctrines <span>Choices, mastery and bonuses</span></summary>
     {open && <div className="doctrine-body">
       {!request ? <p role="status">Choose a recorded country and time to see its doctrines.</p>
-        : error ? <WidgetState kind="error" detail={error} onRetry={retry} />
+        : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
         : !data ? <p role="status">Loading doctrines…</p>
         : <>
           {data.folders.map(folder => <section key={folder.ordinal} className="doctrine-folder" aria-label={folder.name}>

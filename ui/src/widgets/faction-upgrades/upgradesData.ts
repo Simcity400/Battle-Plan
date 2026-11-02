@@ -1,3 +1,5 @@
+import type { Failure } from '../../dashboard/queryError';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { FactionMemberUpgradeLane, FactionRulesReply, FactionSelectionRun } from '../../generated/dashboard';
 
@@ -13,7 +15,7 @@ export const selectionName = (run: SelectionRun) => run.name || 'Name unavailabl
 export const memberNameHour = (member: Pick<FactionMemberUpgradeLane, 'runs'>) => member.runs.filter(run => run.token !== null).at(-1)?.lastHour ?? null;
 
 /** What each lane and span is about, for tooltips and menus. */
-export interface LaneInfo { section: string; slot: string; runs: readonly SelectionRun[] }
+export interface LaneInfo { nameFailure?: Failure; section: string; slot: string; runs: readonly SelectionRun[] }
 
 /** Spans for one lane's recorded selections, up to `until` (Live) and dropping runs with no
  * recorded selection; the run holding the shown hour is emphasised. */
@@ -26,16 +28,16 @@ function spans(id: string, runs: readonly SelectionRun[], at: number, until: num
 
 /** Lanes under headings: rules, shared programmes, faction minimum upgrades, members'
  * upgrades and shared doctrines; a lane without any recorded selection is left out. */
-export function upgradeLanes(reply: RulesReply, at: number, until: number | null, options: { endedProgrammes: boolean; groupName: (group: number) => string; country: (tag: string, hour: number) => string }) {
+export function upgradeLanes(reply: RulesReply, at: number, until: number | null, options: { endedProgrammes: boolean; groupName: (group: number) => string; country: (tag: string, hour: number) => ReturnType<CountryLabel> }) {
   const lanes: TimelineLane[] = [], info = new Map<string, LaneInfo>();
-  const section = (key: string, title: string, items: readonly { id: string; label: string; runs: readonly SelectionRun[] }[]) => {
+  const section = (key: string, title: string, items: readonly { id: string; label: string; nameFailure?: Failure; runs: readonly SelectionRun[] }[]) => {
     const drawn = items.map(item => ({ item, spans: spans(item.id, item.runs, at, until) })).filter(entry => entry.spans.length);
     if (!drawn.length) return;
     lanes.push({ id: `heading:${key}`, label: title, spans: [], heading: true, compact: true, singleLine: true });
     for (const { item, spans: shown } of drawn) {
       lanes.push({ id: item.id, label: item.label, spans: shown, compact: true, depth: 1, names: true, icons: false,
         muted: !shown.some(span => span.lastHour >= at) });
-      info.set(item.id, { section: title, slot: item.label, runs: item.runs });
+      info.set(item.id, { section: title, slot: item.label, runs: item.runs, ...(item.nameFailure ? { nameFailure: item.nameFailure } : {}) });
     }
   };
   section('rules', 'Rules', reply.rules.map(rule => ({ id: `rule:${rule.slot}`, label: `Rule ${rule.slot + 1}`, runs: rule.runs })));
@@ -44,7 +46,9 @@ export function upgradeLanes(reply: RulesReply, at: number, until: number | null
     .map(programme => ({ id: `programme:${programme.slot}`, label: `Programme ${programme.slot + 1}`, runs: programme.runs })));
   section('minimums', 'Faction minimum upgrades', reply.minimums.map(minimum => ({ id: `minimum:${minimum.group}`, label: options.groupName(minimum.group), runs: minimum.runs })));
   section('members', 'Member upgrades', reply.members.flatMap(member => { const hour = memberNameHour(member);
-    return hour === null ? [] : [{ id: `member:${member.key}`, label: `${options.country(member.tag, hour)} · ${options.groupName(member.group)}`, runs: member.runs }]; }));
+    if (hour === null) return [];
+    const country = options.country(member.tag, hour);
+    return [{ id: `member:${member.key}`, label: `${country.name} · ${options.groupName(member.group)}`, nameFailure: country.nameFailure, runs: member.runs }]; }));
   section('doctrines', 'Shared doctrines', reply.doctrines.map(doctrine => ({ id: `doctrine:${doctrine.slot}`, label: `Doctrine ${doctrine.slot + 1}`, runs: doctrine.runs })));
   return { lanes, info };
 }

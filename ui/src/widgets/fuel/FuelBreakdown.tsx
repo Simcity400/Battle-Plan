@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
@@ -105,7 +106,7 @@ export default function FuelBreakdown({ reply: suppliedReply, history: suppliedH
     : undefined, [recipientTotal, assigned, reply.gainScale]);
   return <div ref={parity}>
     {/* The accounting's own reads: a failure says so, keeping any history already drawn. */}
-    {prepared.enabled && prepared.error && <WidgetState kind="error" what="fuel accounting" detail={prepared.error} onRetry={prepared.retry} />}
+    {prepared.enabled && prepared.error && <WidgetState kind="error" what="fuel accounting" failure={asFailure(prepared.error)} onRetry={prepared.retry} />}
     {retainedSelection && !selection && <p className="drill-empty">Choose a recipient again.</p>}
     {selection ? <>
       <button type="button" className="button small quiet" onClick={() => { setConsumer(selection.consumer); onSelection(null); }}>All consumer recipients</button>
@@ -117,7 +118,7 @@ export default function FuelBreakdown({ reply: suppliedReply, history: suppliedH
       <button type="button" className="button small quiet" onClick={() => setConsumer(null)}>All fuel sources and consumers</button>
       <strong>{reply.consumerNames[consumer] ?? 'Consumer'}</strong>
       {!basis ? <p className="drill-empty">Breakdown unavailable.</p>
-        : recipients.error ? <WidgetState kind="error" what="recipients" detail={recipients.error} onRetry={recipients.retry} />
+        : recipients.error ? <WidgetState kind="error" what="recipients" failure={recipients.error} onRetry={recipients.retry} />
           : !awards ? <WidgetState kind="loading" label="Loading actual fuel recipients..." /> : <>
             <DrillParts virtual active={chart.active} positiveBars signedShares parts={recipientParts}
               total={Number(recipientTotal) / reply.gainScale} format={String} unattributed={unattributed}
@@ -151,7 +152,7 @@ export default function FuelBreakdown({ reply: suppliedReply, history: suppliedH
         selectedHour={hour} label={`${reply.tag}: incoming lend-lease fuel over time`}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />}
     </>}
-    {selection && recipients.error && <WidgetState kind="error" what="recipients" detail={recipients.error} onRetry={recipients.retry} />}
+    {selection && recipients.error && <WidgetState kind="error" what="recipients" failure={recipients.error} onRetry={recipients.retry} />}
     {selection && !selected && !recipients.error && <p className="drill-empty">{awards ? 'Recipient unavailable.' : 'Loading recipient…'}</p>}
   </div>;
 }
@@ -204,7 +205,7 @@ function FuelRecipientHistory({ runtime, track, reply, selection, part, hour, wi
   return <>
     <DrillParts positiveBars showShares={false} parts={[{ id: selection.key, label: part.recordedName ?? 'Name unavailable',
       ...current }]} format={String} />
-    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="recipient history" detail={reason} onRetry={windows.retry} />)}
+    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="recipient history" failure={reason} onRetry={windows.retry} />)}
     <BreakdownChart {...chart} within={within} series={series} keyHours={runs.map(row => row.firstHour)} selectedHour={hour}
       onViewChange={onViewChange}
       label={`${part.recordedName ?? 'Recipient'}: fuel receipts over time`}

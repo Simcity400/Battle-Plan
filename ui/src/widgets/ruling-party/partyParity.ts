@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
@@ -28,7 +29,7 @@ export function usePartyParity(client: DashboardClient, source: DashboardSource 
   extent: readonly [number, number], label: 'Party history values' | 'Stability party markers', legacy?: PartyHistoryReply, within?: readonly HourSpan[]) {
   const root = useRef<HTMLDivElement>(null), { requested, prepare } = useParityPreparation();
   const key = JSON.stringify([source?.id, source?.revision, branchId, tag, extent, label, within]);
-  const [answer, setAnswer] = useState<{ key: string; client: DashboardClient; model?: ParityList; error?: string }>();
+  const [answer, setAnswer] = useState<{ key: string; client: DashboardClient; model?: ParityList; error?: Failure }>();
   useEffect(() => {
     if (!requested) return;
     if (!source || !branchId || !tag) {setAnswer({key,client,model:{kind:'chart',label,complete:true,total:0,rows:[]}});return;}
@@ -38,7 +39,7 @@ export function usePartyParity(client: DashboardClient, source: DashboardSource 
       if (!reply) return;
       const rows = partyParityRows(reply, extent, label === 'Stability party markers', hour=>isMember(within,hour));
       if (!controller.signal.aborted) setAnswer({ key, client, model: { kind: 'chart', label, complete: true, total: rows.length, rows } });
-    })().catch(error => { if (!controller.signal.aborted) setAnswer({ key, client, error: String(error) }); });
+    })().catch(error => { if (!controller.signal.aborted) setAnswer({ key, client, error: asFailure(error) }); });
     return () => controller.abort();
   }, [requested, key, client, legacy]);
   const current = answer?.key === key && answer.client === client ? answer : undefined;

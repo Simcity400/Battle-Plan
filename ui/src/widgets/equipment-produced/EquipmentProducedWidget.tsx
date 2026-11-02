@@ -1,3 +1,4 @@
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
@@ -25,7 +26,7 @@ import { groupNumbers } from '../../dashboard/groupsReply';
 import type { CountryGroupReply, EquipmentProducedReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition';
 import { countedSince, emptyRace, formatProduced, MEASURES, producedAt, producedModel, producedRequest, producedTooltips,
-  raceEntries, rankProduced, requestParams, totalRuns, typeLabel, validateProducedReply } from './producedData';
+  raceEntries, rankProduced, requestParams, totalRuns, typeLabel, validateProducedReply } from './producedData.ts';
 import type { Measure } from './producedData';
 import { producedDrillData, producedDrillNumbers } from './producedDrill';
 import { COUNTS, countDecimals, mostDelivered, producedCaption, producedWindowUnavailable } from './producedView';
@@ -44,7 +45,7 @@ import { useParityRows } from '../../dashboard/parityRows';
 /** Clients whose dashboard bridge predates the per-day measure and IC count: their
  * widgets show per month instead of per day (the caption says so) until it is rebuilt. */
 const olderBridges = new WeakSet<object>();
-const olderBridge = (error: string | undefined) => !!error && /unknown (variant|field) `(day|count)`/.test(error);
+const olderBridge = (error: Failure | undefined) => !!error && /unknown (variant|field) `(day|count)`/.test(error.message);
 
 /** Equipment each country delivered: one type at a time in units, or the factory IC
  * put into equipment, as a race re-ranked every hour or as lines over time; a country's
@@ -203,9 +204,9 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (error && olderBridge(error) && count === 'ic') return <WidgetState kind="unavailable" message="Counting in IC needs the updated dashboard bridge." />;
-    if (error && !(olderBridge(error) && measure === 'day')) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (defaultError && !mostType) return <WidgetState kind="error" detail={defaultError} onRetry={preparedDefault ? prefixDefault.retry : defaults.retry} />;
-    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if (error && !(olderBridge(error) && measure === 'day')) return <WidgetState kind="error" failure={asFailure(error)} onRetry={retry} />;
+    if (defaultError && !mostType) return <WidgetState kind="error" failure={defaultError} onRetry={preparedDefault ? prefixDefault.retry : defaults.retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" failure={groupReply.error} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
     // A group with no member found yet asks for nothing, so no reply will come.
     if (none) return <NoMembersState reason={none.reason} icon="layers" />;
@@ -253,7 +254,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     useParityRows(parityRoot!, () => preparedView ? preparedProductionParity(endpoint.fullPage, endpoint.parityComplete)
       : historyProductionParity(model, ranked, !!model && state === null), preparedView ? endpoint.parityPreparation : undefined);
   }
-  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} /> : null;
+  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" failure={groupReply.error} onRetry={groupReply.retry} /> : null;
   // A pinned breakdown shows no main view, so the notice sits outside the drill.
   return <>{groupNotice}<CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced" params={drillParams}

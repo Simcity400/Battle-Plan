@@ -1,3 +1,5 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import { failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -97,14 +99,14 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     && runAt(incomingData?.series.find(series => series.tag === tag)?.identities ?? [], originHour) ? actor : null;
   const headerWanted = useMemo(() => countrySlot && headerActor ? [{ tag: headerActor, hour }] : [], [countrySlot, headerActor, hour]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && !!countrySlot);
-  const header = countrySlot && createPortal(<DatedCountryChip label={headerActor ? headerLabels.labelAt(hour)(headerActor) : null} hour={hour}
-    reason={error ? 'Couldn’t load the breakdown.' : (!headerSelection ? 'Saved country unavailable.'
+  const header = countrySlot && createPortal(<DatedCountryChip failure={error} label={headerActor ? headerLabels.labelAt(hour)(headerActor) : null} hour={hour}
+    reason={error ? failureText(error, 'Couldn’t load the breakdown.') : (!headerSelection ? 'Saved country unavailable.'
       : !headerActor ? 'Country unavailable at this time.' : null)} />, countrySlot);
   return <>{header}<CountryRaceView runtime={runtime} track={track} active={active} options={options} view="mix"
     extent={extent} playhead={playhead} moment={hour} slots={1} ranked={[]} lines={[]}
     countryTags={actor ? [actor] : []} parts={parts} partsLabel="Army breakdown"
     segmentAt={(_, at) => tag ? countryValueSegmentAt(model, tag, at) : null} selectedHour={hour}
-    state={error ? <WidgetState kind="error" what={pinned ? undefined : 'the breakdown'} detail={error} onRetry={history.retry} /> : undefined}
+    state={error ? <WidgetState kind="error" what={pinned ? undefined : 'the breakdown'} failure={error} onRetry={history.retry} /> : undefined}
     mix={tag ? { tag: actor ?? tag, compactStack: true, bands: bands ?? [], parts: parts.map((part, index) => ({ ...part,
       value: part.id === '' ? at?.residualText ?? 'Not known' : at?.parts[index]?.text ?? 'Not known' })) } : null}
     beforeChart={<div className="parts-race-details">
@@ -121,7 +123,7 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
       {!!at?.missing.length && <p className="drill-empty">Not recorded: {at.missing.join(', ')}.</p>}
       {actor && <section className="army-template-roster" aria-label="Division template roster">
         <h3>Division templates</h3>
-        {roster.error ? <WidgetState kind="error" what="the template roster" detail={roster.error} onRetry={roster.retry} />
+        {roster.error ? <WidgetState kind="error" what="the template roster" failure={roster.error} onRetry={roster.retry} />
           : roster.data?.templateSections === undefined ? <WidgetState kind="loading" label="Loading templates…" />
             : roster.data.templateSections.map((section, index) => <pre key={index}>{section}</pre>)}
       </section>}
@@ -133,7 +135,7 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     tooltip={(_, atHour, name, palette, labelAt) => {
       const actor = countryDrillTagAt(identitySpans, atHour);
       const value = actor && model && tag ? armyDrillValue(model, tag, atHour, measure) : null;
-      return value ? [{ title: `${dayLabel(atHour)} · ${actor ? labelAt(atHour)(actor).name : name}`, rows: [
+      return value ? [{ ...countryNameDetails(actor ? labelAt(atHour)(actor) : undefined), title: `${dayLabel(atHour)} · ${actor ? labelAt(atHour)(actor).name : name}`, rows: [
         ...value.parts.map(part => ({ label: part.label, value: part.text, swatch: palette.get(part.id) })),
         { label: ARMY_REMAINDER.label, value: value.residualText, swatch: palette.get('') },
         { label: measureName(measure), value: value.totalText, strong: true, divider: true },

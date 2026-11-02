@@ -1,3 +1,6 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import type { TooltipRow } from '../../charts/tooltip';
 import type { ConvoyHealthReply, EconomyRun } from '../../generated/dashboard';
 import type { HeatPeriod, HeatRow } from '../../charts/heat/layout';
 import { object } from '../../dashboard/validation.ts';
@@ -106,13 +109,14 @@ export const periodPending = (period: HeatPeriod, pending: Gaps) =>
 export interface ConvoyRow {
   id: string;
   label: string;
+  nameDetail?: string;
   kind: 'region' | 'deal' | 'lease';
   /** Fixed5 efficiency at a read; null where none was read. */
   valueAt: (hour: number) => bigint | null;
   /** Unknown at a read: the row's table was not read complete then, or (for
    * lend-lease receipts) no numeric efficiency is recorded. */
   unknownAt: (hour: number) => boolean;
-  detail: (hour: number) => { label: string; value: string }[];
+  detail: (hour: number) => TooltipRow[];
   /** The row's own history for its drill: percentages, or convoy counts. */
   lines: { label: string; runs: readonly EconomyRun[] }[];
   unit: 'percent' | 'count';
@@ -152,7 +156,7 @@ export function exportersAt(reply: ConvoyHealthReply, hour: number): { hour: num
 /** Whether table `index` (regional, deals, clients) was read complete at `hour`. */
 export const tableKnown = (reply: ConvoyHealthReply, index: number, hour: number) => runAt(reply.known[index] ?? [], hour) !== null;
 
-export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: string | null, hour: number) => string }): ConvoyRow[] {
+export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: string | null, hour: number) => ReturnType<CountryLabel> }): ConvoyRow[] {
   const resources = new Map(reply.resources.map(resource => [String(resource.id), resource.name ?? 'Resource name unavailable']));
   if (reply.view === 'regions') return reply.regions.map(region => ({ id: `region:${region.region}`, kind: 'region' as const,
     label: region.name ?? `Sea region ${region.region}`, valueAt: hour => big(region.efficiency, hour),
@@ -165,7 +169,7 @@ export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: str
     // The exporter is named at its latest read, the date the widget asks for.
     const exporterName = names.country(exporter, latest?.[1] ?? 0);
     return { id: `deal:${deal.id}`, kind: 'deal' as const,
-      label: `${exporterName} · ${resource ? resources.get(resource[2]) ?? 'Resource name unavailable' : 'Resource name unavailable'}`,
+      nameDetail: exporterName.nameFailure?.message, label: `${exporterName.name} · ${resource ? resources.get(resource[2]) ?? 'Resource name unavailable' : 'Resource name unavailable'}`,
       valueAt: hour => big(deal.efficiency, hour), unknownAt: hour => !tableKnown(reply, 1, hour),
       lines: [{ label: 'Trade efficiency', runs: deal.efficiency }, { label: 'First factor', runs: deal.factors[0] ?? [] }, { label: 'Second factor', runs: deal.factors[1] ?? [] }],
       unit: 'percent' as const,
@@ -175,7 +179,8 @@ export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: str
         const [a, b] = deal.factors.map(runs => big(runs, hour));
         // The exporter as it was at this read, not as it was last read.
         const dated = exporterAt(reply, deal.exporter, hour);
-        return [{ label: 'Exporter', value: dated ? names.country(dated, hour) : 'Country name unavailable' },
+        const country = names.country(dated, hour);
+        return [{ ...countryNameDetails(country), label: 'Exporter', value: country.name },
           { label: 'Trade efficiency', value: percent(value, reply.scale) },
           ...a !== null && b !== null ? [{ label: 'Factors', value: `${percent(a, reply.scale)} × ${percent(b, reply.scale)}` }] : [],
           ...convoysText(deal.convoys, hour)];
@@ -183,8 +188,9 @@ export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: str
   });
   const leases: ConvoyRow[] = reply.leases.map(lease => {
     const latest = lease.giver.at(-1);
+    const country = names.country(latest ? tagAt(reply.holders[latest[2]], latest[1]) : null, latest?.[1] ?? 0);
     return { id: `lease:${lease.handle}`, kind: 'lease' as const,
-      label: `Lend-lease from ${names.country(latest ? tagAt(reply.holders[latest[2]], latest[1]) : null, latest?.[1] ?? 0)}`,
+      nameDetail: country.nameFailure?.message, label: `Lend-lease from ${country.name}`,
       // Every recorded client has a route flag, even while its giver is unidentified.
       valueAt: () => null, unknownAt: hour => runAt(lease.bad, hour) !== null || !tableKnown(reply, 2, hour),
       lines: [{ label: 'Convoys assigned', runs: lease.convoys[0] ?? [] }, { label: 'Convoys required', runs: lease.convoys[1] ?? [] }], unit: 'count' as const,

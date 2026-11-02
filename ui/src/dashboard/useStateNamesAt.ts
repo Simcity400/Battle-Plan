@@ -1,8 +1,9 @@
+import { failureText } from './queryError.ts';
 import { useCallback, useMemo } from 'react';
 import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
 import type { FactSpec } from './countryFacts';
-import { useCountryFactsAt } from './countryNamesAt';
+import { useCountryFactsRead } from './countryNamesAt.ts';
 import { stateNameKey, stateNameRequestOptions, validateStateNamesReply } from './stateNamesData.ts';
 import type { StateAt, StateLabel } from './stateNamesData';
 
@@ -14,6 +15,12 @@ const NAMES: FactSpec<StateLabel> = {
 };
 export function useStateNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly StateAt[], active: boolean) {
   const requests = useMemo(() => wanted.map(({ hour, state }) => ({ hour, tag: String(state) })), [wanted]);
-  const names = useCountryFactsAt(client, track, requests, active, NAMES, stateNameRequestOptions.maxHours);
-  return useCallback((hour: number, state: number) => names.get(stateNameKey(hour, state)) ?? { state, name: null, missing: 'State name not recorded' }, [names]);
+  const names = useCountryFactsRead(client, track, requests, active, NAMES, stateNameRequestOptions.maxHours);
+  const requested = useMemo(() => new Set(wanted.map(item => stateNameKey(item.hour, item.state))), [wanted]);
+  return useCallback((hour: number, state: number): StateLabel => {
+    const key = stateNameKey(hour, state), found = names.get(key);
+    const read = found === undefined && (!active || !track || !requested.has(key)) ? null : found;
+    return read instanceof Error ? { state, name: failureText(read, 'Couldn’t load state name.'), missing: failureText(read, 'Couldn’t load state name.'), failure: read }
+      : read ?? { state, name: null, missing: read === undefined ? 'Loading state name…' : 'State name not recorded' };
+  }, [names, requested, active, track]);
 }

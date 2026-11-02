@@ -139,7 +139,8 @@ export function projectCountryHour(data: SpecialProjectsReply, hour: number, mem
 
 export function projectHeading(id: string, label: ReturnType<CountryLabel>, message: string): TimelineLane {
   return { id, label: message, identity: { label: label.name, countryFlag: {
-    flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason,
+    ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}),
+    flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason, ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}),
   } }, spans: [], heading: true };
 }
 /** The scientist as rows name them; the last-assignment date belongs in the tooltip. */

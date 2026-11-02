@@ -1,6 +1,10 @@
+import { type Failure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { LogPage, LogRow } from '../../charts/log/logData';
 import { stableLogPages } from '../../charts/log/logPages';
+import { playbackRows, retainPlaybackMap } from '../../charts/playbackIntervals.ts';
+import type { PlaybackBounds } from '../../charts/playbackIntervals';
+import type { RecordingBreak } from './scriptOccurrences';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
@@ -14,6 +18,7 @@ import type { ScriptPage } from './scriptOccurrences';
  * `cards` counts its prepared cards before the hour's visibility cut. */
 interface PageInfo { cursor: string | null; start: number; end: number; count: number; tally: number | null; final: boolean; cards: number | null }
 const NO_WARNINGS: string[] = [];
+const NO_ROWS: ReadonlyArray<LogRow<never>> = [];
 const PAGE_SIZE = 256;
 /** The page a new hour asks first, as the event feed's (`FIRST_PAGE_SIZE` there). */
 const FIRST_PAGE_SIZE = 64;
@@ -28,8 +33,9 @@ const recount = (info: PageInfo): PageInfo => ({ ...info, count: info.cards ?? i
  * `tally` counts a page's shown cards for the header summary. */
 export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean, hour: number | null,
   product: 'event-choices' | 'decisions', kinds: readonly EventFeedKind[], firstHour: number | null, filterKey: string,
-  prepare: (reply: ScriptOccurrenceReply) => LogRow<T>[], at: (row: LogRow<T>, hour: number) => LogRow<T> | null,
-  tally: (rows: readonly LogRow<T>[]) => number) {
+  prepare: (reply: ScriptOccurrenceReply) => ReadonlyArray<LogRow<T>>, at: (row: LogRow<T>, hour: number) => LogRow<T> | null,
+  tally: (rows: readonly LogRow<T>[]) => number, breaks: ReadonlyArray<RecordingBreak>,
+  bounds: (rows: ReadonlyArray<LogRow<T>>, hour: number) => PlaybackBounds) {
   const content = useContentRevision(runtime.client);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
   const request = (cursor: string | null, lastHour: number | null, pageSize = PAGE_SIZE) => ({ sourceId: track!.source.id, revision: track!.source.revision, product,
@@ -45,7 +51,7 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, prepare }), [runtime.client, boundsKey, prepare]);
   const current = useRef(owner); current.current = owner;
   // `shown` is the visibility cut the pages were counted under.
-  const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string; shown?: typeof at }>({ owner, pages: [] });
+  const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: Failure; shown?: typeof at }>({ owner, pages: [] });
   const initial: PageInfo = { cursor: null, start: Math.max(firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0,
     count: FIRST_PAGE_SIZE, tally: null, final: false, cards: null };
   const kept = chain.owner === owner && chain.pages.length ? chain.pages : null;
@@ -60,11 +66,16 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   const prepared = useMemo(() => new Map([...loaded].map(([index, page]) => [index, prepare(page.reply)])), [loaded, prepare]);
   // Cards stop where the shown pages were read, which a page kept while the next hour loads bounds.
   const cut = hour === null ? null : read === null ? hour : Math.min(read, hour);
-  const rendered = useMemo(() => new Map([...prepared].map(([index, rows]) => [index, cut === null ? [] : rows.flatMap(row => {
-    const shown = at(row, cut);
-    // A card read in two pages stays two log rows; its occurrence ID is unchanged.
-    return shown ? [{ ...shown, key: JSON.stringify([index, row.key]), id: JSON.stringify([index, row.id ?? row.key]) }] : [];
-  })])), [prepared, at, cut]);
+  const playbacks = useMemo(() => new Map([...prepared].map(([index, rows]) => {
+    const changes = [...breaks.map(span => span.firstHour), ...loaded.get(index)!.reply.occurrences.flatMap(occurrence => occurrence.edges.map(edge => edge.row.readHour))];
+    return [index, playbackRows<LogRow<T>>(changes, hour => rows.flatMap(row => {
+      const shown = at(row, hour);
+      return shown ? [{ ...shown, key: JSON.stringify([index, row.key]), id: JSON.stringify([index, row.id ?? row.key]) }] : [];
+    }), bounds)] as const;
+  })), [prepared, loaded, at, breaks, bounds]);
+  const renderedBefore = useRef<ReadonlyMap<number, ReadonlyArray<LogRow<T>>>>(new Map());
+  const rendered = useMemo(() => renderedBefore.current = retainPlaybackMap(renderedBefore.current,
+    new Map([...playbacks].map(([index, playback]) => [index, cut === null ? NO_ROWS : playback.at(cut)]))), [playbacks, cut]);
   useEffect(() => {
     if (!active || !first.data) return;
     setChain(previous => {
@@ -72,13 +83,13 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
       const same = previous.owner === owner && previous.pages.length > 0;
       const pages = !same ? [initial] : previous.shown === at ? [...previous.pages] : previous.pages.map(recount);
       let changed = !same || previous.shown !== at;
-      let error: string | undefined;
+      let error: Failure | undefined;
       for (const [index, page] of loaded) {
         const rows = rendered.get(index)!;
         const info = pages[index];
         if (!info) continue;
         if (page.nextCursor !== null && pages.slice(0, index + 1).some(info => info.cursor === page.nextCursor)) {
-          error = 'The occurrence list continuation made no progress.';
+          error = new Error('The occurrence list continuation made no progress.');
           break;
         }
         const hours = page.reply.occurrences.map(occurrence => occurrence.edges[0].row.hour);
@@ -112,6 +123,6 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   const counted = chain.owner === owner && descriptors.at(-1)!.final && descriptors.every(info => info.tally !== null);
   const total = counted ? descriptors.reduce((sum, info) => sum + info.tally!, 0) : null;
   const replies = useMemo(() => [...loaded.values()].map(page => page.reply), [loaded]);
-  return { data: first.data?.reply, prefix: first.data?.prefix ?? null, error: first.error ?? (chain.owner === owner ? chain.error : undefined), retry,
+  return { data: first.data?.reply, shownHour: cut, prefix: first.data?.prefix ?? null, error: first.error ?? (chain.owner === owner ? chain.error : undefined), retry,
     identity, pages, total, replies, warnings: first.data?.reply.warnings ?? NO_WARNINGS, onWantedPages, errors: chunks.errors, retryPages: chunks.retry };
 }

@@ -1,3 +1,4 @@
+import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useMemo } from 'react';
 import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -23,6 +24,6 @@ function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionC
   const { data } = useReachedProduct(runtime.client, track?.source, request, JSON.stringify([track?.branch.id, tags]), true, validateDivisionCareers);
   const wanted = useMemo(() => data ? [...new Set(data.divisions.flatMap(row => row.tag ? [row.tag] : []))].map(tag => ({ hour: data.hour, tag })) : [], [data]);
   const names = useCountryNamesAt(runtime.client, track, wanted, true);
-  return { division: data ? divisionChoices(data, track!.source.metadata.campaignKey, tag => names.get(nameKey(data.hour, tag)) ?? 'Country name unavailable') : [] };
+  return { division: data ? divisionChoices(data, track!.source.metadata.campaignKey, tag => nameReadMetadata(names.get(nameKey(data.hour, tag)))) : [] };
 }
 export default { render: ServiceRecordWidget, useOptionChoices: useDivisionChoices } satisfies WidgetRenderer;

@@ -1,7 +1,11 @@
 import type { ChordData } from './layout.ts';
 
-/** Validate exact identities and numeric geometry before motion changes. */
+// Chord targets are immutable; motion owns separate geometry.
+const checked = new WeakMap<ChordData, number>();
+
 export function checkChord(data: ChordData): number {
+  const held = checked.get(data);
+  if (held !== undefined) return held;
   const nodes = new Set<string>(), flows = new Set<string>();
   for (const node of data.nodes) {
     if (nodes.has(node.id)) throw new Error(`Duplicate chord node: ${node.id}`);
@@ -16,5 +20,6 @@ export function checkChord(data: ChordData): number {
     total += flow.value * 2;
   }
   if (!Number.isFinite(total)) throw new Error('Chord total exceeds numeric geometry range');
+  checked.set(data, total);
   return total;
 }

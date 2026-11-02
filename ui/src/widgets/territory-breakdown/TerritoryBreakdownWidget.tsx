@@ -91,11 +91,11 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   }, [product.data, groups.data, colours.warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign to see its territory breakdown." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
-  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (product.error) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
+  const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!product.data || !groups.data || colours.loading) return <>{groupFailure}<WidgetState kind="loading" label="Loading territory breakdown..." /></>;
-  if (colours.error) return <>{groupFailure}<WidgetState kind="error" what="faction colours" detail={colours.error} /></>;
+  if (colours.error) return <>{groupFailure}<WidgetState kind="error" what="faction colours" failure={colours.error} /></>;
   if (options.growth === 'fill' && endFilter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={endFilter.reason} /></>;
   if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
   if (measure === 'area' && product.data.areaReason) return <>{groupFailure}<WidgetState kind="unavailable" message="Map area is unavailable." /></>;

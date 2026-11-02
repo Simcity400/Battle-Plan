@@ -438,7 +438,7 @@ test('missing and loading viewpoints have honest subtitles and availability uses
   assert.equal(warsReplyState(null, null), 'loading');
   assert.equal(warsReplyState({ available: false }, null), 'unavailable');
   assert.equal(warsReplyState({ available: true }, null), 'ready');
-  assert.equal(warsReplyState(null, 'Not in this recording: corrupt frame'), 'error');
+  assert.equal(warsReplyState(null, new Error('Not in this recording: corrupt frame')), 'error');
 });
 
 test('actual Wars participant hover preserves completed native UI-word and empty names', async () => {

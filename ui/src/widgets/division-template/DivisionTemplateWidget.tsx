@@ -42,7 +42,9 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
-  const countryName = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryName = countryLabel.name;
+  const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
   const countFor = options.countFor === 'host' ? 'host' : 'owner';
   const request = track && window && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'division-templates',
@@ -100,24 +102,24 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see templates." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its templates." />;
-  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
+  else if (country.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (!tag) main = <WidgetState kind="loading" label="Loading templates…" />;
-  else if (state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading templates…" />;
-  else if (data.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
-  else if (!rows.length) main = <WidgetState kind="empty" message={`${countryName} has no division templates at this date.`} />;
+  else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
+  else if (!rows.length) main = <WidgetState kind="empty" message={nameDetail ? 'No division templates at this date.' : `${countryName} has no division templates at this date.`} detail={nameDetail} />;
   else main = <Table label="Division templates" rows={rows} columns={columns} rowKey={rowKey} tree={TREE}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true}
     rankMarkers={false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     onRowClick={snapshot ? open : undefined} tooltip={tooltip} hoursPerSecond={hoursPerSecond} />;
   const draw = snapshot;
   const pickedHour = drillHour(drill, Math.floor(playback) + (track?.axisOffset ?? 0)) ?? hour;
-  return <div ref={anchor} className="division-template">{pill}
+  return <div ref={anchor} className="division-template" data-detail={countryLabel.nameFailure?.message}>{pill}
     {/* Outside the drill, so an open breakdown never hides a later failure. */}
-    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
+    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!draw && !!opened}
       title="Division designer" day={formatDateTime(pickedHour)} following={drill.follow} canFollow anchor={anchor}
       onClose={() => { dispatch({ type: 'close' }); setOpened(null); setWindowLines(NO_LINES); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>

@@ -1,9 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { raidPlayback } from './raidLogData.ts';
 import { syntheticRaidRun, syntheticRaids } from '../../dashboard/raids.fixtures.ts';
 import { raidDescription, raidLogRows, raidLogTypes, raidPreparation, raidStatus, raidTooltip } from './raidLogData.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
+
+test('raid playback retains settled rows while preparation, observations and gaps update the same output', () => {
+  const data = deepFreeze(syntheticRaids()), matches = () => true, playback = raidPlayback(data, [], matches, null);
+  for (const hour of [99, 100, 101, 102, 103, 104, 105, 106, 110, 100]) {
+    const actual = playback.at(hour), expected = raidLogRows(data, hour, [], matches, null);
+    assert.deepEqual(actual.map(row => ({ ...row, item: { ...row.item, hour } })), expected);
+    assert.deepEqual(actual.map(row => raidDescription(data, row.item, 'A', 'B')), expected.map(row => raidDescription(data, row.item, 'A', 'B')));
+    assert.deepEqual(actual.map(row => raidTooltip(data, row.item, 'A', 'B')), expected.map(row => raidTooltip(data, row.item, 'A', 'B')));
+  }
+  assert.notEqual(playback.at(100), playback.at(101));
+  assert.equal(playback.at(103), playback.at(105));
+  assert.equal(playback.at(106), playback.at(110));
+  const episode = data.episodes[0], constant = deepFreeze({ ...data, episodes: [{ ...episode,
+    runs: [syntheticRaidRun(100, 105)], preparation: [[100, 105, 7, 0] as [number, number, number, number]] }] });
+  const preparing = raidPlayback(constant, [], matches, null);
+  assert.equal(preparing.at(100), preparing.at(105));
+  assert.notEqual(preparing.at(105), preparing.at(106));
+});
 
 test('raid log country choices retain every one of 5000 recorded tags', () => {
   const tags = Array.from({ length: 5000 }, (_, index) => `MOD ${index}`);

@@ -1,3 +1,5 @@
+import { failureText } from '../../dashboard/queryError.ts';
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -66,7 +68,7 @@ export function useResourceBalance(widget: WidgetSpec, runtime: WidgetRuntime, a
   const [viewport, setViewport] = useState<{ key: string; from: number; to: number; width: number; resources: readonly number[] }>();
   const [hover, setHover] = useState<{ key: string; hour: number | null }>();
   const [keyboard, setKeyboard] = useState<{ key: string; hour: number | null; revision: number }>();
-  const [navigationError, setNavigationError] = useState<{ key: string; error: string }>();
+  const [navigationError, setNavigationError] = useState<{ key: string; error: Failure }>();
   const navigation = useRef<AbortController | null>(null);
   useEffect(() => () => navigation.current?.abort(), [key, active]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
@@ -110,7 +112,7 @@ export function useResourceBalance(widget: WidgetSpec, runtime: WidgetRuntime, a
       op: 'navigate', within, key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal)
       .then(value => { if (!controller.signal.aborted) { const hour = (value as { hour: number | null }).hour;
         onHover(hour); setKeyboard(before => ({ key, hour, revision: (before?.revision ?? 0) + 1 })); } })
-      .catch(error => { if (!controller.signal.aborted) setNavigationError({ key, error: String(error) }); });
+      .catch(error => { if (!controller.signal.aborted) setNavigationError({ key, error: asFailure(error) }); });
   }, [runtime.client, track, key, active, tag, within, onHover]);
   const retained = useMemo(() => new NumericReply<PreparedResourceReply>(), [runtime.client]);
   const numbers = retained.update(JSON.stringify([key, within]), product.data, resourceNumbers);
@@ -178,7 +180,8 @@ export function useResourceCountry(selection: ResourceCountrySelection | null, r
   // An identity at its original hour, or the group's members, still being prepared are not known yet: not unknown.
   const preparing = !!history && !spans && !!selection && !!track && (!groupsKnownAt(history, track.branch.firstHour + selection.originOffset)
     || !!members && !members.known(track.branch.firstHour, track.branch.lastHour));
-  const reason = (history ? undefined : catalogue.error) ?? product.error ?? members?.reason ?? (!history ? 'Loading the selected country identity…'
+  const failure = (history ? undefined : catalogue.error) ?? product.error;
+  const reason = (failure ? failureText(failure, 'Couldn’t load the selected country.') : undefined) ?? members?.reason ?? (!history ? 'Loading the selected country identity…'
     : !spans ? preparing ? MEMBERSHIP_PREPARING : 'The selected country identity is unknown or conflicting at its original choice.'
       : !data ? 'Loading the selected resource history…' : null);
   return { data, numbers, spans, reason, preparing, error: (history ? undefined : catalogue.error) ?? product.error ?? points.error,

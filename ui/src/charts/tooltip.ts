@@ -3,6 +3,7 @@
  * as markup. The layer renders it above every widget. */
 
 export interface TooltipRow {
+  detail?: string;
   label: string;
   /** Internal content identity, available on hover without becoming the label. */
   lookupKey?: string;
@@ -12,7 +13,7 @@ export interface TooltipRow {
   /** A small artwork image before the label. */
   icon?: string;
   /** Present for a recorded country, including a missing flag at its supplying hour. */
-  countryFlag?: { flag?: string; flagReason?: string; flagPending?: boolean };
+  countryFlag?: { nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
   /** Indents the row under the one above, as a part of it. */
   indent?: boolean;
   /** `neutral` is the game's yellow, for a value neither good nor bad. */
@@ -27,6 +28,7 @@ export interface TooltipRow {
   omittedRows?: number;
 }
 export interface TooltipContent {
+  detail?: string;
   title: string; rows: readonly TooltipRow[]; note?: string;
   /** Keep every row reachable through the measured scrolling layer. */
   scrollable?: boolean;
@@ -41,6 +43,14 @@ export interface TooltipContent {
    * window (`fitTooltip`): the content in full. Else the content itself is read. */
   spoken?: string;
 }
+export function countryNameDetails(...countries: readonly ({ name?: string; nameFailure?: Error; nameDetail?: string } | null | undefined)[]): Pick<TooltipContent, 'detail'> {
+  const messages = new Set(countries.flatMap(country => {
+    const message = country?.nameFailure?.message ?? country?.nameDetail;
+    return message === undefined ? [] : [message];
+  }));
+  return messages.size ? { detail: [...messages].join('\n') } : {};
+}
+
 export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number }
 
 /** The content as one line of text, for assistive technology (the tooltip layer is

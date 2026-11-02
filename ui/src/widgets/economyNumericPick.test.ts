@@ -34,7 +34,7 @@ const group: CountryGroupReply = { branchId: '1', humans: [], wars: [], warStart
 
 test('economy and shared race picks keep their mounted numeric owner through content and playback refresh', async () => {
   assert.equal(validateFuelReply(fuel), fuel);
-  const state = { product: {} as { data?: unknown; error?: string; retry: () => void }, groups: {} as { data?: CountryGroupReply; retry: () => void }, charts: [] as TimeChartProps[],
+  const state = { product: {} as { data?: unknown; error?: Error; retry: () => void }, groups: {} as { data?: CountryGroupReply; retry: () => void }, charts: [] as TimeChartProps[],
     effects: [] as (() => unknown)[], memos: new Map<string, { deps: readonly unknown[]; value: unknown }[]>(),
     cursors: new Map<string, number>(), diagnostics: [] as string[], name: '' };
   const host = globalThis as typeof globalThis & { __economyNumeric?: typeof state;
@@ -155,7 +155,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
           runtime: { tracks: [track], client: {}, clock: { getHour: () => 100, getSnapshot: () => ({ playing: false, hoursPerSecond: 24 }) } },
           active: true, onDiagnostics: (notes: string[]) => { state.diagnostics = notes; } } as unknown as WidgetProps;
         let mounted: ChartPicks | undefined;
-        const render = (data?: unknown, error?: string) => {
+        const render = (data?: unknown, error?: Error) => {
           state.product = { data, error, retry() {} }; state.groups = { data: data === undefined ? undefined : groupReply, retry() {} };
           state.charts = []; state.effects = []; state.cursors.clear();
           const html = renderToStaticMarkup(createElement(Widget, props));
@@ -210,7 +210,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
           render(changed);
           assert.equal(canvas.pick(beforeMembership, 50), false);
         }
-        assert.match(render(undefined, 'Content failed').html, /Content failed/);
+        assert.match(render(undefined, new Error('Content failed')).html, /Content failed/);
         assert.equal(mounted, undefined);
         track.source.id = 'other source';
         assert.equal(render().chart, undefined);

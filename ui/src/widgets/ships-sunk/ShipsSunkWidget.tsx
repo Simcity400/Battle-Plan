@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
@@ -121,8 +122,8 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   }, [data, history.data, groups.data, titles.data, titles.error, titleRows.length, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its ships sunk log." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading ships sunk…" /></>;
   if (!data.available) return <>{groupFailure}{manifest.data?.pending?.length ? <PreparedLogCoverage coverage={manifest.data.coverage} /> : <WidgetState kind="unavailable" message="Not in this recording" />}</>;
@@ -131,7 +132,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
     return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
 
   const pageError = history.errors.get(browseIndex);
-  if (pageError) return <>{groupFailure}<WidgetState kind="error" detail={pageError} onRetry={history.retry} /></>;
+  if (pageError) return <>{groupFailure}<WidgetState kind="error" failure={pageError} onRetry={history.retry} /></>;
   if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading ships sunk…" /></>;
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
@@ -144,12 +145,12 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
     const { victim, attacker } = labels(row);
     const battle = shipBattleLabel(row, titleByRow.get(logRow.key));
     const attackerFlag = row.attacker === null ? null : <CountryFlagUrl className="log-flag"
-      url={attacker.flag} reason={attacker.flagReason} pending={attacker.flagPending} />;
+      url={attacker.flag} detail={attacker.flagDetail} reason={attacker.flagReason} pending={attacker.flagPending} />;
     return <>
       <span className="log-art" aria-hidden="true">{type.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="anchor" />}</span>
       <span className="log-text">
         <b>{shipName(row)}</b>, {shipClassName(data, row)}{' · '}
-        {row.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b>{', '}
+        {row.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} detail={victim.flagDetail} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b>{', '}
         {row.cause === 'cause' ? <>lost to {row.attributionName ?? 'Not recorded'}{row.attacker !== null && <>; attributed to {attackerFlag}<b>{attacker.name}</b></>}</>
           : row.assistedKill || row.cause === 'assisted' ? <>sunk with assistance from {attackerFlag}<b>{attacker.name}</b></>
             : <>sunk by {attackerFlag}<b>{attacker.name}</b></>}
@@ -173,7 +174,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
       {...(import.meta.env.MODE === 'parity' ? { paritySemantic } : {})}
       columns={COLUMNS} renderRow={renderRow} anchorRows onVisible={onVisible}
       describe={row => { const named = labels(row.item); return shipDescription(row.item.page, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key)); }}
-      tooltip={row => { const named = labels(row.item); return [shipTooltip(row.item.page, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key), titles.error)]; }}
+      tooltip={row => { const named = labels(row.item); return [{ ...shipTooltip(row.item.page, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key), titles.error), ...countryNameDetails(named.victim, named.attacker) }]; }}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={match.known(from ?? track.branch.firstHour, shownHour ?? hour) ? "No ships sunk recorded for these settings." : MEMBERSHIP_PREPARING} />
   </div>;
 }

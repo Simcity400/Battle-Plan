@@ -1,3 +1,4 @@
+import { type Failure } from '../../dashboard/queryError.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveWindow } from '../../dashboard/model';
@@ -18,7 +19,7 @@ const validate = (value: unknown): readonly AirTheatre[] | null => {
 
 /** Theatre membership at a reached hour: undefined while loading, null when the recording
  * cannot establish it then. `hour` is the hour the held `theatres` answer. */
-export interface AirTheatres { theatres?: readonly AirTheatre[] | null; hour?: number; error?: string; retry: () => void }
+export interface AirTheatres { theatres?: readonly AirTheatre[] | null; hour?: number; error?: Failure; retry: () => void }
 
 /** The air theatres and their regions at `hour`, from the product's one-hour view. Membership
  * follows the wings' mission regions, which change at any hour, so it is read at the hour

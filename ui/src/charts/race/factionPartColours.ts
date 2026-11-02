@@ -22,11 +22,11 @@ export function factionColourPlan(model: FactionParts, branch: RecordedBranch, h
 
 /** A missing recorded colour stays neutral. The shared correction waits for the
  * entire census to answer so chunk arrival order cannot change a holder's colour. */
-export function factionColourKey(plan: ReturnType<typeof factionColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | symbol>): string | null {
+export function factionColourKey(plan: ReturnType<typeof factionColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | Error>): string | null {
   if (plan.wanted.some(sample => !styles.has(nameKey(sample.hour, sample.tag)))) return null;
   return JSON.stringify([...plan.selection].map(([id, sample]) => {
     const style = sample && styles.get(nameKey(sample.hour, sample.tag));
-    return [id, typeof style === 'object' && style != null ? style.color : null];
+    return [id, style != null && !(style instanceof Error) ? style.color : null];
   }));
 }
 
@@ -39,11 +39,11 @@ export function factionCountryColours(key: string, surface: string, fixed: boole
 }
 
 export function heldFactionColours(colours: ReadonlyMap<string, string>, before: ReturnType<typeof factionColourPlan>['selection'],
-  after: ReturnType<typeof factionColourPlan>['selection'], styles: ReadonlyMap<string, CountryStyle | null | symbol>): Map<string, string> {
+  after: ReturnType<typeof factionColourPlan>['selection'], styles: ReadonlyMap<string, CountryStyle | null | Error>): Map<string, string> {
   return new Map([...colours].filter(([id]) => {
     const old = before.get(id); const next = after.get(id);
     const style = next && styles.get(nameKey(next.hour, next.tag));
     return old != null && next != null && old.tag === next.tag && old.stretch === next.stretch
-      && (style === undefined || typeof style === 'object' && style != null && style.color != null);
+      && (style === undefined || style != null && !(style instanceof Error) && style.color != null);
   }));
 }

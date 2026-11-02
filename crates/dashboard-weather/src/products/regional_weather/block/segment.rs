@@ -1,16 +1,17 @@
 //! Regional weather's keeper on a native recording's segment: at each hour the observer
-//! observes, the temperature operands and the regions' scalars, read only where the hour
-//! changed them. The observer's regions are always those of the last hour it observed, which
-//! are the hour before's wherever a table kept its status, so changed regions apply to them.
+//! observes, the region means its own derivation of the hour's temperatures changed, and the
+//! regions' scalars, read only where the hour changed them. The observer's regions are always
+//! those of the last hour it observed, which are the hour before's wherever a table kept its
+//! status, so changed regions apply to them.
 
 use super::super::admission;
+use super::super::temperature::{Derived, Deriving};
 use super::{Observer, Regional, regional};
 use dashboard_base::prepared::prepass::HeldBytes;
 use dashboard_keyed::{Delta, Values, block::Operands, delta::Names, native, segment::Touched};
 use replay_data::{
     format::FormatVersion,
     rows::{TableId, tables},
-    temperature,
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::btree_map::Entry, io};
@@ -31,14 +32,14 @@ enum Regions {
 
 #[derive(Default)]
 pub(super) struct Keeper {
-    /// The temperature operands of the last hour kept, where its table was complete.
-    temperature: Option<temperature::Input>,
+    temperature: Deriving,
 }
 
 struct Kept {
     branch: u64,
     hour: i32,
-    temperature: Result<temperature::Input, String>,
+    /// None where the keeper holds no temperature content.
+    temperature: Option<Derived>,
     regions: Regions,
 }
 
@@ -51,6 +52,14 @@ fn reserved<T>(count: usize, owner: &'static str) -> io::Result<Vec<T>> {
 }
 
 impl native::Keeper<Observer> for Keeper {
+    fn bind(
+        &mut self,
+        content: &std::sync::Arc<super::super::temperature::Resolved>,
+    ) -> io::Result<()> {
+        self.temperature = Deriving::bind(content)?;
+        Ok(())
+    }
+
     fn keep(
         &mut self,
         _: FormatVersion,
@@ -58,42 +67,10 @@ impl native::Keeper<Observer> for Keeper {
         touched: &Touched,
     ) -> io::Result<(Box<dyn Operands<Observer>>, usize)> {
         let mut bytes = size_of::<Kept>();
-        let touch = touched.of(TableId::WeatherProvinces);
-        let temperature = match frame.complete::<tables::WeatherProvinces>() {
-            Ok(rows) => {
-                let input = match &self.temperature {
-                    Some(previous) if !touch.restated && touch.deleted.is_empty() => {
-                        temperature::Input::capture_changed(
-                            rows,
-                            previous,
-                            touch.written.iter().map(|&(key, _)| key),
-                        )?
-                    }
-                    previous => temperature::Input::capture(rows, previous.as_ref())?,
-                };
-                let mut shared = [std::ptr::null::<()>(); 2];
-                if let Some(previous) = &self.temperature {
-                    let mut at = 0;
-                    previous.allocations(|pointer, _| {
-                        if let Some(slot) = shared.get_mut(at) {
-                            *slot = pointer;
-                        }
-                        at += 1;
-                    });
-                }
-                input.allocations(|pointer, size| {
-                    if !shared.contains(&pointer) {
-                        bytes += size;
-                    }
-                });
-                self.temperature = Some(input.clone());
-                Ok(input)
-            }
-            Err(error) => {
-                self.temperature = None;
-                Err(error.to_string())
-            }
-        };
+        let temperature = self
+            .temperature
+            .derive(frame, touched.of(TableId::WeatherProvinces))?;
+        bytes += temperature.as_ref().map_or(0, Derived::bytes);
         let touch = touched.of(TableId::WeatherRegions);
         let regions = match frame.complete::<tables::WeatherRegions>() {
             Ok(rows) if !touch.restated => {
@@ -152,17 +129,22 @@ fn unfollowed() -> io::Error {
 impl Operands<Observer> for Kept {
     fn observe(&self, observer: &mut Observer, values: &mut Values) -> io::Result<bool> {
         observer.previous = Some((self.branch, self.hour));
-        let temperature_known = observer.temperature.observe_input(
-            self.branch,
-            self.hour,
-            self.temperature.as_ref().map_err(String::as_str),
-            values,
-        )?;
+        let temperature_known = observer
+            .temperature
+            .observe_kept(self.temperature.as_ref(), values)?;
         let known = match &self.regions {
             Regions::Whole { known, rows } => {
-                observer.regions.clear();
+                // Regions held again keep the keys the scan numbered their names with.
+                observer
+                    .regions
+                    .retain(|id, _| rows.binary_search_by_key(id, |&(held, _)| held).is_ok());
                 for &(id, scalars) in rows {
-                    observer.regions.insert(id, Regional::new(id, scalars)?);
+                    match observer.regions.entry(id) {
+                        Entry::Occupied(mut held) => held.get_mut().values = scalars,
+                        Entry::Vacant(entry) => {
+                            entry.insert(Regional::new(id, scalars)?);
+                        }
+                    }
                 }
                 *known
             }
@@ -184,11 +166,7 @@ impl Operands<Observer> for Kept {
             }
         };
         for region in observer.regions.values() {
-            for (name, value) in region.names.iter().zip(region.values) {
-                if let Some(value) = value {
-                    values.push(name.clone(), value);
-                }
-            }
+            region.push(values);
         }
         observer.regional_known = known;
         Ok(known || temperature_known)
@@ -197,19 +175,17 @@ impl Operands<Observer> for Kept {
     fn observe_changes(
         &self,
         observer: &mut Observer,
-        _: &Names<'_>,
+        names: &Names<'_>,
         delta: &mut Delta,
     ) -> io::Result<Option<bool>> {
         if observer.previous.is_none() {
             return Ok(None);
         }
         observer.previous = Some((self.branch, self.hour));
-        let temperature_known = observer.temperature.observe_input_changes(
-            self.branch,
-            self.hour,
-            self.temperature.as_ref().map_err(String::as_str),
-            delta,
-        )?;
+        let temperature_known =
+            observer
+                .temperature
+                .observe_kept_changes(self.temperature.as_ref(), names, delta)?;
         let known = match &self.regions {
             Regions::Whole { known, rows } => {
                 let (mut ended, _credit) =
@@ -218,17 +194,17 @@ impl Operands<Observer> for Kept {
                     rows.binary_search_by_key(id, |&(held, _)| held).is_err()
                 }));
                 for id in ended {
-                    observer.update_values(id, None, delta)?;
+                    observer.update_values(id, None, names, delta)?;
                 }
                 for &(id, scalars) in rows {
-                    observer.update_values(id, Some(scalars), delta)?;
+                    observer.update_values(id, Some(scalars), names, delta)?;
                 }
                 *known
             }
             Regions::Changed(_) if !observer.regional_known => return Err(unfollowed()),
             Regions::Changed(changed) => {
                 for &(id, scalars) in changed {
-                    observer.update_values(id, scalars, delta)?;
+                    observer.update_values(id, scalars, names, delta)?;
                 }
                 true
             }
@@ -237,16 +213,14 @@ impl Operands<Observer> for Kept {
         Ok(Some(known || temperature_known))
     }
 
+    fn skipped(&self, observer: &mut Observer) -> io::Result<()> {
+        // An hour the emit finds quiet changed no region row, so only the means go on.
+        observer.temperature.skip_kept(self.temperature.as_ref())
+    }
+
     fn held(&self, bytes: &mut HeldBytes) {
         bytes.add(size_of::<Self>());
-        match &self.temperature {
-            Ok(temperature) => temperature.allocations(|pointer, size| {
-                bytes.shared(pointer, size);
-            }),
-            Err(reason) => {
-                bytes.heap(reason);
-            }
-        }
+        bytes.add(self.temperature.as_ref().map_or(0, Derived::bytes));
         match &self.regions {
             Regions::Whole { rows, .. } => bytes.heap(rows),
             Regions::Changed(changed) => bytes.heap(changed),

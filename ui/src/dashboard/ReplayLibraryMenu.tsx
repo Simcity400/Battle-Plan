@@ -1,3 +1,4 @@
+import { failureText, type Failure } from './queryError.ts';
 import CampaignPreparation from '../shell/preparation/PreparationView';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
@@ -30,7 +31,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   onRenamed: (from: string, to: string) => void;
   /** Every rename of an open recording the dashboard followed, oldest first. */
   relocations: readonly Relocation[];
-  slots: ReturnType<typeof campaignSlots>; errors: Record<string, string>;
+  slots: ReturnType<typeof campaignSlots>; errors: Record<string, Failure>;
   onOpenReady?: (open: (() => void) | null) => void;
 }) {
   const [query, setQuery] = useState('');
@@ -148,7 +149,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const loadRow = (file: ReplayFile) => {
     const error = Object.entries(errors).find(([path]) => sameCampaignPath(path, file.path))?.[1];
     return <div className="loaded-campaign" role="listitem" key={file.path}>
-      {renaming && sameCampaignPath(renaming, file.path) ? renameInput(file.path) : <button type="button" className="sidebar-row" data-tooltip={[recordingFilename(file.path), error].filter(Boolean).join(' · ')}
+      {renaming && sameCampaignPath(renaming, file.path) ? renameInput(file.path) : <button type="button" className="sidebar-row" data-detail={error?.message} data-tooltip={[recordingFilename(file.path), error && failureText(error, 'Couldn’t load campaign.')].filter(Boolean).join(' · ')}
         aria-label={`Load ${displayName(file.path)}`} onKeyDown={event => rowKey(event, file.path)}
         onContextMenu={event => { const items = actions(file.path); if (items.length) { event.preventDefault(); event.stopPropagation(); contextMenu.open(event.clientX, event.clientY, items); } }}
         onClick={() => { onLoad(file.path, recordingFilename(file.path), slotId); setQuery(''); }}><Icon name="file" /><span>{displayName(file.path)}</span></button>}

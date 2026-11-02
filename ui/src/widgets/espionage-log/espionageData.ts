@@ -1,7 +1,9 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EspionageLogReply, EspionageOperation, EspionageOperationRun, EspionageOperationType } from '../../generated/dashboard';
 import { isOrderedSpans, isSpan, runAt, spansCovered } from '../../charts/series.ts';
 import type { LogRow } from '../../charts/log/logData';
+import { playbackRows } from '../../charts/playbackIntervals.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { object, int, unsigned32, unsigned64 } from '../../dashboard/validation.ts';
@@ -125,7 +127,7 @@ export interface OperationFilter {
   live: boolean;
   runningOrder: 'start' | 'preparation';
 }
-export function operationRows(reply: EspionageLogReply, hour: number, filter: OperationFilter): LogRow<OperationAt>[] {
+export function operationRows(reply: EspionageLogReply, hour: number, filter: OperationFilter): ReadonlyArray<LogRow<OperationAt>> {
   const types = new Set(filter.types);
   const rows: LogRow<OperationAt>[] = [];
   for (const operation of reply.operations) {
@@ -141,7 +143,7 @@ export function operationRows(reply: EspionageLogReply, hour: number, filter: Op
   }
   return sortOperationRows(rows, filter);
 }
-function sortOperationRows(rows: LogRow<OperationAt>[], filter: OperationFilter): LogRow<OperationAt>[] {
+function sortOperationRows(rows: LogRow<OperationAt>[], filter: OperationFilter): ReadonlyArray<LogRow<OperationAt>> {
   const ongoing = (row: LogRow<OperationAt>) => row.item.state === 'preparing' || row.item.state === 'running';
   return rows.sort((a, b) => {
     if (filter.live) {
@@ -176,7 +178,7 @@ export function operationWindows(manifest: EspionageLogReply | undefined, at: nu
 }
 /** A row belongs to its actual ending/read window; a spanning episode is shown
  * once, using the latest loaded window at or before the requested moment. */
-export function windowedOperationRows(windows: ReadonlyMap<number, EspionageLogReply>, hour: number, filter: OperationFilter): LogRow<OperationAt>[] {
+export function windowedOperationRows(windows: ReadonlyMap<number, EspionageLogReply>, hour: number, filter: OperationFilter): ReadonlyArray<LogRow<OperationAt>> {
   const rows = new Map<string, LogRow<OperationAt>>();
   const sorted = [...windows].sort(([a], [b]) => a - b);
   const current = sorted.find(([, reply]) => reply.firstHour <= hour && hour <= reply.lastHour)?.[0];
@@ -185,11 +187,48 @@ export function windowedOperationRows(windows: ReadonlyMap<number, EspionageLogR
     for (const row of operationRows(reply, Math.min(hour, reply.lastHour), filter)) {
       const ended = row.item.state === 'completed' || row.item.state === 'disappeared';
       if (!ended && index !== current) continue;
-      row.item.windowIndex = index;
-      rows.set(row.item.operation.id, row);
+      rows.set(row.item.operation.id, { ...row, item: { ...row.item, windowIndex: index } });
     }
   }
   return sortOperationRows([...rows.values()], filter);
+}
+
+export function espionagePlayback(windows: ReadonlyMap<number, EspionageLogReply>, filter: OperationFilter) {
+  const types = new Set(filter.types);
+  const includes = (run: EspionageOperationRun, hour: number) => {
+    if (types.size && (run.typeKey === null || !types.has(run.typeKey)) || filter.from !== null && hour < filter.from) return false;
+    const owner = run.ownerTag === null ? filter.includeUnknownCountries === true : filter.country(run.ownerTag, hour);
+    const target = run.targetTag === null ? filter.includeUnknownCountries === true : filter.country(run.targetTag, hour);
+    return filter.role === 'owner' ? owner : filter.role === 'target' ? target : owner || target;
+  };
+  function* changes() {
+    for (const reply of windows.values()) {
+      yield reply.firstHour; yield reply.lastHour + 1;
+      for (const operation of reply.operations) {
+        yield operation.firstRead;
+        if (operation.startKnownAt != null) yield operation.startKnownAt;
+        if (operation.end) yield operation.end.byHour;
+        for (const run of operation.runs) {
+          const end = Math.min(run.lastHour, reply.lastHour, operation.end ? operation.end.byHour - 1 : Infinity);
+          if (run.firstHour > end) continue;
+          yield run.firstHour;
+          if (end === run.lastHour) yield end + 1;
+          let low = 0, high = reply.readHours.length;
+          while (low < high) {
+            const middle = Math.floor((low + high) / 2);
+            if (reply.readHours[middle] < run.firstHour) low = middle + 1; else high = middle;
+          }
+          let previous = includes(run, readAt(reply.readHours, run.firstHour) ?? run.readHour);
+          for (let index = low; index < reply.readHours.length && reply.readHours[index] <= end; index++) {
+            const hour = reply.readHours[index], shown = includes(run, hour);
+            if (shown || previous) yield hour;
+            previous = shown;
+          }
+        }
+      }
+    }
+  }
+  return playbackRows(changes(), hour => windowedOperationRows(windows, hour, filter));
 }
 
 export function operationState(at: OperationAt): string {
@@ -232,8 +271,8 @@ export function operationTooltip(reply: EspionageLogReply, row: LogRow<Operation
   const current = at.run;
   const countryRow = (label: string, tag: string | null): TooltipRow => {
     const value = country(tag);
-    return { label, value: value.name, countryFlag: tag === null ? undefined : {
-      flag: value.flag, flagReason: value.flagReason, flagPending: value.flagPending,
+    return { ...countryNameDetails(value), label, value: value.name, countryFlag: tag === null ? undefined : {
+      flag: value.flag, flagReason: value.flagReason, ...(value.flagDetail !== undefined ? { flagDetail: value.flagDetail } : {}), flagPending: value.flagPending,
     } };
   };
   const rows: TooltipRow[] = [

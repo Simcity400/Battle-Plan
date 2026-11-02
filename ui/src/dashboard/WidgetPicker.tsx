@@ -34,7 +34,7 @@ function useAdded(): [boolean, () => void] {
 function useUnavailable(definition: WidgetDefinition, { runtime, track, active }: Shared) {
   const scoped = scopeReason(definition, track?.source.metadata.captureMode);
   const { data, error } = useProduct(runtime.client, scoped ? null : availabilityRequest(definition, track), active, validateWidgetAvailability, track?.source);
-  return scoped ?? availabilityReason(!!definition.availability, !!track, data, error);
+  return { reason: scoped ?? availabilityReason(!!definition.availability, !!track, data, error), detail: error?.message };
 }
 
 /** A group's colour is its Analytics page's icon colour, so the catalogue matches the sidebar. */
@@ -42,7 +42,7 @@ const groupColour = (group: WidgetGroup<unknown>) => ({ '--group-colour': group.
 
 function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry: Entry; placed: number; selected: boolean; onSelect: () => void }) {
   const { definition } = entry;
-  const reason = useUnavailable(definition, shared);
+  const { reason, detail } = useUnavailable(definition, shared);
   const [added, markAdded] = useAdded();
   const icon = useContext(WidgetIconsContext).style(definition.kind);
   const add = () => { shared.onAdd(definition.kind, initialOf(entry)); markAdded(); };
@@ -52,7 +52,7 @@ function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry
       <span className="widget-card-icon" aria-hidden="true"><StyledIcon icon={icon.icon} fallback={definition.icon} colour={icon.colour} /></span>
       {/* The description lives in the details pane; a card says only what it adds: why it is unavailable, or how many the page has. */}
       <span className="widget-card-text"><strong>{entry.title}</strong>
-        {reason ? <small>{reason}</small> : placed > 0 && <small className="widget-card-placed">{placed > 1 ? `On page ×${placed}` : 'On page'}</small>}</span>
+        {reason ? <small data-detail={detail}>{reason}</small> : placed > 0 && <small className="widget-card-placed">{placed > 1 ? `On page ×${placed}` : 'On page'}</small>}</span>
     </button>
     <button type="button" className="icon-button widget-card-add" aria-label={`Add ${entry.title}`} data-tooltip={reason ?? 'Add to page'}
       disabled={shared.disabled || reason !== null} onClick={add}>{added ? <Icon name="check" /> : <Icon name="plus" />}</button>
@@ -61,7 +61,7 @@ function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry
 
 function Details({ entry, ...shared }: Shared & { entry: Entry }) {
   const { definition } = entry;
-  const reason = useUnavailable(definition, shared);
+  const { reason, detail } = useUnavailable(definition, shared);
   const [added, markAdded] = useAdded();
   const countries = !definition.data ? null : definition.countrySelection === false ? 'Whole world'
     : (definition.countries?.max ?? 1) > 1 ? 'Several countries' : 'One country';
@@ -77,7 +77,7 @@ function Details({ entry, ...shared }: Shared & { entry: Entry }) {
         {entry.variant && <span>View of {definition.title}</span>}
       </div>
     </div>
-    {(reason ?? entry.note) && <p className="widget-details-reason" role="status">{reason ?? entry.note}</p>}
+    {(reason ?? entry.note) && <p className="widget-details-reason" role="status" data-detail={detail ?? entry.detail}>{reason ?? entry.note}</p>}
     <button type="button" className="button primary widget-details-add" disabled={shared.disabled || reason !== null}
       onClick={() => { shared.onAdd(definition.kind, initialOf(entry)); markAdded(); }}>
       {added ? <><Icon name="check" />Added</> : <><Icon name="plus" />Add to page</>}</button>

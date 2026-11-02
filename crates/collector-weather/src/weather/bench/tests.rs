@@ -217,7 +217,7 @@ fn temperature_delta(
             .encode_change(Some(old), previous_key, &mut bytes)
             .unwrap()
         {
-            // Each typed read anchors the pass, whose checksum slot zero carries.
+            // Each typed read anchors the pass, whose witness slot zero carries.
             let mask = new.delta(Some(old)).unwrap().unwrap().mask & !(1 << 13);
             if mask != 0 {
                 assert_eq!(mask, 1 << 4);

@@ -15,6 +15,8 @@ export interface TableColumn<T> {
   hint?: string;
   value: (row: T) => SortValue;
   render?: (row: T) => ReactNode;
+  /** Rendered-width key for composed cells with independent paint inputs. */
+  widthKey?: (row: T) => string;
   renderMissing?: boolean;
   align?: 'start' | 'end';
   numeric?: boolean;
@@ -57,7 +59,7 @@ export function cellText<T>(column: TableColumn<T>, row: T): string {
 
 /** Content-sized tracks grow as virtual rows appear; names can keep zero-minimum
  * fractional tracks without making the whole table as wide as their full text. */
-export function tableGrid<T>(columns: readonly TableColumn<T>[], rank: boolean, widths: ReadonlyMap<string, number>): string {
+export function tableGrid<T>(columns: readonly Pick<TableColumn<T>, 'key' | 'width'>[], rank: boolean, widths: ReadonlyMap<string, number>): string {
   return [rank ? 'var(--table-rank-width)' : '', ...columns.map(column => column.width === 'max-content'
     ? widths.has(column.key) ? `${widths.get(column.key)}px` : 'max-content'
     : column.width ?? 'minmax(100px, 1fr)')].filter(Boolean).join(' ');

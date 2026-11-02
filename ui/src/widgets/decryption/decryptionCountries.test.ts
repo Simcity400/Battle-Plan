@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
-import { raceRows } from './decryptionData.ts';
+import { decryptionTooltip, raceRows } from './decryptionData.ts';
+import { tooltipText } from '../../charts/tooltip.ts';
 import type { CountryFactsReply, CountryFlagChoice, CountryFlagParams, DecryptionReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductReply, ProductRequest } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
@@ -55,8 +56,7 @@ test('actual cipher labels read the held timeline, wait only for new flags to be
   };
   const host = globalThis as typeof globalThis & { __cipherCountryHooks?: typeof fixture };
   host.__cipherCountryHooks = fixture;
-  // Only React's dispatcher, the throttle's clock and pixel composition are
-  // synthetic. The consumer, rich label hooks, timeline, drawings and transport are real.
+  // Only React's dispatcher, the throttle's clock and pixel composition are synthetic.
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'cipher-country-request-fixture', enforce: 'pre',
       transform(source, id) {
@@ -166,10 +166,39 @@ test('actual cipher labels read the held timeline, wait only for new flags to be
     view = render(130);
     assert.equal(view.labels.pair(view.row).target.flag, undefined, 'another recording revision holds no timeline yet');
     currentTrack = { ...currentTrack, branch: { ...currentTrack.branch, gaps: [{ firstHour: 130, lastHour: 130, reason: 'Synthetic recording gap' }] } };
-    view = render(130); await settle();
+    render(130); await settle(); view = render(130);
     assert.equal(view.labels.pair(view.row).owner.flag, undefined, 'branch gaps cannot authenticate an old native tag segment');
-    assert.ok(!view.labels.pair(view.row).owner.flagPending);
+    assert.equal(view.labels.pair(view.row).owner.flagPending, false);
     currentTrack = { ...currentTrack, branch: { ...currentTrack.branch, gaps: [] } };
+    const unseen = transport(); client = unseen.client;
+    view = render(130, false);
+    let pair = view.labels.pair(view.row);
+    assert.equal(pair.owner.name, 'Loading name…');
+    assert.equal(pair.owner.known, undefined);
+    assert.equal(pair.owner.flagPending, true);
+    const loadingRevision = view.labels.revision;
+    assert.match(tooltipText(decryptionTooltip(view.row, pair.owner, pair.target, 1000)), /Loading name…/);
+    await settle(); view = render(130, false); await settle(); view = render(130, false);
+    pair = view.labels.pair(view.row);
+    assert.equal(pair.owner.name, 'Renamed at 130', 'a non-drawn row still has its name read');
+    assert.equal(pair.target.name, 'Target at 100');
+    assert.equal(pair.owner.known, true);
+    assert.notEqual(view.labels.revision, loadingRevision, 'description-only name answers advance the tooltip revision');
+    assert.match(tooltipText(decryptionTooltip(view.row, pair.owner, pair.target, 1000)), /Renamed at 130/);
+    assert.equal(unseen.asked.filter(product => product === 'country-facts').length, 1);
+    assert.equal(unseen.draws.length, 0, 'description-only rows do not draw flag artwork');
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('../../dashboard/queryError.ts');
+    for (const failure of [new Error('Synthetic name failure'), new RefusedError('Synthetic country names refused.')]) {
+      client = { product: async () => { throw failure; } } as unknown as DashboardClient;
+      view = render(130, false); await settle(); view = render(130, false); await settle(); view = render(130, false);
+      pair = view.labels.pair(view.row);
+      assert.equal(pair.owner.name, failure instanceof RefusedError ? failure.text : 'Couldn’t load country name.');
+      assert.equal(pair.owner.known, false);
+      assert.equal(pair.owner.nameFailed, true);
+      assert.equal(pair.owner.nameFailure, failure);
+      assert.equal(pair.owner.nameDetail, failure.message);
+      assert.doesNotMatch(tooltipText(decryptionTooltip(view.row, pair.owner, pair.target, 1000)), /Country name unavailable/);
+    }
     const unnamed = { ...data, pairs: data.pairs.map(pair => ({ ...pair, tagRuns: [
       { firstHour: 100, lastHour: 150, ownerTag: null, targetTag: null },
     ] })) };

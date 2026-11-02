@@ -79,8 +79,8 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const warnings = useMemo(() => [...(data?.flatMap(reply => reply.warnings) ?? []), ...groupWarnings], [data, groupWarnings]);
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its political power spending." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupNotice = groupError && <WidgetState kind="error" detail={groupError} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupNotice = groupError && <WidgetState kind="error" failure={groupError} onRetry={retry} />;
   if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading spending…" /></>;
   if (reason) return <>{groupNotice}<WidgetState kind="empty" message={reason} /></>;
   // A group's members at hours still being prepared are not known yet: no country, or nothing spent, is not proof of none.

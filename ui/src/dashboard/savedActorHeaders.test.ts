@@ -38,7 +38,7 @@ const ledger: MilitaryAirReply = { family: 'airLosses', firstHour: 0, lastHour: 
   leaves: [], regions: [], buildings: [], warnings: [] };
 
 test('registered saved native-actor bodies supply country headers at their displayed date', async () => {
-  const state = { hour: 12, pending: false, error: undefined as string | undefined, content: 0,
+  const state = { hour: 12, pending: false, error: undefined as Error | undefined, content: 0,
     army, supply, nuclear, nuclearOrigin, ledger, armyWindows: new Map([[0, army]]), windowErrors: new Map<number, string>(),
     nameKnown: true as boolean | undefined, nameFailed: false, headerName: undefined as string | undefined,
     flagPending: false, flagReason: undefined as string | undefined, flag: 'data:flag-B' as string | undefined,
@@ -284,7 +284,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       assert.ok(state.products.every(read => read.client === runtime.client && read.request.sourceId === 'source-B' && read.request.revision === '2'));
       assert.ok(state.reads.every(read => read.client === runtime.client && read.sourceId === 'source-B' && read.revision === '2'));
       runtime.client = client; track.source = source; unmount();
-      state.error = 'Synthetic identity refusal'; neutral(pinned); state.error = undefined; unmount();
+      state.error = new Error('Synthetic identity refusal'); neutral(pinned); state.error = undefined; unmount();
       unmount(); neutral({ ...pinned, time: { mode: 'pin', windows: {} } });
       const rawOptions = { ...pinned.options };
       delete rawOptions.drillOriginHour; delete rawOptions.holder;

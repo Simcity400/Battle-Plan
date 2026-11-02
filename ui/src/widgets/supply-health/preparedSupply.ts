@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
@@ -23,7 +24,7 @@ export function usePreparedSupply(client: DashboardClient, track: BoundTrack | u
   useEffect(() => () => navigation.current?.abort(), [owner, active]);
   const [viewport, setViewport] = useState<{ key: string; from: number; to: number; width: number }>();
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
-  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: Failure }>();
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => {
     if (view.to < view.from) return;
     const from = Math.floor(view.from), to = Math.ceil(view.to);
@@ -86,7 +87,7 @@ export function usePreparedSupply(client: DashboardClient, track: BoundTrack | u
     void preparedSeriesQuery(client, track.source, 'series-next-change', { branchId: track.branch.id, family: { kind: 'supply-health' }, tags,
       key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal).then(value =>
       { if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: (value as { hour: number | null }).hour, revision: (previous?.revision ?? 0) + 1 })); })
-      .catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); });
+      .catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); });
   }, [owner, active]);
   return { data, geometry, error: display.error ?? reached.error ?? pointed.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
     onNavigateHour: prepared ? onNavigateHour : undefined, keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,

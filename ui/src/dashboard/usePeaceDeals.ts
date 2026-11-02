@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
@@ -20,7 +21,7 @@ export function usePeaceDeals(widget: WidgetSpec, runtime: WidgetRuntime, active
   const content = useContentRevision(runtime.client);
   const key = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, content]);
   const owner = useMemo(() => ({ client: runtime.client, key }), [runtime.client, key]);
-  const [state, setState] = useState<{ owner: typeof owner; data?: PeaceDealsReply; error?: string; preparing?: boolean }>();
+  const [state, setState] = useState<{ owner: typeof owner; data?: PeaceDealsReply; error?: Failure; preparing?: boolean }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !track) return;
@@ -29,7 +30,7 @@ export function usePeaceDeals(widget: WidgetSpec, runtime: WidgetRuntime, active
       () => { if (!controller.signal.aborted) setState(previous => previous?.owner === owner && previous.data ? previous : { owner, preparing: true }); },
       data => { if (!controller.signal.aborted) setState({ owner, data }); }).then(
       data => { if (!controller.signal.aborted) setState({ owner, data }); },
-      error => { if (!controller.signal.aborted) setState(previous => ({ owner, data: previous?.owner === owner ? previous.data : undefined, error: String(error) })); },
+      error => { if (!controller.signal.aborted) setState(previous => ({ owner, data: previous?.owner === owner ? previous.data : undefined, error: asFailure(error) })); },
     );
     return () => controller.abort();
   }, [owner, active, attempt]);

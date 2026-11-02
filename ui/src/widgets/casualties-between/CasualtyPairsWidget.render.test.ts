@@ -4,7 +4,8 @@ import { createElement } from 'react';
 import type { ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { WidgetProps } from '../../dashboard/definitions';
-import type { CasualtyPairsReply, CountryGroupReply } from '../../generated/dashboard';
+import type { CountryGroupReply } from '../../generated/dashboard';
+import type { CasualtyPairsReply } from './casualtyPairsData';
 import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('casualty pairs of a group counted at an hour still being prepared are loading, not none', async () => {

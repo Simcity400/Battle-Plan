@@ -51,7 +51,7 @@ export function headerDetail(templateName: string | null, facts: CareerFacts | n
 export type RecordItem = { entry: RecordEntry; medal: CareerMedal | undefined };
 
 /** The record's entries newest first, filtered by the Show setting; repeats keep their places. */
-export function recordRows(reply: DivisionRecordReply, show: string): LogRow<RecordItem>[] {
+export function recordRows(reply: DivisionRecordReply, show: string): ReadonlyArray<LogRow<RecordItem>> {
   return reply.entries
     .filter(entry => show === 'both' || (show === 'awards') === entry.award)
     .map(entry => ({ key: `${entry.award ? 'award' : 'career'}:${entry.ordinal}`, hour: entry.hour,
@@ -104,8 +104,10 @@ export function topDivision(rows: readonly CareerRow[]): CareerRow | null {
 }
 
 /** Division choices from a careers reply: name and country, ordered by name. */
-export function divisionChoices(reply: DivisionCareersReply, campaignKey: string, country: (tag: string) => string) {
-  return reply.divisions.map(row => ({ value: subjectToken(campaignKey, row.division), name: divisionName(row.name),
-    label: `${divisionName(row.name)} · ${row.tag ? country(row.tag) : 'Country not recorded'}` }))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value)).map(({ value, label }) => ({ value, label }));
+export function divisionChoices(reply: DivisionCareersReply, campaignKey: string, country: (tag: string) => { name: string; nameDetail?: string }) {
+  return reply.divisions.map(row => {
+    const label = row.tag ? country(row.tag) : undefined;
+    return { value: subjectToken(campaignKey, row.division), name: divisionName(row.name),
+      ...(label?.nameDetail ? { detail: label.nameDetail } : {}), label: `${divisionName(row.name)} · ${label?.name ?? 'Country not recorded'}` };
+  }).sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value)).map(({ name: _name, ...choice }) => choice);
 }

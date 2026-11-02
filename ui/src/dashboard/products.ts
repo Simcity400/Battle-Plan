@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { useEffect, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from './client';
 import { validateProductReply } from './client.ts';
@@ -237,21 +238,21 @@ export function forgetSettledProducts(client: DashboardClient, sourceId: string)
   forgetTimelines(client, sourceId, true);
 }
 
-export interface ProductState<T> { data?: T; error?: string; retry: () => void }
-const NO_ERRORS: readonly string[] = [];
+export interface ProductState<T> { data?: T; error?: Failure; retry: () => void }
+const NO_ERRORS: readonly Failure[] = [];
 
 /** A failed request stays failed until Retry, even while other requests publish. */
 export function useProducts<T>(client: DashboardClient, requests: readonly ProductRequest[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T[]> {
   const content = useContentRevision(client);
   // Every request uses the current content revision, never its array index.
   const key = JSON.stringify(requests.map(request => productKey(request, content, !!source && !!client.preparedQuery)));
-  const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T[]; errors?: readonly string[] }>();
+  const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T[]; errors?: readonly Failure[] }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !requests.length) return;
     const controller = new AbortController();
     const values = new Map<number, T>();
-    const failures = new Map<number, string>();
+    const failures = new Map<number, Failure>();
     const commit = () => {
       if (controller.signal.aborted) return;
       const data = values.size === requests.length ? requests.map((_, index) => values.get(index)!) : undefined;
@@ -269,7 +270,7 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
     requests.forEach((request, index) => {
       const publish = (value: T) => { if (!controller.signal.aborted) { values.set(index, value); commit(); } };
       void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(publish,
-        error => { if (!controller.signal.aborted) { failures.set(index, error instanceof Error ? error.message : String(error)); commit(); } });
+        error => { if (!controller.signal.aborted) { failures.set(index, asFailure(error)); commit(); } });
     });
     return () => controller.abort();
     // The structured key names the requests and their order.
@@ -287,7 +288,7 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
 export function useProduct<T>(client: DashboardClient, request: ProductRequest | null, active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> {
   const content = useContentRevision(client);
   const key = request ? productKey(request, content,!!source) : null;
-  const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T; error?: string }>();
+  const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !request || !key) return;
@@ -298,7 +299,7 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
       publish,
       error => inFrame(() => controller.signal.aborted || setState(previous => ({ client, key,
         data: previous?.client === client && previous.key === key ? previous.data : undefined,
-        error: error instanceof Error ? error.message : String(error) }))),
+        error: asFailure(error) }))),
     );
     return () => controller.abort();
     // The request object is recreated each render; its key is the identity.

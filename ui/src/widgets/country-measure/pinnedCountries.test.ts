@@ -110,7 +110,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({campaigns: {}});',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({name: tag => tag, color: () => [20, 50, 80], flag() {}, flagPending() {}, flagReason() {}, revision: 0});`,
     '/widgets/national-focus/useFocusArtwork.ts': 'export const useFocusText = () => ({read: new Map(), warnings: []});',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryNamesRead = () => new Map(); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryFactsRead = () => new Map();',
     '/dashboard/useCountryLineStyles.ts': `export const useCountryLineStyles = () => ({known: new Map([['X', {tag: 'X', color: [20, 50, 80]}]]), data: {warnings: []}});`,
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({categories: ['#123456'], muted: '#888888', surface: '#000000', countryColours: 'game'}); export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({open() {}, menu: null});',

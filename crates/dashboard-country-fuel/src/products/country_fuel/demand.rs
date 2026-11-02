@@ -460,7 +460,7 @@ pub(super) fn summary_at<'a>(
                 && read.country_instance == Some(params.country_instance)
         })
         .ok_or_else(|| {
-            dashboard_core::invalid(
+            dashboard_core::refused(
                 "Current fuel consumption actor or supplying read was not recorded",
             )
         })
@@ -536,7 +536,7 @@ impl Product for CountryFuelDemand {
     ) -> io::Result<Self::Reply> {
         let read = query::summary_at(source, params, context, cancelled)?;
         let pack = query::basis_demand(source, params, context, cancelled)?
-            .map_err(dashboard_core::invalid)?;
+            .map_err(dashboard_core::refused)?;
         let pack = &pack;
         let catalogue = std::sync::OnceLock::new();
         let mut format = |bytes: &[u8]| read_name(source, context, &catalogue, bytes);
@@ -768,7 +768,7 @@ fn stacked_history(
 ) -> io::Result<FuelDemandStackReply> {
     let selected = query::summary_at(source, basis, context, cancelled)?;
     let pack =
-        query::basis_demand(source, basis, context, cancelled)?.map_err(dashboard_core::invalid)?;
+        query::basis_demand(source, basis, context, cancelled)?.map_err(dashboard_core::refused)?;
     let mut parsed = Vec::new();
     for key in keys {
         dashboard_text::metadata::check_cancel(cancelled)?;

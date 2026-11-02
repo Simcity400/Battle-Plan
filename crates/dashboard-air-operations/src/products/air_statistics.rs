@@ -123,6 +123,16 @@ pub static FAMILY: Family = dashboard_keyed::block::family::<AirStatisticsObserv
 );
 
 impl Observer for AirStatisticsObserver {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "air-statistics";
     const TABLES: &'static [TableId] = &[
         TableId::AirStatistics,

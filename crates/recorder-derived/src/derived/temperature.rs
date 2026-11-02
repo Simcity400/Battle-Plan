@@ -1,5 +1,5 @@
 //! Province temperatures against the hourly pass ([`replay_data::temperature`]).
-//! Each hour must reproduce its read checksum. An anchor whose preceding
+//! Each hour must reproduce its read witness. An anchor whose preceding
 //! frame proves its pass must match the derived words and cursor.
 
 use replay_data::{
@@ -17,9 +17,9 @@ pub(super) struct Stats {
     listed: Vec<String>,
     /// Frames holding anchored words and the pass's inputs.
     anchored_hours: u64,
-    /// Hours whose derivation reproduced the read checksum.
-    checksum_equal: u64,
-    checksum_mismatches: u64,
+    /// Hours whose derivation reproduced the read witness.
+    witness_equal: u64,
+    witness_mismatches: u64,
     /// Anchors whose own hour the hour before proves an ordinary pass, compared word for word.
     anchors_compared: u64,
     anchor_rows_equal: u64,
@@ -31,7 +31,7 @@ pub(super) struct Stats {
 
 impl Stats {
     fn mismatches(&self) -> u64 {
-        self.checksum_mismatches + self.anchor_rows_differing + self.anchor_cursor_differing
+        self.witness_mismatches + self.anchor_rows_differing + self.anchor_cursor_differing
     }
 
     fn list(&mut self, line: String) {
@@ -112,14 +112,14 @@ impl Checker {
         }
         match self.memo.states(frame.branch, frame.hour, rows, content) {
             Ok(_) => {
-                self.stats.checksum_equal += 1;
+                self.stats.witness_equal += 1;
                 self.derived = self
                     .memo
                     .simulation()
                     .map(|simulation| (frame.branch, simulation.clone()));
             }
-            Err(reason) if reason.contains("checksum") => {
-                self.stats.checksum_mismatches += 1;
+            Err(reason) if reason.contains("differ from the recorded witness") => {
+                self.stats.witness_mismatches += 1;
                 self.stats.list(format!(
                     "branch {} hour {}: {reason}",
                     frame.branch, frame.hour
@@ -144,10 +144,10 @@ impl Checker {
             Err(reason) => println!("temperature content refused: {reason}"),
         }
         println!(
-            "WeatherProvinces anchored temperatures: {} hours; derivation equal to the read checksum {}, checksum mismatches {}; anchors after a proven pass {} (rows equal {}, rows differing {}, cursors differing {}), anchors without one {}",
+            "WeatherProvinces anchored temperatures: {} hours; derivation equal to the read witness {}, witness mismatches {}; anchors after a proven pass {} (rows equal {}, rows differing {}, cursors differing {}), anchors without one {}",
             stats.anchored_hours,
-            stats.checksum_equal,
-            stats.checksum_mismatches,
+            stats.witness_equal,
+            stats.witness_mismatches,
             stats.anchors_compared,
             stats.anchor_rows_equal,
             stats.anchor_rows_differing,

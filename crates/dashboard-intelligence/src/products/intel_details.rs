@@ -771,7 +771,9 @@ impl Product for IntelDetails {
             cancelled,
         )? {
             SeekResult::Frame(frame) => frame,
-            _ => return Err(dashboard_core::invalid("Intel hour was not recorded")),
+            SeekResult::Gap { reason, .. } => {
+                return Err(frames::gap_error(&reason, "Intel hour was not recorded"));
+            }
         };
 
         dashboard_text::metadata::validate_campaign(&frame, source.replay_ref())?;

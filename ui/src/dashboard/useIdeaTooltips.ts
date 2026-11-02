@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { IdeaHistoryReply } from '../generated/dashboard';
-import { FAILED_FACT, nameKey } from './countryFacts.ts';
+import { nameKey } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
-import { useCountryNamesRead } from './countryNamesAt.ts';
+import { useCountryNamesAt } from './countryNamesAt.ts';
 import type { DashboardClient } from './client';
-import { nameReadText } from './holderLooks.ts';
+import { nameReadText, nameReadFailure } from './nameReads.ts';
 import { ideaTooltipSources } from './ideaTooltip.ts';
 import type { BoundTrack } from './model';
 
@@ -28,14 +28,14 @@ export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork'
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { setRequested([]); asked.current.clear(); }, [data, track?.source.id, track?.source.revision, track?.branch.id]);
   // Asked for only as tooltips are built, so no cap on hours is needed; the store keeps every hour asked.
-  const names = useCountryNamesRead(client, track, requested, active, Infinity, attempt);
+  const names = useCountryNamesAt(client, track, requested, active, Infinity, attempt);
   return useMemo(() => {
     if (!data || !track) return null;
     const metadataName = fallbackName ?? ((tag: string) => track.source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable');
     const nameAt = (tag: string, hour: number) => {
       const key = nameKey(hour, tag);
       const read = names.get(key);
-      if (typeof read === 'string') return read;
+      if (read?.kind === 'value') return read.value;
       // Asked for only while the widget is shown, after this render. One whose read
       // failed is asked again when shown again, at most every RETRY_MS.
       const last = asked.current.get(key);
@@ -43,14 +43,14 @@ export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork'
       if (active && last == null) {
         asked.current.set(key, now);
         queueMicrotask(() => setRequested(list => [...list, { hour, tag }]));
-      } else if (active && read === FAILED_FACT && last != null && now - last > RETRY_MS) {
+      } else if (active && read?.kind === 'failed' && last != null && now - last > RETRY_MS) {
         asked.current.set(key, now);
         queueMicrotask(() => setAttempt(value => value + 1));
       }
-      return fallbackName?.(tag) ?? nameReadText(read);
+      return read === undefined ? fallbackName?.(tag) ?? nameReadText(read) : nameReadText(read);
     };
     return {
-      sources: ideaTooltipSources(data, metadataName, nameAt),
+      sources: { ...ideaTooltipSources(data, metadataName, nameAt), failureAt: (tag: string, hour: number) => nameReadFailure(names.get(nameKey(hour, tag))) },
       infos: new Map(data.ideas.map(info => [info.token, info])),
       art: new Map(data.artwork.map(item => [item.token, item])),
     };

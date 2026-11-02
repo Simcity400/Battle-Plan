@@ -473,12 +473,16 @@ impl fmt::Display for GroupsRefusal {
     }
 }
 
-impl std::error::Error for GroupsRefusal {}
+impl std::error::Error for GroupsRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 /// A groups outcome as air superiority's: a groups refusal refuses it
 /// ([`GroupsRefusal`]); any other error is unchanged.
 pub fn from_groups(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::InvalidData {
+    if error.kind() == io::ErrorKind::InvalidData || dashboard_core::refusal(&error).is_some() {
         io::Error::new(io::ErrorKind::InvalidData, GroupsRefusal(error))
     } else {
         error

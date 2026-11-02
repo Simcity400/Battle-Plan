@@ -31,7 +31,7 @@ const SIDES = ['Attackers', 'Defenders'] as const;
 /** Flags drawn per side before "+N"; every country stays in the hint and tooltip. */
 const FLAGS = 3;
 
-function listRows(rows: readonly LandBattleRow[], view: Props['view'], live: boolean): LogRow<LandBattleRow>[] {
+function listRows(rows: readonly LandBattleRow[], view: Props['view'], live: boolean): ReadonlyArray<LogRow<LandBattleRow>> {
   return view === 'log' ? battleLogRows(rows, live)
     // Ranked rows keep the server's order and show each battle's start.
     : rows.map(item => ({ key: item.id, id: item.id, hour: item.start?.hour ?? item.place.hour, by: item.start?.bound === 'by', item }));
@@ -41,7 +41,7 @@ export function Flags({ look, max = FLAGS }: { look: SideLook; max?: number }) {
   const shown = look.countries.length > max ? look.countries.slice(0, max - 1) : look.countries;
   return <span className="lb-flags">
     {look.unknown && !look.countries.length && <CountryFlagUrl className="log-flag" reason={look.unknown} />}
-    {shown.map(part => <CountryFlagUrl key={`${part.tag}@${part.hour}`} className="log-flag" url={part.flag} reason={part.flagReason} pending={part.flagPending} />)}
+    {shown.map(part => <CountryFlagUrl key={`${part.tag}@${part.hour}`} className="log-flag" url={part.flag} detail={part.flagDetail} reason={part.flagReason} pending={part.flagPending} />)}
     {look.countries.length > shown.length && <span className="lb-more">+{look.countries.length - shown.length}</span>}
   </span>;
 }

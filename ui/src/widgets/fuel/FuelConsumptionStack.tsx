@@ -73,7 +73,7 @@ export default function FuelConsumptionStack({ runtime, track, basis, segmentSta
     rows:values.flatMap(reply=>reply.parts.flatMap(part=>part.runs.map(run=>({key:part.key,...run}))))}));
   return <div ref={parity}>
     {chart.active && [...wanted].some(window => !windows.data.has(window) && !windows.errors.has(window)) && <p className="drill-empty">Loading consumption history…</p>}
-    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="consumption history" detail={reason} onRetry={windows.retry} />)}
+    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="consumption history" failure={reason} onRetry={windows.retry} />)}
     <BreakdownChart {...chart} within={within} pickOwner={owner} series={series} selectedHour={hour} tooltipHeight={height} keyHours={keyHours}
       onViewChange={onViewChange}
       label="Displayed individual current consumption required per day" axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: 0, yMax: null, log: false }} />

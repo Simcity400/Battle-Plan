@@ -16,7 +16,7 @@ function followButton(node: ReactNode): (() => void) | undefined {
   return node.type === 'button' && node.props.children === 'Follow playback' ? node.props.onClick : followButton(node.props.children);
 }
 
-test('the mounted resource pin dates its header and body to local picks and actual-clock Follow through a rename', async () => {
+test('resource pins follow dated renames and unhovered bars name all spoken partners without request churn', async () => {
   const pool = { firstHour: 100, lastHour: 120, startsSegment: true, producedRaw: '100000', subjectsRaw: '0', importedRaw: '0',
     toExportRaw: '0', exportedRaw: '0', availableRaw: '100000', afterProjectsRaw: '100000', productionRaw: '0' };
   const data: ResourceBalanceReply = { branchId: 'b', tag: 'X', decimals: 5, warnings: [],
@@ -25,9 +25,16 @@ test('the mounted resource pin dates its header and body to local picks and actu
   const state = { data, hour: 112, drill: { breakdown: null, follow: true, hour: null } as DrillState,
     chart: undefined as ComponentProps<typeof BreakdownChart> | undefined,
     chip: undefined as ReactElement<{ hour: number; label: { name: string } | null }> | undefined,
-    button: undefined as (() => void) | undefined, wanted: [] as { tag: string; hour: number }[] };
-  const globals = globalThis as typeof globalThis & { __resourcePin?: typeof state };
+    button: undefined as (() => void) | undefined, wanted: [] as { tag: string; hour: number }[],
+    onlyRequested: false, viewport: 1000, cursor: 0, memos: [] as { deps: unknown[]; value: unknown }[] };
+  const globals = globalThis as typeof globalThis & { __resourcePin?: typeof state; __resourceMemo?: (make: () => unknown, deps: unknown[]) => unknown };
   globals.__resourcePin = state;
+  globals.__resourceMemo = (make, deps) => {
+    const index = state.cursor++, before = state.memos[index];
+    if (!before || before.deps.length !== deps.length || !deps.every((value, at) => Object.is(value, before.deps[at])))
+      state.memos[index] = { deps, value: make() };
+    return state.memos[index].value;
+  };
   const replacements: Record<string, string> = {
     '/widgets/resource-balance/useResourceBalance.ts': `
       export const useResourceBalance = (_widget, runtime) => ({ track: runtime.tracks[0], tag: 'X',
@@ -37,14 +44,16 @@ test('the mounted resource pin dates its header and body to local picks and actu
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__resourcePin.hour;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted) => {
       globalThis.__resourcePin.wanted = wanted;
-      return { labelAt: hour => tag => ({ name: tag + ' at ' + hour, known: true, flag: 'data:flag-' + tag + '@' + hour }) };
+      return { labelAt: hour => tag => ({ name: !globalThis.__resourcePin.onlyRequested || wanted.some(item => item.hour === hour && item.tag === tag)
+        ? tag + ' at ' + hour : 'Country name unavailable', known: true, flag: 'data:flag-' + tag + '@' + hour }) };
     };`,
     '/dashboard/CountryComparisons.tsx': 'export default () => { throw new Error("An explicit native pin must keep one country."); };',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], muted: '#777777' });
-      export const useViewportHeight = () => 1000;`,
+      export const useViewportHeight = () => globalThis.__resourcePin.viewport;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
     '/charts/drill/BreakdownChart.tsx': 'export default props => { globalThis.__resourcePin.chart = props; return String(props.selectedHour); };',
     '/charts/drill/DrillParts.tsx': 'export default () => null;',
+    '/charts/drill/DrillHost.tsx': 'export default props => props.open ? props.children : props.main;',
     '/charts/useRowTooltips.ts': 'export const useRowTooltips = () => ({ hovered: null, descriptionId: String, rowProps: () => ({ onKeyDown() {} }) });',
     '/widgets/resource-balance/ResourceDealsView.tsx': 'export default () => null;',
   };
@@ -57,7 +66,7 @@ test('the mounted resource pin dates its header and body to local picks and actu
         if (path.endsWith('/widgets/resource-balance/ResourceBalanceWidget.tsx')) return source
           .replace(/\buseContext\(/g, '(() => null)(')
           .replace(/\buseHeldFailure\(/g, '((error) => error)(')
-          .replace(/\buseMemo(?:<[^;\n]*>)?\(/g, '((factory) => factory())(')
+          .replace(/\buseMemo(?:<[^;\n]*>)?\(/g, 'globalThis.__resourceMemo(')
           .replace(/\buseCallback(?:<[^;\n]*>)?\(/g, '((callback) => callback)(')
           .replace(/\buseEffect\(/g, '(() => {})(')
           .replace(/\buseReducer\(/g, '((reduce) => [globalThis.__resourcePin.drill, action => { globalThis.__resourcePin.drill = reduce(globalThis.__resourcePin.drill, action); }])(')
@@ -78,6 +87,7 @@ test('the mounted resource pin dates its header and body to local picks and actu
       countrySlot: {} as HTMLElement, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     assert.equal(Widget(props).type, Country);
     const render = () => {
+      state.cursor = 0;
       const node = Country(props);
       state.button = followButton(node);
       return renderToStaticMarkup(node);
@@ -120,5 +130,25 @@ test('the mounted resource pin dates its header and body to local picks and actu
     assert.match(bars(signed), /role="button"[^>]*aria-label="Synthetic resource: supply/,
       'Hide empty preserves negative supply and demand');
     assert.doesNotMatch(bars({ ...data, series: [{ id: 7, runs: [{ ...pool, producedRaw: '0', availableRaw: '0', afterProjectsRaw: '0' }] }] }), /role="button"/);
-  } finally { await vite.close(); delete globals.__resourcePin; }
+
+    const imports = Array.from({ length: 9 }, (_, index) => `Import ${index}`), exports = ['Export A', 'Export B'];
+    state.data = { ...data, resources: [...data.resources, { ...data.resources[0], id: 8, token: 'other', name: 'Other resource' }],
+      series: [{ id: 7, runs: [{ ...pool, importedRaw: '900000', availableRaw: '1000000', afterProjectsRaw: '1000000' }] },
+        { id: 8, runs: [{ ...pool, toExportRaw: '200000', exportedRaw: '200000' }] }],
+      trades: [...imports, ...exports].map((partner, index) => ({ partner, deal: String(index), resource: index < imports.length ? 7 : 8,
+        direction: index < imports.length ? 'import' : 'export', deliveredRaw: '100000', factories: 2,
+        convoysAssigned: 0, convoysRequired: 0, firstHour: 100, lastHour: 120, startsSegment: true })) };
+    props.widget.options = { view: 'bars' }; props.widget.time = { mode: 'follow' }; props.countrySlot = undefined;
+    state.hour = 105; state.viewport = 180; state.onlyRequested = true;
+    state.drill = { breakdown: null, follow: true, hour: null }; state.memos = [];
+    const spoken = render();
+    assert.deepEqual(state.wanted.map(item => item.tag).sort(), [...imports, ...exports].sort(), 'all resources request partners without hover or effects');
+    assert.ok(state.wanted.every(item => item.hour === 105));
+    for (const partner of [...imports.slice(0, 8), ...exports]) assert.ok(spoken.includes(`${partner} at 105`), 'the full spoken breakdown names even fitted-out partners');
+    assert.doesNotMatch(spoken, /Country name unavailable/);
+    const wanted = state.wanted;
+    render(); assert.equal(state.wanted, wanted, 'unchanged partners retain the wanted list identity');
+    state.data = { ...state.data, warnings: ['Synthetic update'] };
+    render(); assert.equal(state.wanted, wanted, 'a reply refresh with the same partners causes no request churn');
+  } finally { await vite.close(); delete globals.__resourcePin; delete globals.__resourceMemo; }
 });

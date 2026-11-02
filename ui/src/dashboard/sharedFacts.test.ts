@@ -8,13 +8,14 @@ import type { DashboardClient } from './client';
 function asks(fail = new Set<string>()) {
   const asked: { hour: number; tags: readonly string[]; signal: AbortSignal; release: () => void }[] = [];
   const ask: Ask<string> = (hour, tags, signal) => new Promise<Told<string>>(resolve => {
-    const release = () => resolve(tags.some(tag => fail.has(tag)) ? { failed: true }
+    const release = () => resolve(tags.some(tag => fail.has(tag)) ? { failed: failure }
       : new Map(tags.filter(tag => tag !== 'NONE').map(tag => [tag, `${tag}@${hour}`])));
-    signal.addEventListener('abort', () => resolve({ failed: true }), { once: true });
+    signal.addEventListener('abort', () => resolve({ failed: failure }), { once: true });
     asked.push({ hour, tags, signal, release });
   });
   return { asked, ask };
 }
+const failure = { error: new Error('Synthetic fact failure'), retryable: true };
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
 test('a country wanted by many readers is asked once, and told ones are kept for the next', async () => {
@@ -68,7 +69,7 @@ test('a failure is told to its readers but never kept', async () => {
   const told = facts.read(10, ['ENG'], new AbortController().signal);
   asked.forEach(each => each.release());
   const read = (await failing)!;
-  assert.deepEqual([...read.failed], [['GER', true], ['ITA', true]]);
+  assert.deepEqual([...read.failed], [['GER', failure], ['ITA', failure]]);
   assert.equal((await told)!.failed.size, 0);
   // Asked again, and told this time.
   fail.clear();

@@ -1,5 +1,5 @@
 use super::{Inner, MAX_CANCELLED, MAX_PENDING};
-use crate::{Source, transport::bounded_text};
+use crate::{QueryError, Source, transport::bounded_text};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
@@ -52,7 +52,7 @@ pub(super) struct Pending {
     pub(super) leases: BTreeMap<String, Lease>,
     pub(super) source_requests: BTreeMap<String, String>,
     pub(super) ready: VecDeque<(Arc<Request>, String)>,
-    pub(super) errors: VecDeque<(Arc<Request>, String)>,
+    pub(super) errors: VecDeque<(Arc<Request>, QueryError)>,
     // Recent cancel-before-admission messages are bounded separately. Live work
     // keeps its own token even after an unrelated tombstone evicts an old id.
     pub(super) cancelled: VecDeque<String>,
@@ -152,13 +152,21 @@ impl Pending {
     }
 
     /// Queue a finished job's result if its request is still current.
-    pub(super) fn complete(&mut self, request: Arc<Request>, result: Result<String, String>) {
+    pub(super) fn complete(&mut self, request: Arc<Request>, result: Result<String, QueryError>) {
         if !self.current(&request) {
             return;
         }
         match result {
             Ok(json) => self.ready.push_back((request, json)),
-            Err(error) => self.errors.push_back((request, bounded_text(&error, 2048))),
+            Err(error) => {
+                let error = match error {
+                    QueryError::Failed { message } => QueryError::Failed {
+                        message: bounded_text(&message, 2048),
+                    },
+                    refused => refused,
+                };
+                self.errors.push_back((request, error));
+            }
         }
     }
 }
@@ -183,11 +191,11 @@ impl Inner {
         request
     }
 
-    pub(super) fn error(&self, request: Arc<Request>, message: String) {
+    pub(super) fn error(&self, request: Arc<Request>, message: QueryError) {
         self.complete(request, Err(message));
     }
 
-    pub(super) fn complete(&self, request: Arc<Request>, result: Result<String, String>) {
+    pub(super) fn complete(&self, request: Arc<Request>, result: Result<String, QueryError>) {
         let mut pending = self
             .pending
             .lock()

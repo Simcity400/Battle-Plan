@@ -25,7 +25,7 @@ import './trainingQueue.css';
 const rowKey = (row: QueueRow) => row.key;
 const NO_SORT = { column: 'name', direction: 'ascending' } as const;
 
-function Meter({ ratio, label }: { ratio: number | null; label: string }) {
+function meterCell({ ratio, label }: { ratio: number | null; label: string }) {
   return ratio === null ? <span className="training-queue-missing" data-tooltip="Not recorded">—</span>
     : <span className="training-queue-meter"><ProgressMeter value={ratio} state="live" label={label} /><span>{percent(ratio)}</span></span>;
 }
@@ -37,7 +37,9 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
-  const countryName = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryName = countryLabel.name;
+  const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
   const request = track && window && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'training-queue',
     params: { branchId: track.branch.id, hour, tag } } : null;
@@ -64,11 +66,11 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
       text: row => row.kind === 'order' ? `${row.order.divisions.length} in training` : (r => r === null ? 'Not recorded' : percent(r))(trainingRatio(row.division)),
       render: row => row.kind === 'order'
         ? closed.has(row.key) || !row.order.divisions.length ? <span className="training-queue-missing">{row.order.divisions.length ? `${row.order.divisions.length} in training` : 'No divisions in training'}</span> : ''
-        : <Meter ratio={trainingRatio(row.division)} label="Training" /> },
+        : meterCell({ ratio: trainingRatio(row.division), label: 'Training' }) },
     { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(calc(var(--space-6) * 3), 1fr)', sortable: false, priority: 1, value: () => null, renderMissing: true,
       text: row => { const fill = row.kind === 'order' ? lowestFill(row.order) : equipmentFill(row.division); return fill === null ? 'Not recorded' : percent(fill); },
-      render: row => row.kind === 'order' ? closed.has(row.key) ? <Meter ratio={lowestFill(row.order)} label="Lowest equipment fill" /> : ''
-        : <Meter ratio={equipmentFill(row.division)} label="Equipment" /> },
+      render: row => row.kind === 'order' ? closed.has(row.key) ? meterCell({ ratio: lowestFill(row.order), label: 'Lowest equipment fill' }) : ''
+        : meterCell({ ratio: equipmentFill(row.division), label: 'Equipment' }) },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', hint: 'Available / needed', numeric: true, width: 'max-content', sortable: false, priority: 2, value: () => null, renderMissing: true,
       text: row => row.kind === 'order' ? '' : `${usNumber.format(row.division.manpower)} / ${usNumber.format(row.division.manpowerNeeded)}`,
       render: row => row.kind === 'order' ? '' : `${usNumber.format(row.division.manpower)} / ${usNumber.format(row.division.manpowerNeeded)}` },
@@ -91,18 +93,18 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see the training queue." />;
   else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) body = <WidgetState kind="empty" message="Choose a country to see its training queue." />;
-  else if (country.error && !country.historyHeld) body = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) body = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
   else if (country.holders) body = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) body = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) body = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
+  else if (country.absent) body = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (!tag) body = <WidgetState kind="loading" label="Loading the training queue…" />;
-  else if (state.error) body = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  else if (state.error) body = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading the training queue…" />;
-  else if (data.absent) body = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
-  else if (data.missing !== null) body = <WidgetState kind="unavailable" message="The training queue wasn’t recorded at this time." />;
-  else if (!rows.length) body = <WidgetState kind="empty" message={`${countryName} is not training any divisions.`} />;
+  else if (data.absent) body = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
+  else if (data.missing !== null) body = <WidgetState kind="unavailable" message="The training queue wasn’t recorded at this time." detail={nameDetail} />;
+  else if (!rows.length) body = <WidgetState kind="empty" message={nameDetail ? 'No divisions in training.' : `${countryName} is not training any divisions.`} detail={nameDetail} />;
   else body = <Table label="Training queue" rows={rows} columns={columns} rowKey={rowKey} tree={tree} unsorted sort={NO_SORT}
     cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     tooltip={tooltip} menu={() => data.readHour === null ? [] : [jumpItem(runtime, track.id, data.readHour)]} />;
-  return <div className="training-queue">{pill}{country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}{body}</div>;
+  return <div className="training-queue" data-detail={countryLabel.nameFailure?.message}>{pill}{country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}{body}</div>;
 }

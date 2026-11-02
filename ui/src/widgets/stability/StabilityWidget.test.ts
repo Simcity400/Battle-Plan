@@ -73,7 +73,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
       flagReason: () => globalThis.__stabilityRenderer.flagReason, revision: 0 }; };`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 }); export const flagReadMetadata = () => ({});',
     '/widgets/national-focus/useFocusArtwork.ts': 'export const useFocusText = () => ({read: new Map(), warnings: []});',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryNamesRead = () => new Map(); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryFactsRead = () => new Map();',
     '/charts/useChartTokens.ts': `const tokens = { categories: ['#123456'], muted: '#888888', surface: '#000000',
       countryColours: 'game', fontSize: { body: 12 } }; export const useChartTokens = () => tokens; export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

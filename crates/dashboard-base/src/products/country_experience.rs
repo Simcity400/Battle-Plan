@@ -261,7 +261,7 @@ fn scan_reads(
                         .into_iter()
                         .any(|table| native::left_to_native(decoded, table))
                     {
-                        return Err(io::Error::other(native::unprepared("Experience")));
+                        return Err(native::unprepared("Experience"));
                     }
                     observer.step(decoded, replay.format, None, |tag, _, read| {
                         if let Some(reads) = result.get_mut(tag) {

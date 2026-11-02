@@ -2,6 +2,7 @@
 // and lend-lease tables: art only for mounted rows, the hammer where none loads.
 import { useMemo } from 'react';
 import ArtFallback from '../components/ArtFallback';
+import { defineCellWidth } from '../charts/table/cellWidth.ts';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { variantDecimal } from './economyHistory';
@@ -16,6 +17,9 @@ export function EquipmentCell({ name, detail, icon }: { name: string | null; det
     <span><b>{name ?? EQUIPMENT_UNNAMED}</b>{detail && <small>{detail}</small>}</span>
   </span>;
 }
+
+defineCellWidth(EquipmentCell, ({ name, detail }) => <span className="stockpile-equipment"><span className="stockpile-art" />
+  <span><b>{name ?? EQUIPMENT_UNNAMED}</b>{detail && <small>{detail}</small>}</span></span>);
 
 /** The pictures of the variants (hexadecimal handles) the mounted rows show, read for
  * `tag` at `hour` through the stockpile's artwork product. */

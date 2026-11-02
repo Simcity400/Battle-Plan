@@ -42,7 +42,7 @@ import { OPTIONS } from './definition';
 import TensionDrill from './TensionDrillView';
 import { pinTensionDrill, TENSION_BREAKDOWN, tensionEventKeys } from './tensionDrill';
 import { addedAt, contributionAt, contributionPercent, eventGroup, eventsOutsideReads, eventsWithin, formatContribution, formatTension, formatTensionAxis,
-  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing } from './tensionData';
+  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing } from './tensionData.ts';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import './worldTension.css';
 import { motionOf } from '../../charts/easing.ts';
@@ -218,8 +218,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const content = (() => {
   if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (groups.error && widget.countries.kind !== 'all' && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (groups.error && widget.countries.kind !== 'all' && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   if (!model || (widget.countries.kind !== 'all' && !identities)) return <WidgetState kind="loading" label="Loading world tension…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (!data?.available && data?.pending?.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -312,7 +312,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const total = shownRead ? formatTension(model, shownRead.tensionRaw) : data.exactHours.includes(head) ? 'Not recorded' : 'Loading…';
   const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Unknown country' : looks.name(tag);
   const overviewState = widget.countries.kind === 'group' && groups.error && !groups.data
-    ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+    ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
       : widget.countries.kind === 'group' && !groups.data ? <WidgetState kind="loading" label="Loading country group…" /> : null;
   const main = overviewState ?? <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
@@ -366,5 +366,5 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     canFollow={followHour != null} onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
     onPin={() => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track, drillAt, drill.follow))} main={main}>{breakdown}</DrillHost></div>;
   })();
-  return <div ref={root} style={{ display: 'contents' }}>{widget.countries.kind !== 'all' && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}{content}</div>;
+  return <div ref={root} style={{ display: 'contents' }}>{widget.countries.kind !== 'all' && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{content}</div>;
 }

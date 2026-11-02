@@ -499,11 +499,12 @@ fn icons_anchor_only_at_records_the_loader_admits() {
 #[test]
 fn base_prohibition_lists_keep_raw_zero_and_nonzero_country_aliases() {
     let links = BTreeMap::from([(11, 1), (99, 1), (22, 2)]);
-    assert_eq!(country_list_contains(&[0], 0, &links), Ok(true));
-    assert_eq!(country_list_contains(&[11], 0, &links), Ok(false));
-    assert_eq!(country_list_contains(&[99], 11, &links), Ok(true));
-    assert_eq!(country_list_contains(&[22], 11, &links), Ok(false));
-    assert!(country_list_contains(&[88], 11, &links).is_err());
+    let slot_of = |raw| links.get(&raw).copied();
+    assert_eq!(country_list_contains(&[0], 0, slot_of), Ok(true));
+    assert_eq!(country_list_contains(&[11], 0, slot_of), Ok(false));
+    assert_eq!(country_list_contains(&[99], 11, slot_of), Ok(true));
+    assert_eq!(country_list_contains(&[22], 11, slot_of), Ok(false));
+    assert!(country_list_contains(&[88], 11, slot_of).is_err());
 }
 
 #[test]

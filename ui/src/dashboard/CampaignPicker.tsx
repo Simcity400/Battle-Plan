@@ -1,3 +1,4 @@
+import { type Failure, asFailure, failureText } from './queryError.ts';
 import { useId, useState } from 'react';
 import { Popover, usePopover } from '../components/Popover';
 import { Icon } from '../components/Icons';
@@ -12,7 +13,7 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
   const id = useId();
   const menu = usePopover('end');
   const [query, setQuery] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Failure | null>(null);
   const displayName = recordingDisplayName;
   const open = runtime.campaigns.filter(campaign => !campaign.loading);
   const loading = runtime.campaigns.filter(campaign => campaign.loading);
@@ -27,14 +28,14 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
   const choose = (value: string | null) => {
     setError(null);
     menu.close();
-    void runtime.assignCampaign(widget.id, value).catch(cause => setError(cause instanceof Error ? cause.message : String(cause)));
+    void runtime.assignCampaign(widget.id, value).catch(cause => setError(asFailure(cause)));
   };
   return <div className="field">
     <span>Campaign</span>
     <button ref={menu.trigger} type="button" className="widget-country-trigger" popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open} aria-label={`Widget campaign: ${label}`}>
       <Icon name={widget.campaign === 'default' ? 'star' : 'file'} /><span>{label}</span><Icon name="chevron-down" />
     </button>
-    {error && <p className="map-menu-error" role="alert">Couldn’t load campaign.</p>}
+    {error && <p className="map-menu-error" role="alert" data-detail={error.message}>{failureText(error, "Couldn’t load campaign.")}</p>}
     <Popover menu={menu} portal={false} id={id} className="campaign-picker" aria-label="Choose the widget's campaign" onToggle={event => { if (event.newState === 'closed') setQuery(''); }}>
       <button type="button" className="menu-item" aria-pressed={widget.campaign === 'default'} onClick={() => choose(null)}>
         <Icon name="star" /><span className="menu-item-label">Default campaign<small>{defaultCampaign ? `Now ${displayName(defaultCampaign.path)}` : 'Current campaign'}</small></span>

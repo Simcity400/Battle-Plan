@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
@@ -25,14 +26,15 @@ import { occurrenceCountryRequests, recordingBreaks, scriptNotRecorded } from '.
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import { useScriptOccurrences } from '../event-feed/useScriptOccurrences';
 import { AWAITING, EVENT_KINDS, OPTIONS } from './definition';
-import { awaitingText, choiceAt, choiceDates, choiceDescription, choiceDiagnostics, choiceJumps, choiceTitle, choiceTooltip, isOpen,
-  noChoiceText, optionLines, prepareChoices } from './eventChoicesData';
+import { awaitingText, choiceAt, choicePlaybackBounds, choiceDates, choiceDescription, choiceDiagnostics, choiceJumps, choiceTitle, choiceTooltip, isOpen,
+  noChoiceText, optionLines, prepareChoices } from './eventChoicesData.ts';
 import type { ChoiceAt, ChoiceFilter } from './eventChoicesData';
 import '../event-feed/eventFeed.css';
 import '../peace-deals/peaceDeals.css';
 import './eventChoices.css';
 
 const NO_ROWS: readonly LogRow<ChoiceAt>[] = [];
+const NO_PAGES: readonly never[] = [];
 const count = (rows: readonly LogRow<ChoiceAt>[]) => rows.length;
 const cardHeight = (row: LogRow<ChoiceAt>) => 78 + 18 * Math.max(1, row.item.card.item?.options?.length ?? 1);
 
@@ -68,7 +70,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
   const at = useCallback((row: LogRow<ChoiceAt>, at: number) => choiceAt(row, at, breaks, awaiting), [breaks, awaiting]);
   const filterKey = JSON.stringify([kindsKey, widget.countries, fallback, from]);
   const feed = useScriptOccurrences(runtime, track, active && match.ready && inBranch && kinds.length > 0, hour, 'event-choices',
-    kinds, from, filterKey, prepare, at, count);
+    kinds, from, filterKey, prepare, at, count, breaks, choicePlaybackBounds);
   const [visible, setVisible] = useState<readonly LogRow<ChoiceAt>[]>(NO_ROWS);
   const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
@@ -85,9 +87,9 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
   const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see event choices." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
+  if (feedError) return <>{groupFailure}<WidgetState kind="error" failure={feedError} onRetry={feed.retry} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (kinds.length > 0 && (!feed.data || !match.ready)) return <>{groupFailure}<WidgetState kind="loading" label="Loading event choices…" /></>;
 
@@ -96,7 +98,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
   const country = (hour: number, tag: string | null) => {
     if (tag === null) return <span className="peace-muted">A country not identified</span>;
     const found = label(hour, tag);
-    return <span><CountryFlagUrl className="log-flag" url={found.flag} reason={found.flagReason} pending={found.flagPending} /><b>{found.name}</b></span>;
+    return <span><CountryFlagUrl className="log-flag" url={found.flag} detail={found.flagDetail} reason={found.flagReason} pending={found.flagPending} /><b>{found.name}</b></span>;
   };
   const renderRow = (row: LogRow<ChoiceAt>) => {
     const choice = row.item;
@@ -123,10 +125,16 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     {header}
     {log.chips && <div className="log-chips"><ChipSet label="Event choices filters" chips={chips} selected={selected} max={chips.length}
       onToggle={key => setOption?.(key, !selected.includes(key))} /></div>}
-    <LogList key={feed.identity} pages={kinds.length > 0 ? feed.pages : []} label="Event choices" layout="card" density={log.density} months={log.months}
+    <LogList key={feed.identity} pages={kinds.length > 0 ? feed.pages : NO_PAGES} label="Event choices" layout="card" density={log.density} months={log.months}
+      {...import.meta.env.MODE === 'parity' ? { paritySemantic: { complete: true, reads: undefined,
+        item: (row: LogRow<ChoiceAt>) => ({ ...row.item, hour: feed.shownHour }) } } : {}}
       preparedCoverage={feed.prefix?.coverage} rowHeight={cardHeight} anchorRows
       animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
-      renderRow={renderRow} describe={row => choiceDescription(row.item, name)} tooltip={row => choiceTooltip(row.item, name)}
+      renderRow={renderRow} describe={row => choiceDescription(row.item, name)} tooltip={row => {
+        const countries: ReturnType<typeof label>[] = [];
+        const forms = choiceTooltip(row.item, (tag, hour) => { const country = label(hour, tag); countries.push(country); return country.name; });
+        return forms.map(form => ({ ...form, ...countryNameDetails({ nameDetail: form.detail }, ...countries) }));
+      }}
       menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={!kinds.length || match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;

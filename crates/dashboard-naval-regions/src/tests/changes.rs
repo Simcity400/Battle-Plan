@@ -16,6 +16,20 @@ use std::io;
 struct Whole<O>(O);
 
 impl<O: Observer> Observer for Whole<O> {
+    type Content = O::Content;
+
+    fn content(
+        source: &dashboard_base::Source,
+        options: Option<&dashboard_core::config::ContentOptions>,
+        check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        O::content(source, options, check)
+    }
+
+    fn bind(&mut self, content: &std::sync::Arc<Self::Content>) -> std::io::Result<()> {
+        self.0.bind(content)
+    }
+
     const NAME: &'static str = O::NAME;
     const TABLES: &'static [TableId] = O::TABLES;
     const READ: TableId = O::READ;
@@ -479,7 +493,7 @@ fn native_tables(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame
     ) {
         if matches!(
             &*frame.tables[T::ID.index()],
-            TableView::Complete(_) | TableView::Unavailable { .. }
+            TableView::Complete(_) | TableView::Truncated { .. } | TableView::Unavailable { .. }
         ) {
             write::<T>(walk, frame);
         }
@@ -533,5 +547,252 @@ fn the_native_publications_hold_what_the_walks_scans_hold() {
             native.observer.refusals, walked.observer.refusals,
             "naval supremacy, {label}: refusals"
         );
+    }
+}
+
+fn native_replies_at_cuts<O: Observer>(
+    frames: Vec<DecodedFrame>,
+    params: &[serde_json::Value],
+    reply: fn(&Query<'_>, &dashboard_keyed::native::testing::Stored, bool) -> serde_json::Value,
+) -> Vec<Vec<serde_json::Value>> {
+    use dashboard_keyed::native::testing::{operate, publish_bound};
+    let (first, last) = (frames[0].hour, frames.last().unwrap().hour);
+    let cuts = [7, 8, 12, 23, 24, 31, 35, 48, 55];
+    let publish = |starts: &[usize], resume| {
+        publish_bound::<O>(
+            operate::<O>(&frames, starts, native_tables),
+            1,
+            &cuts,
+            resume,
+            None,
+        )
+    };
+    let reference = publish(&[], None);
+    let resumed = publish(&[1, 5, 17, 24, 29, 41], Some(7));
+    let source = source_for_queries(frames);
+    let flag = AtomicBool::new(false);
+    let mut replies = Vec::new();
+    for ((cut, reference), resumed) in cuts.into_iter().zip(reference).zip(resumed) {
+        let reference = reference.store();
+        let resumed = resumed.store();
+        let prefix = Prefix::new(
+            &source,
+            1,
+            Coverage {
+                schema: 1,
+                first_hour: first,
+                last_hour: cut,
+                complete: cut == last,
+            },
+            None,
+        );
+        let mut at_cut = Vec::new();
+        for params in params {
+            let ask = |publication: &dashboard_keyed::native::testing::Stored, uninterrupted| {
+                let q = Query {
+                    source: &source,
+                    params,
+                    content: None,
+                    store: &publication.fixture.store,
+                    key: &publication.fixture.key,
+                    branch: 1,
+                    prefix: &prefix,
+                    cancelled: &flag,
+                };
+                reply(&q, publication, uninterrupted)
+            };
+            let actual = ask(&resumed, false);
+            assert_eq!(
+                actual,
+                ask(&reference, true),
+                "{} at {cut}, {params}",
+                O::NAME
+            );
+            at_cut.push(actual);
+        }
+        replies.push(at_cut);
+    }
+    replies
+}
+
+#[test]
+fn minefield_native_replies_and_history_warnings_match_at_every_cut_after_resume() {
+    let mut frames = worlds(4, 7..=55);
+    frames[1] = frames[0].clone();
+    frames[1].hour = 8;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frames[1].tables[TableId::Countries.index()]
+    {
+        rows[0].political_power_raw = Some(999);
+    }
+    let replies = native_replies_at_cuts::<MinefieldsObserver>(
+        frames,
+        &[
+            json!({"branchId": "1"}),
+            json!({"branchId": "1", "tags": [tag(0)]}),
+            json!({"branchId": "1", "firstHour": 8, "lastHour": 49}),
+        ],
+        |q, publication, _| {
+            minefields::answer(q, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+        },
+    );
+    let warning =
+        json!("1 naval observations refused: Minefield owner country link is unavailable");
+    assert!(
+        replies[1][0]["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&warning)
+    );
+    assert_eq!(replies[0][0]["warnings"], replies[1][0]["warnings"]);
+}
+
+#[test]
+fn supremacy_native_replies_and_history_warnings_match_at_every_cut_after_resume() {
+    let mut frames = worlds(4, 7..=55);
+    frames[0].tables[TableId::NavalSupremacy.index()] = TableView::Unavailable {
+        reason: "synthetic refused currents".into(),
+    }
+    .into();
+    frames[1] = frames[0].clone();
+    frames[1].hour = 8;
+    let replies = native_replies_at_cuts::<NavalSupremacyObserver>(
+        frames,
+        &[
+            json!({"branchId": "1", "tag": tag(0), "daily": true}),
+            json!({"branchId": "1", "tag": tag(1), "daily": true}),
+            json!({"branchId": "1", "tag": tag(0), "daily": true, "firstHour": 8, "lastHour": 49}),
+        ],
+        |q, publication, uninterrupted| {
+            let walk: naval_supremacy::Walk = if uninterrupted {
+                naval_supremacy::lookup
+            } else {
+                naval_supremacy::sweep
+            };
+            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+        },
+    );
+    let warning = json!("1 naval observations refused: NavalSupremacy is not recorded");
+    assert!(
+        replies[1][0]["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&warning)
+    );
+    assert_eq!(replies[0][0]["warnings"], replies[1][0]["warnings"]);
+}
+
+#[test]
+fn unselected_restatements_do_not_repeat_refusals_after_resume() {
+    let mut frames = worlds(4, 7..=55);
+    frames[0].tables[TableId::NavalSupremacy.index()] = TableView::Unavailable {
+        reason: "synthetic refused currents".into(),
+    }
+    .into();
+    frames[1] = frames[0].clone();
+    frames[1].hour = 8;
+    let TableView::Complete(TableRows::Countries(countries)) =
+        &mut *frames[1].tables[TableId::Countries.index()]
+    else {
+        unreachable!();
+    };
+    countries[0].political_power_raw = None;
+    countries[0].border_land_doctrine_level = rows::Recorded::Value(Some(77));
+    let TableView::Complete(TableRows::Subjects(subjects)) =
+        &mut *frames[1].tables[TableId::Subjects.index()]
+    else {
+        unreachable!();
+    };
+    subjects[0].autonomy_ratio = 999;
+    subjects[0].state = b"changed unselected state".to_vec();
+    let TableView::Complete(TableRows::CountryCounterInputs(counters)) =
+        &mut *frames[1].tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!();
+    };
+    counters[0].owned_states = rows::Recorded::Value(Some(vec![10, 20, 30]));
+    counters[0].owned_state_count = 3;
+    let replies = native_replies_at_cuts::<NavalSupremacyObserver>(
+        frames,
+        &[json!({"branchId": "1", "tag": tag(0), "daily": true})],
+        |q, publication, uninterrupted| {
+            let walk: naval_supremacy::Walk = if uninterrupted {
+                naval_supremacy::lookup
+            } else {
+                naval_supremacy::sweep
+            };
+            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+        },
+    );
+    let warning = json!("1 naval observations refused: NavalSupremacy is not recorded");
+    assert!(
+        replies[1][0]["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&warning)
+    );
+    assert_eq!(replies[0][0]["warnings"], replies[1][0]["warnings"]);
+}
+
+#[test]
+fn changed_truncated_country_rows_keep_native_history_warnings_across_resume() {
+    let mut frames = worlds(4, 7..=55);
+    let countries = TableId::Countries.index();
+    let TableView::Complete(rows) = &*frames[0].tables[countries] else {
+        unreachable!();
+    };
+    frames[0].tables[countries] = TableView::Truncated {
+        rows: rows.clone(),
+        missing: 1,
+    }
+    .into();
+    frames[0].tables[TableId::NavalSupremacy.index()] = TableView::Unavailable {
+        reason: "synthetic refused currents".into(),
+    }
+    .into();
+    frames[1] = frames[0].clone();
+    frames[1].hour = 8;
+    if let TableView::Truncated {
+        rows: TableRows::Countries(rows),
+        ..
+    } = &mut *frames[1].tables[countries]
+    {
+        rows[0].tag = b"REN".to_vec();
+    }
+    let mines = native_replies_at_cuts::<MinefieldsObserver>(
+        frames.clone(),
+        &[json!({"branchId": "1"})],
+        |q, publication, _| {
+            minefields::answer(q, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+        },
+    );
+    let supremacy = native_replies_at_cuts::<NavalSupremacyObserver>(
+        frames,
+        &[json!({"branchId": "1", "tag": tag(0), "daily": true})],
+        |q, publication, uninterrupted| {
+            let walk: naval_supremacy::Walk = if uninterrupted {
+                naval_supremacy::lookup
+            } else {
+                naval_supremacy::sweep
+            };
+            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+        },
+    );
+    for (replies, reason) in [
+        (
+            mines,
+            "Minefield amounts or country identities are not recorded",
+        ),
+        (supremacy, "NavalSupremacy is not recorded"),
+    ] {
+        for (cut, count) in [(0, 1), (1, 2)] {
+            let warning = json!(format!("{count} naval observations refused: {reason}"));
+            assert!(
+                replies[cut][0]["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&warning)
+            );
+        }
     }
 }

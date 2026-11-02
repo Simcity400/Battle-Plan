@@ -30,6 +30,6 @@ export function useLeaderPortraits(runtime: WidgetRuntime, track: BoundTrack | u
   const portraits = useCountryFactsAt(runtime.client, track, wanted, active, spec);
   return {
     at: (row: LeaderRow) => portraits.get(nameKey(row.person.portraitHour, row.person.portraitReference)),
-    warnings: [...new Set([...portraits.values()].flatMap(portrait => portrait.warnings))],
+    warnings: [...new Set([...portraits.values()].flatMap(portrait => portrait instanceof Error ? [portrait.message] : portrait.warnings))],
   };
 }

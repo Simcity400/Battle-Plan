@@ -5,7 +5,7 @@ use base64::Engine;
 use dashboard::{
     Config, Service,
     protocol::{MAX_MESSAGE_BYTES, replay_revision},
-    transport::{DataCommand, DataEvent, ReplyChunks, bounded_text},
+    transport::{DataCommand, DataEvent, ReplyChunks},
 };
 use serde::Deserialize;
 use std::{
@@ -168,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(error) => {
                         if !emit(&DataEvent::Error {
                             id,
-                            message: error.to_string(),
+                            error: error.into(),
                         }) {
                             return Err("Browser connection closed".into());
                         }
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(error) => {
                     if !emit(&DataEvent::Error {
                         id: id.clone(),
-                        message: bounded_text(&error.to_string(), 2048),
+                        error: error.into(),
                     }) {
                         return Err("Browser connection closed".into());
                     }
@@ -258,8 +258,10 @@ mod folder_command_tests {
             "type": "artwork", "id": "art-1", "name": "synthetic.png"
         }))
         .unwrap();
-        assert!(matches!(command, Command::Local(LocalCommand::Artwork { id, name })
-            if id == "art-1" && name == "synthetic.png"));
+        assert!(
+            matches!(command, Command::Local(LocalCommand::Artwork { id, name })
+            if id == "art-1" && name == "synthetic.png")
+        );
         for value in [
             serde_json::json!({"type": "setContentFolders", "id": "1", "game": "C:/Game"}),
             serde_json::json!({"type": "setContentFolders", "id": "1", "game": "C:/Game", "user": null}),

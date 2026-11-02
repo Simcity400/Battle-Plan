@@ -36,6 +36,16 @@ use std::{
 };
 use ts_rs::TS;
 
+pub(crate) mod native;
+pub(crate) mod served;
+
+/// The catalogue's warning where some ownership is unknown.
+pub(crate) const OWNERSHIP_INCOMPLETE: &str =
+    "Some ownership history is unavailable. Only countries with recorded land ownership are listed.";
+/// The catalogue's warning after the count of countries named by their tag.
+pub(crate) const NAMES_UNRESOLVED: &str =
+    "country names could not be resolved from the recorded content and show their tag.";
+
 /// Ownership witnesses and the operands used to name their first observation.
 #[cfg(test)]
 pub(crate) const TABLES: &[TableId] = &[
@@ -318,12 +328,10 @@ impl Scan {
             .collect();
         let mut warnings = Vec::new();
         if self.incomplete {
-            warnings.push("Some ownership history is unavailable. Only countries with recorded land ownership are listed.".into());
+            warnings.push(OWNERSHIP_INCOMPLETE.into());
         }
         if self.unnamed > 0 {
-            warnings.push(format!(
-            "{} country names could not be resolved from the recorded content and show their tag.",self.unnamed
-        ));
+            warnings.push(format!("{} {NAMES_UNRESOLVED}", self.unnamed));
         }
         warnings.extend(self.warnings.iter().cloned());
         countries.sort_unstable_by(|a, b| (&a.2.tag, a.0, a.1).cmp(&(&b.2.tag, b.0, b.1)));
@@ -345,9 +353,6 @@ impl Scan {
     }
 }
 
-/// Why every recording refuses the catalogue: its only preparation was the hourly walk.
-pub(crate) const NOT_PREPARED: &str = "Land owners are not prepared natively yet";
-
 pub struct LandOwnersProduct;
 
 /// Land ownership is campaign-wide; there are no parameters.
@@ -358,6 +363,7 @@ pub struct LandOwnersParams {}
 impl Product for LandOwnersProduct {
     const KEY: &'static str = "land-owners";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = LandOwnersParams;
     type Reply = LandOwners;
 

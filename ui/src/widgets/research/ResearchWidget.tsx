@@ -15,6 +15,7 @@ import { VirtualList } from '../../components/VirtualList';
 import { jumpItem, rowJumpProps } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
 import Table from '../../charts/table/Table';
+import { defineCellWidth } from '../../charts/table/cellWidth.ts';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import type { TableColumn } from '../../charts/table/Table';
@@ -60,6 +61,8 @@ const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.data
 function Art({ icon, className }: { icon: string | undefined; className: string }) {
   return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
+
+defineCellWidth(Art, ({ className }) => <span className={className} />);
 
 /** Hover and keyboard focus show the same tooltip. */
 function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
@@ -184,8 +187,9 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const text = useMemo<ResearchText>(() => ({
     name: (token, databaseIndex) => contentTitle(researchArt(artwork, token, databaseIndex)?.name, token, 'Technology name unavailable'),
     icon: token => artwork.get(token)?.icon ?? undefined,
+    artworkFailure: token => images.failures?.get(token),
     folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
-  }), [artwork, looks]);
+  }), [artwork, looks, images.failures]);
   const tip = useCallback<Tip>((content, key, x, y) => showTooltip(owner, content(), x, y, key), [owner]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
@@ -203,7 +207,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   </>;
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{header}<div className="dash-empty" role="status">This time is outside the recording.</div></>;
-  const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return <>{header}{failure}</>;
   if (!data || !slots) return <>{header}{preparing ? <PreparedLogCoverage coverage={null} /> : <ListSkeleton label="Loading research…" />}</>;
   if (!lanes.length && preparedPrefix(data)?.pending.length) return <>{header}{failure}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} /></>;

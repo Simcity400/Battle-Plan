@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { CountryGroupReply, OperativePlacementReply, PlacementPeriod } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import { countryMatch, worldFilter } from '../../dashboard/groups.ts';
@@ -123,7 +124,7 @@ export function placementChord(placements: readonly PlacementAt[], most: number,
   const data = { nodes: [...countries].map(([id, tag]) => {
       const label = labels(tag);
       return { id, label: label.name, flag: label.flag, color: color(tag),
-        countryFlag: { flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason } };
+        countryFlag: { ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}), ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason } };
     }),
     flows: placements.map(n => ({ id: n.id, source: countryNodeId(n.owner), target: countryNodeId(n.target), value: n.count })) };
   const folded = foldChord(data, keep, { id: OTHER_ID, label: 'Other countries', color: muted });
@@ -143,7 +144,7 @@ export function placementChordMemo() {
     const facts = new Map<string, PlacementFact>();
     for (const n of placements) for (const tag of [n.owner, n.target]) if (!facts.has(tag)) {
       const label = labels(tag);
-      facts.set(tag, { name: label.name, flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason, color: color(tag) });
+      facts.set(tag, { ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}), name: label.name, flag: label.flag, flagPending: label.flagPending, flagReason: label.flagReason, ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), color: color(tag) });
     }
     if (previous && previous.most === most && previous.read === read && previous.muted === muted
       && previous.placements.length === placements.length && placements.every((n, i) => {
@@ -151,7 +152,7 @@ export function placementChordMemo() {
         return n.id === old.id && n.owner === old.owner && n.target === old.target && n.count === old.count && n.operatives.length === old.operatives.length && n.operatives.every((o, j) => o.id === old.operatives[j].id && o.name === old.operatives[j].name && o.unnamed === old.operatives[j].unnamed);
       }) && facts.size === previous.facts.size && [...facts].every(([tag, fact]) => {
         const old = previous!.facts.get(tag);
-        return old?.name === fact.name && old.flag === fact.flag && old.flagPending === fact.flagPending
+        return old?.name === fact.name && old.nameFailure === fact.nameFailure && old.flagDetail === fact.flagDetail && old.flag === fact.flag && old.flagPending === fact.flagPending
           && old.flagReason === fact.flagReason && old.color === fact.color;
       })) return previous.chord;
     const chord = placementChord(placements, most, read, tag => facts.get(tag)!, tag => facts.get(tag)!.color, muted);
@@ -166,9 +167,9 @@ export function placementTooltip(hit: ChordHit, chord: PlacementChord): TooltipC
   if (hit.kind === 'flow') {
     const members = chord.flows.get(hit.id)?.map(id => chord.placements.get(id)!);
     if (!members?.length) return null;
-    if (members.length === 1) return { title: title(members[0]), rows: names(members[0]) };
+    if (members.length === 1) return { ...countryNameDetails(chord.labels(members[0].owner), chord.labels(members[0].target)), title: title(members[0]), rows: names(members[0]) };
     return { title: 'Operative placements', rows: [
-      ...members.flatMap(n => [{ label: title(n), strong: true }, ...names(n)]),
+      ...members.flatMap(n => [{ ...countryNameDetails(chord.labels(n.owner), chord.labels(n.target)), label: title(n), strong: true }, ...names(n)]),
       { label: 'Total operatives', value: members.reduce((sum, n) => sum + BigInt(n.count), 0n).toString(), strong: true },
     ] };
   }
@@ -177,7 +178,7 @@ export function placementTooltip(hit: ChordHit, chord: PlacementChord): TooltipC
   const tags = memberIds.map(id => chord.countries.get(id)!);
   let incoming = 0n, outgoing = 0n;
   for (const tag of tags) { const total = chord.totals.get(tag)!; outgoing += total.outgoing; incoming += total.incoming; }
-  return { title: hit.id === OTHER_ID ? 'Other countries' : chord.labels(tags[0]).name,
+  return { ...countryNameDetails(...tags.map(tag => chord.labels(tag))), title: hit.id === OTHER_ID ? 'Other countries' : chord.labels(tags[0]).name,
     rows: [{ label: 'Operatives sent', value: outgoing.toString() }, { label: 'Operatives received', value: incoming.toString() },
       ...(hit.id === OTHER_ID ? tags.map(tag => ({ label: chord.labels(tag).name, countryFlag: chord.labels(tag), tone: 'muted' as const })) : [])] };
 }

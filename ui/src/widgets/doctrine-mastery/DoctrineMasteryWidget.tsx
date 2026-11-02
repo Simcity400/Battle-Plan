@@ -1,3 +1,5 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
+import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -70,12 +72,12 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   useEffect(() => setDescribing(tips.hovered?.startsWith('mark#') ?? false), [tips.hovered]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const country = useCountryNamesAt(runtime.client, track, useMemo(() => tag && readHour !== undefined ? [{ hour: readHour, tag }] : [], [tag, readHour]), active);
-  const countryName = tag && readHour !== undefined ? country.get(nameKey(readHour, tag)) : undefined;
+  const countryName = tag && readHour !== undefined ? nameReadText(country.get(nameKey(readHour, tag))) : undefined;
   const pill = headerSlot && at && createPortal(<span className="pill">{activeTracks(at.folders)} tracks active</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="flask" message="Load a campaign to see doctrines." />;
   if (!tag) return <WidgetState kind="empty" icon="flask" message="Choose a country in the widget's header." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading doctrines…" />;
   if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!at) return <WidgetState kind="unavailable" message="Doctrines were not recorded at this time." />;
@@ -85,7 +87,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     const next = chosen.includes(id) ? chosen.filter(item => item !== id) : [...chosen, id];
     setOption?.('folders', next.length === chips.length ? '' : next.map(setToken).join(' '));
   };
-  return <div ref={anchor} className="doctrine-mastery">
+  return <div ref={anchor} data-detail={failureDetails([...country.values()].map(nameReadFailure))} className="doctrine-mastery">
     {pill}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     {chips.length > 1 && setOption && <div className="log-chips doctrine-mastery-chips"><ChipSet label="Doctrine folders" chips={chips}

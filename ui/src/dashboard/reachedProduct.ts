@@ -1,3 +1,5 @@
+import { nameReadMetadata } from './nameReads.ts';
+import { type Failure } from './queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 import { useContentRevision } from './contentRevision';
@@ -32,7 +34,7 @@ export function useReachedProduct<T>(client: DashboardClient, source: DashboardS
 /** Rebinding waits for complete identity history; held history remains usable alongside errors. */
 export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, hour: number, active: boolean, stored: unknown,
   setOption?: (key: string, value: string) => void)
-  : ReachedCountry & { holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: string; retry: () => void; historyHeld: boolean } {
+  : ReachedCountry & { holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: Failure; retry: () => void; historyHeld: boolean } {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const histories = groups.data?.countryIdentities;
@@ -71,9 +73,10 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     error: groups.error, retry: groups.retry, historyHeld: !!histories };
 }
 
-/** One country's name at an hour for a widget's own messages; its tag while the name loads. */
-export function useCountryNameAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tag: string | null, hour: number, active: boolean): string {
-  const wanted = useMemo(() => tag ? [{ hour, tag }] : [], [tag, hour]);
-  const names = useCountryNamesAt(client, track, wanted, active);
-  return tag ? names.get(nameKey(hour, tag)) ?? tag : '';
+/** Preserve the dated name state for the widget's messages and developer detail. */
+export function useCountryNameAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tag: string | null, hour: number, active: boolean) {
+  const available = !!track && !!tag && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  const wanted = useMemo(() => available && tag ? [{ hour, tag }] : [], [available, tag, hour]);
+  const names = useCountryNamesAt(client, track, wanted, active && available);
+  return nameReadMetadata(available && tag ? names.get(nameKey(hour, tag)) : undefined);
 }

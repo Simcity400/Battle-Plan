@@ -1647,7 +1647,7 @@ fn validate_origin(
             })
         });
     if !witnessed {
-        return Err(dashboard_core::invalid(
+        return Err(dashboard_core::refused(
             "The selected native country identity is not recorded at its origin",
         ));
     }

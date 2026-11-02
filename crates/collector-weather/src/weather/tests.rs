@@ -274,7 +274,9 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
                 cursor: 0,
                 anchor_seed: None,
                 hours: Vec::new(),
-                checksum: replay_data::temperature::checksum([fixture_words().temperature]),
+                witness: replay_data::rows::TemperatureWitness::new(
+                    replay_data::temperature::witness([fixture_words().temperature])
+                ),
             })),
             // The typed fixture path reads no modifier: a refusal, never zero.
             modifiers: rows::Recorded::Value(None),
@@ -1853,11 +1855,13 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
             cursor: 0,
             anchor_seed: None,
             hours: Vec::new(),
-            checksum: replay_data::temperature::checksum([fixture_words().temperature]),
+            witness: replay_data::rows::TemperatureWitness::new(replay_data::temperature::witness(
+                [fixture_words().temperature]
+            )),
         }
     );
     // The next hour's pass visits the one slot and moves its words; the rows keep the
-    // anchor's words and the pass records the hour's seed and read checksum.
+    // anchor's words and the pass records the hour's seed and read witness.
     put(
         &mut bytes,
         0x4000 + sweather_per_province::TEMPERATURE,
@@ -1871,7 +1875,10 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
         (recorded.anchor, recorded.hours.clone()),
         (500, vec![Some(78)])
     );
-    assert_eq!(recorded.checksum, replay_data::temperature::checksum([42]));
+    assert_eq!(
+        recorded.witness,
+        replay_data::rows::TemperatureWitness::new(replay_data::temperature::witness([42]))
+    );
     // An unread seed records no pass, keeps every province field, and the next hour anchors.
     let unread = FaultReads {
         memory: memory(&bytes),
@@ -1900,7 +1907,7 @@ fn province_projection_compares_all_owned_fields_without_allocating() {
         cursor: 2,
         anchor_seed: Some(7),
         hours: vec![Some(8)],
-        checksum: 13,
+        witness: replay_data::rows::TemperatureWitness::new(13),
     });
     let native = captured.provinces.rows[0];
     let previous = captured.province_row(&native);

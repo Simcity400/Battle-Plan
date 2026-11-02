@@ -215,7 +215,10 @@ impl Product for PoliticsState {
         )? {
             SeekResult::Frame(frame) => frame,
             SeekResult::Gap { reason, .. } => {
-                return Err(invalid(format!("Politics unavailable: {reason}")));
+                return Err(dashboard_base::prepared::query::frames::gap_error(
+                    &reason,
+                    format!("Politics unavailable: {reason}"),
+                ));
             }
         };
         native::fill(source, &mut frame, tables, cancelled)?;
@@ -320,9 +323,10 @@ pub fn read(
         PoliticsView::Balances => balances(frame, catalogue, &mut reply)?,
     }
     for entry in &reply.unavailable {
-        reply
-            .warnings
-            .push(format!("{} refused {}: {}", entry.count, entry.label, entry.reason));
+        reply.warnings.push(format!(
+            "{} refused {}: {}",
+            entry.count, entry.label, entry.reason
+        ));
     }
     Ok(reply)
 }
@@ -525,7 +529,8 @@ fn balances(
         let active = token(&record.active_range);
         // The authored range the recorded id names, where it names exactly one;
         // otherwise its bounds stay unknown and the record's other facts stand.
-        let authored = content.map(|database| database.range(&record.balance, &record.active_range));
+        let authored =
+            content.map(|database| database.range(&record.balance, &record.active_range));
         if let Some(Err(reason)) = &authored {
             reply.refuse("balance ranges", reason.clone(), 1);
         }
@@ -576,15 +581,13 @@ fn balances(
         let sources = match (&statics, &registry, breakdowns) {
             (Some((catalogue, statics)), Ok(registry), Some(breakdowns)) => {
                 match breakdowns.iter().find(|row| row.record == record.ordinal) {
-                    Some(row) => {
-                        match drift_sources(catalogue, statics, registry, &row.sources) {
-                            Ok(sources) => Some(sources),
-                            Err(reason) => {
-                                reply.refuse("balance drift sources", reason, 1);
-                                None
-                            }
+                    Some(row) => match drift_sources(catalogue, statics, registry, &row.sources) {
+                        Ok(sources) => Some(sources),
+                        Err(reason) => {
+                            reply.refuse("balance drift sources", reason, 1);
+                            None
                         }
-                    }
+                    },
                     None => {
                         reply.refuse(
                             "balance drift sources",
@@ -669,15 +672,17 @@ fn drift_sources(
     let inputs: Vec<_> = sources
         .iter()
         .zip(&blocks)
-        .map(|(source, block)| replay_derive::power_balance_derive::Source {
-            name: source,
-            auxiliary: !block.tooltip_table().is_empty() || !block.children.is_empty(),
-            values: block
-                .values
-                .iter()
-                .map(|value| (value.name.as_str(), value.value))
-                .collect(),
-        })
+        .map(
+            |(source, block)| replay_derive::power_balance_derive::Source {
+                name: source,
+                auxiliary: !block.tooltip_table().is_empty() || !block.children.is_empty(),
+                values: block
+                    .values
+                    .iter()
+                    .map(|value| (value.name.as_str(), value.value))
+                    .collect(),
+            },
+        )
         .collect();
     let daily = replay_derive::power_balance_derive::tree(
         engine_executable::modifier_keys::POWER_BALANCE_DAILY,

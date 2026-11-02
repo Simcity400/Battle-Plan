@@ -86,7 +86,7 @@ function FuelBranchesCountry({ widget, runtime, active, onDiagnostics, within }:
   if (!track) return <WidgetState kind="empty" icon="droplet" message="Load a campaign to see fuel." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading fuel by branch…" />;
   if (options.view === 'time') return <FuelBranchesOverTime data={data} tag={tag} hour={hour} playbackHour={playbackHour} widget={widget} runtime={runtime} active={active} amount={amount} within={within} />;
   if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;

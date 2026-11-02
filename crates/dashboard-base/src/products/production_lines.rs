@@ -1827,7 +1827,7 @@ fn holder_view(
     let (catalogue, _) = scan_content(source, context, warnings);
     let history = index
         .native_history(holder)
-        .ok_or_else(|| crate::invalid("Production country identity is not prepared"))?;
+        .ok_or_else(|| dashboard_core::refused("Production country identity is not prepared"))?;
     view_warnings(index, history, catalogue.as_deref(), warnings)?;
     prefix_warning(
         &approximate(source, params.branch(), &index.directory.coverage),

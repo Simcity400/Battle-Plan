@@ -1,3 +1,4 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -27,7 +28,7 @@ import TransferDrill from './TransferDrill';
 import { CountryTable, TransferTable } from './TransferTables';
 import { transferDrillOpen, selectedTransfers, transferSelection, transferSelectionToken, transferTime } from './transferDrillData';
 import { chosenConference, conferenceChoiceId, conferenceToken, countryBalances, decodeTransfers, involving, transferConferenceLabel, transferCutoff, transferEmptyMessage,
-  transferGapHint, transferGapWindow, transferGaps, transferHow, transferScope, transfersAt, visibleConferences } from './territoryData';
+  transferGapHint, transferGapWindow, transferGaps, transferHow, transferScope, transfersAt, visibleConferences } from './territoryData.ts';
 import type { CountryBalance, TransferOccurrence } from './territoryData';
 import { countryTooltip, transferRequest, transferTooltip } from './territoryTooltip';
 import type { TransferLabels, TransferTipRequest } from './territoryTooltip';
@@ -161,14 +162,14 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
   if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   // A prepared prefix may still omit transfers; pending hours are not missing data.
-  const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
   if (!data || !transfers) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading territory transfers…" />;
   if (pinned && selectionMissing) return failure ?? <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return failure ?? <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
   // Chosen countries need the country groups' identity history: a failed read says so and can be retried.
   if (filtered && !match.ready) return <>{failure}{groups.error && !groups.data
-    ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />
+    ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : <WidgetState kind="loading" label="Loading territory transfers…" />}</>;
 
   const [gapFrom, until] = transferGapWindow(conference, scoped, track.branch.firstHour, moment);
@@ -190,7 +191,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     {...tables} sort={pinned ? transferSort : TRANSFER_SORT} setOption={pinned ? transferSetOption : undefined}
     tooltip={transferTip} menu={transferMenu} onVisibleRows={setVisibleTransfers} />;
 
-  if (pinned) return <>{failure}<div className="territory-transfers">
+  if (pinned) return <>{failure}<div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="territory-transfers">
     {header}
     {storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection is unavailable. Select transfers again." /> : <>
       <div className="drill-header"><span className="drill-day">{formatDateTime(drillAt)}</span>
@@ -199,7 +200,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
       </div>{notes}{drillBody}</>}
   </div></>;
 
-  if (view === 'transfers') return <>{failure}<div className="territory-transfers">
+  if (view === 'transfers') return <>{failure}<div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="territory-transfers">
     {header}{notes}
     {shown.length ? <TransferTable {...tables} rows={shown} sort={transferSort} setOption={transferSetOption} tooltip={transferTip} menu={transferMenu}
       onVisibleRows={setVisibleTransfers} label="Territory transfers" /> : empty}
@@ -214,12 +215,12 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
       options: { ...spec.options, scope, conference: conference == null ? '' : conferenceToken(campaignKey, track.branch.id, conference.id),
         selection: transferSelectionToken(campaignKey, track.branch.id, [], Number.isFinite(rangeFrom) ? rangeFrom - track.branch.firstHour : null, drillCountry) } });
   };
-  const main = <div className="territory-transfers">
+  const main = <div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="territory-transfers">
     {notes}
     {balances.length ? <CountryTable {...tables} rows={balances} sort={tableSortOf(options.tableSort, COUNTRY_SORT)} setOption={setOption}
       onPick={openDrill} tooltip={countryTip} menu={countryMenu} onVisibleRows={setVisibleCountries} /> : empty}
   </div>;
-  return <>{failure}<div className="territory-transfer-host" ref={drillAnchor}>
+  return <>{failure}<div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="territory-transfer-host" ref={drillAnchor}>
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
       title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null}

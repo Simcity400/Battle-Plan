@@ -18,7 +18,7 @@ const catalogue = (): CountryGroupReply => ({ branchId: 'branch', humans: [{ tag
     { tag: 'Y', identities: [native(100, 119, 99), native(120, 129, 10), native(131, 139, 10)] },
   ] });
 
-type State = { groups?: CountryGroupReply; error?: string; groupReads: { track?: string; active: boolean }[];
+type State = { groups?: CountryGroupReply; error?: Error; groupReads: { track?: string; active: boolean }[];
   requests: readonly ProductRequest<{ tag: string }>[]; groupRetries: number; ledgerRetries: number };
 
 async function fixture() {
@@ -119,7 +119,7 @@ test('actual spending hook fetches dated alias ledgers without broadening rows o
     assert.deepEqual(new Set(end.tags), new Set(['B', 'X']));
     assert.equal(end.selection.matches('B', 105), true); assert.equal(end.selection.matches('Y', 125), false);
     view.state.groups = catalogue();
-    view.state.error = 'Native catalogue could not be read';
+    view.state.error = new Error('Native catalogue could not be read');
     const failed = view.politics(widget, view.runtime, true);
     assert.equal(failed.error, undefined, 'published membership stays in use');
     assert.equal(failed.groupError, view.state.error); failed.retry();

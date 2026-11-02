@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import { productionEndpointReply } from './preparedProducedView';
 import { usePreparedProduction } from './usePreparedProduction';
@@ -90,7 +91,7 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
   const window = producedWindow(measure, dayLabel(hour), since == null ? null : dayLabel(since));
   // The chart's key stays while the table's own replies load or refresh.
   const table = !alias ? <p className="drill-empty">Country unavailable at this time.</p>
-    : units.error ? <p className="drill-empty">{units.error}</p>
+    : units.error ? <p className="drill-empty" data-detail={units.error.message}>{failureText(units.error, 'Couldn’t load units delivered.')}</p>
       : !unitsModel ? <p className="drill-empty">Loading what this country made…</p>
         : <>
           <p className="drill-empty">Units delivered{icModel ? ' and IC put in' : ''} {window}, by type

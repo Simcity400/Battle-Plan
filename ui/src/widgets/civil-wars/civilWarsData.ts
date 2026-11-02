@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { TimelineLane } from '../../charts/timeline/layout';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -294,8 +295,7 @@ export function civilWarLanes(view: readonly CivilWarAt[], collapsed: ReadonlySe
   return { lanes, info };
 }
 
-/** What the given lanes name: sides named at the shown hour (`live`), and countries
- * named at a fixed hour (`dated`), so only lanes in view read names and flags. */
+// Live sides use the shown hour; headings and former sides use their supplying hours.
 export function laneCountries(lanes: readonly TimelineLane[], info: ReadonlyMap<string, CivilWarLaneInfo>): { live: string[]; dated: NameAt[] } {
   const live = new Set<string>();
   const dated = new Map<string, NameAt>();
@@ -369,9 +369,10 @@ export function warTooltip(war: CivilWarAt, hovered: number, text: TooltipText):
   ];
   let note: string | undefined;
   if (war.outcome) {
-    const losers = war.sides.filter(side => !side.winner).map(side => name(side.tag, side.labelHour).name);
+    const loserLooks = war.sides.filter(side => !side.winner).map(side => name(side.tag, side.labelHour));
+    const losers = loserLooks.map(look => look.name);
     const winner = name(war.winnerTag, war.outcome.hour);
-    rows.push({ label: 'Outcome', value: `Winner: ${winner.name} — ${listNames(losers)} annexed by a side by ${text.day(war.outcome.hour)}`, tone: 'positive' });
+    rows.push({ ...countryNameDetails(winner, ...loserLooks), label: 'Outcome', value: `Winner: ${winner.name} — ${listNames(losers)} annexed by a side by ${text.day(war.outcome.hour)}`, tone: 'positive' });
   } else if (!war.ongoing) {
     rows.push({ label: 'Outcome', value: 'Unknown', tone: 'muted' });
     note = 'No side was left after the others were annexed by a side.';
@@ -381,7 +382,7 @@ export function warTooltip(war: CivilWarAt, hovered: number, text: TooltipText):
     const look = name(side.tag, side.labelHour);
     rows.push({ label: look.name, countryFlag: look, indent: true, short: true, ...(side.winner ? { value: 'Winner', tone: 'positive' as const } : {}) });
   }
-  return { title: headingTitle(name(war.titleTag, war.war.firstHour).name), subtitle: `Civil war · ${text.day(hovered)}`, rows, ...(note ? { note } : {}) };
+  return { ...countryNameDetails(name(war.titleTag, war.war.firstHour)), title: headingTitle(name(war.titleTag, war.war.firstHour).name), subtitle: `Civil war · ${text.day(hovered)}`, rows, ...(note ? { note } : {}) };
 }
 
 /** How a side left, as the recorded annexation says. */

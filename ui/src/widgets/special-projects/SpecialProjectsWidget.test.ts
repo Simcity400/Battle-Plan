@@ -32,7 +32,7 @@ type Request = { params: { tag: string; selectionTags: string[] } };
 const host = globalThis as typeof globalThis & { __projectTimeline?: TimelineProps; __projectRequests?: Request[];
   __projectWanted?: { tag: string; hour: number }[]; __projectFlag?: ReturnType<CountryLabel>; __projectLabels?: [number, string][];
   __projectGroupReply?: CountryGroupReply; __projectReplies?: Record<string, SpecialProjectsReply>; __projectMenu?: readonly MenuItem[];
-  __projectPending?: boolean; __projectGroupPending?: boolean; __projectErrors?: Record<string, string>; __projectGroupError?: string;
+  __projectPending?: boolean; __projectGroupPending?: boolean; __projectErrors?: Record<string, Error>; __projectGroupError?: Error;
   __projectRetries?: string[]; __projectRetry?: () => void; __projectPortals?: ReactElement<{ onChange: (value: string) => void }>[];
   __projectPortalTargets?: unknown[]; __projectActions?: HTMLElement;
   __projectKeys?: Record<string, (event: { key: string; shiftKey?: boolean; preventDefault: () => void; currentTarget: { getBoundingClientRect: () => { left: number; bottom: number } } }) => void> };
@@ -137,7 +137,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     assert.match(render(), /Loading special projects/);
     assert.equal(host.__projectPortals?.length, 1);
     delete host.__projectPending;
-    host.__projectErrors = { Y: 'Synthetic malformed backend reason' };
+    host.__projectErrors = { Y: new Error('Synthetic malformed backend reason') };
     const partlyFailed = render();
     assert.match(partlyFailed, /X project 1/);
     assert.match(partlyFailed, /Couldn’t load\./);
@@ -149,7 +149,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     assert.match(render(), /Loading countries/);
     assert.equal(host.__projectPortals?.length, 1);
     delete host.__projectGroupPending;
-    host.__projectGroupError = 'Synthetic group failure';
+    host.__projectGroupError = new Error('Synthetic group failure');
     assert.match(render(), />Retry</);
     host.__projectRetry!(); assert.equal(host.__projectRetries.at(-1), 'groups');
     delete host.__projectGroupError;

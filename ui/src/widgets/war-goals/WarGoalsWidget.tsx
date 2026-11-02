@@ -38,7 +38,7 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see war goals." />;
   if (hour == null) return <WidgetState kind="unavailable" message="Choose a recorded time." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country to see its war goals." />;
-  if (product.error && !data) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
+  if (product.error && !data) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading war goals…" />;
 
   const label = labelAt(data.hour);

@@ -329,6 +329,16 @@ pub static FAMILY: Family = dashboard_keyed::block::family::<MinefieldsObserver>
     "minefields.fallback",
 );
 impl Observer for MinefieldsObserver {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "minefields";
     const TABLES: &'static [TableId] = &[
         TableId::NavalRegionalMines,

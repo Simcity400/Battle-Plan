@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { DashboardClient } from '../../dashboard/client';
@@ -128,7 +129,8 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const data = useMemo(() => selection && shownCatalogue ? stockpileView(shownCatalogue, shownAt, at.hour, selection.tag) : undefined,
     [selection, shownCatalogue, shownAt, at.hour]);
   const error = catalogue.error ?? at.error;
-  const reason = ((groups.error && !history) || error ? 'Couldn’t load country.' : null) ?? (!history ? 'Loading country…'
+  const failure = (history ? undefined : groups.error) ?? error;
+  const reason = (failure ? failureText(failure, 'Couldn’t load country.') : null) ?? (!history ? 'Loading country…'
     : !spans ? 'Choose a country again.' : !data ? 'Loading the selected stockpile history…' : null);
   return { data, catalogue: shownCatalogue, holders, spans, reason, error: (history ? undefined : groups.error) ?? error,
     retry: groups.error && !history ? groups.retry : () => { catalogue.retry(); at.retry(); }, identityError: history ? groups.error : undefined, identityRetry: groups.retry };

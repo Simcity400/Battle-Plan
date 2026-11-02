@@ -112,7 +112,7 @@ test('actual transport cancels queued reads without fetch, holds an aborted body
     const imageFailure = assert.rejects(image, /Synthetic image refusal/);
     await tick();
     transport.requests.find(request => request.body.request?.product === 'focus-artwork')!.finish({ name: 'Independent localized title' });
-    transport.requests.find(request => request.body.request?.product === 'technology-artwork')!.finish({ error: 'Synthetic image refusal' }, false);
+    transport.requests.find(request => request.body.request?.product === 'technology-artwork')!.finish({ error: { kind: 'failed', message: 'Synthetic image refusal' } }, false);
     assert.equal((await text).data.name, 'Independent localized title'); await imageFailure;
     await transport.drain();
     await Promise.all([...histories.slice(1, 3), next]);
@@ -219,4 +219,24 @@ test('preparation commands echo their request identity and preserve decimal coun
     assert.deepEqual(bodies[0], { type: 'preparation', id: 'exact-progress', sourceId: 'prepared-source', revision: 'v1', action: 'status' });
     await assert.rejects(client.preparationStatus!({ ...identity, requestId: 'stale-progress' }, new AbortController().signal), /does not match this recording and request/);
   } finally { globalThis.fetch = previous; }
+});
+
+test('browser product errors keep named refusals distinct from technical failures', async () => {
+  const { browserDashboardClient: client } = await import('./browserClient.ts');
+  const { RefusedError } = await import('./queryError.ts');
+  const transport = pendingTransport();
+  try {
+    for (const error of [{ kind: 'refused', text: 'Synthetic data was not recorded' }, { kind: 'failed', message: 'Synthetic technical detail' }]) {
+      const read = client.product(query('land-owners'), new AbortController().signal);
+      const rejected = assert.rejects(read, failure => {
+        assert.ok(failure instanceof Error);
+        assert.equal(failure instanceof RefusedError, error.kind === 'refused');
+        assert.equal(failure.message, error.kind === 'refused' ? error.text : error.message);
+        return true;
+      });
+      await tick();
+      transport.requests.at(-1)!.finish({ error }, false);
+      await rejected;
+    }
+  } finally { transport.restore(); }
 });

@@ -49,7 +49,7 @@ test('faction races request and display numeric totals during a colour failure, 
     detail: undefined as {hour: number; following: boolean} | undefined,
     control: undefined as {onPause: () => void; onFollow: () => void} | undefined,
     host: undefined as {onPause: () => void; onFollow: () => void; onPin: () => void} | undefined,
-    looks: {loading: false, error: 'Synthetic colour failure' as string | undefined, factions: [] as {id: string}[], names: new Map(), colours: new Map<string, string>(), warnings: []} };
+    looks: {loading: false, error: new Error('Synthetic colour failure') as Error | undefined, factions: [] as {id: string}[], names: new Map(), colours: new Map<string, string>(), warnings: []} };
   const hooks = {
     useMemo(build: () => unknown, deps: readonly unknown[]) {
       const index = state.cursor++, before = state.slots[index] as { deps: readonly unknown[]; value: unknown } | undefined;
@@ -105,7 +105,7 @@ test('faction races request and display numeric totals during a colour failure, 
     assert.equal(state.chart!.entityLooks.color('faction-0'), '#123456');
     state.looks.loading = true; state.looks.colours = new Map(); render();
     assert.equal(state.chart!.entityLooks.color('faction-0'), '#123456', 'pending colour refresh retains its known look');
-    state.looks.loading = false; state.looks.error = 'Synthetic completed failure'; render();
+    state.looks.loading = false; state.looks.error = new Error('Synthetic completed failure'); render();
     assert.equal(state.chart!.entityLooks.color('faction-0'), '#888', 'completed failures fall back to neutral');
     state.chart!.onPick(5, '1'); render(); assert.equal(state.detail!.hour, 10); assert.equal(state.detail!.following, true);
     state.host!.onPause(); render(); state.hour = 20; render(); assert.equal(state.detail!.hour, 10);

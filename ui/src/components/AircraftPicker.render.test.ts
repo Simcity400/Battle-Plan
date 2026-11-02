@@ -87,7 +87,7 @@ test('a listing without its first page says it is reading, and a failed first pa
     const reading = new catalogue.AircraftPages('reading');
     reading.begin(0);
     assert.match(render(reading), /Reading the content&#x27;s aircraft/);
-    reading.fail(0, 'Choose the game and user folders in Settings first');
+    reading.fail(0, new Error('Choose the game and user folders in Settings first'));
     assert.match(render(reading), /role="alert">Choose the game and user folders in Settings first.*Retry/);
     const none = new catalogue.AircraftPages('none');
     none.begin(0);
@@ -118,7 +118,7 @@ test('refused rows keep their places in the list but are no keyboard destination
     pages.begin(0);
     pages.accept(0, reply);
     pages.begin(1);
-    pages.fail(1, 'The data service stopped');
+    pages.fail(1, new Error('The data service stopped'));
     renderToStaticMarkup(createElement(module.AircraftCatalogueView, {
       pages, version: 2, scope: 'aircraft', onScope: () => {}, query: '', onQuery: () => {}, chosen: null, status: null,
       onChoose: () => {}, request: () => {}, retry: () => {} }));

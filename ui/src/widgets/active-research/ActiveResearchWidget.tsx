@@ -72,8 +72,9 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const text = useMemo<ResearchText>(() => ({
     name: (token, databaseIndex) => contentTitle(researchArt(artwork, token, databaseIndex)?.name, token, 'Technology name unavailable'),
     icon: token => artwork.get(token)?.icon ?? undefined,
+    artworkFailure: token => images.failures?.get(token),
     folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
-  }), [artwork, looks]);
+  }), [artwork, looks, images.failures]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
   const breakdown = usePopover('start');
@@ -88,7 +89,7 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const header = headerSlot && cards.length > 0 && createPortal(<span className="pill">{researching} of {cards.length} researching</span>, headerSlot);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
-  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || !slots) return <ListSkeleton label="Loading research..." />;
   const shownSlot = shown ? historySlots?.find(slot => slot.index === shown.slotIndex) : undefined;
   // The assignment stays resolved once it completes or is switched out.
@@ -137,15 +138,15 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   };
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="active-research" aria-label="Active research" ref={parity}>
     {header}
-    {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
+    {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
     <div className="active-cards">{cards.map(card)}</div>
     {!cards.length && <p>No research slots recorded at {researchDate(slotHour ?? hour)}.</p>}
     <ResearchGrants inventory={grantsShown} loading={grants !== undefined && grantsShown === undefined} />
     {historyPreparing && <p className="chart-line-key" role="status">Assignment dates and time breakdown are still being prepared.{countdownPreparing && ' The carried days-left estimate is still being prepared.'}</p>}
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && <>
-        {history.error && history.data ? <WidgetState kind="error" detail={history.error} onRetry={history.retry} /> : null}
-        {history.error && !history.data ? <WidgetState kind="error" detail={history.error} onRetry={history.retry} /> : historyPreparing || !history.data ? <PreparedLogCoverage coverage={null} /> : shownSlot && shownEntry ? <>
+        {history.error && history.data ? <WidgetState kind="error" failure={history.error} onRetry={history.retry} /> : null}
+        {history.error && !history.data ? <WidgetState kind="error" failure={history.error} onRetry={history.retry} /> : historyPreparing || !history.data ? <PreparedLogCoverage coverage={null} /> : shownSlot && shownEntry ? <>
         <PopoverHeading title={text.name(shownEntry.token, shownEntry.databaseIndex)} menu={breakdown} />
         <ResearchExplanation history={history.data.history} slots={historySlots!} slot={shownSlot} entry={shownEntry}
           description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} />

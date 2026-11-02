@@ -17,10 +17,10 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     names: new Map([[nameKey(100, 'read 0'), ''], [nameKey(101, 'read 4999'), 'Selected historical name']]),
     wanted: [] as { tag: string; hour: number }[], listReads: [] as { tag: string; branchId: string; hour: number }[][],
     headerReads: [] as { tag: string; hour: number }[],
-    rows: [] as { onClick: () => void; 'aria-label'?: string; 'data-tooltip'?: string }[],
+    rows: [] as { children: any[]; onClick: () => void; 'aria-label'?: string; 'data-tooltip'?: string }[],
     scroll: undefined as ((event: { currentTarget: { scrollTop: number; clientHeight: number } }) => void) | undefined,
     search: undefined as ((event: { currentTarget: { value: string } }) => void) | undefined,
-    changed: [] as (string | null)[], rosterLoads: 0, rosterError: null as string | null,
+    changed: [] as (string | null)[], rosterLoads: 0, rosterError: null as Error | null,
     rosterReply: null as unknown, retryAction: undefined as (() => void) | undefined, flagCall: 0, drawn: new WeakMap<object, Set<string>>() };
   const globals = globalThis as typeof globalThis & { __pickerWitness?: typeof state };
   globals.__pickerWitness = state;
@@ -53,12 +53,12 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__pickerWitness.content;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
       export const useCountryNamesAt = (_client, _track, wanted) => { const s = globalThis.__pickerWitness; s.wanted = wanted;
-        return new Map(wanted.flatMap(({ tag, hour }) => { const key = nameKey(hour, tag); return s.names.has(key) ? [[key, s.names.get(key)]] : []; })); };
-      export const useCountryNamesRead = () => new Map();`,
+        return new Map(wanted.map(({ tag, hour }) => { const key = nameKey(hour, tag); return [key, s.names.has(key)
+          ? { kind: 'value', value: s.names.get(key) } : { kind: 'loading' }]; })); };`,
     '/dashboard/products.ts': `export const loadProduct = (_client, request) => {
         const s = globalThis.__pickerWitness;
         s.rosterLoads++;
-        if (s.rosterError) return Promise.reject(Error(s.rosterError));
+        if (s.rosterError) return Promise.reject(s.rosterError);
         if (!s.rosterReply) throw Error('authoritative choices must not request metadata fallback');
         return Promise.resolve(s.rosterReply);
       };`,
@@ -101,13 +101,17 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.doesNotMatch(html, /no recorded read|Name and flag unavailable|data-icon="alert"/);
     assert.equal(state.rows[1]['aria-label'], undefined, 'missing looks leave the fallback country name visible');
     assert.equal(state.rows[1]['data-tooltip'], undefined);
-    assert.match(html, /actor 0002/);
+    const rowFor = (tag: string) => state.rows.find(row => row.children[2].props.children === tag)!;
+    for (const index of [2, 3, 4]) {
+      assert.equal(rowFor(tags[index]).children[1].props.children, 'Country name unavailable', 'unrequested supplying reads are absent');
+    }
+    assert.equal(rowFor(tags[5]).children[1].props.children, 'Loading name…', 'a valid pending supplying read is loading');
     assert.deepEqual(state.headerReads, [{ tag: 'read 4999', hour: 101 }]);
     state.rows[0].onClick(); assert.deepEqual(state.changed, [tags[0]], 'a mapped alias never replaces the pickable actor');
     state.open = true; props.selectedTag = tags[0]; render(); await flush(); html = render();
     assert.match(html, /<span><\/span>/, 'a proved empty name stays empty'); assert.match(html, /data-flag="read 0"/);
     props.choiceReads = new Map(reads).set(tags[0], null);
-    html = render(); assert.doesNotMatch(html, /data-flag="read 0"/); await flush();
+    html = render(); assert.doesNotMatch(html, /data-flag="read 0"/); assert.match(html, /Country name unavailable/); await flush();
     assert.ok(!state.wanted.some(read => read.tag === 'read 0'), 'changed witnesses release old names immediately');
     props.choiceReads = new Map(reads).set(tags[0], { tag: 'successor', branchId: '1', hour: 102 });
     state.names.set(nameKey(102, 'successor'), 'Successor name'); render(); await flush(); html = render();
@@ -128,7 +132,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.equal(state.rosterLoads, 0, 'authoritative choices never request the metadata roster');
     state.open = true; state.scroll!({ currentTarget: { scrollTop: 0, clientHeight: 340 } });
     props.allowedTags = undefined; props.choiceReads = undefined; props.flagAt = null;
-    state.rosterError = 'Synthetic native roster request failed';
+    state.rosterError = new Error('Synthetic native roster request failed');
     html = render(); assert.match(html, /Loading countries…/);
     await flush(); html = render();
     assert.match(html, /Couldn’t load countries\./);
@@ -169,7 +173,7 @@ test('the listbox names its active option only while that row is drawn, and is m
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = () => createElement('span');`,
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryNamesRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
     '/dashboard/products.ts': 'export const loadProduct = () => new Promise(() => {});',
     '/dashboard/countryFlags.ts': `export const flagReadKey = read => JSON.stringify([read.branchId, read.hour, read.tag]);
       export const retryFlags = () => {}; export const useFlagReads = () => new Map();`,

@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
@@ -6,7 +7,7 @@ import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { jumpItem } from '../../charts/jump';
 import { runAt } from '../../charts/series';
@@ -81,11 +82,11 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const portraits = useCountryFactsAt(runtime.client, track, artRequests, active && data !== undefined, PORTRAITS, new Set(artRequests.map(item => item.hour)).size);
   const columns = useMemo<readonly TableColumn<AceRow>[]>(() => [
     { key: 'portrait', header: null, label: 'Portrait', sortable: false, width: 'var(--military-portrait-column)', value: () => null, renderMissing: true,
-      render: row => { const art = portraits.get(nameKey(row.hour, row.key)); return art?.image ? <img className="aces-portrait" src={art.image} alt="" />
-        : <ArtFallback icon="helmet" className="aces-portrait" />; } },
+      render: row => { const art = portraits.get(nameKey(row.hour, row.key)); return art && !(art instanceof Error) && art.image ? <img className="aces-portrait" src={art.image} alt="" />
+        : <ArtFallback icon="helmet" className="aces-portrait" failure={art instanceof Error ? art : undefined} />; } },
     { ...SORT_CHOICES[1], label: 'Ace', header: 'Ace', width: 'minmax(var(--military-name-min), 1.6fr)', value: aceNameValue, renderMissing: true,
       render: row => { const label = row.run.tag ? labelAt(row.hour)(row.run.tag) : null; return <div className="aces-who"><b title={aceName(row)}>{aceName(row)}</b><small>
-        {label ? <CountryFlagUrl className="aces-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} />
+        {label ? <CountryFlagUrl className="aces-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />
           : <span className="aces-flag aces-country-missing" role="img" aria-label="Country not recorded" data-tooltip="Country not recorded" />}
         {aceCallsign(row) ? `“${aceCallsign(row)}”` : ''}
       </small></div>; } },
@@ -94,8 +95,9 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
     { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', priority: 1, inTooltip: true, value: row => row.ace.firstSeen, renderMissing: true,
       render: row => <small className="aces-status">{aceStatus(row)}</small> },
   ], [portraits, labelAt]);
-  const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name)], viewport), [labelAt, viewport]);
-  const diagnostics = useMemo(() => data ? [...data.warnings, ...(detail?.warnings ?? WARNINGS)] : WARNINGS, [data, detail]);
+  const tooltip = useCallback((row: AceRow) => fitTooltip([{ ...aceTooltip(row, tag => labelAt(row.hour)(tag).name),
+    ...countryNameDetails(...[row.run.tag, row.run.death?.killerTag].map(tag => tag == null ? null : labelAt(row.hour)(tag))) }], viewport), [labelAt, viewport]);
+  const diagnostics = useMemo(() => data ? [...data.warnings, ...(detail?.warnings ?? WARNINGS), ...[...portraits.values()].filter((value): value is Error => value instanceof Error).map(error => error.message)] : WARNINGS, [data, detail, portraits]);
   useDiagnostics(onDiagnostics, diagnostics);
   const root = useRef<HTMLDivElement>(null);
   useParityRows(root, () => ({ kind: 'windowed', label: 'Ace roster values',
@@ -104,8 +106,8 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   }));
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (loaded.error && !display) return <WidgetState kind="error" detail={loaded.error} onRetry={loaded.retry} />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (loaded.error && !display) return <WidgetState kind="error" failure={loaded.error} onRetry={loaded.retry} />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading aces…" /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
@@ -115,7 +117,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   // Aces are matched at the hour read: a country whose membership there is still being prepared is not known to be left out.
   if (!rows.length && read !== null && !match.known(read)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="star" message="No aces match these settings." /></>;
-  return <div ref={root} className="aces-widget">{groupFailure}{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status">{loaded.error ? 'Couldn’t load aces.' : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
+  return <div ref={root} className="aces-widget">{groupFailure}{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status" data-detail={loaded.error?.message}>{loaded.error ? failureText(loaded.error, 'Couldn’t load aces.') : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
     rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable" narrow={narrowTableOf(options)}
     muted={row => !row.run.alive} menu={row => row.preparing ? [] : [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed}
     {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: aceRowModel } } : {})} /></div>;

@@ -1,3 +1,4 @@
+import { type Failure } from '../../dashboard/queryError.ts';
 import { runAt } from '../../charts/series.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { TimelineLabel } from '../../charts/timeline/labelCatalogue';
@@ -132,7 +133,7 @@ export function viewpointSummary(country: ReturnType<CountryLabel> | null): stri
     : country.known !== true ? 'Loading viewpoint…' : `Wars as ${country.name} sees them`;
 }
 
-export function warsReplyState(reply: Pick<WarsReply, 'available'> | null | undefined, error: string | null | undefined): 'loading' | 'unavailable' | 'error' | 'ready' {
+export function warsReplyState(reply: Pick<WarsReply, 'available'> | null | undefined, error: Failure | null | undefined): 'loading' | 'unavailable' | 'error' | 'ready' {
   return error ? 'error' : !reply ? 'loading' : reply.available ? 'ready' : 'unavailable';
 }
 

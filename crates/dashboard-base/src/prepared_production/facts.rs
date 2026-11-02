@@ -8,9 +8,9 @@ use crate::products::equipment::production::{ProductionSpendingUnknown, Purpose}
 use std::io;
 
 /// The section each branch's fact ranges are appended to, as `{FACTS}/{branch}`.
-pub const FACTS: &str = "production-facts-v2";
+pub const FACTS: &str = "production-facts-v3";
 
-const MAGIC: u32 = 0x5046_5032;
+const MAGIC: u32 = 0x5046_5033;
 pub(crate) const PREAMBLE: usize = 4 + 8 + 8 + 8 + 8;
 
 /// Endpoints between two ranking keyframes.
@@ -200,6 +200,7 @@ pub(crate) struct Head {
     pub observation: Option<i32>,
     pub segment: u64,
     pub read_hour: Option<i32>,
+    pub spending_since: i32,
     pub units_known: bool,
     pub spending_known: bool,
     pub present: Option<bool>,
@@ -212,6 +213,7 @@ impl Head {
         out.u32(self.country_id);
         out.u64(self.segment);
         out.opt_i32(self.read_hour);
+        out.i32(self.spending_since);
         out.opt_i32(self.observation);
         out.u8(
             u8::from(self.units_known)
@@ -227,6 +229,7 @@ impl Head {
         let country_id = input.u32()?;
         let segment = input.u64()?;
         let read_hour = input.opt_i32()?;
+        let spending_since = input.i32()?;
         let observation = input.opt_i32()?;
         let flags = input.u8()?;
         if flags > 0b1111 {
@@ -238,6 +241,7 @@ impl Head {
             observation,
             segment,
             read_hour,
+            spending_since,
             units_known: flags & 1 != 0,
             spending_known: flags & 2 != 0,
             present: (flags & 4 != 0).then_some(flags & 8 != 0),
@@ -680,6 +684,7 @@ mod tests {
             observation: Some(3),
             segment: 1,
             read_hour: None,
+            spending_since: 3,
             units_known: true,
             spending_known: true,
             present: Some(true),

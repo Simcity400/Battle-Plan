@@ -6,6 +6,8 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import { lookHour } from '../../dashboard/countryLooks.ts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
+import { ABSENT_NAME, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import { FOLLOW_MS } from '../../dashboard/useCountriesAt.ts';
 import { useThrottled } from '../../dashboard/useThrottled.ts';
@@ -15,10 +17,9 @@ export interface CipherCountries { owner: ReturnType<CountryLabel>; target: Retu
 type Shown = CipherCountries & { row: RaceRow; hour: number };
 const sameIdentity = (a: RaceRow, b: RaceRow) => a.key === b.key && a.pair.ownerId === b.pair.ownerId && a.pair.targetId === b.pair.targetId && a.tags.firstHour === b.tags.firstHour
   && a.tags.ownerTag === b.tags.ownerTag && a.tags.targetTag === b.tags.targetTag;
-const missing = (): ReturnType<CountryLabel> => ({ name: 'Country name unavailable' });
+const missing = (): ReturnType<CountryLabel> => nameReadMetadata(ABSENT_NAME);
 
-/** Exact sampled country reads, with one completed display pair held only inside
- * its native tag segment. The shared fact store owns requests and their cache. */
+// Completed display pairs stay inside their native tag segment.
 export function useDecryptionCountries(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined,
   rows: readonly RaceRow[], visible: readonly MovingRow<RaceRow>[], active: boolean) {
   const content = useContentRevision(client);
@@ -37,17 +38,22 @@ export function useDecryptionCountries(client: DashboardClient, track: Pick<Boun
   const { pairs: held, reading } = shown.current;
   for (const [id, pair] of held) if (!valid(pair.row)) held.delete(id);
   for (const [id, row] of reading) if (!valid(row)) reading.delete(id);
-  // A slow read stays wanted even across throttle ticks; a later cohort starts
-  // only after this pair finishes, or its native identity becomes invalid.
+  // A slow flag read stays wanted until the pair finishes or its native identity changes.
   for (const { item, phase } of sampled) if (phase !== 'leaving' && valid(item) && !reading.has(item.key)) reading.set(item.key, item);
   const samples = [...reading.values()];
   const unique = new Map<string, { hour: number; tag: string }>();
-  for (const row of samples) for (const tag of [row.tags.ownerTag, row.tags.targetTag]) {
+  for (const row of [...rows, ...visible.map(row => row.item), ...samples]) for (const tag of [row.tags.ownerTag, row.tags.targetTag]) {
     if (tag !== null) unique.set(JSON.stringify([row.hour, tag]), { hour: row.hour, tag });
   }
   const wanted = [...unique.values()];
   const maxHours = Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size);
-  const countries = useCountryLabelsAt(client, track, wanted, active, maxHours);
+  const names = useCountryNamesAt(client, track, wanted, active, maxHours);
+  const flagWanted = samples.flatMap(row => [row.tags.ownerTag, row.tags.targetTag].flatMap(tag => tag === null ? [] : [{ hour: row.hour, tag }]));
+  const countries = useCountryLabelsAt(client, track, flagWanted, active, maxHours);
+  const version = useRef({ names, labels: countries.revision, revision: 0 });
+  if (version.current.names !== names || version.current.labels !== countries.revision) {
+    version.current = { names, labels: countries.revision, revision: version.current.revision + 1 };
+  }
   const pending = new Map<string, Shown>();
   for (const row of samples) {
     const label = countries.labelAt(row.hour);
@@ -64,10 +70,13 @@ export function useDecryptionCountries(client: DashboardClient, track: Pick<Boun
     pair: (row: RaceRow): CipherCountries => {
       const pair = held.get(row.key) ?? pending.get(row.key);
       if (pair && pair.hour <= row.hour && sameIdentity(pair.row, row)) return pair;
-      const waiting = valid(row);
-      const fallback = (tag: string | null) => tag === null ? missing() : waiting ? { name: 'Loading name…', flagPending: true } : missing();
+      const fallback = (tag: string | null) => {
+        if (tag === null) return missing();
+        const read = names.get(nameKey(row.hour, tag));
+        return { ...nameReadMetadata(read), flagPending: active && (read?.kind === 'loading' || valid(row)) };
+      };
       return { owner: fallback(row.tags.ownerTag), target: fallback(row.tags.targetTag) };
     },
-    revision: countries.revision,
+    revision: version.current.revision,
   };
 }

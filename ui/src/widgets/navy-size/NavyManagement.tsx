@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { PartsRaceDetailProps } from '../../charts/race/PartsRaceView';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -13,7 +14,7 @@ export default function NavyManagement({ client, track, tag, hour, active }: Par
   const revision = useContentRevision(client);
   const owner = useMemo(() => ({ client, source: track.source.id, revision: track.source.revision,
     branch: track.branch.id, hour, tag, content: revision }), [client, track.source.id, track.source.revision, track.branch.id, hour, tag, revision]);
-  const [state, setState] = useState<{ owner: typeof owner; data?: NavalManagementReply; error?: string }>();
+  const [state, setState] = useState<{ owner: typeof owner; data?: NavalManagementReply; error?: Failure }>();
   useEffect(() => {
     if (!active || !open) return;
     const controller = new AbortController();
@@ -24,13 +25,13 @@ export default function NavyManagement({ client, track, tag, hour, active }: Par
           if (data.branchId !== owner.branch || data.hour !== hour) throw Error('Naval management belongs to another date.');
           setState({ owner, data });
         }
-      }).catch(error => { if (!controller.signal.aborted) setState({ owner, error: String(error) }); });
+      }).catch(error => { if (!controller.signal.aborted) setState({ owner, error: asFailure(error) }); });
     return () => controller.abort();
   }, [owner, active, open, attempt]); // source and request fields are bound by owner
   const current = state?.owner === owner ? state : undefined;
   return <details className="navy-management" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Repairs, refits and reinforcement</summary>
-    {open && <div className="navy-management-content">{current?.error ? <WidgetState kind="error" detail={current.error} onRetry={() => setAttempt(value => value + 1)} />
+    {open && <div className="navy-management-content">{current?.error ? <WidgetState kind="error" failure={current.error} onRetry={() => setAttempt(value => value + 1)} />
       : !current?.data ? <WidgetState kind="loading" label="Loading naval orders..." />
       : <><p>Standing orders for fleets held by this country.</p>{current.data.warnings.length > 0 && <p role="status">Some naval details are unavailable. {current.data.warnings.join(' ')}</p>}
         {current.data.sections.map(section => <section key={section.key}><h4>{section.title}</h4>

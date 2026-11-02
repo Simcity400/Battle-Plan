@@ -14,7 +14,7 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime},
@@ -1740,6 +1740,50 @@ enum Entries {
     Flat { file: File, offsets: Vec<u64> },
 }
 
+#[derive(Default)]
+struct ResidentEntries {
+    bytes: OnceLock<Box<[u8]>>,
+    filling: Mutex<()>,
+}
+
+impl ResidentEntries {
+    fn get_or_read(&self, read: impl FnOnce() -> io::Result<Box<[u8]>>) -> io::Result<&[u8]> {
+        if let Some(bytes) = self.bytes.get() {
+            return Ok(bytes);
+        }
+        let _filling = self
+            .filling
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(bytes) = self.bytes.get() {
+            return Ok(bytes);
+        }
+        let bytes = read()?;
+        let _ = self.bytes.set(bytes);
+        Ok(self.bytes.get().unwrap())
+    }
+}
+
+fn read_entries(file: &File, offset: u64, len: u64) -> io::Result<Box<[u8]>> {
+    #[cfg(test)]
+    tests::ENTRY_READS.set(tests::ENTRY_READS.get() + 1);
+    // A corrupt listing must not size the fill past its log.
+    let size = file.metadata()?.len();
+    if offset.checked_add(len).is_none_or(|end| end > size) {
+        return Err(invalid("truncated prepared entry log"));
+    }
+    let len = to_usize(len)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    bytes.resize(len, 0);
+    if read_at(file, &mut bytes, offset)? != bytes.len() {
+        return Err(invalid("truncated prepared entry log"));
+    }
+    Ok(bytes.into_boxed_slice())
+}
+
 struct Catalog {
     /// Where its names file, entry logs and packs are.
     directory: PathBuf,
@@ -1748,6 +1792,8 @@ struct Catalog {
     names: (u64, u64),
     /// Each section's runs, in range order, covering its ranges.
     runs: Vec<Vec<Run>>,
+    /// One slot per run, or one per section in a flat listing.
+    resident: Vec<Vec<ResidentEntries>>,
     logs: Vec<PackRecord>,
     packs: Vec<PackRecord>,
     entries: Entries,
@@ -1830,6 +1876,7 @@ impl Catalog {
             },
             names: (0, 0),
             runs: Vec::new(),
+            resident: Vec::new(),
             logs: Vec::new(),
             packs: Vec::new(),
             entries: Entries::Logs(Mutex::default()),
@@ -1982,6 +2029,10 @@ impl Catalog {
                 sections,
             },
             names: (head.names, head.names_bytes),
+            resident: section_runs
+                .iter()
+                .map(|runs| runs.iter().map(|_| ResidentEntries::default()).collect())
+                .collect(),
             runs: section_runs,
             logs,
             packs,
@@ -2014,6 +2065,11 @@ impl Catalog {
         Ok(Self {
             directory,
             runs: head.sections.iter().map(|_| Vec::new()).collect(),
+            resident: head
+                .sections
+                .iter()
+                .map(|_| vec![ResidentEntries::default()])
+                .collect(),
             header: Header {
                 source: head.source,
                 sections: head.sections,
@@ -2025,8 +2081,6 @@ impl Catalog {
         })
     }
 
-    /// One range's entry: its section's run, then that run's log, read at
-    /// the entry's offset. Logs are opened once per catalog.
     fn entry(&self, section: usize, range: u64) -> io::Result<Option<RangeId>> {
         let Some(s) = self.header.sections.get(section) else {
             return Ok(None);
@@ -2034,35 +2088,41 @@ impl Catalog {
         if range >= s.count {
             return Ok(None);
         }
-        let mut bytes = [0; ENTRY_BYTES as usize];
-        let read = match &self.entries {
+        let (bytes, index) = match &self.entries {
             Entries::Flat { file, offsets } => {
-                read_at(file, &mut bytes, offsets[section] + range * ENTRY_BYTES)?
+                let bytes = self.resident[section][0]
+                    .get_or_read(|| read_entries(file, offsets[section], s.count * ENTRY_BYTES))?;
+                (bytes, range)
             }
             Entries::Logs(_) => {
                 let runs = &self.runs[section];
-                let run = runs[runs.partition_point(|run| run.end() <= range)];
-                let log = self.log(run.log)?;
-                read_at(
-                    &log,
-                    &mut bytes,
-                    run.offset + (range - run.first) * ENTRY_BYTES,
-                )?
+                let index = runs.partition_point(|run| run.end() <= range);
+                let run = &runs[index];
+                let bytes = self.resident[section][index].get_or_read(|| {
+                    let log = self.log(run.log)?;
+                    read_entries(&log, run.offset, run.bytes())
+                })?;
+                (bytes, range - run.first)
             }
         };
-        if read != bytes.len() {
-            return Err(invalid("truncated prepared entry log"));
-        }
-        RangeId::decode(&bytes).map(Some)
+        let at = to_usize(index * ENTRY_BYTES)?;
+        RangeId::decode(&bytes[at..at + ENTRY_BYTES as usize]).map(Some)
     }
 
     fn visit_run(
         &self,
-        run: &Run,
+        section: usize,
+        index: usize,
         scratch: &mut [u8],
         mut visit: impl FnMut(u64, RangeId) -> io::Result<()>,
     ) -> io::Result<()> {
-        let file = self.log(run.log)?;
+        let run = &self.runs[section][index];
+        let resident = self.resident[section][index].bytes.get();
+        let file = if resident.is_none() {
+            Some(self.log(run.log)?)
+        } else {
+            None
+        };
         let page_bytes = scratch.len() / ENTRY_BYTES as usize * ENTRY_BYTES as usize;
         if page_bytes == 0 {
             return Err(invalid("prepared entry scratch is too small"));
@@ -2070,13 +2130,21 @@ impl Catalog {
         let mut at = 0;
         while at < run.bytes() {
             let bytes = to_usize((run.bytes() - at).min(page_bytes as u64))?;
-            if read_at(&file, &mut scratch[..bytes], run.offset + at)? != bytes {
-                return Err(invalid("truncated prepared entry log"));
-            }
-            for (index, entry) in scratch[..bytes]
-                .chunks_exact(ENTRY_BYTES as usize)
-                .enumerate()
-            {
+            let entries = if let Some(resident) = resident {
+                let start = to_usize(at)?;
+                &resident[start..start + bytes]
+            } else {
+                if read_at(
+                    file.as_ref().unwrap(),
+                    &mut scratch[..bytes],
+                    run.offset + at,
+                )? != bytes
+                {
+                    return Err(invalid("truncated prepared entry log"));
+                }
+                &scratch[..bytes]
+            };
+            for (index, entry) in entries.chunks_exact(ENTRY_BYTES as usize).enumerate() {
                 visit(
                     run.first + at / ENTRY_BYTES + index as u64,
                     RangeId::decode(entry)?,
@@ -3668,7 +3736,7 @@ impl Writer {
                 _ => Vec::new(),
             };
             let relocated = if scan {
-                relocate_runs(&runs, section, base, &mut mover, &mut log, scratch)?
+                relocate_runs(index, &runs, section, base, &mut mover, &mut log, scratch)?
             } else {
                 None
             };
@@ -4416,6 +4484,7 @@ fn copy_entries(
 }
 
 fn relocate_runs(
+    section_index: usize,
     runs: &[Run],
     section: &PendingSection,
     base: Option<&Catalog>,
@@ -4428,8 +4497,8 @@ fn relocate_runs(
     }
     let base = base.ok_or_else(|| invalid("missing prefix"))?;
     let mut moving = false;
-    for run in runs {
-        base.visit_run(run, scratch, |range, id| {
+    for index in 0..runs.len() {
+        base.visit_run(section_index, index, scratch, |range, id| {
             moving |= id.len != 0
                 && mover.compact.contains(&id.pack)
                 && !section.replaced.contains_key(&range);
@@ -4442,8 +4511,8 @@ fn relocate_runs(
     let offset = log.len;
     let split = scratch.len() / 2 / ENTRY_BYTES as usize * ENTRY_BYTES as usize;
     let (entries, payload) = scratch.split_at_mut(split);
-    for run in runs {
-        base.visit_run(run, entries, |range, id| {
+    for index in 0..runs.len() {
+        base.visit_run(section_index, index, entries, |range, id| {
             let id = section.replaced.get(&range).copied().unwrap_or(id);
             log.append(&mover.place(id, payload)?.encode())
         })?;

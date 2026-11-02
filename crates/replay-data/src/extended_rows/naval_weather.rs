@@ -540,7 +540,7 @@ impl ProvinceTemperature {
 /// pass moves them, or None for an hour whose suspended manager moved nothing. The collector starts
 /// a new anchor at any other hour and every two `KEYFRAME_INTERVAL`s of hours. `anchor_seed` is the
 /// anchor hour's own seed when the hour before proves that hour's ordinary pass, which lets an
-/// anchor be compared with its derivation; `checksum` is [`crate::temperature::checksum`] of every
+/// anchor be compared with its derivation; `witness` is [`crate::temperature::witness`] of every
 /// record's committed temperature read at the frame's hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TemperaturePass {
@@ -548,11 +548,67 @@ pub struct TemperaturePass {
     pub cursor: i32,
     pub anchor_seed: Option<u32>,
     pub hours: Vec<Option<u32>>,
-    pub checksum: u64,
+    pub witness: TemperatureWitness,
 }
 value_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u32>,
-    hours: Vec<Option<u32>>, checksum: u64 });
+    hours: Vec<Option<u32>>, witness: TemperatureWitness });
 opaque_value!(Option<TemperaturePass>);
+
+/// A [`TemperaturePass`]'s [`crate::temperature::witness`], eight little-endian bytes. Recordings
+/// before [`PROVINCE_WITNESS_FORMAT`](crate::rows::compatibility::PROVINCE_WITNESS_FORMAT) hold an
+/// order-dependent checksum in those bytes, which decodes as no witness, so their derived
+/// temperatures are refused by name.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TemperatureWitness(Option<u64>);
+
+impl TemperatureWitness {
+    pub const fn new(witness: u64) -> Self {
+        Self(Some(witness))
+    }
+
+    /// None where the recording predates the witness.
+    pub const fn get(self) -> Option<u64> {
+        self.0
+    }
+}
+
+impl Value for TemperatureWitness {
+    const MINIMUM_ENCODED_BYTES: usize = size_of::<u64>();
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(size_of::<u64>())
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let witness = self
+            .0
+            .ok_or_else(|| invalid("a temperature pass without its witness"))?;
+        output.extend_from_slice(&witness.to_le_bytes());
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let witness = <u64 as Value>::decode(input)?;
+        Ok(Self(
+            (input.format >= crate::rows::compatibility::PROVINCE_WITNESS_FORMAT)
+                .then_some(witness),
+        ))
+    }
+}
+// Checkpoints keep a decoded older pass's absent witness, which recordings never write.
+impl crate::checkpoint::values::CheckpointValue for TemperatureWitness {
+    const MINIMUM_BYTES: usize =
+        <Option<u64> as crate::checkpoint::values::CheckpointValue>::MINIMUM_BYTES;
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        crate::checkpoint::values::CheckpointValue::encode(&self.0, output)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        <Option<u64> as crate::checkpoint::values::CheckpointValue>::decode(input).map(Self)
+    }
+}
 
 /// The clock a province slot's day/night record holds at the boundary: the manager's dense
 /// day/night array (stride 0x330), the local hour (i32) and night factor (fixed5), which the

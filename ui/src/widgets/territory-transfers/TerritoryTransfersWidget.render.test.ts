@@ -8,7 +8,7 @@ import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pe
 import { reply } from './transfers.fixture.ts';
 
 test('no transfers while the group hours they are matched at are still being prepared is loading, not none for these countries', async () => {
-  const state = { groups: pendingGroups() as ReturnType<typeof pendingGroups> | undefined, data: reply([]), error: undefined as string | undefined, retries: 0 };
+  const state = { groups: pendingGroups() as ReturnType<typeof pendingGroups> | undefined, data: reply([]), error: undefined as Error | undefined, retries: 0 };
   const host = globalThis as typeof globalThis & { __transfersPending?: typeof state }; host.__transfersPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/territory-transfers/TerritoryTransfersWidget.tsx', {
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: globalThis.__transfersPending.groups, error: globalThis.__transfersPending.error,
@@ -29,7 +29,7 @@ test('no transfers while the group hours they are matched at are still being pre
     state.groups = pendingGroups({ final: true });
     assert.match(render(), /No territory transfers for these countries yet\./);
     // Country groups that fail before their first reply say so, with a Retry, never loading forever.
-    state.groups = undefined; state.error = 'service unavailable';
+    state.groups = undefined; state.error = new Error('service unavailable');
     const failed = render();
     assert.match(failed, /Country groups are unavailable: service unavailable/);
     assert.match(failed, /Retry/);

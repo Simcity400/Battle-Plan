@@ -590,7 +590,7 @@ impl Product for CountryFuelAwards {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let (_, awards) = query::basis_awards(source, params, context, cancelled)?;
-        let (sums, recipients) = awards.map_err(dashboard_core::invalid)?;
+        let (sums, recipients) = awards.map_err(dashboard_core::refused)?;
         let totals = FuelAwardTotals::from(&sums);
         let catalogue = std::sync::OnceLock::new();
         let recipients = recipients_of(&recipients, cancelled, |bytes| {

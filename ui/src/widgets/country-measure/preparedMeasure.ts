@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { Range } from '../../charts/view';
@@ -20,7 +21,7 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const [viewport, setViewport] = useState<{ owner: typeof owner; from: number; to: number; width: number }>();
-  const [states, setStates] = useState<{ owner: typeof owner; error?: string }>();
+  const [states, setStates] = useState<{ owner: typeof owner; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   const [pendingSummary, setPendingSummary] = useState<{ owner: typeof owner; pending: boolean }>();
   const [pendingStates, setPendingStates] = useState<{ owner: typeof owner; pending: boolean }>();
@@ -75,7 +76,7 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The prepared keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
       setStates(previous => previous?.error ? undefined : previous);
-    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: String(error) })); });
+    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: asFailure(error) })); });
   }, [owner, active, enabled, attempt]);
   const exactAt = useCallback(async (hour: number): Promise<MeasureStates | null> => {
     if (!enabled || !active) return null;
@@ -87,7 +88,7 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
       setStates(previous => previous?.error ? undefined : previous);
       return reply;
     } catch (error) {
-      if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: String(error) }));
+      if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: asFailure(error) }));
       return null;
     } finally { picks.current.delete(controller); }
   }, [owner, active, enabled, attempt]);

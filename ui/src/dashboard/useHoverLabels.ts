@@ -1,3 +1,4 @@
+import { failureKey } from './queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from './client';
 import { flagReadMetadata } from './countryFlagsAt.ts';
@@ -5,7 +6,7 @@ import type { CountryLabel } from './countryFlagsAt';
 import { useCountryFlagsRead } from './countryFlags.ts';
 import type { FlagRead } from './countryFlags';
 import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
-import { FAILED_FACT, MAX_NAME_HOURS } from './countryFacts.ts';
+import { FAILED_FACT, MAX_NAME_HOURS, isFailedFact } from './countryFacts.ts';
 import { lookPlan } from './countryLooks.ts';
 import type { NameAt } from './countryFacts';
 import type { LookRead } from './looks';
@@ -14,7 +15,7 @@ import { countryReadName, STYLES } from './useCountriesAt.ts';
 
 export interface HoverRead {
   style: LookRead['style'];
-  flag: FlagRead | null | undefined | typeof FAILED_FACT;
+  flag: FlagRead | null | undefined | typeof FAILED_FACT | Error;
 }
 
 /** Countries in a tooltip, named and flagged as the recording showed them at the hour
@@ -74,8 +75,8 @@ export function useHoverLabels(client: DashboardClient, track: Pick<BoundTrack, 
  * being read; a sample that gave nothing, or failed, holds nothing. */
 export function heldRead(exact: HoverRead, sample: HoverRead): HoverRead {
   return {
-    style: exact.style === undefined && sample.style && sample.style !== FAILED_FACT ? sample.style : exact.style,
-    flag: exact.flag === undefined && sample.flag && sample.flag !== FAILED_FACT && sample.flag.url ? sample.flag : exact.flag,
+    style: exact.style === undefined && sample.style && !isFailedFact(sample.style) ? sample.style : exact.style,
+    flag: exact.flag === undefined && sample.flag && !isFailedFact(sample.flag) && sample.flag.url ? sample.flag : exact.flag,
   };
 }
 
@@ -84,7 +85,7 @@ export function heldRead(exact: HoverRead, sample: HoverRead): HoverRead {
  * changes. A flag is fingerprinted by its length and end, not copied whole. */
 export function hoverRevision(asked: { hour: number; tags: readonly string[] } | null, read: (tag: string) => HoverRead): string {
   if (!asked) return '';
-  const part = <V>(value: V | null | undefined | typeof FAILED_FACT, show: (value: V) => unknown) => value === undefined ? 0 : value === null ? 1 : value === FAILED_FACT ? 2 : show(value);
+  const part = <V>(value: V | null | undefined | typeof FAILED_FACT | Error, show: (value: V) => unknown) => value === undefined ? 0 : value === null ? 1 : isFailedFact(value) ? failureKey(value) : show(value);
   return JSON.stringify([asked.hour, asked.tags, asked.tags.map(tag => {
     const { style, flag } = read(tag);
     return [part(style, value => [value.name, value.color]), part(flag, value => [value.url ? `${value.url.length}:${value.url.slice(-24)}` : null, value.reason])];

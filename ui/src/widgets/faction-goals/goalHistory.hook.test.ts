@@ -8,7 +8,7 @@ import type { GoalPart } from './goalParts.ts';
 
 type Asked = { params: { faction: string; firstHour: number | null; lastHour: number | null }; signal: AbortSignal;
   resolve: (data: unknown) => void; reject: (error: Error) => void; publish: (data: unknown) => void };
-type History = { parts: readonly GoalPart[]; error?: string; retry: () => void };
+type History = { parts: readonly GoalPart[]; error?: Error; retry: () => void };
 type Host = typeof globalThis & { __history?: { requests: Asked[]; latest?: History }; IS_REACT_ACT_ENVIRONMENT?: boolean };
 
 const OVER = () => new Error('This product reply exceeds the transport reply budget of 25165824 bytes');
@@ -77,7 +77,7 @@ test('the real hook replaces only a refused range, keeps its siblings\' requests
     assert.deepEqual(ranges(state.latest!.parts), [[null, null, null, null]], 'a cancelled answer is never shown');
     // A failure that is not the budget is held, and its retry asks the whole history again.
     await answer(() => requests[6].reject(new Error('Background preparation is off.')));
-    assert.equal(state.latest!.error, 'Background preparation is off.');
+    assert.equal(state.latest!.error?.message, 'Background preparation is off.');
     assert.equal(requests.length, 7, 'an ordinary failure is not split');
     await answer(() => state.latest!.retry());
     assert.equal(requests.length, 8);

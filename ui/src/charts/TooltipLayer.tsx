@@ -20,12 +20,12 @@ export default function TooltipLayer() {
       { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight });
     element.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }, [state]);
-  return <div ref={ref} popover="manual" role="tooltip" className={`chart-tooltip${state?.content.scrollable ? ' is-scrollable' : ''}`} aria-live="off">
+  return <div ref={ref} data-detail={state?.content.detail ?? state?.content.countryFlag?.nameFailure?.message} popover="manual" role="tooltip" className={`chart-tooltip${state?.content.scrollable ? ' is-scrollable' : ''}`} aria-live="off">
     {state && <>
       {state.content.icon || state.content.countryFlag || state.content.subtitle
         ? <div className="chart-tooltip-head">
           {state.content.countryFlag ? <CountryFlagUrl className="chart-tooltip-flag" url={state.content.countryFlag.flag}
-            reason={state.content.countryFlag.flagReason} pending={state.content.countryFlag.flagPending} />
+            detail={state.content.countryFlag.flagDetail} reason={state.content.countryFlag.flagReason} pending={state.content.countryFlag.flagPending} />
             : state.content.icon && <img src={state.content.icon} alt="" />}
           <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}</div>
         </div>

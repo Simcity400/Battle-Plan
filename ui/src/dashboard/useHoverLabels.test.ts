@@ -1,3 +1,4 @@
+import { RefusedError } from './queryError.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { heldRead, hoverRevision } from './useHoverLabels.ts';
@@ -51,4 +52,12 @@ test('a hovered hour still being read shows its sampled look, part by part, neve
   assert.deepEqual(heldRead({ style: null, flag: FAILED_FACT }, sample), { style: null, flag: FAILED_FACT }, 'a completed read wins');
   assert.deepEqual(heldRead(going, { style: FAILED_FACT, flag: { reason: 'No flag file' } }), going);
   assert.deepEqual(heldRead(going, { style: null, flag: null }), going);
+});
+
+
+test('hover revisions retain the kind and text of a failed fact', () => {
+  const asked = { hour: 10, tags: ['synthetic'] };
+  const revision = (error: Error) => hoverRevision(asked, () => ({ style: error, flag: null }));
+  assert.notEqual(revision(new RefusedError('Not recorded')), revision(new RefusedError('Unsupported mod')));
+  assert.notEqual(revision(new RefusedError('Not recorded')), revision(new Error('Not recorded')));
 });

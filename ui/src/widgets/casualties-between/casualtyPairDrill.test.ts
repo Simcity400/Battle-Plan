@@ -4,13 +4,14 @@ import { runAt } from '../../charts/series.ts';
 import { compactStackExtent } from '../../charts/stack.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
-import type { CasualtyPairsReply } from '../../generated/dashboard';
+import type { CasualtyPairsReply } from './casualtyPairsData';
 import { casualtyPairsAt } from './casualtyPairsData.ts';
 import { casualtyPairIds, pairHistory, pinPairs, readPairSelection } from './casualtyPairDrill.ts';
 import '../definitions.ts';
+import { deepFreeze } from '../../testFrozen.ts';
 
 const windows = [{ firstHour: 100, lastHour: 119 }, { firstHour: 120, lastHour: 139 }];
-const reply = (window: number, identity: string, first: number, last: number, value: string): CasualtyPairsReply => ({
+const reply = (window: number, identity: string, first: number, last: number, value: string): CasualtyPairsReply => deepFreeze({
   branchId: '1', available: true, window, windows, observed: [{ firstHour: first, lastHour: last }], hasGap: true, warnings: [],
   pairs: [{ identity, firstCountry: 'mod attacker', secondCountry: 'mod victim', runs: [
     { firstHour: first, lastHour: last, readHour: first, hourly: true, firstTaken: '0', secondTaken: value, incomplete: false },
@@ -19,8 +20,8 @@ const reply = (window: number, identity: string, first: number, last: number, va
 
 test('pair parts history retains signed rows, observed gaps and selected native holders', () => {
   const original = reply(0, '1:10|2:20', 100, 110, '-12');
-  const continued = reply(1, '1:10|2:20', 120, 124, '9007199254740993');
-  continued.pairs[0].firstCountry = 'renamed mod attacker';
+  const read = reply(1, '1:10|2:20', 120, 124, '9007199254740993');
+  const continued = deepFreeze({ ...read, pairs: read.pairs.map(pair => ({ ...pair, firstCountry: 'renamed mod attacker' })) });
   const replacement = reply(1, '1:11|2:20', 125, 139, '999');
   const ids = casualtyPairIds([original]);
   const model = pairHistory([original, { ...continued, observed: windows.slice(1), pairs: [...continued.pairs, ...replacement.pairs] }], ids);

@@ -1,3 +1,4 @@
+import { queryFailure } from './queryError.ts';
 import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
 import { preparedReplyData, validateProductReply } from './client.ts';
 import type { PreparationAction, PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
@@ -35,7 +36,7 @@ function chooseRecording(): Promise<string | null> {
       void requests.run('history', async signal => {
         const response = await fetch('/api/recordings/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Recording-Name': encodeURIComponent(file.name), 'X-Recording-Page': page }, body: file, signal });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error ?? 'Cannot open recording');
+        if (!response.ok) throw queryFailure(data.error);
         return data.path as string;
       }).then(resolve, reject);
     }, { once: true });
@@ -51,7 +52,7 @@ async function request<T>(body: { type: string; request?: ProductRequest; source
     const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: active });
     const text = await response.text();
     const data = JSON.parse(text);
-    if (!response.ok) throw new Error(data.error ?? 'Cannot read recording');
+    if (!response.ok) throw queryFailure(data.error);
     if (data && typeof data === 'object') replyLengths.set(data, text.length);
     return data;
   }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, refresh: body.refresh === true, onCancelledValue: releaseLate });

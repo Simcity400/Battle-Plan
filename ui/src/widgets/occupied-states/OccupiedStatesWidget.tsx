@@ -1,3 +1,4 @@
+import { nameReadText } from '../../dashboard/nameReads.ts';
 import { pendingReplyAt } from '../../dashboard/preparedPrefix';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
 import { useRef } from 'react';
@@ -9,7 +10,7 @@ import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -28,7 +29,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { OccupiedStatesManifestReply, OccupiedStatesReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { countryHour, garrisonCell, occupiedAt, occupiedWindows, occupationTooltip, percentCell, stateName, validateOccupiedStatesManifest,
-  validateOccupiedStatesReply } from './occupiedStatesData';
+  validateOccupiedStatesReply } from './occupiedStatesData.ts';
 import type { OccupiedRow } from './occupiedStatesData';
 import './occupiedStates.css';
 
@@ -91,7 +92,8 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const laws = useMemo(() => new Map([...manifest?.laws ?? [], ...display?.data.laws ?? []].map(law => [law.token, law])), [manifest, display?.data]);
   const columns = useMemo<readonly TableColumn<OccupiedRow>[]>(() => {
     const country = (role: 'owner' | 'occupier', label: string, priority?: number): TableColumn<OccupiedRow> => ({ key: role, header: label, label, renderMissing: true, width: 'minmax(150px, 1fr)', priority,
-      value: row => { const tag = row.value[role]; return tag === null ? null : names.get(nameKey(countryHour(row, role, shown), tag)) ?? 'Country name unavailable'; },
+      value: row => { const tag = row.value[role]; return tag === null ? null : nameReadText(names.get(nameKey(countryHour(row, role, shown), tag))); },
+      text: row => { const tag = row.value[role]; return tag === null ? null : labelAt(countryHour(row, role, shown))(tag).name; },
       render: row => { const tag = row.value[role]; return tag === null ? 'Unknown' : <CountryCell {...labelAt(countryHour(row, role, shown))(tag)} />; } });
     return [
       { key: 'state', header: 'State', label: 'State', renderMissing: true, width: 'minmax(160px, 1.2fr)', value: row => row.value.name ?? null, render: stateName },
@@ -111,7 +113,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const tooltip = useCallback((row: OccupiedRow) => {
     if (!manifest) return { title: '', rows: [] };
     const content = occupationTooltip(row, tag => labelAt(row.hour)(tag).name);
-    return fitTooltip([content], viewportHeight);
+    return fitTooltip([{ ...content, ...countryNameDetails(row.value.occupied === null ? null : labelAt(row.hour)(row.value.occupied)) }], viewportHeight);
   }, [labelAt, viewportHeight]);
   const diagnostics = useMemo(() => manifest ? [...new Set([...manifest.warnings, ...(display?.data.warnings ?? EMPTY_WARNINGS)])] : EMPTY_WARNINGS,
     [manifest, display?.data]);
@@ -119,10 +121,10 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
 
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see occupied states." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = groupError ? <WidgetState kind="error" detail={groupError} onRetry={groupRetry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = groupError ? <WidgetState kind="error" failure={groupError} onRetry={groupRetry} /> : null;
   if (groupFailure && !groups) return groupFailure;
-  if (windows.errors.has(target)) return <>{groupFailure}<WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} /></>;
+  if (windows.errors.has(target)) return <>{groupFailure}<WidgetState kind="error" failure={windows.errors.get(target)!} onRetry={windows.retry} /></>;
   if (!manifest || (target >= 0 && !display) || (selection.kind !== 'all' && !groups)) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupied states…" /></>;
   if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
   if (pendingReplyAt(display?.data, shown)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;

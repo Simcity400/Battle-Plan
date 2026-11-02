@@ -1,3 +1,5 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
+import { nameReadFrom, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Select } from '../../components/Select';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -20,7 +22,7 @@ import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { formatDateTime } from '../../dashboard/calendar';
 import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
-import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
+import { MAX_NAME_HOURS, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { useCountryFlagsAt, useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
@@ -53,7 +55,6 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
   const keys = useMemo(() => [...model.raw.keys()], [model]);
   const at = tensionDrillAt(model, hour);
   const [visible, setVisible] = useState<readonly string[]>([]);
-  const visibleSet = new Set(visible);
   const onVisible = useCallback((ids: readonly string[]) => setVisible(previous => previous.length === ids.length
     && previous.every((id, index) => id === ids[index]) ? previous : ids), []);
   const planned = useMemo(() => new Map(keys.flatMap(key => {
@@ -75,17 +76,21 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
   const colours = useMemo(() => {
     const known = [...samples].sort(([a], [b]) => a.localeCompare(b)).flatMap(([key, sample]) => {
       const style = styles.get(nameKey(sample.hour, sample.tag));
-      return style && style !== FAILED_FACT && style.color
+      return style && !isFailedFact(style) && style.color
         ? [{ key, color: { r: style.color[0], g: style.color[1], b: style.color[2] } }] : [];
     });
     const raw = known.map(item => item.color);
     const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
     return new Map(known.map((item, index) => [item.key, toHex(adjusted[index])]));
   }, [samples, styles, tokens.countryColours, tokens.surface]);
+  const countryFailure = (key: string) => {
+    const sample = samples.get(key), style = sample ? styles.get(nameKey(sample.hour, sample.tag)) : undefined;
+    return isFailedFact(style) ? style : undefined;
+  };
   const countryLabel = (key: string) => {
     const sample = samples.get(key);
     const style = sample ? styles.get(nameKey(sample.hour, sample.tag)) : null;
-    return style && style !== FAILED_FACT ? style.name ?? 'Country name unavailable' : 'Country name unavailable';
+    return nameReadMetadata(nameReadFrom(isFailedFact(style) ? style : style === undefined ? undefined : style?.name ?? null, !!sample && !!track && active)).name;
   };
   const layerColours = useMemo(() => keys.map(key => colours.get(key) ?? tokens.muted).concat(tokens.muted), [keys, colours, tokens.muted]);
   const history = useMemo(() => tensionDrillHistory(model, keys), [model, keys]);
@@ -149,11 +154,11 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
   const root = useRef<HTMLDivElement>(null);
   useParityRows(root,() => ({ kind: 'chart',label: 'World tension breakdown',scope: 'displayed-hour',hour,
     complete: !!at || !!prepared.data?.exactHours.includes(hour),total: at?.parts.length ?? 0,rows: at?.parts ?? [],read: at?.read,remainder: at?.remainder }));
-  return <div ref={root} className="world-tension-drill">
+  return <div ref={root} className="world-tension-drill" data-detail={failureDetails(styles.values())}>
     <DrillParts virtual active={active} onVisible={onVisible} signedShares
       parts={at?.parts.map(part => {
         const sample = samples.get(part.key);
-        return { id: part.key, label: part.preparing ? 'Still being prepared' : visibleSet.has(part.key) ? countryLabel(part.key) : 'Country name unavailable',
+        return { detail: countryFailure(part.key)?.message, id: part.key, label: part.preparing ? 'Still being prepared' : countryLabel(part.key),
           value: contributionPercent(model, part.raw), raw: BigInt(part.raw), text: exact(part.raw),
           shareText: tensionShareText(part.raw, at?.read.sumRaw ?? null), color: colours.get(part.key) ?? tokens.muted,
           icon: sample ? flags.get(nameKey(sample.hour, sample.tag)) : undefined };

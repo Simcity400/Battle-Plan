@@ -114,7 +114,7 @@ pub(crate) enum Made {
     /// Prepared before `hour`, refused from it on: the family's branch ends there.
     Refused {
         hour: i32,
-        reason: String,
+        reason: crate::QueryError,
         from: Option<String>,
     },
     /// None prepared. With `ends`, nothing of the branch after them is the family's either.
@@ -137,7 +137,10 @@ pub(crate) enum Stopped {
 impl Stopped {
     fn error(&self) -> io::Error {
         let (kind, message): (io::ErrorKind, String) = match self {
-            Self::Cancelled => (io::ErrorKind::Interrupted, "Preparation was cancelled".into()),
+            Self::Cancelled => (
+                io::ErrorKind::Interrupted,
+                "Preparation was cancelled".into(),
+            ),
             Self::Cleared => (
                 io::ErrorKind::Interrupted,
                 "Prepared data is being cleared".into(),
@@ -906,12 +909,17 @@ impl Finished {
     }
 }
 
-/// A stage a job holds, released once the job is done with it, however it ends.
-struct Release<'p, 's>(&'p Publisher<'s>);
+/// The stage a job seals in: its writer closes before the stage is released, however the job
+/// ends, so a stop that sees every stage released finds the store's handles closed.
+struct Forked<'p, 's> {
+    publisher: &'p Publisher<'s>,
+    writer: Option<store::Writer>,
+}
 
-impl Drop for Release<'_, '_> {
+impl Drop for Forked<'_, '_> {
     fn drop(&mut self) {
-        self.0.released();
+        drop(self.writer.take());
+        self.publisher.released();
     }
 }
 
@@ -1045,14 +1053,17 @@ impl<'s> Publisher<'s> {
             segments,
             prepared,
         } = job;
-        let mut writer = match writer {
+        let writer = match writer {
             Some(writer) => writer,
             None => match self.fork(family.id) {
                 Ok(writer) => writer,
                 Err(error) => return Finished::failed(error),
             },
         };
-        let release = Release(self);
+        let mut forked = Forked {
+            publisher: self,
+            writer: Some(writer),
+        };
         let name = family.id.name();
         let mut sealed = Sealed {
             published: Vec::with_capacity(sealings.len()),
@@ -1069,6 +1080,9 @@ impl<'s> Publisher<'s> {
             ));
         }
         let sealings = if written.is_ok() { sealings } else { Vec::new() };
+        let Some(writer) = forked.writer.as_mut() else {
+            return Finished::failed(io::Error::other("A job lost its stage"));
+        };
         for sealing in sealings {
             let Sealing {
                 branch,
@@ -1077,9 +1091,9 @@ impl<'s> Publisher<'s> {
                 mut tree,
             } = sealing;
             let identity = self.binding.identity(branch, family.stamp);
-            let published = roots::write(&mut writer, name, branch, identity, cut, &pending, &mut tree)
+            let published = roots::write(writer, name, branch, identity, cut, &pending, &mut tree)
                 .and_then(|published| {
-                    pipeline::write_family_page(&mut writer, name, branch, &published.frontier)
+                    pipeline::write_family_page(&mut *writer, name, branch, &published.frontier)
                         .map(|()| published)
                 });
             drop(pending);
@@ -1094,19 +1108,19 @@ impl<'s> Publisher<'s> {
                 }
             }
         }
-        let batch = match written {
-            Ok(()) => writer.into_staged().map(|staged| Batch {
+        let batch = written.and_then(|()| {
+            let writer = forked
+                .writer
+                .take()
+                .ok_or_else(|| io::Error::other("A job lost its stage"))?;
+            Ok(Batch {
                 family: family.id,
-                staged,
+                staged: writer.into_staged()?,
                 sealed,
-            }),
-            Err(error) => {
-                drop(writer);
-                Err(error)
-            }
-        };
+            })
+        });
         let queued = batch.and_then(|batch| self.queue(batch));
-        drop(release);
+        drop(forked);
         Finished {
             trees,
             outcome: queued.and_then(|ticket| self.wait(ticket)),
@@ -1294,10 +1308,7 @@ impl Stage<'_, '_> {
             .last
             .checked_add(1)
             .ok_or_else(|| refused("Ordinal overflow"))?;
-        let bytes = self
-            .writer
-            .as_ref()
-            .map_or(0, store::Writer::bytes_written);
+        let bytes = self.writer.as_ref().map_or(0, store::Writer::bytes_written);
         let publisher = self.publisher;
         let family = self.family;
         let step = self.step(hours.branch)?;
@@ -1370,7 +1381,7 @@ impl Stage<'_, '_> {
                     hour,
                     hours.last_hour,
                     Held::Refused,
-                    reason.clone(),
+                    reason.to_string(),
                 ));
                 frontier.end = Some(End {
                     held: Held::Refused,
@@ -1390,7 +1401,7 @@ impl Stage<'_, '_> {
                     frontier.end = Some(End {
                         held: Held::Lost,
                         hour: hours.first_hour,
-                        reason,
+                        reason: reason.into(),
                         from: None,
                     });
                 }

@@ -41,7 +41,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
 
   if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its recorded clock times." />;
   if (!request) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" what="campaign clock" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" what="campaign clock" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading campaign clock…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Playing and paused time were not recorded in this campaign." />;
   if (data.recordedSeconds === null) return <WidgetState kind="unavailable" message="Overlapping recordings prevent a unique campaign clock total." />;

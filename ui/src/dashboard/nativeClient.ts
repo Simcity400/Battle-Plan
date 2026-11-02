@@ -1,3 +1,5 @@
+import { queryFailure } from './queryError.ts';
+import type { QueryError } from '../generated/dashboard';
 import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
 import { preparedReplyData, validateProductReply } from './client.ts';
 import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
@@ -19,7 +21,7 @@ function cancelled(): DOMException {
 
 /** Data replies arrive as raw JSON bytes; the host never parses them. */
 async function rawInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
-  const result = await invoke<unknown>(command, args);
+  const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;
   const reply: unknown = JSON.parse(new TextDecoder().decode(result));
   if (reply && typeof reply === 'object') {

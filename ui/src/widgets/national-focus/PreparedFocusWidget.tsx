@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -12,11 +13,11 @@ import { rowJumpProps } from '../../charts/jump';
 import { VirtualList } from '../../components/VirtualList';
 import WidgetState from '../../components/WidgetState';
 import ListSkeleton from '../../components/Skeleton';
-import { CurrentFocus, FocusArt, FocusCompletion, isCompletedFocus } from './NationalFocusWidget';
+import { CurrentFocus, FocusArt, FocusCompletion, FocusFailureNotices, isCompletedFocus } from './NationalFocusWidget.tsx';
 import type { FocusListItem } from './NationalFocusWidget';
 import { useFocusArtwork } from './useFocusArtwork';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
-import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts';
+import { nameKey, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { FocusEntry } from '../../generated/dashboard';
 import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus } from './preparedFocusData';
 import { activeFocus } from './focusData';
@@ -40,7 +41,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const identity = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, contentRevision]);
   const [selection, setSelection] = useState<{ identity: string; page: bigint } | null>(null);
   const selected = selection?.identity === identity ? selection.page : null;
-  const [answer, setAnswer] = useState<{ identity: string; client: typeof runtime.client; hour: number; snapshot: Snapshot | null; pending: boolean; error: string | null; warnings: string[] } | null>(null);
+  const [answer, setAnswer] = useState<{ identity: string; client: typeof runtime.client; hour: number; snapshot: Snapshot | null; pending: boolean; error: Failure | null; warnings: string[] } | null>(null);
   const presented = useRef<{ identity: string; client: typeof runtime.client; snapshot: Snapshot } | null>(null);
   if (presented.current && (presented.current.identity !== identity || presented.current.client !== runtime.client)) presented.current = null;
   const [retry, setRetry] = useState(0);
@@ -92,7 +93,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     const failed = (error: unknown, own = generation) => {
       if (controller.signal.aborted || own !== generation) return;
       setAnswer(previous => ({ identity, client: runtime.client, hour,
-        snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: error instanceof Error ? error.message : String(error), warnings: [] }));
+        snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: asFailure(error), warnings: [] }));
       landedHour();
     };
     // The final reply waits for the presentation an equal partial reply started.
@@ -126,7 +127,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     ? snapshot.order.filter(item => opened.rows.has(disclosureKey(item.ordinal, preparedArtKey('national', item.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, item.token)))) : [], [opened, identity, runtime.client, snapshot]);
   const detailOwner = JSON.stringify([identity, snapshot?.hour.slot, snapshot?.hour.countryId, snapshot?.page.toString()]);
   const detailKeys = JSON.stringify(detailEntries.map(item => preparedArtKey('national', item.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, item.token)));
-  type DetailResult = { data: PreparedFocusArt | null; pending: boolean; error: string | null };
+  type DetailResult = { data: PreparedFocusArt | null; pending: boolean; error: Failure | null };
   const [preparedDetail, setPreparedDetail] = useState<{ owner: string; client: typeof runtime.client; rows: Map<string, DetailResult> } | null>(null);
   const detailResults = preparedDetail?.owner === detailOwner && preparedDetail.client === runtime.client ? preparedDetail.rows : undefined;
   useEffect(() => {
@@ -142,7 +143,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
       try {
         const data = await loadPreparedFocusDetail(runtime.client as FocusPreparedClient, track.source, track.branch.id, tag, snapshot.hour, entry, controller.signal);
         results.set(key, { data, pending: false, error: null });
-      } catch (error) { results.set(key, { data: null, pending: false, error: error instanceof Error ? error.message : String(error) }); }
+      } catch (error) { results.set(key, { data: null, pending: false, error: asFailure(error) }); }
     })).then(() => { if (current) setPreparedDetail({ owner: detailOwner, client: runtime.client, rows: results }); });
     return () => { current = false; controller.abort(); };
   }, [runtime.client, track, tag, detailOwner, detailKeys, active]);
@@ -161,8 +162,8 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const descriptions = useRef<{ owner: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
   if (descriptions.current?.owner !== detailOwner || descriptions.current.client !== runtime.client) descriptions.current = { owner: detailOwner, client: runtime.client, texts: new Map() };
   const warnings = useMemo(() => snapshot ? [...(shown?.warnings ?? []), ...snapshot.warnings, ...details.warnings,
-    ...[...detailResults?.values() ?? []].flatMap(item => item.error ? [item.error] : item.data?.reason ? [item.data.reason] : []),
-    ...[...details.details?.values() ?? []].flatMap(item => item && item !== FAILED_FACT && item.reason ? [item.reason] : []),
+    ...[...detailResults?.values() ?? []].flatMap(item => item.error ? [item.error.message] : item.data?.reason ? [item.data.reason] : []),
+    ...[...details.details?.values() ?? []].flatMap(item => item && !isFailedFact(item) && item.reason ? [item.reason] : []),
     ...[...snapshot.art.values()].flatMap(item => item.reason ? [item.reason] : [])] : shown?.warnings ?? [], [snapshot, details.warnings, details.details, detailResults, shown?.warnings]);
   useDiagnostics(onDiagnostics, warnings);
   const rows = useMemo<FocusListItem[]>(() => {
@@ -185,14 +186,14 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const paritySnapshot = import.meta.env.MODE === 'parity' ? useMemo(() => snapshot && !shown?.pending ? { ...snapshot,
     details: new Map(detailEntries.flatMap(entry => {
       const read = detailRead(preparedArtKey('national', entry.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, entry.token), entry);
-      return read && read !== FAILED_FACT ? [[entry.ordinal, read] as const] : [];
+      return read && !isFailedFact(read) ? [[entry.ordinal, read] as const] : [];
     })),
   } : undefined, [snapshot, shown?.pending, detailEntries, detailResults, details.details]) : undefined;
   const parityReady = !!shown && !shown.pending && detailEntries.every(entry => !detailPending(preparedArtKey('national', entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, entry.token), entry));
   const parityRoot = import.meta.env.MODE === 'parity' ? usePreparedFocusParity(runtime.client as FocusPreparedClient, track?.source, track?.branch.id, tag, hour, moment, identity, active && inRange && parityReady, openedOrdinals, paritySnapshot) : undefined;
   if (!track || !tag) return <div className="dash-empty" role="status">Load a campaign and choose a country to see its national focuses.</div>;
   if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
-  const failure = shown?.error ? <WidgetState kind="error" detail={shown.error} onRetry={() => setRetry(value => value + 1)} /> : null;
+  const failure = shown?.error ? <WidgetState kind="error" failure={shown.error} onRetry={() => setRetry(value => value + 1)} /> : null;
   if (failure && !snapshot) return <div ref={parityRoot}>{failure}</div>;
   if (!shown || shown.pending && !snapshot) return <div ref={parityRoot}><ListSkeleton label="Loading national focuses…" /></div>;
   if (!snapshot) return <div ref={parityRoot} className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
@@ -205,7 +206,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     {headerSlot && createPortal(<span className="pill focus-header-count">{row.completed.rows} completed</span>, headerSlot)}
     {failure}
     {moment && <CurrentFocus order={{ completed: [], current: row.current, continuous: row.continuous, paused: row.paused }} art={currentArt?.artwork}
-      state={{ progress: BigInt(row.progressRaw), dailyGain: row.dailyGainRaw === null ? null : BigInt(row.dailyGainRaw) }} live={live} reason={currentArt?.reason ?? undefined} pending={shown.pending} />}
+      state={{ progress: BigInt(row.progressRaw), dailyGain: row.dailyGainRaw === null ? null : BigInt(row.dailyGainRaw) }} live={live} reason={currentArt?.reason ?? undefined} failure={currentArt?.failure} titleFailure={currentArt?.titleFailure} pending={active && shown.pending && !currentArt} />}
     {finalPage > 0n && <nav className="focus-page-controls" aria-label="Completion pages">
       <button type="button" disabled={snapshot.page === 0n || shown.pending} onClick={() => changePage(0n)}>First</button>
       <button type="button" disabled={snapshot.page === 0n || shown.pending} onClick={() => changePage(snapshot.page - 1n)}>Previous</button>
@@ -221,14 +222,15 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
         if (item.kind === 'unfinished') return <div className="focus-row">
           <span className="focus-number" aria-hidden="true">{String(BigInt(row.completed.rows) + 1n).padStart(2, '0')}</span>
           <FocusArt art={currentArt?.artwork} size="small" />
-          <span className="focus-label"><strong data-tooltip={contentTitleHint(item.token, currentArt?.reason ?? undefined)}>{contentTitle(currentArt?.artwork.name, item.token, 'Focus name unavailable', shown.pending)}</strong>
+          <span className="focus-label"><strong data-detail={currentArt?.failure?.message} data-tooltip={contentTitleHint(item.token, currentArt?.reason ?? undefined)}>{contentTitle(currentArt?.titleFailure ?? currentArt?.artwork.name, item.token, 'Focus name unavailable', active && shown.pending && !currentArt)}</strong>
             <span>{row.paused ? 'Paused' : 'In progress'}</span></span>
+          {currentArt?.failure && <FocusFailureNotices errors={[currentArt.failure]} />}
         </div>;
         const entry = item.entry, key = preparedArtKey('national', entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token), disclosure = disclosureKey(entry.ordinal, key);
         const art = snapshot.art.get(key), read = detailRead(key, entry);
-        const description = read && read !== FAILED_FACT ? read.artwork.description ?? art?.artwork.description : art?.artwork.description;
+        const description = read && !isFailedFact(read) ? read.artwork.description ?? art?.artwork.description : art?.artwork.description;
         if (description) descriptions.current!.texts.set(key, description);
-        return <FocusCompletion datePreparing={row.preparing?.includes('completedByHour')} entry={entry} art={art?.artwork} reason={art?.reason ?? undefined} pending={shown.pending}
+        return <FocusCompletion datePreparing={row.preparing?.includes('completedByHour')} entry={entry} art={art?.artwork} reason={art?.reason ?? undefined} failure={art?.failure} titleFailure={art?.titleFailure} failures={[isFailedFact(read) ? read : undefined, detailResults?.get(key)?.error ?? undefined].filter((error): error is Failure => error !== undefined)} pending={active && shown.pending && !art}
           description={description ?? (detailPending(key, entry) ? descriptions.current!.texts.get(key) : null)} open={detailEntries.some(item => item.ordinal === entry.ordinal)}
           onToggle={open => setOpened(previous => {
             const wanted = previous?.identity === identity && previous.client === runtime.client && previous.slot === row.slot && previous.countryId === row.countryId ? previous.rows : new Set<string>();

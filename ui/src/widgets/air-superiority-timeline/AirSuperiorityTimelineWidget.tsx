@@ -30,7 +30,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
   if (!air.window || air.beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (air.error) return <WidgetState kind="error" detail={air.error} onRetry={air.retry} />;
+  if (air.error) return <WidgetState kind="error" failure={air.error} onRetry={air.retry} />;
   // Rows the held reply lacks may be in the days still loading: no empty result is shown before they are read.
   if (!air.data || !air.projectedTimeline || !air.labelCatalogue || (air.timelineBehind && !air.loading.length)
     || (air.loading.length && !air.projectedTimeline.rows.length)) return <WidgetState kind="loading" label="Loading air superiority…" />;

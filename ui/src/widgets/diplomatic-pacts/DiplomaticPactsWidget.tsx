@@ -78,7 +78,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see diplomacy." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (!tag) return <WidgetState kind="empty" icon="link" message="Choose a country in widget settings." />;
-  if (reply.error) return <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />;
+  if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading diplomacy…" />;
   if (!lanes.length) return prefix?.pending.some(span => span.firstHour <= at)
     ? <WidgetState kind="loading" label="This range is still being prepared." />

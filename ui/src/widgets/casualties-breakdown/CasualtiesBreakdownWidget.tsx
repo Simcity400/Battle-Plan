@@ -1,3 +1,5 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
+import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
@@ -107,7 +109,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   // observed holder. A replacement under its tag cannot supply its old flag.
   const flagFacts = useMemo(() => visible.map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [visible]);
   const flags = useCountryFlagsRead(runtime.client, track, flagFacts, active && open);
-  const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => names.get(nameKey(hour, tag)) ?? 'Country name unavailable'), [snapshot, end, names]);
+  const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => nameReadText(names.get(nameKey(hour, tag)))), [snapshot, end, names]);
   const levels = [options.warLevel !== false, options.enemyLevel !== false];
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
     [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -134,7 +136,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
 
   if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its casualties." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
+  if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
   if (!manifest.data) return <WidgetState kind="loading" label="Loading casualty breakdown…" />;
   // Nothing observed yet while preparation runs: later blocks may hold losses.
   if (!manifest.data.available) return preparedPrefix(manifest.data)?.pending.length
@@ -149,7 +151,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
     {pinned && <p className="casualty-breakdown-total">{dayLabel(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
     {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
-      : error ? <WidgetState kind="error" detail={error} onRetry={histories.retry} />
+      : error ? <WidgetState kind="error" failure={error} onRetry={histories.retry} />
       : !detail ? <WidgetState kind="loading" label="Loading this moment…" />
         : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
           ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {dayLabel(detailHour)}.</p>
@@ -179,7 +181,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
     {chartWindows.some(index => histories.errors.has(index)) && <button type="button" className="button small" onClick={histories.retry}>Retry history</button>}
   </div>;
   const main = outside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
-    : currentError ? <WidgetState kind="error" detail={currentError} onRetry={histories.retry} />
+    : currentError ? <WidgetState kind="error" failure={currentError} onRetry={histories.retry} />
       : !current ? <WidgetState kind="loading" label="Loading casualty history…" />
         : <div className="casualty-breakdown-main" onContextMenu={event => { event.preventDefault(); menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hour)]); }}
     onKeyDown={event => { if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
@@ -198,7 +200,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
       { type: 'open', breakdown: DETAIL.id, hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing,
         playhead: widget.time.mode === 'follow' ? hour : null }))}>All losses</button>
   </div>;
-  return <div ref={anchor} className="casualty-breakdown">
+  return <div ref={anchor} className="casualty-breakdown" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
     {pinned ? detailBody : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Recorded losses"
       day={dayLabel(detailHour)} following={effectiveDrill.follow} canFollow
       onClose={() => setDrill(CLOSED)} onFollow={follow}

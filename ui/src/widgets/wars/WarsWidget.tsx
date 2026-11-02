@@ -6,7 +6,7 @@ import { jumpItem } from '../../charts/jump';
 import { laneRequests } from '../../charts/timeline/laneRequests';
 import Timeline from '../../charts/timeline/Timeline';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLooks } from '../../dashboard/countryLooks';
@@ -158,7 +158,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
       ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Country history unavailable: ${groups.error}`] : []),
       ...(exact.error ? [`War casualty values unavailable: ${exact.error}`] : []),
       ...(prepared?.unidentifiedHours ? [`${prepared.unidentifiedHours} participant-hours have unknown countries; those lanes keep unknown labels and colours.`] : [])])];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
+    onDiagnostics(warnings.length ? warnings.map(warning => warning instanceof Error ? warning.message : warning) : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, factions.warnings, factions.error, exact.error, prepared, onDiagnostics]);
 
@@ -173,11 +173,11 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const state = warsReplyState(data, product.error);
-  if (state === 'error') return <WidgetState kind="error" detail={product.error!} onRetry={product.retry} />;
-  if (exact.error) return <WidgetState kind="error" detail={exact.error} onRetry={exact.retry} />;
+  if (state === 'error') return <WidgetState kind="error" failure={product.error!} onRetry={product.retry} />;
+  if (exact.error) return <WidgetState kind="error" failure={exact.error} onRetry={exact.retry} />;
   if (state === 'unavailable' && !current?.available) return preparedThrough != null
     ? <WidgetState kind="loading" label="This range is still being prepared." /> : <WidgetState kind="unavailable" />;
-  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !prepared) return <>{groupFailure}<WidgetState kind="loading" label="Loading wars…" /></>;
 
@@ -195,7 +195,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
       if (about.kind !== 'country') return null;
       const tag = countryTagAt(about.country, hour);
       if (recorded && tag !== null) hover.ask(hour, [tag]);
-      return { title: tag === null ? NAME_WORDS.missing : labels(tag).name, subtitle: dayLabel(hour), rows: [{ label: 'War', value: data.unobserved.some(gap => gap.firstHour <= hour && hour <= gap.lastHour)
+      return { ...countryNameDetails(tag === null ? null : labels(tag)), title: tag === null ? NAME_WORDS.missing : labels(tag).name, subtitle: dayLabel(hour), rows: [{ label: 'War', value: data.unobserved.some(gap => gap.firstHour <= hour && hour <= gap.lastHour)
         ? 'Not recorded' : 'No war' }] };
     }
     const observation = observationAt(war, hour);

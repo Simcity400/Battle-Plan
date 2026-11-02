@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artworkUrlValue as png } from '../../dashboard/payload.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
@@ -253,10 +254,10 @@ export function careerEmptyEntry(reply: UnitLeadersData, leader: LeaderCareer, l
 /** A count from an incomplete battle history is a lower bound. */
 const atLeast = (row: LeaderRow, count: number | null) => count == null ? '—' : row.foughtPartial ? `at least ${count}` : String(count);
 
-export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string }): TooltipContent {
+export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string; nameFailure?: Error; nameDetail?: string }): TooltipContent {
   const dates = new Map(row.career.traitGains.filter(g => g.hour <= row.hour).map(g => [g.token, g]));
   const names = attributeNames(row.value);
-  return { title: leaderName(row), subtitle: `${country.name} · ${row.value.rank ?? `Rank ${row.value.category}`} · ${formatDateTime(row.hour)}`,
+  return { ...countryNameDetails(country), title: leaderName(row), subtitle: `${country.name} · ${row.value.rank ?? `Rank ${row.value.category}`} · ${formatDateTime(row.hour)}`,
     rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? '' : ` / ${row.value.maximumSkill}`}` },
       { label: `${names[0]} · ${names[1]}`, value: `${row.value.components[0]} · ${row.value.components[1]}` },
       { label: `${names[2]} · ${names[3]}`, value: `${row.value.components[2]} · ${row.value.components[3]}` },

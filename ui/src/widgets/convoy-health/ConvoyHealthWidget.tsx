@@ -1,3 +1,4 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -20,8 +21,8 @@ import Legend from '../../charts/Legend';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useChartTokens } from '../../charts/useChartTokens';
-import { MAX_NAME_HOURS, nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { nameReadText } from '../../dashboard/holderLooks';
+import { MAX_NAME_HOURS, nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
+import { nameReadMetadata, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -72,10 +73,10 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   // Names only at the dates the rows and the facts shown look them up.
   const wanted = useMemo(() => data ? [...labelDates(data).wanted,
     ...[shownRead, picked ? Math.floor(drillAt) : null].flatMap(read => read === null ? [] : exportersAt(data, read))] : [], [data, shownRead, picked, drillAt]);
-  const names = useCountryNamesRead(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size));
+  const names = useCountryNamesAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size));
   // A name still being read says so; one not recorded is unavailable: country codes show only on hover.
-  const countryName = useCallback((country: string | null, at: number) => country === null ? 'Country name unavailable'
-    : nameReadText(names.get(nameKey(at, country))), [names]);
+  const countryName = useCallback((country: string | null, at: number) => country === null ? nameReadMetadata(undefined)
+    : nameReadMetadata(names.get(nameKey(at, country))), [names]);
   const days = useMemo(() => track ? dayPeriods(extent, track.branch.gaps) : [], [track, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   // Reads stop at the playhead and at what preparation has accepted: the day under way
   // reads the hour reached, a partly prepared day its prepared part.
@@ -92,7 +93,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
     if (read !== null) showRead(read);
     const details = entry && read !== null ? entry.detail(read) : [];
     const missing = read === null && period && periodPending(period, pending) ? 'Still being prepared' : 'Not recorded';
-    return { title: row.label, subtitle: dayLabel(period?.firstHour ?? hour), rows: [
+    return { detail: entry?.nameDetail, title: row.label, subtitle: dayLabel(period?.firstHour ?? hour), rows: [
       ...details.length ? details : [{ label: read === null || entry?.unknownAt(read) ? missing : entry?.kind === 'region' ? 'No bad convoy route here' : 'No deal this day', tone: 'muted' as const }],
       ...read !== null && details.length ? [{ label: `As of ${dayLabel(read)}`, tone: 'muted' as const }] : [],
     ] };
@@ -111,7 +112,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see convoys." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || data.view !== view) return <WidgetState kind="loading" label="Loading convoys…" />;
   const shownHour = playhead ?? extent[1];
   if (!heat.length) {
@@ -136,7 +137,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
       tooltip={tooltip} onContextMenu={onMenu} onPick={onPick} pickOwner={pickOwner} /></div>
     {menu.menu}
   </div>;
-  return <div ref={anchor} className="convoy-health-host">
+  return <div ref={anchor} className="convoy-health-host" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!drilled} anchor={anchor}
       title={drilled?.label ?? DETAILS.label} day={dayLabel(drillAt)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
@@ -180,7 +181,7 @@ function ConvoyDrill({ row, runtime, track, hour, extent, active, scale, onPick,
   }, [lines, percent, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const facts = row.detail(hour);
   return <div className="convoy-health-drill">
-    {facts.length ? <dl className="convoy-health-facts">{facts.map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl>
+    {facts.length ? <dl className="convoy-health-facts">{facts.map(fact => <div key={fact.label} data-detail={fact.detail}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl>
       : <p className="drill-empty">Nothing was recorded for this row at this date.</p>}
     <Legend label="Lines" items={lines.map(line => ({ id: line.label, label: line.label, color: line.color }))} />
     <div className="convoy-health-drill-chart">
@@ -189,7 +190,7 @@ function ConvoyDrill({ row, runtime, track, hour, extent, active, scale, onPick,
         valueTicks={percent ? [0, 25, 50, 75, 100] : undefined} formatValue={percent ? value => `${value}%` : undefined} padding={{ right: 64 }}
         layers={layers} overlay={overlay} active={active} pickOwner={row.id} revision={`${row.id}:${lines.length}`}
         onHover={at => onRead(at === null ? null : Math.floor(at))}
-        tooltip={at => fitTooltip([{ title: dayLabel(Math.floor(at)), rows: row.detail(Math.floor(at)) }], viewport)}
+        tooltip={at => fitTooltip([{ detail: row.nameDetail, title: dayLabel(Math.floor(at)), rows: row.detail(Math.floor(at)) }], viewport)}
         onPick={at => onPick(Math.floor(at))} />
     </div>
   </div>;

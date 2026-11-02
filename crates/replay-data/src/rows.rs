@@ -978,6 +978,14 @@ macro_rules! define_tables {
                     None => None,
                 }),+ })
             }
+            /// The rows at `keys`, ascending and each present, as a later
+            /// [`Self::apply_changes`] sets them: the rows an hour wrote.
+            pub fn rows_at(&self, keys: &[u128], deleted: Vec<u128>) -> io::Result<RowChanges> {
+                Ok(match self { $(Self::$table(rows) => RowChanges {
+                    rows: Self::$table(rows_at_typed(rows, keys)?),
+                    deleted,
+                }),+ })
+            }
             /// The rows [`Self::changes_since`] found `changes` from: each of
             /// its rows set at its key and each of its deleted keys removed.
             pub fn apply_changes(self, changes: RowChanges) -> io::Result<Self> {
@@ -2433,6 +2441,22 @@ impl RowChanges {
             deleted: allocation::copy_vec(&self.deleted)?,
         })
     }
+}
+
+#[inline(never)]
+fn rows_at_typed<T: RowCodec>(rows: &[T], keys: &[u128]) -> io::Result<Vec<T>> {
+    let mut found = Vec::new();
+    allocation::reserve(&mut found, keys.len())?;
+    let mut from = 0;
+    for &key in keys {
+        let at = from
+            + rows[from..]
+                .binary_search_by_key(&key, |row| row.key())
+                .map_err(|_| invalid("a written key is not held"))?;
+        found.push(rows[at].try_clone_validated()?);
+        from = at + 1;
+    }
+    Ok(found)
 }
 
 #[inline(never)]

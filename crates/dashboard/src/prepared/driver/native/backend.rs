@@ -504,7 +504,7 @@ impl<N: Native> Emit<'_, '_, N> {
         for item in chunk.items {
             let hour = item.hour();
             if let Err(error) = self.observe(native, branch, item) {
-                if error.kind() != io::ErrorKind::InvalidData {
+                if error.kind() != io::ErrorKind::InvalidData && crate::refusal(&error).is_none() {
                     return Err(alone(error));
                 }
                 refused = Some((hour, error));
@@ -518,7 +518,7 @@ impl<N: Native> Emit<'_, '_, N> {
         if let Some((hour, error)) = refused {
             let made = Made::Refused {
                 hour,
-                reason: error.to_string(),
+                reason: crate::QueryError::from(&error),
                 from: None,
             };
             self.processed(native, walking, at, made)?;
@@ -544,7 +544,7 @@ impl<N: Native> Emit<'_, '_, N> {
             None => Made::Prepared,
             Some(Ending::Refused { hour, error }) => Made::Refused {
                 hour: *hour,
-                reason: error.to_string(),
+                reason: crate::QueryError::from(error),
                 from: None,
             },
             Some(Ending::Lost(loss)) => Made::Lost {
@@ -723,10 +723,8 @@ fn of_the_run(error: &io::Error) -> bool {
 pub(crate) fn alone(error: io::Error) -> io::Error {
     if of_the_run(&error) {
         segments::fatal(error)
-    } else if error.kind() == io::ErrorKind::InvalidData {
-        io::Error::other(error.to_string())
     } else {
-        error
+        segments::family_failure(error)
     }
 }
 
@@ -735,7 +733,11 @@ fn resumed(error: io::Error) -> io::Error {
     if of_the_run(&error) {
         segments::fatal(error)
     } else {
-        io::Error::other(format!("Its saved state could not be taken up: {error}"))
+        alone(
+            crate::QueryError::from(error)
+                .context("Its saved state could not be taken up")
+                .into(),
+        )
     }
 }
 

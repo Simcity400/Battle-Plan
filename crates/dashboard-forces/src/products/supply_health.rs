@@ -146,7 +146,7 @@ impl Defines {
         .map(ToString::to_string)
         .collect();
         if !errors.is_empty() {
-            return Err(dashboard_core::invalid(format!(
+            return Err(dashboard_core::refused(format!(
                 "Supply health refused {} define(s): {}",
                 errors.len(),
                 errors.join("; ")

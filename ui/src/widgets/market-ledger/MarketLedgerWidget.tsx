@@ -97,10 +97,10 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
   if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (chosen.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={chosen.reason} /></>;
-  if (ledger.error) return <>{groupFailure}<WidgetState kind="error" detail={ledger.error} onRetry={ledger.retry} /></>;
+  if (ledger.error) return <>{groupFailure}<WidgetState kind="error" failure={ledger.error} onRetry={ledger.retry} /></>;
   if (kinds.length && (!chosen.countries || !ledger.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading market activity…" /></>;
   const main = <div className="log-widget market-ledger">
     {log.chips && <div className="log-chips"><ChipSet label="Market occurrences" chips={chips}
@@ -116,7 +116,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
           <span className="log-art" aria-hidden="true"><span className="event-feed-icon" style={{ '--event-colour': tokens.categories[PALETTE[row.item.row.kind] ?? 0] } as CSSProperties}>
             <Icon name={ledgerIcon(row.item.row.kind)} /></span></span>
           <span className="log-text market-ledger-text" onClick={() => open(row.item, row.hour)}><b>{ledgerTitle(row.item, named)}</b>
-            <small>{row.item.seller && <CountryFlagUrl className="log-flag" url={seller.flag} reason={seller.flagReason} pending={seller.flagPending} />}
+            <small>{row.item.seller && <CountryFlagUrl className="log-flag" url={seller.flag} detail={seller.flagDetail} reason={seller.flagReason} pending={seller.flagPending} />}
               {named(row.item.seller)} → {named(row.item.buyer)}{row.item.equipment ? ` · ${row.item.equipment}` : ''}</small></span>
           {figure ? <span className={`market-ledger-figure${figure.negative ? ' is-negative' : ''}`} onClick={() => open(row.item, row.hour)}>{figure.text}</span> : <span />}
         </>;

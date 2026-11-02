@@ -52,10 +52,11 @@ export default function ChordChart(props: ChordChartProps) {
     const frames = new ChordFrames(), motion = frames.motion;
     let disposed = false, refusal: string | null | undefined;
     let layout: ChordLayout = { arcs: [], ribbons: [] }, surface: ChordSurface = chordSurface(0, 0);
+    let placed: ChordData | null = null;
     let hover: HoverState<{ x: number; y: number; clientX: number; clientY: number }, ChordHit> = NO_HOVER;
     let hot: ChordHit | null = null, keyText = '';
     let descriptionKey = 0;
-    let described: { data: ChordData; hit: ChordHit; tooltip: ChordChartProps['tooltip']; height: number; content: TooltipContent | null; fitted: TooltipContent | null; spoken: string; key: string } | null = null;
+    let described: { data: ChordData; revision: unknown; hit: ChordHit; tooltip: ChordChartProps['tooltip']; height: number; content: TooltipContent | null; fitted: TooltipContent | null; spoken: string; key: string } | null = null;
     let device: { width: number; height: number } | undefined;
     const wake = () => { described = null; if (!disposed && task.current) scheduler.wake(task.current); };
     let indexed: ChordData | null = null;
@@ -90,13 +91,13 @@ export default function ChordChart(props: ChordChartProps) {
       if (hover.keyed && !hover.pointer && !keyIntent && heldTooltip != null && heldTooltip.owner !== owner) return;
       const { props: p, viewportHeight: height } = latest.current;
       const data = frames.data;
-      if (hot && data && (described?.data !== data || described.hit.kind !== hot.kind || described.hit.id !== hot.id || described.tooltip !== p.tooltip || described.height !== height)) {
+      if (hot && data && (described?.data !== data || described.revision !== frames.revision || described.hit.kind !== hot.kind || described.hit.id !== hot.id || described.tooltip !== p.tooltip || described.height !== height)) {
         const flag = hot.kind === 'node' ? data.nodes.find(node => node.id === hot!.id)?.countryFlag : undefined;
         const content = p.tooltip(hot, data);
         let keep = 0;
         if (content) for (let i = content.rows.length - 1; i >= 0 && content.rows[i].strong; i--) keep++;
         const fitted = countryTooltipContent(content, flag, wake, height, keep);
-        described = { data, hit: hot, tooltip: p.tooltip, height, content, fitted, spoken: fitted ? tooltipText(fitted) : '', key: String(++descriptionKey) };
+        described = { data, revision: frames.revision, hit: hot, tooltip: p.tooltip, height, content, fitted, spoken: fitted ? tooltipText(fitted) : '', key: String(++descriptionKey) };
       }
       const content = hot && data ? described?.content : null;
       if (content) {
@@ -131,7 +132,7 @@ export default function ChordChart(props: ChordChartProps) {
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0); context.clearRect(0, 0, width, height);
       surface = chordSurface(width, height);
       const eased = motion.advance(dt, easeTau(t.motion, motionNow(p.hoursPerSecond), t.reducedMotion));
-      layout = layoutChord(eased.data, motion.presence, eased.ringPresence);
+      if (placed !== eased.data) { placed = eased.data; layout = layoutChord(eased.data, motion.presence, eased.ringPresence); }
       if (hover.pointer) {
         const local = toLocal(hover.pointer.clientX, hover.pointer.clientY, rect, width, height);
         hover.pointer.x = local.x; hover.pointer.y = local.y;

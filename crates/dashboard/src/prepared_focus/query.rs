@@ -288,7 +288,7 @@ pub fn order_page<P: PageRead>(
     requested: &Pages,
     page: u64,
 ) -> io::Result<serde_json::Value> {
-    let unavailable = || invalid("Prepared focus data is unavailable at this hour");
+    let unavailable = || dashboard_core::refused("Prepared focus data is unavailable at this hour");
     let Some((actor, key)) = order_key(directory, tag) else {
         return Err(unavailable());
     };

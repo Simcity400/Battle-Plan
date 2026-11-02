@@ -1,3 +1,4 @@
+import { asFailure, type Failure } from './queryError.ts';
 import type { CountryFactsReply, CountryFlagChoice, CountryStyle } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
 import type { FactSource } from './countryFacts';
@@ -14,7 +15,7 @@ export interface CountryTimeline {
   /** One colour per recorded map colour, shared by every country and hour drawn in it; kept as the timeline grows and released with it. */
   colours: Map<number, { color: [number, number, number] }>;
 }
-interface Entry { content: number | null; timeline?: CountryTimeline; controller?: AbortController; askAt?: number }
+interface Entry { content: number | null; timeline?: CountryTimeline; controller?: AbortController; askAt?: number; error?: Failure }
 
 /** A spec's values for `tags` at `hour` from a timeline, or undefined when it does not hold the hour. */
 export type HeldLookup<V> = (timeline: CountryTimeline, hour: number, tags: readonly string[]) => ReadonlyMap<string, V> | undefined;
@@ -38,7 +39,7 @@ function setEntry(client: DashboardClient, entries: Map<string, Entry>, key: str
   // A read that settles tells its watchers even when it keeps the timeline: one waiting for an
   // hour asks again once the read's retry may.
   const settled = !!before?.controller && !entry?.controller;
-  if (before?.timeline !== entry?.timeline || settled) for (const changed of [...watchers.get(client)?.get(key) ?? []]) changed();
+  if (before?.timeline !== entry?.timeline || before?.error !== entry?.error || settled) for (const changed of [...watchers.get(client)?.get(key) ?? []]) changed();
 }
 
 const integer = (value: unknown): value is number => Number.isInteger(value);
@@ -102,8 +103,8 @@ export function askTimeline(client: DashboardClient, source: FactSource, recordi
     if (entries.get(key)?.controller === controller) setEntry(client, entries, key, { content, askAt: Date.now() + GROWING_MS,
       timeline: { reply, runs: new Map(reply.countries.map(country => [country.tag, country.runs as Run[]])), final: finalPreparedReply(data),
         colours: current?.colours ?? new Map() } });
-  }).catch(() => {
-    if (entries.get(key)?.controller === controller) setEntry(client, entries, key, { content, timeline: current, askAt: Date.now() + RETRY_MS });
+  }).catch(error => {
+    if (entries.get(key)?.controller === controller) setEntry(client, entries, key, { content, timeline: current, error: asFailure(error), askAt: Date.now() + RETRY_MS });
   });
   return current;
 }
@@ -113,6 +114,21 @@ export function askTimeline(client: DashboardClient, source: FactSource, recordi
 export function askableAt(client: DashboardClient, source: FactSource): number | undefined {
   const entry = held.get(client)?.get(timelineKey(source));
   return entry && !entry.controller ? entry.askAt : undefined;
+}
+
+export function timelineFailure(client: DashboardClient, source: FactSource): Failure | undefined {
+  const entry = held.get(client)?.get(timelineKey(source));
+  return entry?.content === (source.content ?? null) ? entry.error : undefined;
+}
+
+export function retryTimelines(client: DashboardClient, sourceId: string): void {
+  const entries = held.get(client);
+  if (!entries) return;
+  for (const [key, entry] of entries) {
+    if ((JSON.parse(key) as string[])[0] === sourceId && entry.error) {
+      setEntry(client, entries, key, { ...entry, error: undefined, askAt: undefined });
+    }
+  }
 }
 
 /** Whether the timeline holds `hour`. */

@@ -664,7 +664,7 @@ fn cell<T: columns::Plain + Copy>(
     {
         return Ok(*value);
     }
-    Err(dashboard_core::invalid(format!(
+    Err(dashboard_core::refused(format!(
         "Occupation {table:?} field {field} is not recorded at slot {slot}"
     )))
 }
@@ -677,7 +677,7 @@ fn text(state: &State, table: TableId, field: usize, slot: u32) -> io::Result<Ve
     {
         return Ok(bytes.to_vec());
     }
-    Err(dashboard_core::invalid(format!(
+    Err(dashboard_core::refused(format!(
         "Occupation {table:?} text field {field} is not recorded at slot {slot}"
     )))
 }

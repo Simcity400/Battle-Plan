@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
@@ -21,7 +22,7 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
   // Only the latest key's request may answer the chart's pending navigation.
   const navigation = useRef<AbortController | null>(null);
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
-  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: Failure }>();
   useEffect(() => () => { for (const request of pending.current) request.abort(); pending.current.clear(); }, [owner, active]);
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const dense = !!client.preparedQuery && view?.key === key && Math.ceil(view.to) - Math.floor(view.from) + 1 > view.width;
@@ -54,7 +55,7 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
       const model = countryValuesModel(reply);
       return model.tags.filter(tag => countryValueAt(model, tag, Math.floor(hour))?.total != null);
     } catch (error) {
-      if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) });
+      if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) });
       return null;
     } finally { pending.current.delete(controller); }
   }, [owner, manifest, active]);
@@ -67,7 +68,7 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
       family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, tags: params.tags,
       key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal).then(value => {
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: (value as { hour: number | null }).hour, revision: (previous?.revision ?? 0) + 1 }));
-    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); }).finally(() => pending.current.delete(controller));
+    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); }).finally(() => pending.current.delete(controller));
   }, [owner, active]);
   const retry = () => { setNavigationError(undefined); incoming.retry(); };
   const navigationFailure = useHeldFailure(navigationError?.owner === owner ? navigationError.error : undefined,

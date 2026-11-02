@@ -1,3 +1,5 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
+import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -110,10 +112,10 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see organisations." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading organisations…" />;
   if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  const country = names.get(nameKey(hour, tag)) ?? tag;
+  const country = nameReadText(names.get(nameKey(hour, tag)));
   const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} organisations</span>, headerSlot);
   const main = !rows.length ? rosterKnown(data, hour) ? <WidgetState kind="empty" icon="factory" message={`${country} has no industrial organisations at this date.`} />
     : <WidgetState kind="unavailable" message="Industrial organisations were not recorded at this date." />
@@ -121,7 +123,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
       rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} hoursPerSecond={hoursPerSecond}
       onRowClick={Chooser ? open : undefined} tooltip={tooltip} />;
-  return <div ref={anchor} className="industrial-organisations">
+  return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="industrial-organisations">
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={windowOpen} anchor={anchor}
       title={POLICY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}

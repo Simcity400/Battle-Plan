@@ -19,7 +19,7 @@ import { resolveWindow } from './model';
 import { contentSet, resolveOptions, setToken, toggleContentSet } from './options';
 import { usePlaybackMotion } from './playback';
 import { categoryChoices, monthLabel, spendLabel, spendingAt, spendingCostNotes, spendingCountryRequests, spendingGapNote, spendingGaps, spendingSummary,
-  preparedSpendingTableRows, unknownCosts } from './politicsSpending';
+  preparedSpendingTableRows, unknownCosts } from './politicsSpending.ts';
 import type { PowerCurrency, SpendingTableRow } from './politicsSpending';
 import { NO_SPENDING_CATEGORIES, normalizePoliticsSpendingOptions, POLITICS_SPENDING_OPTIONS, spendingSort } from './politicsSpendingOptions';
 import { powerGain } from './powerBalance';
@@ -148,8 +148,8 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon={icon} message="Load a campaign and choose a country to see its spending." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupNotice = groupError && <WidgetState kind="error" detail={groupError} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupNotice = groupError && <WidgetState kind="error" failure={groupError} onRetry={retry} />;
   if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading group membership…" /></>;
   if (reason) return <>{groupNotice}<WidgetState kind="empty" message="Selected country unavailable at this time." /></>;
   // A group's members at hours still being prepared are not known yet: no country, or nothing spent, is not proof of none.

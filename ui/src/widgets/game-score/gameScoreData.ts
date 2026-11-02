@@ -128,7 +128,7 @@ export function gameScoreIdentityAt(model: GameScoreModel | null, tag: string, h
 export function gameScoreCountryKnown(value: GameScoreIdentity | null | undefined): boolean {
   return value?.canonicalSlot != null && value.nativeCountry != null;
 }
-type ScoreFlagAt = (tag: string, hour: number) => FlagRead | null | undefined | typeof FAILED_FACT;
+type ScoreFlagAt = (tag: string, hour: number) => FlagRead | null | undefined | typeof FAILED_FACT | Error;
 export function gameScoreCountryCell(row: ScoreRow, flagAt: ScoreFlagAt) {
   if (!gameScoreCountryKnown(row.identity)) return null;
   return { name: row.identity.name ?? 'Country name unavailable', ...flagReadMetadata(flagAt(row.tag, row.hour)) };

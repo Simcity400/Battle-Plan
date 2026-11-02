@@ -65,7 +65,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see dockyards and repairs." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading dockyards…" />;
   if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!at) return <WidgetState kind="unavailable" message="Repairs were not recorded at this time." />;

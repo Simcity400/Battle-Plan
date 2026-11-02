@@ -8,7 +8,7 @@ import { tokensFromValues } from '../charts/tokens.ts';
 
 const requests: unknown[] = [];
 const CLIENT = {};
-const shared = globalThis as typeof globalThis & { airRequests: unknown[]; airClient?: object; airTimeline: unknown; airChoices?: unknown; airDay?: unknown; airDayError?: string; airHeld?: unknown; airWindows?: unknown; airFactionName?: string; airFactionColours?: [string, string][]; airStyleReads?: { tag: string; hour: number }[][]; airStyles?: [string, number, [number, number, number]][]; airLookPlans?: { hour: number; segmentAt: (tag: string, hour: number) => number | null; hours?: ReadonlyMap<string, number>; exact: boolean }[]; airHoverSegment?: (tag: string, hour: number) => number | null; airUseState?: () => unknown; airUseEffect?: (effect: () => unknown, deps: readonly unknown[]) => void };
+const shared = globalThis as typeof globalThis & { airRequests: unknown[]; airClient?: object; airTimeline: unknown; airChoices?: unknown; airDay?: unknown; airDayError?: Error; airHeld?: unknown; airWindows?: unknown; airFactionName?: string; airFactionColours?: [string, string][]; airStyleReads?: { tag: string; hour: number }[][]; airStyles?: [string, number, [number, number, number]][]; airLookPlans?: { hour: number; segmentAt: (tag: string, hour: number) => number | null; hours?: ReadonlyMap<string, number>; exact: boolean }[]; airHoverSegment?: (tag: string, hour: number) => number | null; airUseState?: () => unknown; airUseEffect?: (effect: () => unknown, deps: readonly unknown[]) => void };
 shared.airRequests = requests;
 shared.airTimeline = { view: 'timeline', branchId: '1', firstHour: 0, lastHour: 24, available: true,
   days: [23, 24], sides: [], segments: {}, anchorReads: {}, rows: [], excluded: [], theatreReads: [], warnings: [], scale: 100000, dayHours: 24, badBelow: 40000, goodAbove: 60000 };
@@ -152,7 +152,7 @@ test('air side colours use the dated majority faction independently of the ancho
 });
 
 test('follow surfaces a refused current-day reply instead of silently holding the timeline', () => {
-  shared.airDayError = 'Exact air view exceeds MAX_PRODUCT_REPLY_BYTES';
+  shared.airDayError = new Error('Exact air view exceeds MAX_PRODUCT_REPLY_BYTES');
   try { assert.equal(render(25).result.error, shared.airDayError); }
   finally { delete shared.airDayError; }
 });

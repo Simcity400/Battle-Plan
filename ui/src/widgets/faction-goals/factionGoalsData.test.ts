@@ -69,12 +69,12 @@ test('an hour the history has not read is not an empty list: it, an unprepared h
 
 test('an over-budget history range is asked again in halves, and a faction switch never shows the last faction', () => {
   const branch = { firstHour: 100, lastHour: 160 };
-  const OVER = 'This product reply exceeds the transport reply budget of 25165824 bytes';
+  const OVER = new Error('This product reply exceeds the transport reply budget of 25165824 bytes');
   const halves = splitPart(WHOLE[0], OVER, branch)!;
   assert.deepEqual(halves, [{ firstHour: null, lastHour: 130 }, { firstHour: 131, lastHour: null }]);
   assert.deepEqual(splitPart(halves[1], OVER, branch), [{ firstHour: 131, lastHour: 145 }, { firstHour: 146, lastHour: null }]);
   assert.equal(splitPart({ firstHour: 120, lastHour: 120 }, OVER, branch), null, 'one hour cannot split');
-  assert.equal(splitPart(WHOLE[0], 'Background preparation is off.', branch), null, 'other failures are not split');
+  assert.equal(splitPart(WHOLE[0], new Error('Background preparation is off.'), branch), null, 'other failures are not split');
   assert.equal(partAt(halves, 130), halves[0]);
   assert.equal(partAt(halves, 131), halves[1]);
   assert.equal(partAt(halves, 10_000), halves[1], 'the open end holds a growing branch');

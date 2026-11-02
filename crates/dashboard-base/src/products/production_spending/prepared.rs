@@ -444,14 +444,19 @@ pub(crate) fn read_pages(
             };
             reads.push(at.read_hour);
             let track = tags.entry(input.tag.clone()).or_default();
+            let since = at.head.spending_since;
+            if track.hours.last() == Some(&since) {
+                *track.last_hours.last_mut().expect("a held spending sample") = page.last_hour;
+                continue;
+            }
             let sample = u32::try_from(track.hours.len())
                 .map_err(|_| crate::invalid("Too many requested production samples"))?;
-            track.hours.push(page.first_hour);
+            track.hours.push(since);
             track.last_hours.push(page.last_hour);
             track.starts.push(true);
             track.identities.push((at.head.slot, at.head.country_id, 0));
             track.presence.push(at.head.present);
-            scope.insert(page.first_hour, at.head.campaign_reason);
+            scope.insert(since, at.head.campaign_reason);
             let mut entries = BTreeMap::new();
             for leaf in &at.source.leaves {
                 entries.insert(
@@ -540,14 +545,15 @@ pub(crate) fn read_pages(
     )?;
     for run in &mut reply.production {
         if run.present == Some(false) {
-            let ordinal = unique.keys().copied().find(|&ordinal| {
-                let page = index.endpoint(ordinal);
-                page.first_hour <= run.first_hour && run.first_hour <= page.last_hour
-            });
-            run.empty_census_hour = match ordinal {
-                Some(ordinal) => source_of(index, &unique, ordinal, false)?.map(|at| at.read_hour),
-                None => None,
-            };
+            for &ordinal in unique.keys() {
+                if let Some(at) = source_of(index, &unique, ordinal, false)?
+                    && at.head.spending_since <= run.first_hour
+                    && run.first_hour <= index.endpoint(ordinal).last_hour
+                {
+                    run.empty_census_hour = Some(at.read_hour);
+                    break;
+                }
+            }
         }
     }
     let mut continuity = BTreeMap::new();

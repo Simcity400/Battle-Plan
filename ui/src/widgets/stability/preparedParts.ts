@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { HourSpan, MeasureParts } from '../../generated/dashboard';
@@ -105,7 +106,7 @@ error:prepared.error ?? ranking.error,ready:!!prepared.summaries && !!ranking.su
 export function usePartsParity(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined, tags: readonly string[], measure: Measure, extent: readonly [number,number], legacy: MeasureParts, within?: ReadonlyMap<string,readonly HourSpan[]>) {
   const root = useRef<HTMLDivElement>(null), {requested,prepare} = useParityPreparation();
   const key = JSON.stringify([source?.id,source?.revision,branchId,tags,measure,extent,within && [...within]]);
-  const [answer,setAnswer] = useState<{key:string;client:DashboardClient;model?:ParityList;error?:string}>();
+  const [answer,setAnswer] = useState<{key:string;client:DashboardClient;model?:ParityList;error?: Failure}>();
   useEffect(()=> { if (!requested || !source || !branchId) return; const controller = new AbortController();
     void (async()=> {const rows:unknown[]=[];
       for (let first=Math.floor(extent[0]);first<=extent[1];first+=128) {
@@ -114,7 +115,7 @@ export function usePartsParity(client: DashboardClient, source: DashboardSource 
         for (const hour of hours) {if(partsPending(data,hour,within)) throw new Error('Stability parts are still being prepared.'); const values=partsAt(data ? preparedPartsAt(data,hour,within,tags) : legacy,hour); rows.push({hour,values:values?.map(({part,raw})=>({id:part.id,valueRaw:raw})).sort((a,b)=>a.id.localeCompare(b.id)) ?? null});}
       }
       if (!controller.signal.aborted) setAnswer({key,client,model:{kind:'chart',label:'Stability part values',complete:true,total:rows.length,rows}});
-    })().catch(error=>{if(!controller.signal.aborted)setAnswer({key,client,error:String(error)});}); return ()=>controller.abort();
+    })().catch(error=>{if(!controller.signal.aborted)setAnswer({key,client,error: asFailure(error)});}); return ()=>controller.abort();
   },[requested,key,client,legacy]);
   const current=answer?.key===key && answer.client===client ? answer : undefined;
   useParityRows(root,()=>current?.model ?? {kind:'chart',label:'Stability part values',complete:false,total:0,rows:[]},{prepare,ready:()=>!!current?.model,error:()=>current?.error ?? null});

@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { PeopleExile, PoliticsHistoryReply, PoliticsStateReply } from '../../generated/dashboard';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { SortValue } from '../../charts/table/logic';
@@ -90,15 +91,15 @@ export const EXILE_VALUES: Readonly<Record<'legitimacy' | 'manpower' | 'leaders'
   leaders: row => row.leaders,
 };
 
-type Label = { name: string; flag?: string; flagReason?: string; flagPending?: boolean };
+type Label = { nameFailure?: Error; nameDetail?: string; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
 /** The row's facts in the exile cards' wording. `air` is undefined while the hour detail loads. */
 export function exileTooltip(row: ExileRow, hour: number, exile: Label, host: Label | null, air: number | null | undefined): TooltipContent {
   const notRecorded = 'Not recorded';
   const number = (value: number | null) => value === null ? notRecorded : usNumber.format(value);
   const note = readNote(row, hour);
-  return { title: exile.name, countryFlag: { flag: exile.flag, flagReason: exile.flagReason, flagPending: exile.flagPending }, rows: [
+  return { ...countryNameDetails(exile), title: exile.name, countryFlag: { flag: exile.flag, flagReason: exile.flagReason, ...(exile.flagDetail !== undefined ? { flagDetail: exile.flagDetail } : {}), flagPending: exile.flagPending }, rows: [
     host === null ? { label: 'Host', value: notRecorded }
-      : { label: 'Host', value: host.name, countryFlag: { flag: host.flag, flagReason: host.flagReason, flagPending: host.flagPending } },
+      : { ...countryNameDetails(host), label: 'Host', value: host.name, countryFlag: { flag: host.flag, flagReason: host.flagReason, ...(host.flagDetail !== undefined ? { flagDetail: host.flagDetail } : {}), flagPending: host.flagPending } },
     { label: 'Legitimacy', value: row.legitimacy === null ? notRecorded : legitimacyText(row.legitimacy) },
     { label: 'Exile manpower', value: number(row.manpower) },
     { label: 'Exile manpower cap', value: number(row.cap) },

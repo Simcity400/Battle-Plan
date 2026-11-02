@@ -197,7 +197,7 @@ fn membership(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<BTreeMap<String, Vec<HourSpan>>>> {
     if params.origin_hour.is_some() && history.is_none() {
-        return Err(io::Error::other(
+        return Err(dashboard_core::refused(
             "Nuclear drill identity history is unavailable",
         ));
     }

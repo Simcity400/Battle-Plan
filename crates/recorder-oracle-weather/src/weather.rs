@@ -124,7 +124,7 @@ fn compare_provinces(
     let rows = complete::<tables::WeatherProvinces>(frame)?;
     let rebuild = ModifierRebuild::prepare(frame, rows, province_modifiers, report);
     // Derive temperatures at the frame's hour from its anchor and pass.
-    // `recorder derived` checks each hour against the read checksum.
+    // `recorder derived` checks each hour against the read witness.
     let unrecorded = rows
         .iter()
         .all(|row| matches!(row.temperature.record(), Ok(TemperatureRecord::NotRecorded)));

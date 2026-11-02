@@ -39,7 +39,9 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
   const tag = country.tag;
-  const countryName = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
+  const countryName = countryLabel.name;
+  const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
   const measure: Measure = options.measure === 'equipment' ? 'equipment' : 'manpower';
   const ledger = (LEDGER_CHOICES.find(choice => choice.value === options.ledger)?.value ?? 'combat') as Ledger;
@@ -83,18 +85,18 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see army losses." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its army losses." />;
-  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
+  else if (country.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (!tag) main = <WidgetState kind="loading" label="Loading losses…" />;
-  else if (state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data || !bars) main = <WidgetState kind="loading" label="Loading losses…" />;
-  else if (data.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
+  else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (data.availability.armies || data.availability.manpower && measure === 'manpower')
-    main = <WidgetState kind="unavailable" message="The combat log wasn’t recorded at this time." />;
+    main = <WidgetState kind="unavailable" message="The combat log wasn’t recorded at this time." detail={nameDetail} />;
   else if (!bars.periods.some(period => !period.unknown))
-    main = <WidgetState kind="empty" message={`${countryName} has no recorded army losses${widget.time.mode === 'follow' ? ' yet' : ''}.`} />;
+    main = <WidgetState kind="empty" message={`${nameDetail ? 'No recorded army losses' : `${countryName} has no recorded army losses`}${widget.time.mode === 'follow' ? ' yet' : ''}.`} detail={nameDetail} />;
   else {
     charted = true;
     main = <div className="army-losses-chart">
@@ -112,13 +114,13 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];
   // Hatched months need saying what they are.
   const unrecorded = charted && !!bars?.periods.some(period => period.unknown);
-  return <div ref={anchor} className="army-losses">{menu.menu}
+  return <div ref={anchor} className="army-losses" data-detail={countryLabel.nameFailure?.message}>{menu.menu}
     {setOption && <div className="army-losses-caption"><span>{caption} per month</span>
       <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />
       {measure === 'equipment' && <Segmented value={ledger} options={LEDGER_CHOICES} label="Ledger" onChange={value => setOption('ledger', value)} />}
     </div>}
     {/* Outside the drill, so an open breakdown never hides a later failure. */}
-    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
+    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={month !== null} title={month === null ? 'Month' : monthLabel(month)}
       day={month === null ? '' : monthLabel(month)} following={false} canFollow={false} anchor={anchor}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}

@@ -8,7 +8,7 @@ import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { contentTitleHint } from '../../dashboard/contentTitles';
@@ -79,14 +79,14 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
     { key: 'kills', header: 'Enemy soldiers killed', label: 'Enemy soldiers killed', numeric: true, width: 'max-content', priority: 1, value: killsValue, renderMissing: true,
       render: row => row.facts.kills === null ? <span className="decorated-missing" data-tooltip="Not recorded">—</span> : row.facts.kills.toLocaleString('en-US') },
   ], [templates, country, data, options.cellBars]);
-  const tooltip = useCallback((row: CareerRow) => data ? fitTooltip([careerTooltip(row, data, country(row).name, templates.get(row.template)?.name ?? null)], viewportHeight)
+  const tooltip = useCallback((row: CareerRow) => data ? fitTooltip([{ ...careerTooltip(row, data, country(row).name, templates.get(row.template)?.name ?? null), ...countryNameDetails(country(row)) }], viewportHeight)
     : { title: divisionName(row.name), rows: [] }, [data, country, templates, viewportHeight]);
   let main;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see divisions." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (selection.group.error) main = <WidgetState kind="error" detail={selection.group.error} onRetry={selection.group.retry} />;
+  else if (selection.group.error) main = <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
   else if (selection.selectionReason) main = <WidgetState kind="unavailable" message={selection.selectionReason} />;
-  else if (state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading divisions…" />;
   else if (data.missing) main = <WidgetState kind="unavailable" message="Divisions weren’t recorded at this time." />;
   else if (!rows.length) main = selection.known ? <WidgetState kind="empty" message="No divisions at this date." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;

@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { useEffect, useRef, useState } from 'react';
 import { inFrame } from './frameUpdates.ts';
 
@@ -9,7 +10,7 @@ export interface ViewRead<T> {
   /** The newest read that landed for this lane, whichever view it was asked for. */
   data?: T;
   /** The failure of the view now asked for. */
-  error?: string;
+  error?: Failure;
   /** The view key `data` answers. */
   viewKey?: string;
   /** The view key whose read failed with `error`. */
@@ -29,7 +30,7 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
   read: (view: V, signal: AbortSignal, publish: (value: T) => void, restart: boolean) => Promise<T>, owner?: object): ViewRead<T> {
   // The reading client is part of the lane: another client's reply is never shown.
   const lane = reads == null ? null : owner ? `${ownerId(owner)}:${reads}` : reads;
-  const [state, setState] = useState<{ lane: string; viewKey: string; data?: T; error?: string; errorKey?: string }>();
+  const [state, setState] = useState<{ lane: string; viewKey: string; data?: T; error?: Failure; errorKey?: string }>();
   const [attempt, setAttempt] = useState(0);
   const [landed, setLanded] = useState(0);
   const flight = useRef<{ lane: string; id: string; viewKey: string; shown: boolean; controller: AbortController } | null>(null);
@@ -60,7 +61,7 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
       // Kept data keeps the view it answers; only the failure is the asked view's.
       if (!controller.signal.aborted) inFrame(() => {
         if (!controller.signal.aborted) setState(previous => ({ lane, ...(previous?.lane === lane && previous.data !== undefined
-          ? { viewKey: previous.viewKey, data: previous.data } : { viewKey: asked.viewKey }), error: error instanceof Error ? error.message : String(error),
+          ? { viewKey: previous.viewKey, data: previous.data } : { viewKey: asked.viewKey }), error: asFailure(error),
           errorKey: asked.viewKey }));
       });
     }).finally(() => {

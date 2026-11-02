@@ -178,10 +178,10 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see supply health." />;
     if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Selected country unavailable." />;
-    if (widget.countries.kind === 'group' && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    if (widget.countries.kind === 'group' && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (countries.top != null) return <WidgetState kind="empty" message="Choose countries or a group in settings." />;
     if (countries.reason) return <WidgetState kind="empty" message={countries.reason} />;
-    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
     if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading supply health…" />;
     if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
     // A group's members at hours still being prepared are not known yet: no country is not proof of none.
@@ -253,7 +253,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       }} />
   </div> : breakdown;
   return <>
-    {widget.countries.kind === 'group' && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
+    {widget.countries.kind === 'group' && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {neutralHeader}
     {headerSlot && createPortal(<small className="dash-widget-subtitle"> · share of divisions</small>, headerSlot)}
     <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost

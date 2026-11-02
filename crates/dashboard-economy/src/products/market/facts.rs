@@ -29,7 +29,12 @@ use replay_data::{
     scope::CaptureMode,
 };
 use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
-use std::{collections::BTreeMap, io, mem::size_of, sync::LazyLock};
+use std::{
+    collections::BTreeMap,
+    io,
+    mem::size_of,
+    sync::{Arc, LazyLock},
+};
 
 /// The tables a projection reads: the market's, the countries naming its holders, the variant
 /// catalogue's, and Campaign, which every frame of the walk's world holds.
@@ -97,23 +102,28 @@ pub fn needs() -> io::Result<Needs> {
     })
 }
 
-/// Why a table is not complete, as the row decoder names it, without its hour.
+/// Why a table is not complete, as the row decoder names it.
 pub type Refusal = Box<str>;
 
-/// The reason the row decoder gives `table`, not complete at the hour, after the hour.
-fn refusal(state: &State, table: TableId, mode: CaptureMode) -> io::Result<Refusal> {
+/// The reason the row decoder gives `table`, not complete at `hour`.
+fn refusal(state: &State, table: TableId, mode: CaptureMode, hour: i32) -> io::Result<Refusal> {
     Ok(match columns::status(state, table) {
         columns::Status::Unavailable { reason } => {
             let reason = state
                 .dictionary()
                 .get(reason)
                 .ok_or_else(|| io::Error::other("A market reason names no dictionary entry"))?;
-            format!("{table:?} is unavailable: {}", String::from_utf8_lossy(reason))
+            format!(
+                "hour {hour} {table:?} is unavailable: {}",
+                String::from_utf8_lossy(reason)
+            )
         }
         columns::Status::Truncated { missing } => {
-            format!("{table:?} is truncated ({missing} missing rows)")
+            format!("hour {hour} {table:?} is truncated ({missing} missing rows)")
         }
-        columns::Status::NotRecorded => format!("{table:?} is not recorded in a {mode} recording"),
+        columns::Status::NotRecorded => {
+            format!("hour {hour} {table:?} is not recorded in a {mode} recording")
+        }
         columns::Status::Complete => {
             return Err(io::Error::other("A complete market table has no reason"));
         }
@@ -470,6 +480,9 @@ fn tags(roster: &Roster) -> Vec<(u32, Box<str>)> {
 pub struct Projector {
     format: FormatVersion,
     mode: CaptureMode,
+    blocks: Arc<BTreeMap<u64, Arc<[i32]>>>,
+    block_starts: Arc<[i32]>,
+    next_block: usize,
     masks: [u64; 5],
     asks: Vec<(TableId, Hold)>,
     /// The frame the world's views are lent into for an hour, given back before it ends.
@@ -490,11 +503,18 @@ pub struct Projector {
 const SAVED: &[u8] = b"market projector: cold";
 
 impl Projector {
-    pub fn new(format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
+    pub fn new(
+        format: FormatVersion,
+        mode: CaptureMode,
+        blocks: Arc<BTreeMap<u64, Arc<[i32]>>>,
+    ) -> io::Result<Self> {
         let masks = masks()?;
         Ok(Self {
             format,
             mode,
+            blocks,
+            block_starts: Arc::from([]),
+            next_block: 0,
             asks: asks(&masks),
             masks,
             frame: DecodedFrame {
@@ -524,8 +544,11 @@ impl Projector {
 impl Operator<World> for Projector {
     type Output = Hour;
 
-    fn start(&mut self, start: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
+    fn start(&mut self, start: segments::Start<'_>, branch: u64, first: i32) -> io::Result<()> {
         self.cold = true;
+        // A branch the row recording holds no block of has no row block start to observe.
+        self.block_starts = self.blocks.get(&branch).cloned().unwrap_or_else(|| Arc::from([]));
+        self.next_block = self.block_starts.partition_point(|&hour| hour < first);
         // A restart holds the hour before's statuses, which this hour's may have moved from.
         if let segments::Start::Restart(before) = start {
             for &table in tables() {
@@ -578,17 +601,23 @@ impl Operator<World> for Projector {
         };
         let restated: [bool; 5] = std::array::from_fn(|index| shaped[STATE[index].index()]);
         let mut changed = [false; 5];
-        // A cold start restates every table, which wakes nothing: only its deltas do.
-        let mut woke = false;
+        // The row preparation starts a fresh change tracker at each row block.
+        while self.block_starts.get(self.next_block).is_some_and(|&first| first < at) {
+            self.next_block += 1;
+        }
+        let mut woke = self.block_starts.get(self.next_block) == Some(&at);
+        self.next_block += usize::from(woke);
         for (index, &table) in STATE.iter().enumerate() {
-            woke |= moved[table.index()];
+            woke |= moved[table.index()]
+                || self.shapes[table.index()] != Some(columns::Status::Complete);
             changed[index] = restated[index]
                 || (self.shapes[table.index()] == Some(columns::Status::Complete)
                     && slots::relevant(state, table, self.masks[index])?);
         }
         let mut reshaped = false;
         for table in [TableId::Countries, TableId::CountryLinks] {
-            woke |= moved[table.index()];
+            woke |= moved[table.index()]
+                || self.shapes[table.index()] != Some(columns::Status::Complete);
             reshaped |= shaped[table.index()];
             woke |= slots::relevant(state, table, u64::MAX)?;
         }
@@ -599,7 +628,7 @@ impl Operator<World> for Projector {
         let flipped = opens || identities != self.identities;
         self.identities = identities;
         let relinked = flipped || roster.rebuilt() || !roster.changed_links().is_empty();
-        if !(reshaped || roster.changed() || changed.contains(&true)) {
+        if !(woke || reshaped || roster.changed() || changed.contains(&true)) {
             let bytes = raws_heap(&raws);
             return out.push(Hour {
                 hour: at,
@@ -612,7 +641,7 @@ impl Operator<World> for Projector {
             });
         }
         let mut facts = Facts::default();
-        if flipped || (reshaped && !identities) {
+        if flipped || (woke && !identities) {
             facts.identities = Some(if identities {
                 Ok(())
             } else {
@@ -621,7 +650,7 @@ impl Operator<World> for Projector {
                 } else {
                     TableId::Countries
                 };
-                Err(refusal(state, table, self.mode)?)
+                Err(refusal(state, table, self.mode, at)?)
             });
         }
         if identities && (flipped || roster.changed()) {
@@ -647,8 +676,8 @@ impl Operator<World> for Projector {
             facts.tables[index] = if !identities {
                 flipped.then_some(Table::Skipped)
             } else if !columns::complete(state, table) {
-                whole
-                    .then(|| refusal(state, table, self.mode).map(Table::Refused))
+                (whole || woke)
+                    .then(|| refusal(state, table, self.mode, at).map(Table::Refused))
                     .transpose()?
             } else if whole || changed[index] {
                 let edits = (!whole)
@@ -681,7 +710,7 @@ impl Operator<World> for Projector {
                 None
             };
         }
-        if changed[4] {
+        if changed[4] || (woke && !columns::complete(state, TableId::MarketEvents)) {
             let table = TableId::MarketEvents;
             facts.events = Some(if columns::complete(state, table) {
                 let rows = frame.complete::<tables::MarketEvents>()?;
@@ -699,7 +728,7 @@ impl Operator<World> for Projector {
                         .collect(),
                 }
             } else {
-                Events::Refused(refusal(state, table, self.mode)?)
+                Events::Refused(refusal(state, table, self.mode, at)?)
             });
         }
         drop(lent);
@@ -731,7 +760,7 @@ impl Operator<World> for Projector {
                 "Not a saved market projector",
             ));
         }
-        *self = Self::new(self.format, self.mode)?;
+        *self = Self::new(self.format, self.mode, Arc::clone(&self.blocks))?;
         Ok(())
     }
 }

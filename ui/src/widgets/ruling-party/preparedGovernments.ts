@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { LedgerGovernment, MeasureDropReply, PoliticsLedgerReply } from '../../generated/dashboard';
@@ -64,14 +65,14 @@ export function usePreparedGovernments(client: DashboardClient, source: Dashboar
     : cluster ? supplemental.slice(first, Math.min(first + 32, end)) : undefined;
   const next = cluster?.tag === 'native' ? page.data?.cursor : first + 32 < end ? String(first + 32) : null;
   const parityKey = JSON.stringify([source?.id, source?.revision, branchId, tag, through]);
-  const [parity, setParity] = useState<{ key: string; data?: PoliticsLedgerReply; error?: string }>();
+  const [parity, setParity] = useState<{ key: string; data?: PoliticsLedgerReply; error?: Failure }>();
   const parityRows = parity?.key === parityKey ? parity.data : undefined;
   const prepareParity = () => {
     if (import.meta.env.MODE !== 'parity' || !enabled || parity?.key === parityKey) return;
     setParity({ key: parityKey });
     void preparedSeriesQuery(client, source!, 'politics-ledger', { branchId, tag, view: 'governments', from: extent[0], hour: Math.floor(through) }, new AbortController().signal)
       .then(value => setParity({ key: parityKey, data: validateGovernmentLedger(value) }))
-      .catch(error => setParity({ key: parityKey, error: String(error) }));
+      .catch(error => setParity({ key: parityKey, error: asFailure(error) }));
   };
   const onSummaryView = useCallback((view: { from: number; to: number; width: number }) => setViewport(previous => previous?.owner === owner
     && previous.from === view.from && previous.to === view.to && previous.width === view.width ? previous : { owner, ...view }), [owner]);

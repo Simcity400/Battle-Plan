@@ -24,7 +24,7 @@ const daily: WeatherReply = { ...choices, window, columns: { days: 1,
 const snowDay: WeatherReply = { ...choices, modifiers: [], window: { firstHour: 120, lastHour: 143, known: [{ firstHour: 120, lastHour: 143 }], reads: [[120, 143, 140]],
   series: [{ name: '1|snow', runs: [[120, 143, '1', true]] }] } };
 
-interface Fixture { data: WeatherReply; chart?: TimeChartProps; read: Map<number, { data?: WeatherReply; error?: string }>; wanted: number[];
+interface Fixture { data: WeatherReply; chart?: TimeChartProps; read: Map<number, { data?: WeatherReply; error?: Error }>; wanted: number[];
   menu?: unknown[]; drilled?: number }
 const host = globalThis as typeof globalThis & { __weather?: Fixture };
 

@@ -174,6 +174,16 @@ pub struct OccupationReserveObserver {
 }
 
 impl KeyedObserver for OccupationReserveObserver {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "occupation-reserve";
     const TABLES: &'static [TableId] = &[
         TableId::CountryOccupationReserveManpower,

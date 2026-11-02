@@ -1,3 +1,4 @@
+import { RefusedError } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
@@ -50,16 +51,17 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   const data = fallback ? details.data : lookup?.kind === 'held' ? lookup.view : undefined;
   // Asked details still shown while the next hour loads keep the hour they answer.
   const dataHour = fallback && details.data && details.moment ? (JSON.parse(details.moment) as [number])[0] : hour;
-  const failure = fallback ? details.error : lookup?.kind === 'absent' ? ABSENT_FACTION : undefined;
+  const absent = useMemo(() => new RefusedError(ABSENT_FACTION), []);
+  const failure = fallback ? details.error : lookup?.kind === 'absent' ? absent : undefined;
   const retry = fallback ? details.retry : () => setRetried(at);
   const historyFailure = history.error === undefined ? null : `Goal history unavailable: ${history.error}`;
-  useHeldFailures(historyFailure ? [historyFailure] : NO_WARNINGS, history.retry);
+  useHeldFailures(history.error ? [history.error] : [], history.retry);
   const all = useMemo(() => data && !data.goalReason ? goalRows(data) : [], [data]);
   const rows = useMemo(() => filterGoals(all, options.goals as GoalFilter), [all, options.goals]);
   const order = useMemo(() => termOrder(all), [all]);
   const diagnostics = useMemo(() => {
     const held = historyFailure ? [historyFailure] : NO_WARNINGS;
-    if (!data) return failure ? [failure, ...held] : held;
+    if (!data) return failure ? [failure.message, ...held] : held;
     const unnamed = all.filter(row => row.definition.reason).length;
     const unnamedTerms = all.filter(row => row.category && !row.categoryName).length;
     return [...held, ...data.warnings, ...data.refusals.map(refusal => `${refusal.fact} (${refusal.count}): ${refusal.reason}`),
@@ -94,11 +96,11 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
     {completedCount(all)} completed</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see faction goals." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction goals…" /></>;
   if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="target" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
-  if (failure) return <>{groupFailure}<WidgetState kind="error" detail={failure} onRetry={retry} /></>;
+  if (failure) return <>{groupFailure}<WidgetState kind="error" failure={failure} onRetry={retry} /></>;
   if (!data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction goals…" /></>;
   if (data.goalReason) return <>{groupFailure}<WidgetState kind="unavailable" message="This faction’s goals were not recorded at this time." /></>;
   if (!all.length) return <>{groupFailure}{header}<WidgetState kind="empty" icon="target" message="This faction has no goals." /></>;

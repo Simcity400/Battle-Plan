@@ -108,9 +108,10 @@ impl Product for NavalManagement {
         {
             SeekResult::Frame(frame) => frame,
             SeekResult::Gap { reason, .. } => {
-                return Err(io::Error::other(format!(
-                    "Naval management unavailable: {reason}"
-                )));
+                return Err(dashboard_base::prepared::query::frames::gap_error(
+                    &reason,
+                    format!("Naval management unavailable: {reason}"),
+                ));
             }
         };
         let catalogue = context
@@ -171,7 +172,7 @@ fn project(
         .map_err(io::Error::other)?;
     let (_, slot) = tagged_country(countries, links, &params.tag)
         .found()
-        .ok_or_else(|| io::Error::other("Selected naval country identity unavailable"))?;
+        .ok_or_else(|| dashboard_core::refused("Selected naval country identity unavailable"))?;
     let own = |raw| link_slot(links, raw) == Some(slot);
     let lexical = rows!(LexicalTokens);
     let variants = rows!(VariantDefinitions);
@@ -427,8 +428,14 @@ fn project(
                 ships.iter().find(|row| row.id == entry.ship),
                 models.iter().find(|row| row.ship == entry.ship),
             );
-            let strength = hull.current_raw.map(fixed).unwrap_or_else(|| "Unavailable".into());
-            let maximum = hull.maximum_raw.map(fixed).unwrap_or_else(|| "Unavailable".into());
+            let strength = hull
+                .current_raw
+                .map(fixed)
+                .unwrap_or_else(|| "Unavailable".into());
+            let maximum = hull
+                .maximum_raw
+                .map(fixed)
+                .unwrap_or_else(|| "Unavailable".into());
             lines.push(format!(
                 "{}. Ship {} - hull HP {} / {}",
                 u64::from(entry.ordinal) + 1,

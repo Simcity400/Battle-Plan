@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { SortValue } from '../../charts/table/logic';
@@ -75,9 +76,9 @@ export const ELECTION_VALUES: Readonly<Record<'term' | 'days' | 'next', (row: El
   next: row => row.next,
 };
 
-export function electionTooltip(row: ElectionRow, country: { name: string; flag?: string; flagReason?: string; flagPending?: boolean }): TooltipContent {
+export function electionTooltip(row: ElectionRow, country: { nameFailure?: Error; nameDetail?: string; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean }): TooltipContent {
   const notRecorded = 'Not recorded';
-  return { title: country.name, countryFlag: { flag: country.flag, flagReason: country.flagReason, flagPending: country.flagPending }, rows: [
+  return { ...countryNameDetails(country), title: country.name, countryFlag: { flag: country.flag, flagReason: country.flagReason, ...(country.flagDetail !== undefined ? { flagDetail: country.flagDetail } : {}), flagPending: country.flagPending }, rows: [
     { label: 'Election interval', value: row.interval === null ? notRecorded : intervalText(row.interval) },
     { label: 'Next election', value: row.next === null ? notRecorded : dayLabel(row.next) },
     { label: 'Days left', value: row.hoursLeft === null ? notRecorded : daysText(row.hoursLeft) },

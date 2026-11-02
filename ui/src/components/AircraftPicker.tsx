@@ -1,3 +1,4 @@
+import { failureText } from '../dashboard/queryError.ts';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -45,7 +46,7 @@ function Row({ index, pages, chosen, onChoose, request, retry }: {
   useEffect(() => { if (!entry && !error) request(index, index); }, [entry, error, index, request]);
   if (!entry) {
     if (error) return <div className="aircraft-row is-failed" role="alert">
-      <span>Rows from {(Math.floor(index / pages.size) * pages.size + 1).toLocaleString()} did not load: {error}</span>
+      <span data-detail={error.message}>{failureText(error, `Rows from ${(Math.floor(index / pages.size) * pages.size + 1).toLocaleString()} did not load.`)}</span>
       <button type="button" className="map-menu-action" onClick={() => retry(index)}>Retry</button>
     </div>;
     return <div className="aircraft-row is-loading" aria-hidden="true"><span className="skeleton" /></div>;
@@ -93,7 +94,7 @@ export function AircraftCatalogueView({ pages, version, scope, onScope, query, o
     {line && <p className={line.alert ? 'aircraft-picker-status is-refused' : 'aircraft-picker-status'} role={line.alert ? 'alert' : 'status'}>{line.text}</p>}
     <div className="aircraft-picker-list" ref={scroll}>
       {pages && pages.matching === null && !failed && <p className="aircraft-picker-note" role="status">Reading the content's aircraft...</p>}
-      {pages && pages.matching === null && failed && <p className="aircraft-picker-note" role="alert">{failed}
+      {pages && pages.matching === null && failed && <p className="aircraft-picker-note" role="alert" data-detail={failed.message}>{failureText(failed, "Couldn’t load aircraft.")}
         <button type="button" className="map-menu-action" onClick={() => retry(0)}>Retry</button></p>}
       {pages?.matching === 0 && <p className="aircraft-picker-note">{query.trim() ? 'No model matches the search.' : 'The content has no models here.'}</p>}
       {pages && rows.length > 0 && <VirtualList identity={pages} items={rows} itemKey={index => String(index)} estimate={52} label="Aircraft models" scrollRef={scroll} isInteractive={interactive}>

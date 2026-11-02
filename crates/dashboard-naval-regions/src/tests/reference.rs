@@ -46,6 +46,16 @@ pub(super) struct Supremacy {
     pub refusals: BTreeMap<String, u64>,
 }
 impl Observer for Supremacy {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = NavalSupremacyObserver::NAME;
     const TABLES: &'static [TableId] = NavalSupremacyObserver::TABLES;
     const READ: TableId = NavalSupremacyObserver::READ;
@@ -142,6 +152,16 @@ pub(super) struct Minefields {
     pub refusals: BTreeMap<String, u64>,
 }
 impl Observer for Minefields {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = MinefieldsObserver::NAME;
     const TABLES: &'static [TableId] = MinefieldsObserver::TABLES;
     const READ: TableId = MinefieldsObserver::READ;

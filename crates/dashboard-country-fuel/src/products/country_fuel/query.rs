@@ -1296,7 +1296,7 @@ pub(super) fn summary_at(
         )?));
     }
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     let read = opened.read(cancelled, |snapshot, directory| {
         match directory.actor(basis.tag.as_bytes()) {
             Some(actor) => read_at(snapshot, directory, actor, basis.hour),
@@ -1309,7 +1309,11 @@ pub(super) fn summary_at(
                 && read.country == basis.country
                 && read.country_instance == Some(basis.country_instance)
         })
-        .ok_or_else(|| invalid("Current fuel consumption actor or supplying read was not recorded"))
+        .ok_or_else(|| {
+            dashboard_core::refused(
+                "Current fuel consumption actor or supplying read was not recorded",
+            )
+        })
 }
 
 /// The supplying read the detail products' error names when `basis` names none.
@@ -1341,7 +1345,7 @@ pub(super) fn basis_awards(
         return Ok((read, awards_detail(row, basis.hour)));
     }
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     let found = opened.read(cancelled, |snapshot, directory| {
         match directory.actor(basis.tag.as_bytes()) {
             Some(actor) => recorded_at(snapshot, directory, actor, basis.hour),
@@ -1369,7 +1373,7 @@ pub(super) fn basis_demand(
         return Ok(demand::pack_of(row, basis.hour).map(pack::Pack::of));
     }
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     opened.read(cancelled, |snapshot, directory| {
         let Some(actor) = directory.actor(basis.tag.as_bytes()) else {
             return Err(invalid(UNRECORDED));
@@ -1411,7 +1415,7 @@ pub(super) fn window_awards(
     }
     let _ = window;
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     opened.read(cancelled, |snapshot, directory| {
         let mut found = BTreeMap::new();
         for (tag, hour) in reads {
@@ -1453,7 +1457,7 @@ pub(super) fn window_demand(
     }
     let _ = window;
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     let mut by_tag: BTreeMap<&str, Vec<i32>> = BTreeMap::new();
     for (tag, hour) in reads {
         by_tag.entry(tag).or_default().push(*hour);
@@ -1512,7 +1516,7 @@ pub(super) fn actor_window(
         });
     }
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     let country: u32 = country
         .parse()
         .map_err(|_| invalid("Fuel country reference invalid"))?;
@@ -1571,7 +1575,7 @@ pub(super) fn actor_consumption(
     let (first, last) = dashboard_base::products::production_lines::detail_window(window)
         .ok_or_else(|| invalid("Invalid current fuel consumption window"))?;
     let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
-        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+        .ok_or_else(|| dashboard_core::refused("Fuel summary preparation is not available"))?;
     let country: u32 = basis
         .country
         .parse()

@@ -206,9 +206,10 @@ impl Product for Doctrines {
         )? {
             SeekResult::Frame(frame) => frame,
             SeekResult::Gap { reason, .. } => {
-                return Err(invalid(format!(
-                    "Doctrine state unavailable at this hour: {reason}"
-                )));
+                return Err(dashboard_base::prepared::query::frames::gap_error(
+                    &reason,
+                    format!("Doctrine state unavailable at this hour: {reason}"),
+                ));
             }
         };
         let default_reward = Some(
@@ -275,7 +276,7 @@ fn fixed(raw: i64) -> String {
 }
 fn text(bytes: &[u8]) -> io::Result<String> {
     String::from_utf8(installed_content_core::parser::c_string(bytes).to_vec())
-        .map_err(|_| invalid("1 doctrine text value has unsupported UTF-8 bytes"))
+        .map_err(|_| dashboard_core::refused("1 doctrine text value has unsupported UTF-8 bytes"))
 }
 
 /// The country holding `tag` this hour, as every per-country product resolves it.
@@ -286,10 +287,10 @@ fn doctrine_country<'a>(
     let (countries, links) = metadata::country_tables(frame)?;
     match metadata::tagged_country(countries, links, tag) {
         metadata::TaggedCountry::Found(country, slot) => Ok((country, slot)),
-        metadata::TaggedCountry::Absent => Err(invalid(
+        metadata::TaggedCountry::Absent => Err(dashboard_core::refused(
             "Selected doctrine country is not recorded at this hour",
         )),
-        metadata::TaggedCountry::Unresolved => Err(invalid(
+        metadata::TaggedCountry::Unresolved => Err(dashboard_core::refused(
             "Selected doctrine country identity is unresolved at this hour",
         )),
     }
@@ -307,7 +308,9 @@ fn project(
         .complete::<tables::DoctrineCountries>()?
         .iter()
         .find(|row| row.slot == slot)
-        .ok_or_else(|| invalid("Doctrine status is not recorded for this country"))?;
+        .ok_or_else(|| {
+            dashboard_core::refused("Doctrine status is not recorded for this country")
+        })?;
     if status.country != country.id
         && !frame
             .complete::<tables::CountryLinks>()?
@@ -325,7 +328,7 @@ fn project(
         tokens
             .get(&id)
             .copied()
-            .ok_or_else(|| invalid(format!("Doctrine token {id} is not recorded")))
+            .ok_or_else(|| dashboard_core::refused(format!("Doctrine token {id} is not recorded")))
     };
     let mut warnings = database.notes.clone();
     let mut name = |kind, id| -> io::Result<String> {
@@ -1281,7 +1284,13 @@ mod tests {
             hour: 7,
         };
         let read = |frame: &DecodedFrame| {
-            project(frame, &params, &Default::default(), &Default::default(), None)
+            project(
+                frame,
+                &params,
+                &Default::default(),
+                &Default::default(),
+                None,
+            )
         };
         let reply = read(&frame).unwrap();
         assert_eq!(
@@ -1295,8 +1304,11 @@ mod tests {
         assert_eq!(doctrine_country(&frame, "GER").unwrap().1, 7);
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(Vec::new()));
-        let unresolved = read(&frame).unwrap_err().to_string();
-        assert!(unresolved.contains("unresolved"), "{unresolved}");
+        let unresolved = read(&frame).unwrap_err();
+        assert_eq!(
+            dashboard_core::refusal(&unresolved),
+            Some("Selected doctrine country identity is unresolved at this hour")
+        );
         *frame.tables[TableId::Countries.index()] =
             TableView::Complete(TableRows::Countries(Vec::new()));
         let absent = read(&frame).unwrap_err().to_string();

@@ -14,7 +14,7 @@ test('experience widget reads only viewport summaries and reached hours while pr
   type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
   const tag = 'opaque / country', raw = '9223372036854775807';
   const fixture = { cursor: 0, slots: [] as Slot[], effects: [] as (() => void)[], chart: undefined as TimeChartProps | undefined,
-    groupError: undefined as string | undefined, groupsHeld: true,
+    groupError: undefined as Error | undefined, groupsHeld: true,
     prefix: undefined as number | undefined,
     histories: [{tag,identities:[{slot:7,countryId:11,firstHour:0,lastHour:100}]}],
     products: [] as { product: string; active: boolean }[], queries: [] as { product: string; params: Record<string, unknown>; signal: AbortSignal }[],
@@ -53,7 +53,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__preparedExperienceFixture.styles;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour,tag) => JSON.stringify([hour,tag]);
-      export const useCountryNamesRead = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),row.tag]));`,
+      export const useCountryNamesAt = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),{kind:'value',value:row.tag}]));`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt:()=>tag=>({name:tag,known:true}),revision:0});',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({color:()=>[20,50,80],flag(){},flagPending:()=>false,flagReason(){}}); export const lookPlan = (_branch,tags,hour) => ({wanted:tags.map(tag=>({tag,hour})),maxHours:128});`,
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => globalThis.__preparedExperienceFixture.tokens; export const useViewportHeight = () => 1000;',
@@ -163,7 +163,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     fixture.chart!.onSummaryView!({from:0,to:100,width:103}); render(); await settle();
     assert.doesNotMatch(render(), /Still being prepared/);
     assert.equal(fixture.chart!.layers.length,1,'the band disappears with exact history');
-    fixture.groupError='Identity catalogue unavailable'; fixture.products=[];
+    fixture.groupError=new Error('Identity catalogue unavailable'); fixture.products=[];
     const held = render();
     assert.ok(fixture.chart, 'the accepted chart stays drawn');
     assert.ok(fixture.products.every(request=>request.product!=='country-experience'||!request.active),'retained group history keeps the prepared reader');

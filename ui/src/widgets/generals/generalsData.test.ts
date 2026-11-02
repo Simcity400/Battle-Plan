@@ -269,7 +269,7 @@ test('the picker uses the last owner date and sorts names', () => {
   data.people.push({ ...data.people[0], name: 'Zed' });
   data.leaders.unshift({ ...leader, reference: '8', runs: [{ ...leader.runs[0], value: { ...leader.runs[0].value, person: 1 } }] });
   const called: unknown[] = [];
-  const choices = leaderChoices(data, 'c0ffee', (hour, tag) => { called.push([hour, tag]); return 'Named country'; });
+  const choices = leaderChoices(data, 'c0ffee', (hour, tag) => { called.push([hour, tag]); return { name: 'Named country' }; });
   assert.equal(subjectHandle('beef', choices[0].value), null, 'a choice is saved under its campaign');
   assert.match(choices[0].label, /^A modded commander · Named country/);
   assert.ok(called.some(c => JSON.stringify(c) === JSON.stringify([106, 'transfer country'])));
@@ -402,7 +402,7 @@ test('a known empty leader name survives leaderboard, career tooltip and picker 
   const row = leaderAt(data, data.leaders[0], 101)!;
   assert.equal(leaderName(row), '');
   assert.equal(leaderTooltip(row, { name: 'Country' }).title, '');
-  assert.equal(leaderChoices(data, 'c0ffee', () => 'Country')[0].label, ' · Country');
+  assert.equal(leaderChoices(data, 'c0ffee', () => ({ name: 'Country' }))[0].label, ' · Country');
   person.name = null; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = ''; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = null; assert.equal(leaderName(row), 'Character name unavailable');

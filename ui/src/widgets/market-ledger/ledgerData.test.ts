@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, MarketLedgerReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import { logPageItems } from '../../charts/log/logPages.ts';
@@ -13,6 +14,15 @@ const reply = (extra: Partial<MarketLedgerReply> = {}): MarketLedgerReply => val
   variants: { a1: [{ firstHour: 0, name: 'Synthetic rifle', known: true, design: null }] },
   rows: [row('3', 21, '150000'), row('2', 34, null, 'Delivery amount unavailable: cumulative baseline uncertified'), row('1', 20, '-200000')],
   coverage: { firstHour: 0, lastHour: 40, complete: true }, pending: [], ...extra });
+
+test('ledger rows are prepared once per reply and page while replacements supply their changed values', () => {
+  const data = deepFreeze(reply()), first = ledgerRows(data, 0);
+  assert.equal(ledgerRows(data, 0), first);
+  assert.notEqual(ledgerRows(data, 1), first);
+  const replacement = deepFreeze({ ...data, rows: data.rows.map(row => ({ ...row, amountRaw: '250000' })) });
+  assert.equal(ledgerRows(replacement, 0)[0].item.row.amountRaw, '250000');
+  assert.notEqual(ledgerRows(replacement, 0), first);
+});
 
 test('ledger rows name both parties at their hour and keep unavailable amounts apart from zero', () => {
   const rows = ledgerRows(reply(), 0);

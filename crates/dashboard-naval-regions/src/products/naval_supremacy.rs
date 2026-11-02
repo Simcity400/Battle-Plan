@@ -6,19 +6,19 @@ use crate::{
     operands,
     shared::{self, Choice, Labels},
 };
+#[cfg(test)]
+use dashboard_base::prepared::prepass::Family;
 use dashboard_base::{
     catalogue::Refusals,
     prepared::{frame_changes::FrameChanges, prepass::HeldBytes},
     products::Product,
 };
-#[cfg(test)]
-use dashboard_base::prepared::prepass::Family;
 use dashboard_keyed::daily::DAY_HOURS;
 use dashboard_keyed::{
     Delta, Observer, Values,
-    delta::same_rows,
     countries::Countries,
     daily::{Day, Days},
+    delta::same_rows,
     query::{KeyedWindow, Opened, Query},
 };
 use replay::container::TableFields;
@@ -110,6 +110,16 @@ pub static FAMILY: Family = dashboard_keyed::block::family::<NavalSupremacyObser
     "naval-supremacy.fallback",
 );
 impl Observer for NavalSupremacyObserver {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "naval-supremacy";
     const TABLES: &'static [TableId] = &[
         TableId::NavalSupremacy,
@@ -272,7 +282,9 @@ impl Observer for NavalSupremacyObserver {
                 },
                 |old, new| {
                     if let Some(old) = old {
-                        let part = renamed.get(&old.country).or_else(|| parts.get(&old.country));
+                        let part = renamed
+                            .get(&old.country)
+                            .or_else(|| parts.get(&old.country));
                         delta.remove(current_row_name(
                             part.and_then(Option::as_deref),
                             old.region,
@@ -562,7 +574,9 @@ fn currents(values: &BTreeMap<&str, i128>) -> io::Result<Vec<rows::NavalSupremac
             let slot = values
                 .get(format!("region|{region}|slot").as_str())
                 .copied()
-                .ok_or_else(|| io::Error::other("Naval region runtime slot is not recorded"))?;
+                .ok_or_else(|| {
+                    io::Error::other("Prepared naval current has no region runtime slot")
+                })?;
             currents.push(rows::NavalSupremacyRow {
                 region,
                 country,
@@ -811,7 +825,7 @@ struct Group<'a> {
 /// Each series read once over the requested days and swept day by day, applying only
 /// its changes; a table is restored again only on a day one of its values changed.
 /// The days project exactly as [`lookup`]'s.
-fn sweep(
+pub(crate) fn sweep(
     q: &Query<'_>,
     opened: &mut Opened<'_, NavalSupremacyObserver>,
     named: &[(String, u64)],

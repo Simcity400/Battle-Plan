@@ -85,13 +85,13 @@ export function warsColourPlan(data: PreparedWars | null, branch: RecordedBranch
 }
 
 /** Admit one complete colour input, so partial batches and unchanged hours do no correction. */
-export function warsFixedColourKey(plan: ReturnType<typeof warsColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | symbol>): string | null {
+export function warsFixedColourKey(plan: ReturnType<typeof warsColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | Error>): string | null {
   if (!plan.wanted.length || plan.wanted.some(item => !styles.has(nameKey(item.hour, item.tag)))) return null;
   const hours = new Map(plan.samples.map(sample => [sample.tag, sample.hour]));
   const inputs = [...plan.selection].map(([key, tag]) => {
     const hour = tag == null ? undefined : hours.get(tag);
     const style = tag == null || hour === undefined ? null : styles.get(nameKey(hour, tag));
-    const color = typeof style === 'object' && style != null ? style.color : null;
+    const color = style != null && !(style instanceof Error) ? style.color : null;
     return [key, tag, color] as const;
   });
   return inputs.some(([, , color]) => color != null) ? JSON.stringify(inputs) : null;

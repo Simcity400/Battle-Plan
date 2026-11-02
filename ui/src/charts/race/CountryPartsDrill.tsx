@@ -137,7 +137,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   }), [parts, at, colours]);
   const unavailable = missingPinnedDate ? <WidgetState kind="unavailable" message="The chosen moment is unavailable." />
     : invalidSaved ? <WidgetState kind="unavailable" message="Saved country unavailable." />
-    : state ?? (reply.error ? <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />
+    : state ?? (reply.error ? <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />
     : tag && !model ? <WidgetState kind="loading" label={`Loading ${title.toLowerCase()}…`} />
       : !tag ? <WidgetState kind="empty" message="Choose a country in the widget settings." /> : undefined);
   const follow = () => {

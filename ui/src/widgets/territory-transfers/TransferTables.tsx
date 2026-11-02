@@ -13,7 +13,7 @@ import type { CountryBalance, TransferOccurrence, TransferSide } from './territo
 import type { TransferLabels } from './territoryTooltip';
 
 /** A signed whole number in the positive or error colour, as balances are drawn elsewhere. */
-function Signed({ value }: { value: bigint }) {
+function signedCell(value: bigint) {
   return <span className={value > 0n ? 'transfer-gain' : value < 0n ? 'transfer-loss' : undefined}>{formatSigned(value, 0, 0)}</span>;
 }
 
@@ -40,9 +40,9 @@ export function CountryTable({ rows, labels, sort, setOption, cellBars, density,
       width: 'minmax(var(--table-name-min), 1fr)' },
     { key: 'gained', header: 'Gained', label: 'Gained', numeric: true, bar: 'visible', value: row => row.gained, render: row => usNumber.format(row.gained), width: 'max-content' },
     { key: 'lost', header: 'Lost', label: 'Lost', numeric: true, bar: 'visible', value: row => row.lost, render: row => usNumber.format(row.lost), width: 'max-content' },
-    { key: 'net', header: 'Net', label: 'Net', numeric: true, priority: 2, text: row => formatSigned(BigInt(row.gained - row.lost), 0, 0), value: row => row.gained - row.lost, render: row => <Signed value={BigInt(row.gained - row.lost)} />, width: 'max-content' },
+    { key: 'net', header: 'Net', label: 'Net', numeric: true, priority: 2, text: row => formatSigned(BigInt(row.gained - row.lost), 0, 0), value: row => row.gained - row.lost, render: row => signedCell(BigInt(row.gained - row.lost)), width: 'max-content' },
     { key: 'netVictoryPoints', header: 'Net VP', label: 'Net VP', priority: 1, text: row => { const value = netVictoryPoints(row); return value == null ? null : formatSigned(value, 0, 0); }, hint: 'Victory points gained minus lost; unknown when any of the states’ points were not recorded.',
-      numeric: true, value: netVictoryPoints, render: row => <Signed value={netVictoryPoints(row)!} />, width: 'max-content' },
+      numeric: true, value: netVictoryPoints, render: row => signedCell(netVictoryPoints(row)!), width: 'max-content' },
   ], [labels]);
   return <Table label="Territory transfers by country" rows={rows} columns={columns} rowKey={countryKey} sort={sort} setOption={setOption}
     cellBars={cellBars} density={density} narrow={narrow} hoursPerSecond={hoursPerSecond} onRowClick={onPick} tooltip={tooltip} menu={menu} onVisibleRows={onVisibleRows} />;
@@ -68,7 +68,7 @@ export function TransferTable({ rows, labels, sort, setOption, cellBars, density
       { key: 'date', header: 'Date', label: 'Date', value: row => row.afterHour, render: row => transferDate(row.afterHour), width: 'max-content', priority: 1 },
       { key: 'victoryPoints', header: 'VP', label: 'VP', hint: 'Victory points', numeric: true, value: signedVictoryPoints, priority: 2,
         text: row => { const value = signedVictoryPoints(row); return value == null ? null : focus == null ? usNumber.format(value) : formatSigned(BigInt(value), 0, 0); },
-        render: row => focus == null ? usNumber.format(row.victoryPoints!) : <Signed value={signedVictoryPoints(row)!} />, width: 'max-content' },
+        render: row => focus == null ? usNumber.format(row.victoryPoints!) : signedCell(signedVictoryPoints(row)!), width: 'max-content' },
     ];
   }, [labels, focus]);
   return <Table label={label} rows={rows} columns={columns} rowKey={transferKey} sort={sort} setOption={setOption}

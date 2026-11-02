@@ -393,7 +393,7 @@ export interface DriftParts {
   weekly: bigint | null;
 }
 
-type MemberLabel = { name: string; flag?: string; flagReason?: string; flagPending?: boolean };
+type MemberLabel = { nameFailure?: Error; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
 const sum = (values: readonly (string | null)[]): bigint | null => values.some(value => value === null) ? null : values.reduce((total, value) => total + BigInt(value!), 0n);
 
 /** Signed parts of the record's weekly change, each exact; members are their own group. */
@@ -407,7 +407,7 @@ export function driftParts(record: BalanceRecord, member: (tag: string) => Membe
     const raw = entry.weekly === null ? null : BigInt(entry.weekly);
     return { id: `member:${index}`, label: label.name, value: raw === null ? null : plotValue(raw), raw, text: raw === null ? 'Not recorded' : changeText(raw),
       shareText: entry.daily === null ? 'Daily not recorded' : `${changeText(entry.daily)} daily`,
-      ...(entry.tag === null ? {} : { countryFlag: { flag: label.flag, flagReason: label.flagReason, flagPending: label.flagPending } }) };
+      ...(entry.tag === null ? {} : { countryFlag: { ...(label.nameFailure ? { nameFailure: label.nameFailure } : {}), flag: label.flag, flagReason: label.flagReason, ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), flagPending: label.flagPending } }) };
   });
   const weekly = record.members.length ? sum(record.members.map(entry => entry.weekly)) : null;
   const sourced = record.sources ? sum(record.sources.map(source => source.weekly)) : null;

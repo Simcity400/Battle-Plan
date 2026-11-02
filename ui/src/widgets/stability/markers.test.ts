@@ -1,3 +1,5 @@
+import { RefusedError } from '../../dashboard/queryError.ts';
+import { badgeRows } from '../../charts/badges.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FocusReply, IdeaHistoryReply } from '../../generated/dashboard';
@@ -204,4 +206,17 @@ test('a membership ending where preparation is still pending is not a departure'
   const prefix = { ...groups, factions: [faction], unobserved: { humans: [], factions: [], wars: [] },
     coverage: { firstHour: 0, lastHour: 299, complete: false }, pending: [{ firstHour: 300, lastHour: 499 }] } as CountryGroupReply;
   assert.deepEqual(stabilityMarkers({ ...base, groups: prefix }, new Set<MarkerKind>(['factions'])).map(badge => badge.label), ['Joined Pact']);
+});
+
+
+test('focus markers retain named refusals and technical details independently of missing titles', () => {
+  const focus = { completed: [{ ordinal: 0, token: 'synthetic', completedByHour: 50 }] };
+  const refusal = new RefusedError('Synthetic focus text is not recorded');
+  const failure = new Error('Synthetic decoder failure');
+  for (const error of [refusal, failure]) {
+    const badges = stabilityMarkers({ ...base, focus, focusName: () => error }, new Set(['focus']));
+    assert.equal(badges[0].failure, error);
+    assert.equal(badges[0].label, `Focus: ${error === refusal ? refusal.text : 'Couldn’t load focus name.'} (completed by then)`);
+    assert.equal(badgeRows(badges)[0].detail, error.message);
+  }
 });

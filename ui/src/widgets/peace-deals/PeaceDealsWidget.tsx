@@ -1,3 +1,5 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import { CountryFlagUrl, countryFlagUnavailable } from '../../components/CountryFlag';
@@ -20,7 +22,7 @@ import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { formatDateTime } from '../../dashboard/calendar';
 import { chipsByValue, conferenceLabel, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActionTotals, peaceDescription, peaceGapHint,
-  peaceGapsIn, peaceRowHeight, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog, WAR_END_NOTE } from './peaceData';
+  peaceGapsIn, peaceRowHeight, peacePlayback, peaceTooltipRows, peaceWanted, preparePeaceLog, WAR_END_NOTE } from './peaceData.ts';
 import type { PeaceActionRow, PeaceCard, PeaceChip, PeaceRow } from './peaceData';
 import { OPTIONS } from './definition';
 import './peaceDeals.css';
@@ -48,7 +50,8 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   const log = useMemo(() => data ? preparePeaceLog(data) : null, [data]);
   const filtered = useMemo(() => log ? filterPeaceLog(log, contentSet(actions).map(contentKey)) : null, [log, actions]);
   const from = widget.time.mode === 'range' ? window?.firstHour ?? Infinity : -Infinity;
-  const rows = useMemo(() => filtered && hour != null ? peaceRowsAt(filtered, hour, from) : NO_ROWS, [filtered, hour, from]);
+  const rowPlayback = useMemo(() => filtered ? peacePlayback(filtered, from) : null, [filtered, from]);
+  const rows = hour != null ? rowPlayback?.at(hour) ?? NO_ROWS : NO_ROWS;
   if (import.meta.env.MODE === 'parity') useParityRows(parity, () => ({ kind: 'log', label: 'Peace deal values', complete: true, total: rows.length,
     rows: rows.map((row, index) => ({ index, key: row.key, item: row.item })) }));
   const gapHint = useMemo(() => log && hour != null ? peaceGapHint(peaceGapsIn(log.gaps, hour, from)) : null, [log, hour, from]);
@@ -75,19 +78,19 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   }, [labelAt]);
   const tooltip = useCallback(({ item: card }: PeaceRow): readonly TooltipContent[] => {
     const details = peaceTooltipRows(card, labelAt, chipLabel);
-    return [{ title: sidesText(card), subtitle: `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, rows: details,
+    return [{ ...countryNameDetails(...[...card.deal.winners, ...card.deal.losers].map(tag => labelAt(card.hour)(tag))), title: sidesText(card), subtitle: `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, rows: details,
       note: [conferenceLabel(card.deal), derivedNote(card.deal), card.warEnd ? WAR_END_NOTE : null].filter(Boolean).join(' · ') || undefined }];
   }, [labelAt, chipLabel, sidesText]);
   const describe = useCallback((row: PeaceRow) => [sidesText(row.item), peaceDescription(row)].join(' · '), [sidesText]);
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its peace conferences." />;
-  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading peace conferences…" />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{error && <WidgetState kind="error" detail={error} onRetry={retry} />}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
 
   const flag = (tag: string, at: number) => {
     const label = labelAt(at)(tag);
-    return <CountryFlagUrl key={tag} className="peace-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} />;
+    return <CountryFlagUrl key={tag} className="peace-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />;
   };
   // One side on one line: its first flags, its first country and how many more,
   // with every country and its flag's status in the side's tooltip.
@@ -156,7 +159,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   };
   const chosen = contentSet(actions);
   const empty = chosen.length ? 'No peace conferences match these settings yet.' : 'No peace conferences yet.';
-  return <div className="peace-deals" ref={parity}>
+  return <div data-detail={failureDetails(wanted.states.map(read => stateAt(read.hour, read.state).failure))} className="peace-deals" ref={parity}>
     {rows.length > 0 && <div className="peace-summary">
       <span><b>{usNumber.format(rows.length)}</b> {rows.length === 1 ? 'conference' : 'conferences'}</span>
       <span><b>{usNumber.format(summary.states)}</b> {summary.states === 1 ? 'state' : 'states'} in their outcomes</span>
@@ -167,7 +170,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
         if (value === '') setOption?.('actions', '');
         else { const next = toggleContentSet(actions, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('actions', next); }
       }} /></div>}
-    {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
+    {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
     {gapHint && <p className="peace-note" data-tooltip={gapHint}>Some conferences may be missing.</p>}
     <LogList key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} rows={rows} label="Peace conferences" layout="card" density={settings.density} months={settings.months}
     preparedCoverage={prefix?.coverage}

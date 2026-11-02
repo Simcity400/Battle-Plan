@@ -1,16 +1,19 @@
+import { RefusedError } from './queryError.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, MAX_NAME_HOURS, nameKey } from './countryFacts.ts';
-import { holderLooks, holderReads, nameReadText } from './holderLooks.ts';
+import { holderLooks, holderReads } from './holderLooks.ts';
+import { nameReadFrom, nameReadText } from './nameReads.ts';
 import { lookPlan } from './countryLooks.ts';
 
 const tokens = { surface: '#ffffff', muted: '#888888', countryColours: 'raw' as const };
 
 test('a dated name is loading only while its read is going, and unavailable once it completed without one or failed', () => {
-  assert.equal(nameReadText(undefined), 'Loading name…');
-  assert.equal(nameReadText(null), 'Country name unavailable');
-  assert.equal(nameReadText(FAILED_FACT), 'Country name unavailable');
-  assert.equal(nameReadText('A mod country'), 'A mod country');
+  assert.equal(nameReadText(nameReadFrom(undefined, true)), 'Loading name…');
+  assert.equal(nameReadText(nameReadFrom(null, true)), 'Country name unavailable');
+  assert.equal(nameReadText(nameReadFrom(FAILED_FACT, true)), 'Couldn’t load country name.');
+  assert.equal(nameReadText(nameReadFrom(new RefusedError('Synthetic identity was not recorded'), true)), 'Synthetic identity was not recorded');
+  assert.equal(nameReadText(nameReadFrom('A mod country', true)), 'A mod country');
 });
 
 test('holders reusing a tag inside one look sampling interval are each read at their own hour', () => {
@@ -32,6 +35,6 @@ test('holders reusing a tag inside one look sampling interval are each read at t
   assert.equal(missing.name('later'), 'Country name unavailable', 'a completed read without a name is not loading for ever');
   assert.notEqual(missing.revision, pending.revision, 'a completed read redraws');
   styles.set(nameKey(48, 'mod:Ω'), FAILED_FACT);
-  assert.equal(holderLooks(holders, styles as never, tokens).name('later'), 'Country name unavailable');
+  assert.equal(holderLooks(holders, styles as never, tokens).name('later'), 'Couldn’t load country name.');
   assert.equal(pending.name('not drawn'), 'Country name unavailable', 'a key it was never asked for is not loading');
 });

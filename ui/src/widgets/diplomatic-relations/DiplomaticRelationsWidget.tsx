@@ -1,3 +1,5 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -16,8 +18,9 @@ import { useTableHour } from '../../charts/table/useTableHour';
 import { SECONDARY_DASH } from '../../charts/palette';
 import { mix } from '../../shell/appearance/color';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { nameReadText, useHolderLooks } from '../../dashboard/holderLooks';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
+import { useHolderLooks } from '../../dashboard/holderLooks.ts';
+import { nameReadMetadata, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { factionNameAt } from '../../dashboard/factionChoice';
@@ -59,7 +62,7 @@ function PairHistory({ runtime, track, pair: chosen, hour, active }: Pick<Widget
     draw: (ctx, frame, tokens, state) => { drawLine(ctx, frame, tokens, runs, looks.colour(index ? 'second' : 'first'), { dash: index ? SECONDARY_DASH : undefined, held: true, until: state.playhead ?? undefined }); },
     extent: (x: readonly [number, number]) => extentOfAll([runs], x[0], x[1]),
   })), [lines, looks]);
-  if (reply.error) return <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />;
+  if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
   if (!reply.data) return <WidgetState kind="loading" label="Loading opinions…" />;
   if (!lines[0].length && !lines[1].length) return <WidgetState kind="unavailable" message="These opinions were not recorded." />;
   const valueAt = (runs: readonly { firstHour: number; lastHour: number; value: number | null }[], at: number) => {
@@ -130,15 +133,15 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const picked = choice?.scope === scope ? choice.pair : null;
   // The matrix names its countries at the hour shown; a chosen pair, for its pinned title,
   // at the hour it was chosen.
-  const names = useCountryNamesRead(runtime.client, track, useMemo(() => [...tags.map(tag => ({ hour: shown, tag })),
+  const names = useCountryNamesAt(runtime.client, track, useMemo(() => [...tags.map(tag => ({ hour: shown, tag })),
     ...(picked ? pairHolders(picked).map(holder => ({ hour: holder.hour, tag: holder.tag })) : [])], [tags, shown, picked]), active);
   const flagsWanted = useMemo(() => visibleTags.map(tag => ({ hour: shown, tag })), [visibleTags, shown]);
   const flags = useCountryLabelsAt(runtime.client, track, flagsWanted, active);
-  const label = useCallback((tag: string, at = shown) => ({ name: nameReadText(names.get(nameKey(at, tag))) }), [names, shown]);
+  const label = useCallback((tag: string, at = shown) => nameReadMetadata(names.get(nameKey(at, tag))), [names, shown]);
   const ordered = useMemo(() => orderCountries(tags, options.order === 'name' ? 'name' : 'faction', tag => label(tag).name, groups.data, shown,
     id => { const faction = groups.data?.factions.find(item => item.id === id); return faction ? factionNameAt(faction, shown) : id; }), [tags, options.order, label, groups.data, shown]);
   const axis = useMemo<MatrixAxisItem[]>(() => ordered.map(tag => { const country = flags.labelAt(shown)(tag); const named = label(tag);
-    return { id: tag, label: named.name, countryFlag: { flag: country.flag, flagReason: country.flagReason, flagPending: country.flagPending } }; }), [ordered, flags, label, shown]);
+    return { id: tag, label: named.name, countryFlag: { ...(named.nameFailure ? { nameFailure: named.nameFailure } : {}), flag: country.flag, flagReason: country.flagReason, ...(country.flagDetail !== undefined ? { flagDetail: country.flagDetail } : {}), flagPending: country.flagPending } }; }), [ordered, flags, label, shown]);
   const lookup = useMemo(() => data ? opinionIndex(data) : null, [data]);
   const [low, high] = useMemo(() => data ? opinionDomain(data) : [0, 0], [data]);
   const grey = mix(tokens.surface, tokens.text, 0.2);
@@ -152,7 +155,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
     const there = lookup?.(a, b), back = lookup?.(b, a);
     const text = (found: typeof there) => !found ? 'Not recorded' : 'unknown' in found ? 'Not recorded' : opinionText(found.value);
     const read = there && !('unknown' in there) ? there.readHour : null;
-    return { title: `${label(a).name}’s opinion of ${label(b).name}: ${text(there)}`, subtitle: dayLabel(shown), rows: [
+    return { ...countryNameDetails(label(a), label(b)), title: `${label(a).name}’s opinion of ${label(b).name}: ${text(there)}`, subtitle: dayLabel(shown), rows: [
       { label: `${label(b).name}’s opinion of ${label(a).name}`, value: text(back) },
       ...(read != null && read !== shown ? [{ label: 'As of', value: dayLabel(read) }] : []),
     ] };
@@ -166,7 +169,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   useDiagnostics(onDiagnostics, diagnostics);
   if (!track) return <WidgetState kind="empty" icon="handshake" message="Load a campaign to see opinions." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (resolved?.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
   if (options.show === PAIR.id) return <>{groupFailure}{savedPair
@@ -176,12 +179,12 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const none = resolved && noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="handshake" /></>;
   const rankingError = registry.error ?? ranked.error;
-  if (top !== null && rankingError) return <>{groupFailure}<WidgetState kind="error" what="the top countries" detail={rankingError} onRetry={() => { registry.retry(); ranked.retry(); }} /></>;
+  if (top !== null && rankingError) return <>{groupFailure}<WidgetState kind="error" what="the top countries" failure={rankingError} onRetry={() => { registry.retry(); ranked.retry(); }} /></>;
   if (top !== null && !ranked.tags) return <>{groupFailure}<WidgetState kind="loading" label={ranked.preparing ? 'This range is still being prepared.' : 'Ranking countries…'} /></>;
   // A group's members at an hour still being prepared are not known yet: too few is not proof.
   if (tags.length < 2 && resolved && !resolved.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (tags.length < 2) return <>{groupFailure}<WidgetState kind="empty" icon="handshake" message="Choose at least two countries." /></>;
-  if (opinions.error) return <>{groupFailure}<WidgetState kind="error" detail={opinions.error} onRetry={opinions.retry} /></>;
+  if (opinions.error) return <>{groupFailure}<WidgetState kind="error" failure={opinions.error} onRetry={opinions.retry} /></>;
   if (!data) return <>{groupFailure}<WidgetState kind="loading" label="Loading opinions…" /></>;
   const main = <HeatMatrix label="Opinions" rows={axis} columns={axis} cell={cell} revision={`${data.hour}:${ordered.join(',')}:${low}:${high}:${grey}`} active={active && (!picked || options.drill === 'popout')}
     tooltip={tooltip} onVisible={(rows, columns) => setVisibleTags(previous => { const next = [...new Set([...rows, ...columns])];
@@ -190,7 +193,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
     menu={(row) => { const read = data.owners.find(owner => owner.tag === ordered[row])?.readHour; return read != null && read !== shown ? [jumpItem(runtime, track.id, read)] : []; }}
     legend={[{ id: 'low', label: low < 0 ? opinionText(low) : '0', color: low < 0 ? tokens.error : grey }, { id: 'zero', label: '0', color: grey },
       { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />;
-  return <div ref={anchor} className="diplomatic-relations">{groupFailure}
+  return <div ref={anchor} className="diplomatic-relations" data-detail={failureDetails([...names.values()].map(nameReadFailure))}>{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null && picked != null} title="Pair history" day={dayLabel(hour)}
       following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setChoice(null); }} onFollow={() => {}}
       onPin={picked ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id);

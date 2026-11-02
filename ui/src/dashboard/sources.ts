@@ -1,12 +1,12 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { errorMessage } from '../shell/api';
 import type { CountryMetadata } from '../shell/api';
 import type { DashboardClient, DashboardSource } from './client';
 import type { LandOwners } from '../generated/dashboard';
 import { forgetProducts, loadProduct } from './products.ts';
 import { EffectLifetime } from './effectLifetime';
 
-export interface SourceBinding { source: DashboardSource | null; loading: boolean; error: string | null }
+export interface SourceBinding { source: DashboardSource | null; loading: boolean; error: Failure | null }
 
 export function useSourceRoles(client: DashboardClient) {
   const [bindings, setBindings] = useState<Record<string, SourceBinding>>({});
@@ -43,7 +43,7 @@ export function useSourceRoles(client: DashboardClient) {
       [roleId, updates.has(roleId) && binding.source?.id === sourceId && binding.source.revision === revision ? { ...binding, source: updates.get(roleId)! } : binding])));
   }, []);
 
-  const open = useCallback(async (roleId: string, path: string, onError?: (message: string) => void): Promise<DashboardSource | null> => {
+  const open = useCallback(async (roleId: string, path: string, onError?: (error: Failure) => void): Promise<DashboardSource | null> => {
     controllers.current.get(roleId)?.abort();
     const controller = new AbortController();
     controllers.current.set(roleId, controller);
@@ -64,8 +64,8 @@ export function useSourceRoles(client: DashboardClient) {
       return source;
     } catch (cause) {
       if (mounted.current && !controller.signal.aborted && controllers.current.get(roleId) === controller) {
-        onError?.(errorMessage(cause));
-        setBindings((previous) => ({ ...previous, [roleId]: { source: null, loading: false, error: errorMessage(cause) } }));
+        onError?.(asFailure(cause));
+        setBindings((previous) => ({ ...previous, [roleId]: { source: null, loading: false, error: asFailure(cause) } }));
       }
       return null;
     } finally {

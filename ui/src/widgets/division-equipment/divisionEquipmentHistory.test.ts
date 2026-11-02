@@ -114,7 +114,7 @@ test('the reached product is asked only for an hour the loaded history does not 
   assert.equal(historyAnswer(true, loaded, 20).asked, true, 'refused: the reached product answers with its error');
   assert.equal(historyAnswer(true, {}, 14).asked, false, 'the history is still loading');
   assert.equal(historyAnswer(true, { data: null }, 14).asked, true, 'a pending history');
-  assert.equal(historyAnswer(true, { error: 'too large' }, 14).asked, true);
+  assert.equal(historyAnswer(true, { error: new Error('too large') }, 14).asked, true);
   assert.deepEqual(historyAnswer(false, loaded, 14), { held: null, asked: true }, 'no prepared queries');
 });
 
@@ -137,9 +137,9 @@ test('a history answers only inside its range, and a range over budget is asked 
   assert.equal(divisionEquipmentAt(windowed, 21), null);
   assert.equal(divisionEquipmentAt(windowed, 14)?.hour, 14);
   const branch = { firstHour: 10, lastHour: 40 };
-  assert.deepEqual(splitPart(WHOLE[0], 'This product reply exceeds the transport reply budget of 25165824 bytes', branch),
+  assert.deepEqual(splitPart(WHOLE[0], new Error('This product reply exceeds the transport reply budget of 25165824 bytes'), branch),
     [{ firstHour: null, lastHour: 25 }, { firstHour: 26, lastHour: null }]);
-  assert.equal(splitPart(WHOLE[0], 'Recording changed', branch), null);
-  assert.equal(splitPart({ firstHour: 12, lastHour: 12 }, 'exceeds the transport reply budget', branch), null);
+  assert.equal(splitPart(WHOLE[0], new Error('Recording changed'), branch), null);
+  assert.equal(splitPart({ firstHour: 12, lastHour: 12 }, new Error('exceeds the transport reply budget'), branch), null);
   assert.equal(partAt([{ firstHour: null, lastHour: 25 }, { firstHour: 26, lastHour: null }], 30)?.firstHour, 26);
 });

@@ -67,10 +67,11 @@ test('focus titles and icons exclude descriptions, while opened details retain s
   try {
     const { useFocusArtwork } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/useFocusArtwork.ts') as typeof import('./useFocusArtwork');
     const { contentRevision } = await vite.ssrLoadModule('/ui/src/dashboard/contentRevision.ts') as typeof import('../../dashboard/contentRevision');
-    const { FAILED_FACT, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
+    const { nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('../../dashboard/queryError');
     const calls: { input: ProductRequest; signal: AbortSignal; answer: (data: unknown) => void; fail: () => void }[] = [];
     const makeClient = () => ({ product: (input: ProductRequest, signal: AbortSignal) => new Promise<ProductReply<unknown>>((resolve, reject) => {
-      calls.push({ input, signal, answer: data => resolve({ ...input, data }), fail: () => reject(new Error('Synthetic description refusal')) });
+      calls.push({ input, signal, answer: data => resolve({ ...input, data }), fail: () => reject(new RefusedError('Synthetic description refusal')) });
     }) }) as unknown as DashboardClient;
     let client = makeClient(), track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
     const wanted = ['literal', 'empty', 'equal'].map(tag => ({ tag, hour: 10 }));
@@ -95,16 +96,18 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     answer(calls[1]); await settle();
     result = render();
     const pendingTitle = result.read.get(nameKey(10, 'literal'));
-    assert.ok(pendingTitle && typeof pendingTitle !== 'symbol');
+    assert.ok(pendingTitle && !(pendingTitle instanceof Error));
     assert.equal(pendingTitle.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(pendingTitle.titlePending, true, 'a successful image cannot complete its pending title');
     assert.equal(pendingTitle.titleReason, undefined);
     calls[0].fail(); await settle();
     result = render();
     const failedTitle = result.read.get(nameKey(10, 'literal'));
-    assert.ok(failedTitle && typeof failedTitle !== 'symbol');
+    assert.ok(failedTitle && !(failedTitle instanceof Error));
     assert.equal(failedTitle.titlePending, false);
-    assert.equal(failedTitle.titleReason, 'Focus name request failed.');
+    assert.equal(failedTitle.titleReason, 'Synthetic description refusal');
+    assert.ok(failedTitle.titleFailure instanceof RefusedError);
+    assert.ok(result.warnings.includes('Synthetic description refusal'));
     assert.equal(failedTitle.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', 'a failed title retains its successful image');
     // A content revision explicitly retries the refused title and clears old artwork.
     contentRevision(client).observe({ game: 'retry-game', user: 'retry-user', contentReady: true });
@@ -117,7 +120,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     result = render();
     for (const [token, name] of [['literal', 'Authored literal title'], ['empty', ''], ['equal', 'equal']]) {
       const item = result.read.get(nameKey(10, token));
-      assert.ok(item && typeof item !== 'symbol');
+      assert.ok(item && !(item instanceof Error));
       assert.equal(item.artwork.name, name);
       assert.equal(item.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
       assert.equal(item.artwork.description, null);
@@ -135,7 +138,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     answer(calls[2], true); await settle();
     result = render();
     const empty = result.read.get(nameKey(10, 'empty'));
-    assert.ok(empty && typeof empty !== 'symbol');
+    assert.ok(empty && !(empty instanceof Error));
     assert.equal(empty.artwork.name, '', 'detail-side text cannot replace a known empty title');
     assert.equal(empty.artwork.description, '', 'known empty descriptions remain usable');
     assert.deepEqual(result.warnings, ['Reached description warning']);
@@ -145,9 +148,10 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     assert.deepEqual(params(calls[3]).tokens, ['literal'], 'the title-only answer does not suppress a full description request');
     calls[3].fail(); await settle();
     result = render(); hooks.commit(); await settle();
-    assert.equal(result.details.get(nameKey(10, 'literal')), FAILED_FACT);
+    assert.equal((result.details.get(nameKey(10, 'literal')) as Error).message, 'Synthetic description refusal');
+    assert.ok(result.warnings.includes('Synthetic description refusal'));
     const literal = result.read.get(nameKey(10, 'literal'));
-    assert.ok(literal && typeof literal !== 'symbol');
+    assert.ok(literal && !(literal instanceof Error));
     assert.equal(literal.artwork.name, 'Authored literal title');
     assert.equal(literal.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(calls.length, 4, 'permanent detail failures do not retry in a loop');
@@ -229,7 +233,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
     result = render();
     for (const token of ['scoped', 'absent']) {
       const item = result.read.get(nameKey(10, token));
-      assert.ok(item && typeof item !== 'symbol');
+      assert.ok(item && !(item instanceof Error));
       assert.equal(item.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', 'icons display before slower scoped titles arrive');
       assert.equal(item.artwork.name, null, 'an image-only reply cannot invent a title');
     }
@@ -237,7 +241,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
     result = render();
     for (const [token, name] of [['plain', 'Known static title'], ['empty', ''], ['equal', 'equal'], ['scoped', 'Dated title'], ['absent', 'Dated title']]) {
       const item = result.read.get(nameKey(10, token));
-      assert.ok(item && typeof item !== 'symbol');
+      assert.ok(item && !(item instanceof Error));
       assert.equal(item.artwork.name, name);
       assert.equal(item.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     }
@@ -247,7 +251,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
     assert.equal(calls[2].params.includeDescriptions, true, 'static titles never suppress opened full descriptions');
     calls[2].answer('Detail-side title', 'Dated full description'); await settle();
     const detailed = render().read.get(nameKey(10, 'plain'));
-    assert.ok(detailed && typeof detailed !== 'symbol');
+    assert.ok(detailed && !(detailed instanceof Error));
     assert.equal(detailed.artwork.name, 'Known static title');
     assert.equal(detailed.artwork.description, 'Dated full description');
     contentRevision(client).observe({ game: 'changed-game', user: 'changed-user', contentReady: true });
@@ -298,7 +302,7 @@ test('a continuous focus is read from its own database, never from a national fo
     };
     const shown = (read: ReturnType<typeof render>['national']['read']) => {
       const item = read.get(nameKey(10, 'shared'));
-      return item && typeof item !== 'symbol' ? item.artwork : undefined;
+      return item && !(item instanceof Error) ? item.artwork : undefined;
     };
     let result = render();
     assert.equal(shown(result.national.read)?.name, 'Static national title');
@@ -316,7 +320,7 @@ test('a continuous focus is read from its own database, never from a national fo
     await settle();
     result = render();
     const continuous = result.continuous.read.get(nameKey(10, 'shared'));
-    assert.ok(continuous && typeof continuous !== 'symbol');
+    assert.ok(continuous && !(continuous instanceof Error));
     assert.equal(continuous.artwork.name, 'Continuous title');
     assert.equal(shown(result.national.read)?.name, 'Static national title');
   } finally {

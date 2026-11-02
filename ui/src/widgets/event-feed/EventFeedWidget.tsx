@@ -1,3 +1,5 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
+import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChipSet } from '../../components/ChipSet';
@@ -102,16 +104,16 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its key moments." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
+  if (feedError) return <>{groupFailure}<WidgetState kind="error" failure={feedError} onRetry={feed.retry} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!feed.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading the event feed…" /></>;
   // The log's coverage line says the hour is still being prepared: no row there is not proof of none.
   const empty = pendingAt(feed.prefix, hour!) ? null
     : match.known(from ?? track.branch.firstHour, hour!) ? 'No recorded events match these settings.' : MEMBERSHIP_PREPARING;
 
-  return <div className="log-widget event-feed-widget">{groupFailure}
+  return <div data-detail={failureDetails(wantedStates.map(read => stateAt(read.hour, read.state).failure))} className="log-widget event-feed-widget">{groupFailure}
     {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
       selected={[...categories]} max={CATEGORIES.length} onToggle={key => setOption?.(key, !categories.has(key))} /></div>}
     <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}
@@ -126,13 +128,17 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
           {artwork && <span className="log-art" aria-hidden="true">{at.item?.icon ? <img src={at.item.icon} alt="" />
             : <span className="event-feed-icon" style={{ '--event-colour': tokens.categories[category.palette] } as CSSProperties}><Icon name={EVENT_ICONS[at.event.kind]} /></span>}</span>}
           <span className="log-text">{eventSentence(at, stateName).map((part, index) => 'tag' in part ? <span key={index}>
-            <CountryFlagUrl className="log-flag" url={label(part.tag).flag} reason={label(part.tag).flagReason} pending={label(part.tag).flagPending} /><b>{label(part.tag).name}</b>
+            <CountryFlagUrl className="log-flag" url={label(part.tag).flag} detail={label(part.tag).flagDetail} reason={label(part.tag).flagReason} pending={label(part.tag).flagPending} /><b>{label(part.tag).name}</b>
           </span> : <span key={index}>{part.text}</span>)}</span>
           <span className="log-tag"><i style={{ background: tokens.categories[category.palette] }} />{category.label}</span>
         </>;
       }}
       describe={row => eventDescription(row.item, tag => labels(row)(tag).name, stateName)}
-      tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name, stateName)}
+      tooltip={row => {
+        const countries: ReturnType<ReturnType<typeof labels>>[] = [];
+        const forms = eventTooltip(row.item, tag => { const country = labels(row)(tag); countries.push(country); return country.name; }, stateName);
+        return forms.map(form => ({ ...form, ...countryNameDetails({ nameDetail: form.detail }, ...countries) }));
+      }}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={empty} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;

@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { WALK_GATE, type DashboardClient, type DashboardSource } from './client.ts';
 import { validatePreparationReply, type PreparationReply, type PreparedCoverage } from '../shell/preparation/contract.ts';
 import { newId } from '../shell/ids.ts';
@@ -225,8 +226,8 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   const current = useRef(owner); current.current = owner;
   const navigation = useRef(new Set<AbortController>());
   const [view, setView] = useState<{ owner: typeof owner; from: number; to: number; width: number; series: PreparedBinding[] }>();
-  const [summaries, setSummaries] = useState<{ owner: typeof owner; geometryKey: string; seriesKey: string; data?: T; error?: string }>();
-  const [states, setStates] = useState<{ owner: typeof owner; data?: T; error?: string }>();
+  const [summaries, setSummaries] = useState<{ owner: typeof owner; geometryKey: string; seriesKey: string; data?: T; error?: Failure }>();
+  const [states, setStates] = useState<{ owner: typeof owner; data?: T; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   const viewport = view?.owner === owner ? view : { from: bounds[0], to: bounds[1], width: 1, series: [] };
   const seriesKey = JSON.stringify(viewport.series);
@@ -264,7 +265,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
       });
     };
     void preparedWindowQuery(client,source,family,params,asked.viewport,controller.signal,validate,merge,attempt > 0,publish).then(publish)
-      .catch(error => { if (live()) inFrame(() => live() && setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey: asked.geometryKey, seriesKey, error: String(error) }))); })
+      .catch(error => { if (live()) inFrame(() => live() && setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey: asked.geometryKey, seriesKey, error: asFailure(error) }))); })
       .finally(() => {
         if (flight.current?.controller !== controller) return;
         flight.current = null;
@@ -279,7 +280,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
     const publish = (value: unknown) => { if (live()) { const data = validate(value); inFrame(() => live() && setStates({ owner, data })); } };
     void preparedSeriesQuery(client,source,'series-state',{...params,family:{kind:family},reads:readHours.map(hour=>({hour}))},controller.signal,attempt>0,
       undefined,undefined,publish).then(publish)
-      .catch(error=> {if(live()) inFrame(() => live() && setStates(previous => ({...(previous?.owner === owner ? previous : {}),owner,error:String(error)})));});
+      .catch(error=> {if(live()) inFrame(() => live() && setStates(previous => ({...(previous?.owner === owner ? previous : {}),owner,error: asFailure(error)})));});
     return ()=>controller.abort();
   }, [owner, readKey, active, attempt]);
   const onSummaryView = useCallback((next: { from: number; to: number; width: number }, series: PreparedBinding[] = []) => setView(previous => previous?.owner === owner
@@ -302,7 +303,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
     const request = ++sequence.current;
     void change('global',action,from,Math.ceil(x[0]),Math.floor(Math.min(x[1],cutoff ?? x[1]))).then(hour => {
       if (request === sequence.current && currentPick.current === pickOwner) setKeyboard(previous => ({ owner: pickOwner,hour,revision: (previous?.revision ?? 0)+1 }));
-    }).catch(error=> {if(!(error instanceof DOMException && error.name==='AbortError') && request===sequence.current && currentPick.current===pickOwner)setStates(previous=>({...(previous?.owner === owner ? previous : {}),owner,error:String(error)}));});
+    }).catch(error=> {if(!(error instanceof DOMException && error.name==='AbortError') && request===sequence.current && currentPick.current===pickOwner)setStates(previous=>({...(previous?.owner === owner ? previous : {}),owner,error: asFailure(error)}));});
   },[change,pickOwner]);
   const geometry=summaries?.owner===owner ? summaries.data : undefined;
   const exact=states?.owner===owner ? states.data : undefined;

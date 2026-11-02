@@ -1,7 +1,7 @@
 import type { ChordData, ChordFlow, ChordNode } from './layout.ts';
 import { checkChord } from './check.ts';
 
-export interface FoldedChord { data: ChordData; nodes: Map<string, readonly string[]>; flows: Map<string, readonly string[]> }
+export interface FoldedChord { readonly data: ChordData; readonly nodes: ReadonlyMap<string, readonly string[]>; readonly flows: ReadonlyMap<string, readonly string[]> }
 
 /** The widget chooses which nodes to keep and supplies the aggregate's identity,
  * label and colour. Everything else folds, including flows inside the aggregate.
@@ -14,21 +14,22 @@ export function foldChord(data: ChordData, keep: ReadonlySet<string>, other: Cho
   const folded = data.nodes.filter(node => !keep.has(node.id));
   for (const node of shown) nodes.set(node.id, [node.id]);
   if (folded.length) { shown.push(other); nodes.set(other.id, folded.map(node => node.id)); }
-  const grouped = new Map<string, Map<string, ChordFlow>>();
-  const result: ChordFlow[] = [];
+  const grouped = new Map<string, Map<string, number>>();
+  const result: Omit<ChordFlow, 'value'>[] = [], values: number[] = [];
   for (const flow of data.flows) {
     const source = keep.has(flow.source) ? flow.source : other.id, target = keep.has(flow.target) ? flow.target : other.id;
     let targets = grouped.get(source);
     if (!targets) { targets = new Map(); grouped.set(source, targets); }
-    let aggregate = targets.get(target);
-    if (!aggregate) {
+    let index = targets.get(target);
+    if (index === undefined) {
       // JSON tuples preserve opaque identities, including delimiters and spaces.
-      aggregate = { id: JSON.stringify([source, target]), source, target, value: 0 };
-      targets.set(target, aggregate); result.push(aggregate); flows.set(aggregate.id, []);
+      index = result.length;
+      const aggregate = { id: JSON.stringify([source, target]), source, target };
+      targets.set(target, index); result.push(aggregate); values.push(0); flows.set(aggregate.id, []);
     }
-    aggregate.value += flow.value;
-    if (!Number.isFinite(aggregate.value)) throw new Error('Folded chord total exceeds numeric geometry range');
-    flows.get(aggregate.id)!.push(flow.id);
+    values[index] += flow.value;
+    if (!Number.isFinite(values[index])) throw new Error('Folded chord total exceeds numeric geometry range');
+    flows.get(result[index].id)!.push(flow.id);
   }
-  return { data: { nodes: shown, flows: result }, nodes, flows };
+  return { data: { nodes: shown, flows: result.map((flow, index) => ({ ...flow, value: values[index] })) }, nodes, flows };
 }

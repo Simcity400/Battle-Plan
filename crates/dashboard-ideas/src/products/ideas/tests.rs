@@ -26,8 +26,10 @@ use replay::{
 use replay_data::{
     format::FormatVersion,
     rows::{
-        ActiveIdeaRow, CharacterRow, CountryAppearanceRow, CountryLinkRow, CountryRow,
-        HiredAdvisorRow, LexicalTokenRow, ModifierDefinitionRow, RowCodec, TableId,
+        ActiveIdeaRow, CharacterRow, CountryAppearanceRow, CountryCivilWarRow,
+        CountryCounterInputRow, CountryLinkRow, CountryRow, CountryWarRow, HiredAdvisorRow,
+        LexicalTokenRow, ModifierDefinitionRow, Recorded, ReservedCountryNamingRow, RowCodec,
+        TableId, WarRelationRow, tables,
     },
     scope::CaptureMode,
 };
@@ -38,6 +40,7 @@ const REFUSAL: &str = "synthetic refusal";
 
 /// The countries, their links and every table holdings are read from at one hour; none where
 /// a table is unavailable.
+#[derive(Clone)]
 struct Tables {
     hour: i32,
     countries: Option<Vec<CountryRow>>,
@@ -47,6 +50,11 @@ struct Tables {
     characters: Vec<CharacterRow>,
     tokens: Vec<LexicalTokenRow>,
     appearance: Vec<CountryAppearanceRow>,
+    reserved: Option<Vec<ReservedCountryNamingRow>>,
+    civil_wars: Option<Vec<CountryCivilWarRow>>,
+    wars: Option<Vec<CountryWarRow>>,
+    relations: Option<Vec<WarRelationRow>>,
+    counters: Option<Vec<CountryCounterInputRow>>,
     definitions: Vec<ModifierDefinitionRow>,
 }
 
@@ -210,6 +218,11 @@ fn scenario() -> Vec<Tables> {
                 characters,
                 tokens,
                 appearance,
+                reserved: None,
+                civil_wars: None,
+                wars: None,
+                relations: None,
+                counters: None,
                 definitions,
             }
         })
@@ -258,6 +271,23 @@ fn projected(hours: &[Tables], starts: &[i32]) -> (Vec<facts::Hour>, Vec<Decoded
         write(walk, TableId::Characters, Some(&tables.characters[..]));
         write(walk, TableId::LexicalTokens, Some(&tables.tokens[..]));
         write(walk, TableId::CountryAppearance, Some(&tables.appearance[..]));
+        write(
+            walk,
+            TableId::ReservedCountryNaming,
+            tables.reserved.as_deref(),
+        );
+        write(
+            walk,
+            TableId::CountryCivilWars,
+            tables.civil_wars.as_deref(),
+        );
+        write(walk, TableId::CountryWars, tables.wars.as_deref());
+        write(walk, TableId::WarRelations, tables.relations.as_deref());
+        write(
+            walk,
+            TableId::CountryCounterInputs,
+            tables.counters.as_deref(),
+        );
         write(walk, TableId::ModifierDefinitions, Some(&tables.definitions[..]));
         let cold = starts.contains(&tables.hour);
         if cold {
@@ -301,6 +331,195 @@ fn projected(hours: &[Tables], starts: &[i32]) -> (Vec<facts::Hour>, Vec<Decoded
         frames.push(frame);
     }
     (out, frames)
+}
+
+fn naming_hours(last: i32) -> Vec<Tables> {
+    let mut first = scenario().remove(0);
+    first.civil_wars = Some(Vec::new());
+    first.wars = Some(Vec::new());
+    first.relations = Some(Vec::new());
+    first.counters = Some(
+        (1..=3)
+            .map(|country| CountryCounterInputRow {
+                country,
+                owned_state_count: 1,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    (100..=last)
+        .map(|hour| Tables {
+            hour,
+            ..first.clone()
+        })
+        .collect()
+}
+
+fn read_tags(hour: &facts::Hour) -> Vec<&str> {
+    hour.facts
+        .iter()
+        .flat_map(|facts| &facts.reads)
+        .map(|read| read.tag.as_ref())
+        .collect()
+}
+
+fn naming<'a>(hour: &'a facts::Hour, tag: &str) -> &'a dashboard_text::identity::Look {
+    hour.facts
+        .as_ref()
+        .unwrap()
+        .reads
+        .iter()
+        .find(|read| &*read.tag == tag)
+        .unwrap()
+        .naming
+        .look
+        .as_ref()
+        .unwrap()
+}
+
+#[test]
+fn dynamic_naming_reads_again_when_an_unchanged_war_relation_ends() {
+    let mut hours = naming_hours(103);
+    for hour in &mut hours {
+        hour.civil_wars = Some(vec![CountryCivilWarRow {
+            country: 1,
+            ordinal: 0,
+            target: 3,
+        }]);
+        hour.relations = Some(vec![WarRelationRow {
+            first_country: 1,
+            second_country: 3,
+            start_hour: 99,
+            end_hour: 102,
+            ..Default::default()
+        }]);
+    }
+    let (out, frames) = projected(&hours, &[]);
+    assert_eq!(naming(&out[0], "CCC").civil_war, Ok(true));
+    assert!(out[1].facts.is_none());
+    assert_eq!(read_tags(&out[2]), ["CCC"]);
+    assert_eq!(naming(&out[2], "CCC").civil_war, Ok(false));
+    assert!(out[3].facts.is_none());
+    assert_eq!(
+        frames[0].complete::<tables::WarRelations>().unwrap(),
+        frames[2].complete::<tables::WarRelations>().unwrap()
+    );
+}
+
+#[test]
+fn dynamic_naming_reads_again_when_a_civil_war_target_changes() {
+    let mut hours = naming_hours(103);
+    for hour in &mut hours {
+        hour.counters.as_mut().unwrap()[1].owned_state_count = 0;
+        hour.civil_wars = Some(vec![CountryCivilWarRow {
+            country: 3,
+            ordinal: 0,
+            target: if hour.hour < 102 { 1 } else { 2 },
+        }]);
+    }
+    let (out, _) = projected(&hours, &[]);
+    assert_eq!(naming(&out[0], "CCC").civil_war, Ok(true));
+    assert!(out[1].facts.is_none());
+    assert_eq!(read_tags(&out[2]), ["CCC"]);
+    assert_eq!(naming(&out[2], "CCC").civil_war, Ok(false));
+    assert!(out[3].facts.is_none());
+}
+
+#[test]
+fn slot_zero_naming_reads_the_reserved_original_tag_and_its_changes() {
+    let mut hours = naming_hours(107);
+    for hour in &mut hours {
+        hour.countries.as_mut().unwrap()[0].canonical_slot = 0;
+        for link in &mut hour.links {
+            if link.canonical_slot == 1 {
+                link.canonical_slot = 0;
+            }
+        }
+        hour.appearance[0].original_tag = Recorded::Value(Some(b"APPEARANCE".to_vec()));
+        hour.appearance[0].original_tag_reference = Recorded::Value(Some(1));
+        hour.reserved = (hour.hour != 106).then(|| {
+            vec![ReservedCountryNamingRow {
+                tag: if hour.hour < 104 {
+                    b"ZERO".to_vec()
+                } else {
+                    b"LAST".to_vec()
+                },
+                original_tag: Recorded::Value(Some(if hour.hour < 102 {
+                    b"ORIG".to_vec()
+                } else {
+                    b"NEXT".to_vec()
+                })),
+                original_tag_reference: Recorded::Value(Some(i32::from(hour.hour < 103))),
+                ..Default::default()
+            }]
+        });
+    }
+    let (out, _) = projected(&hours, &[]);
+    assert_eq!(
+        naming(&out[0], "AAA").original_or_own_tag.as_deref(),
+        Ok("ORIG")
+    );
+    assert!(out[1].facts.is_none());
+    for (index, expected) in [(2, "NEXT"), (3, "ZERO"), (4, "LAST"), (7, "LAST")] {
+        assert_eq!(read_tags(&out[index]), ["AAA"]);
+        assert_eq!(
+            naming(&out[index], "AAA").original_or_own_tag.as_deref(),
+            Ok(expected)
+        );
+    }
+    assert!(out[5].facts.is_none());
+    assert_eq!(read_tags(&out[6]), ["AAA"]);
+    assert!(naming(&out[6], "AAA").original_or_own_tag.is_err());
+}
+
+#[test]
+fn civil_changes_and_war_end_hours_do_not_read_non_dynamic_holders() {
+    let mut hours = naming_hours(103);
+    for hour in &mut hours {
+        hour.appearance[1].name_tag.clear();
+        hour.civil_wars = Some(vec![CountryCivilWarRow {
+            country: 1,
+            ordinal: 0,
+            target: if hour.hour < 101 { 2 } else { 3 },
+        }]);
+        hour.relations = Some(vec![WarRelationRow {
+            first_country: 1,
+            second_country: 3,
+            start_hour: 99,
+            end_hour: 102,
+            ..Default::default()
+        }]);
+    }
+    let (out, _) = projected(&hours, &[]);
+    assert_eq!(read_tags(&out[0]), ["AAA", "BBB", "CCC"]);
+    assert!(out[1..].iter().all(|hour| hour.facts.is_none()));
+}
+
+#[test]
+fn civil_input_restatements_read_dynamic_holders() {
+    for table in [
+        TableId::CountryCivilWars,
+        TableId::CountryWars,
+        TableId::WarRelations,
+        TableId::CountryCounterInputs,
+    ] {
+        let mut hours = naming_hours(103);
+        match table {
+            TableId::CountryCivilWars => hours[1].civil_wars = None,
+            TableId::CountryWars => hours[1].wars = None,
+            TableId::WarRelations => hours[1].relations = None,
+            TableId::CountryCounterInputs => hours[1].counters = None,
+            _ => unreachable!(),
+        }
+        let (out, _) = projected(&hours, &[]);
+        assert_eq!(naming(&out[0], "CCC").civil_war, Ok(false));
+        for index in [1, 2] {
+            assert_eq!(read_tags(&out[index]), ["CCC"], "{table:?} at {index}");
+        }
+        assert!(naming(&out[1], "CCC").civil_war.is_err(), "{table:?}");
+        assert_eq!(naming(&out[2], "CCC").civil_war, Ok(false));
+        assert!(out[3].facts.is_none());
+    }
 }
 
 fn identity() -> dashboard_series::Identity {

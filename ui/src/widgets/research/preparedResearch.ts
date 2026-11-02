@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
@@ -23,7 +24,7 @@ export function usePreparedResearch(client: DashboardClient, source: DashboardSo
   const content = useContentRevision(client);
   const key = JSON.stringify([source?.id, source?.revision, branchId, tag, content]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
-  const [state, setState] = useState<{ owner: typeof owner; data?: ResearchReply; error?: string; preparing?: boolean }>();
+  const [state, setState] = useState<{ owner: typeof owner; data?: ResearchReply; error?: Failure; preparing?: boolean }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !source || !branchId || !tag) return;
@@ -32,7 +33,7 @@ export function usePreparedResearch(client: DashboardClient, source: DashboardSo
       () => { if (!controller.signal.aborted) setState(previous => previous?.owner === owner && previous.data ? previous : { owner, preparing: true }); },
       data => { if (!controller.signal.aborted) setState({ owner, data }); }).then(
       data => { if (!controller.signal.aborted) setState({ owner, data }); },
-      error => { if (!controller.signal.aborted) setState(previous => ({ owner, data: previous?.owner === owner ? previous.data : undefined, error: String(error) })); },
+      error => { if (!controller.signal.aborted) setState(previous => ({ owner, data: previous?.owner === owner ? previous.data : undefined, error: asFailure(error) })); },
     );
     return () => controller.abort();
   }, [owner, active, attempt]);

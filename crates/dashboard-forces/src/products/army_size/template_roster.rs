@@ -31,12 +31,12 @@ pub(super) fn query(
     let frame = dashboard_base::prepared::query::progressive::frame_at(
         source, branch, *hour, TABLES, cancelled,
     )?
-    .ok_or_else(|| dashboard_core::invalid("Template roster hour is not recorded"))?;
+    .ok_or_else(|| dashboard_core::refused("Template roster hour is not recorded"))?;
     let countries = frame.complete::<tables::Countries>()?;
     let links = frame.complete::<tables::CountryLinks>()?;
     let country = dashboard_text::metadata::tagged_country(countries, links, tag);
     let dashboard_text::metadata::TaggedCountry::Found(_, slot) = country else {
-        return Err(dashboard_core::invalid(
+        return Err(dashboard_core::refused(
             "Template roster country is unavailable at this hour",
         ));
     };

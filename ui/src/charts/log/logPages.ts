@@ -17,7 +17,7 @@ export function stableLogPages<T>(previous: readonly LogPage<T>[], next: readonl
   return previous;
 }
 
-export function logPageItems<T>(pages: readonly LogPage<T>[], months: boolean): LogItem<T>[] {
+export function logPageItems<T>(pages: readonly LogPage<T>[], months: boolean): ReadonlyArray<LogItem<T>> {
   const entries: LogEntry<T>[] = [];
   const ordered = pages.map((page, index) => ({ page, index })).sort((a, b) => b.page.end - a.page.end || b.page.start - a.page.start || a.index - b.index);
   for (const { page } of ordered) {

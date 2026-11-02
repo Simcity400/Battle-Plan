@@ -90,7 +90,11 @@ test('frame subtitles identify only campaigns different from the sidebar and war
     assert.match(chip({ name: 'TAG' }), />Loading…</);
     assert.doesNotMatch(chip({ name: 'TAG' }), /Name unavailable/);
     assert.match(chip({ name: 'TAG', known: false }), />Unavailable</);
-    assert.match(chip({ name: 'TAG', nameFailed: true }), /Name unavailable/);
+    assert.match(chip({ name: 'TAG', nameFailed: true }), /Couldn’t load country name\./);
+      const failure = new Error('Synthetic dated chip decoder failure');
+      assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: failure }), /data-detail="Synthetic dated chip decoder failure"/);
+      const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
+      assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: new RefusedError('Synthetic dated name refusal') }), />Synthetic dated name refusal</);
     assert.doesNotMatch(chip(null, 'Synthetic native refusal'), /Synthetic native refusal/);
     assert.match(chip({ name: 'Name', known: true }), /As of /);
     assert.doesNotMatch(chip({ name: '', known: true }), /Loading…|Unavailable/);
@@ -179,14 +183,14 @@ test('a frame says each failure its body holds beside published data once, above
     const failures = new HeldFailures();
     assert.equal(renderToStaticMarkup(createElement(Notices, { failures })), '', 'nothing failed, nothing said');
     const asked: string[] = [];
-    failures.put({}, [{ error: 'Preparation stopped', retry: () => asked.push('roster') }]);
-    failures.put({}, [{ error: 'Preparation stopped', retry: () => asked.push('labels') }]);
-    failures.put({}, [{ error: 'Source released', retry: () => asked.push('history') }]);
+    failures.put({}, [{ error: new Error('Preparation stopped'), retry: () => asked.push('roster') }]);
+    failures.put({}, [{ error: new Error('Preparation stopped'), retry: () => asked.push('labels') }]);
+    failures.put({}, [{ error: new Error('Source released'), retry: () => asked.push('history') }]);
     const html = renderToStaticMarkup(createElement(Notices, { failures }));
     assert.equal(html.match(/data-detail="Preparation stopped"/g)?.length, 1, 'one failure is said once');
     assert.match(html, /data-detail="Source released"/);
     assert.equal(html.match(/>Retry</g)?.length, 2);
-    failures.retry('Preparation stopped');
+    failures.retry(new Error('Preparation stopped'));
     assert.deepEqual(asked, ['roster', 'labels'], 'its Retry asks every reader holding it again');
   } finally { await vite.close(); delete host.__frameFailures; }
 });

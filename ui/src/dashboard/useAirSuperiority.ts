@@ -238,7 +238,7 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   }, [legend, sides]);
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(windowChoices.data?.warnings ?? []), ...(choices.data?.warnings ?? []), ...(catalogue.data?.warnings ?? []), ...factions.warnings, ...(factions.error ? [factions.error] : [])];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
+    onDiagnostics(warnings.length ? warnings.map(warning => warning instanceof Error ? warning.message : warning) : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, windowChoices.data, choices.data, catalogue.data, factions.warnings, factions.error, onDiagnostics]);
   const error = moment ? windowChoices.error ?? windows.errors.get(wanted[0]) ?? (options.order === 'name' ? choices.error : null) : timeline.error ?? (follow ? day.error : null) ?? catalogue.error;

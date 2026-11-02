@@ -22,7 +22,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
   const state = { reply, hour: 108, cursor: 0, hooks: [] as unknown[], chart: undefined as CountryRaceViewProps | undefined,
     picker: undefined as ComponentProps<typeof CountryPicker> | undefined,
     requests: [] as { product: string; params: { tags: string[]; family: { kind: string }; reads: { hour: number }[] } }[],
-    groups: { error: null as string | null }, groupsActive: false, productError: null as string | null };
+    groups: { error: null as Error | null }, groupsActive: false, productError: null as Error | null };
   const globals = globalThis as typeof globalThis & { __occupationHolderAdapter?: typeof state };
   globals.__occupationHolderAdapter = state;
   const hooks = `const cell = init => { const state = globalThis.__occupationHolderAdapter, index = state.cursor++; return state.hooks[index] ??= init(); };
@@ -103,7 +103,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
     state.reply = structuredClone(reply); state.reply.series[0].runs[1].resistanceRaw = '400000'; render();
     replaced('alias'); render();
     assert.equal(state.chart!.mix!.tag, 'root', 'a replaced numeric model invalidates its chooser callback');
-    state.groups.error = 'Group catalogue refused'; render();
+    state.groups.error = new Error('Group catalogue refused'); render();
     assert.equal(state.groupsActive, false, 'manual roots use the product native catalogue');
     assert.equal(state.chart!.state, null, 'manual roots bypass a retained inactive group error');
     props.widget.countries = { kind: 'all' }; render();
@@ -115,7 +115,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
     props.widget.countries = { kind: 'all' }; render();
     assert.equal(state.groupsActive, false);
     assert.equal(state.chart!.state, null, 'switching the failed smart group to All removes its inactive error');
-    props.widget.countries = { kind: 'tags', tags: ['root'] }; state.productError = 'Native occupation catalogue refused'; render();
+    props.widget.countries = { kind: 'tags', tags: ['root'] }; state.productError = new Error('Native occupation catalogue refused'); render();
     assert.match(renderToStaticMarkup(state.chart!.state), /Native occupation catalogue refused/, 'the required manual product error remains visible');
   } finally { await vite.close(); delete globals.__occupationHolderAdapter; }
 });

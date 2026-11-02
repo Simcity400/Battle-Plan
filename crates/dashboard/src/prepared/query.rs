@@ -509,7 +509,7 @@ fn people_reply(
         return Ok(Value::Null);
     };
     let (operands, (slot, _)) =
-        found.ok_or_else(|| crate::invalid("Country unavailable at this hour"))?;
+        found.ok_or_else(|| dashboard_core::refused("Country unavailable at this hour"))?;
     let Some(politics) = history::at_hour(source, content, branch, slot, hour, cancelled)? else {
         return Ok(Value::Null);
     };
@@ -1082,7 +1082,9 @@ fn score_series(
     };
     let reach = (!shared.complete).then_some(shared.last_hour);
     if product == "series-state"
-        && reach.is_some_and(|reach| game_score::query::state_hour(params).is_ok_and(|hour| hour > reach))
+        && reach.is_some_and(|reach| {
+            game_score::query::state_hour(params).is_ok_and(|hour| hour > reach)
+        })
     {
         return Ok(Value::Null);
     }
@@ -1198,11 +1200,13 @@ fn tension_series(
     };
     let last = reached.map_or(shared.last_hour, |reached| reached.min(shared.last_hour));
     let answered = match &opened {
-        Some(_) if shared.first_hour <= last => Some(dashboard_base::prepared::coverage::Coverage {
-            last_hour: last,
-            complete: shared.complete && last == shared.last_hour,
-            ..shared.clone()
-        }),
+        Some(_) if shared.first_hour <= last => {
+            Some(dashboard_base::prepared::coverage::Coverage {
+                last_hour: last,
+                complete: shared.complete && last == shared.last_hour,
+                ..shared.clone()
+            })
+        }
         None if shared.complete => Some(shared.clone()),
         _ => None,
     };
@@ -1362,8 +1366,8 @@ fn air_series(
         content: content.cloned(),
     };
     opened.read(cancelled, |snapshot, directory| {
-        let reach = (!shared.complete)
-            .then(|| shared.last_hour.min(snapshot.publication().accepted.last));
+        let reach =
+            (!shared.complete).then(|| shared.last_hour.min(snapshot.publication().accepted.last));
         air_force::query::series(
             source, product, params, &context, snapshot, directory, &history, reach, cancelled,
         )
@@ -1425,8 +1429,8 @@ fn navy_series(
         content: content.cloned(),
     };
     opened.read(cancelled, |snapshot, directory| {
-        let reach = (!shared.complete)
-            .then(|| shared.last_hour.min(snapshot.publication().accepted.last));
+        let reach =
+            (!shared.complete).then(|| shared.last_hour.min(snapshot.publication().accepted.last));
         navy::query::series(
             source, product, params, &context, snapshot, directory, &history, reach, cancelled,
         )
@@ -1489,7 +1493,14 @@ fn factories_series(
     };
     opened.read(cancelled, |snapshot, directory| {
         country_factories::query::series(
-            source, product, params, &context, snapshot, directory, &history, accepted.clone(),
+            source,
+            product,
+            params,
+            &context,
+            snapshot,
+            directory,
+            &history,
+            accepted.clone(),
             cancelled,
         )
     })
@@ -2200,7 +2211,7 @@ fn admit(
     if let Some((hour, error)) = super::pipeline::refusal_from(published, branch, name)?
         && through.is_none_or(|through| through >= hour)
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, error));
+        return Err(error.into());
     }
     // A series request waits for its family kind's coverage; factory faction totals wait only for
     // the families they read.
@@ -2235,6 +2246,64 @@ fn admit(
     entry.declare(declared, || {
         query_data(source, &admitted, content, cancelled)
     })
+}
+
+/// The land-owner catalogue a native preparation published: every branch's page, once the job
+/// has prepared every branch through its last recorded hour or ended it; None until then.
+fn land_owners(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    store: &store::Store,
+    key: &store::SourceKey,
+    published: &gates::Published,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<crate::LandOwners>> {
+    use crate::products::land_owners::native::{self, Page, Readiness};
+    use std::io::Read as _;
+    let replay = source.replay_ref();
+    // Only branches the recording holds hours of are prepared.
+    let mut last = std::collections::BTreeMap::new();
+    for block in &replay.index {
+        let hour = last.entry(block.branch).or_insert(block.last_hour);
+        *hour = (*hour).max(block.last_hour);
+    }
+    for (&branch, &through) in &last {
+        check_cancel(cancelled)?;
+        let refusal = super::pipeline::refusal_from(published, branch, native::NAME)?;
+        let frontier = super::pipeline::own_root(published, native::NAME, branch)?
+            .map(|root| &root.frontier);
+        if let Readiness::Refused(error) = native::readiness(branch, refusal, frontier, through) {
+            return Err(error.into());
+        }
+    }
+    let mut incomplete = !replay.gaps.is_empty();
+    for (&branch, &through) in &last {
+        check_cancel(cancelled)?;
+        let frontier = super::pipeline::own_root(published, native::NAME, branch)?
+            .map(|root| &root.frontier);
+        let Readiness::Done { incomplete: partial } =
+            native::readiness(branch, None, frontier, through)
+        else {
+            return Ok(None);
+        };
+        incomplete |= partial;
+    }
+    let mut pages = Vec::new();
+    for &branch in last.keys() {
+        check_cancel(cancelled)?;
+        if let Some(mut file) = store.read(key, &native::section(branch), 0)? {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            pages.push((branch, Page::read(&bytes)?));
+        }
+    }
+    let blocks = replay
+        .index
+        .iter()
+        .map(|block| (block.branch, block.first_hour, block.last_hour));
+    // The content the store is keyed by named every page's countries.
+    let tags = dashboard_base::content::name_localisation(source, content).err();
+    Ok(Some(native::catalogue(blocks, &pages, incomplete, tags)))
 }
 
 /// A casualty state request whose reads past `prefix` are read at its last
@@ -2296,8 +2365,13 @@ fn market_read<T>(
     type Kept = std::collections::BTreeMap<u64, (([u64; 3], u64), Arc<Catalogue>)>;
     #[derive(Default)]
     struct Catalogues(Kept);
-    let Some(opened) =
-        published::open(source, content, market::FAMILY, market::emit::SCHEMA, branch)?
+    let Some(opened) = published::open(
+        source,
+        content,
+        market::FAMILY,
+        market::emit::SCHEMA,
+        branch,
+    )?
     else {
         return read(None);
     };
@@ -2312,9 +2386,8 @@ fn market_read<T>(
     let catalogue = match kept {
         Some(catalogue) => catalogue,
         None => {
-            let catalogue = Arc::new(opened.read(cancelled, |_, directory| {
-                Catalogue::read(directory)
-            })?);
+            let catalogue =
+                Arc::new(opened.read(cancelled, |_, directory| Catalogue::read(directory))?);
             state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -2387,11 +2460,13 @@ fn economy(
                 None => None,
             };
             let reply = match (opened, through) {
-                (Some(opened), Some(through)) => opened.read(cancelled, |snapshot, directory| {
-                    fuel_branches::query::reply(
-                        snapshot, directory, &params, through, labels, warnings, cancelled,
-                    )
-                })?,
+                (Some(opened), Some(through)) => {
+                    opened.read(cancelled, |snapshot, directory| {
+                        fuel_branches::query::reply(
+                            snapshot, directory, &params, through, labels, warnings, cancelled,
+                        )
+                    })?
+                }
                 _ => fuel_branches::query::unpublished(&params, through, warnings),
             };
             serde_json::to_value(reply)?
@@ -2435,7 +2510,9 @@ fn economy(
             };
             let reply = match opened {
                 Some(opened) => opened.read(cancelled, |snapshot, directory| {
-                    lend_lease_balance::query::reply(snapshot, directory, &params, through, cancelled)
+                    lend_lease_balance::query::reply(
+                        snapshot, directory, &params, through, cancelled,
+                    )
                 })?,
                 None => lend_lease_balance::query::unpublished(&params, through)?,
             };
@@ -2480,11 +2557,13 @@ fn economy(
                 None => None,
             };
             let reply = match (opened, through) {
-                (Some(opened), Some(through)) => opened.read(cancelled, |snapshot, directory| {
-                    production_catalogue::query(
-                        snapshot, directory, &params, through, &naming, warnings, cancelled,
-                    )
-                })?,
+                (Some(opened), Some(through)) => {
+                    opened.read(cancelled, |snapshot, directory| {
+                        production_catalogue::query(
+                            snapshot, directory, &params, through, &naming, warnings, cancelled,
+                        )
+                    })?
+                }
                 _ => production_catalogue::query::unpublished(&params, through, warnings),
             };
             serde_json::to_value(reply)?
@@ -2731,7 +2810,14 @@ fn query_data(
             };
             let reply = match opened {
                 Some(opened) => opened.read(cancelled, |snapshot, directory| {
-                    civil_wars::query(snapshot, directory, &params, through, &annexations, cancelled)
+                    civil_wars::query(
+                        snapshot,
+                        directory,
+                        &params,
+                        through,
+                        &annexations,
+                        cancelled,
+                    )
                 })?,
                 None => civil_wars::unpublished(&params, through)?,
             };
@@ -3210,10 +3296,14 @@ fn query_data(
         "land-owners" => {
             let _: crate::products::land_owners::LandOwnersParams =
                 serde_json::from_value(request.params.clone())?;
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                crate::products::land_owners::NOT_PREPARED,
-            ));
+            let Some(published) = gates::current(&store, &key) else {
+                return Ok(Value::Null);
+            };
+            let owners = land_owners(source, content, &store, &key, &published, cancelled)?;
+            match owners {
+                Some(owners) => serde_json::to_value(owners)?,
+                None => Value::Null,
+            }
         }
         "country-identities" => {
             let id = request
@@ -3228,7 +3318,7 @@ fn query_data(
         }
         "idea-history" => {
             let options = content.ok_or_else(|| {
-                crate::invalid("Choose the game and user folders in Settings first")
+                dashboard_core::refused("Choose the game and user folders in Settings first")
             })?;
             let content = crate::products::politics_content::politics_content(source, options)?;
             crate::products::ideas::query::reply(
@@ -3812,7 +3902,9 @@ fn query_data(
                         source, &context, &params, snapshot, directory, prefix, cancelled,
                     )
                 })?,
-                None => faction_state::query::unpublished(source, &context, &params, prefix, cancelled)?,
+                None => {
+                    faction_state::query::unpublished(source, &context, &params, prefix, cancelled)?
+                }
             };
             serde_json::to_value(reply)?
         }
@@ -3997,9 +4089,16 @@ fn query_data(
                 cancelled,
             )?;
             let mut data = match opened {
-                Some(opened) => serde_json::to_value(opened.read(cancelled, |snapshot, directory| {
-                    crate::prepared_focus::query::hour(snapshot, directory, &params.tag, params.hour)
-                })?)?,
+                Some(opened) => {
+                    serde_json::to_value(opened.read(cancelled, |snapshot, directory| {
+                        crate::prepared_focus::query::hour(
+                            snapshot,
+                            directory,
+                            &params.tag,
+                            params.hour,
+                        )
+                    })?)?
+                }
                 None => Value::Null,
             };
             super::prefix::read_or_empty(
@@ -4177,7 +4276,14 @@ fn query_data(
             let accepted = admitted.ranges.coverage.clone();
             match family {
                 Some("game-score") => {
-                    return score_series(source, content, product, &request.params, branch, cancelled);
+                    return score_series(
+                        source,
+                        content,
+                        product,
+                        &request.params,
+                        branch,
+                        cancelled,
+                    );
                 }
                 Some("country-fuel") => {
                     return crate::products::country_fuel::query::query(
@@ -4419,9 +4525,7 @@ fn query_data(
                 None => None,
             };
             if let Some(reply) = data.as_object_mut() {
-                if family != Some("occupation-trend")
-                    || !reply.contains_key("coverage")
-                {
+                if family != Some("occupation-trend") || !reply.contains_key("coverage") {
                     reply.insert(
                         "coverage".into(),
                         serde_json::to_value(super::prefix::extent(

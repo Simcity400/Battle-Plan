@@ -1,3 +1,5 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
+import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -108,10 +110,10 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see designs." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading designs…" />;
   if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  const country = names.get(nameKey(hour, tag)) ?? tag;
+  const country = nameReadText(names.get(nameKey(hour, tag)));
   const table = (label: string, list: readonly DesignRow[], columns: readonly TableColumn<DesignRow>[], obsolete: boolean) => <Table key={`${track.source.id}:${track.branch.id}:${label}`}
     label={label} rows={list} columns={columns} rowKey={row => row.key} sort={obsolete ? OBSOLETE_SORT : sort} setOption={obsolete ? undefined : setOption} cellBars={false}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}
@@ -128,7 +130,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
           {table('Obsolete designs', obsolete, obsoleteColumns, true)}</div>
       </details>}
     </div>;
-  return <div ref={anchor} className="equipment-designs">
+  return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
       title={picked ? picked.name ?? EQUIPMENT_UNNAMED : SHEET.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
@@ -143,7 +145,7 @@ function DesignSheet({ runtime, track, hour, variant, active }: { runtime: Widge
   const request = { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-design-detail', params: {
     branchId: track.branch.id, hour: Math.floor(hour), variant, fromVariant: null, ship: null, wing: null, observer: null, fog: null, targetCountry: null } };
   const { data, error, retry } = useProduct<DesignDetailReply>(runtime.client, request, active, validateDesignDetail);
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the design…" />;
   return <div className="equipment-design-detail"><DesignSections sections={data.sections} /></div>;
 }

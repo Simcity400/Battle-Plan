@@ -227,7 +227,7 @@ impl Product for ArmyLosses {
             cancelled,
             || {
                 let frame = native::frame_at(source, branch, p.hour, &TABLES, cancelled)?
-                    .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
+                    .ok_or_else(|| dashboard_core::refused("This hour is not recorded"))?;
                 let mut warnings = Vec::new();
                 let cat = context.content.as_ref().and_then(|options| {
                     catalogue::catalogue(source, options)

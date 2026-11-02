@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { deepFreeze } from '../testFrozen.ts';
+import { worldFilterQuery } from './groups.ts';
 import type { CountryGroupReply } from '../generated/dashboard';
 import type { CountrySelection } from './model';
 import { aggregateGroupRuns, resolveCountries, projectResolvedCountries, rankedCandidates, countrySelectionMode, countrySelectionModes, countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupsKnownAt, groupsPendingAt, groupsSettled, groupUnobserved, membersKnown, membershipChanges, worldFilter, worldRequestTags } from './groups.ts';
@@ -20,6 +22,31 @@ const REPLY: CountryGroupReply = {
   countryIdentities: ['GER', 'ENG', 'ITA', 'HUN', 'FRA', 'POL', 'D01', 'MY TAG', 'A B'].map((tag, index) => ({ tag,
     identities: [{ firstHour: 0, lastHour: 200, slot: index + 100, countryId: index + 200 }] })),
 };
+
+test('prepared world filter queries do not revisit selection tags between playback boundaries', () => {
+  let reads = 0;
+  const tags = deepFreeze(['GER', 'ENG']);
+  const selection = deepFreeze({ kind: 'tags' as const, get tags() { reads++; return tags; } });
+  const query = worldFilterQuery(selection, deepFreeze([]), deepFreeze(structuredClone(REPLY)), 200);
+  const first = query.at(101), preparedReads = reads;
+  for (let hour = 102; hour < 110; hour++) assert.equal(query.at(hour), first);
+  assert.equal(reads, preparedReads);
+  assert.deepEqual([...first.tags!], tags);
+});
+
+test('world filters keep membership identities across unrelated changes and pick up replacement replies', () => {
+  const reply = deepFreeze(structuredClone(REPLY));
+  const selection = deepFreeze({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const);
+  const fallback = deepFreeze([] as string[]), first = worldFilter(selection, fallback, reply, 101, 200);
+  assert.equal(worldFilter(selection, fallback, reply, 109, 200), first);
+  assert.equal(worldFilter(selection, fallback, reply, 110, 200).tags, first.tags);
+  assert.equal(worldFilter(selection, fallback, reply, 149, 200).tags, first.tags);
+  const changed = worldFilter(selection, fallback, reply, 150, 200);
+  assert.notEqual(changed.tags, first.tags);
+  assert.deepEqual([...changed.tags!], ['GER', 'ENG']);
+  const replacement = deepFreeze({ ...reply, humans: [{ tag: 'ITA', firstHour: 100, lastHour: 200 }] });
+  assert.deepEqual([...worldFilter(selection, fallback, replacement, 101, 200).tags!], ['ITA']);
+});
 
 test('world filters resolve countries at the counted membership hour, including tag reuse within a run', () => {
   const identityChanges = [{ hour: 10, from: 'AAA', to: 'BBB' }];

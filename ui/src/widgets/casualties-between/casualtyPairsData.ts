@@ -3,7 +3,15 @@ import { runAt, isOrderedSpans, spansCovered } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import { object, opaqueTag, signed32, unsigned64, int } from '../../dashboard/validation.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { CasualtyPairsReply } from '../../generated/dashboard';
+import type { CasualtyPairsReply as WireCasualtyPairsReply } from '../../generated/dashboard';
+
+type PairSeries = WireCasualtyPairsReply['pairs'][number];
+export type CasualtyPairsReply = Readonly<Omit<WireCasualtyPairsReply, 'pairs' | 'windows' | 'observed' | 'warnings'> & {
+  pairs: ReadonlyArray<Readonly<Omit<PairSeries, 'runs'> & { runs: ReadonlyArray<Readonly<PairSeries['runs'][number]>> }>>;
+  windows: ReadonlyArray<Readonly<Span>>;
+  observed: ReadonlyArray<Readonly<Span>>;
+  warnings: ReadonlyArray<string>;
+}>;
 
 // Country-pair sums can exceed i64; preserve the native signed counters in BigInt.
 // Fewer than 39 digits always fit, so only the longest counters are parsed.
@@ -12,7 +20,7 @@ const amount = (value: unknown): value is string => typeof value === 'string'
   && value.length <= 40
   && /^-?(0|[1-9]\d*)$/.test(value)
   && (value.length - (value[0] === '-' ? 1 : 0) < 39 || inRange(BigInt(value)));
-const append = (lists: Map<string, Span[]>, key: string, runs: readonly Span[]) => {
+const append = (lists: Map<string, Readonly<Span>[]>, key: string, runs: ReadonlyArray<Readonly<Span>>) => {
   let list = lists.get(key);
   if (!list) lists.set(key, list = []);
   for (const run of runs) list.push(run);
@@ -26,8 +34,8 @@ export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
     || !Array.isArray(value.pairs) || !Array.isArray(value.warnings) || !value.warnings.every(w => typeof w === 'string')) return bad();
   if ([...value.windows, ...value.observed].some(span => !signed32(span.firstHour) || !signed32(span.lastHour))) return bad();
   const keys = new Set<string>();
-  const endpoints = new Map<string, Span[]>();
-  const identities = new Map<string, Span[]>();
+  const endpoints = new Map<string, Readonly<Span>[]>();
+  const identities = new Map<string, Readonly<Span>[]>();
   for (const pair of value.pairs) {
     if (!object(pair) || typeof pair.identity !== 'string' || !pair.identity
       || !opaqueTag(pair.firstCountry) || !opaqueTag(pair.secondCountry) || pair.firstCountry === pair.secondCountry
@@ -57,8 +65,8 @@ export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
   return value as unknown as CasualtyPairsReply;
 }
 
-export interface PairFlow { id: string; from: string; to: string; value: bigint; readHour: number; incomplete: boolean }
-export interface PairSnapshot { countries: string[]; flows: PairFlow[] }
+export interface PairFlow { readonly id: string; readonly from: string; readonly to: string; readonly value: bigint; readonly readHour: number; readonly incomplete: boolean }
+export interface PairSnapshot { readonly countries: ReadonlyArray<string>; readonly flows: ReadonlyArray<PairFlow> }
 
 // pairs.rs orders endpoints by native identity, independently of their current tags.
 export const pairFlowId = (identity: string, direction: 'first' | 'second') => JSON.stringify([identity, direction]);
@@ -67,10 +75,16 @@ export const pairFlowId = (identity: string, direction: 'first' | 'second') => J
  * not zero. Different holders of a tag never sum together. */
 export function casualtyPairsAt(reply: CasualtyPairsReply, hour: number, includes: (tag: string) => boolean = () => true,
   between = false): PairSnapshot {
-  if (!runAt(reply.observed, hour)) return { countries: [], flows: [] };
+  return readCasualtyPairs(reply, hour, includes, between).snapshot;
+}
+
+function readCasualtyPairs(reply: CasualtyPairsReply, hour: number, includes: (tag: string) => boolean,
+  between: boolean, pairs = reply.pairs): { snapshot: PairSnapshot; hourly: ReadonlySet<PairFlow> } {
+  if (!runAt(reply.observed, hour)) return { snapshot: { countries: [], flows: [] }, hourly: new Set() };
   const flows: PairFlow[] = [];
   const countries = new Set<string>();
-  for (const pair of reply.pairs) {
+  const hourly = new Set<PairFlow>();
+  for (const pair of pairs) {
     const first = includes(pair.firstCountry), second = includes(pair.secondCountry);
     if (!(between ? first && second : first || second)) continue;
     const run = runAt(pair.runs, hour);
@@ -81,8 +95,64 @@ export function casualtyPairsAt(reply: CasualtyPairsReply, hour: number, include
       to: pair.secondCountry, value: BigInt(run.secondTaken), readHour: read, incomplete: run.incomplete });
     flows.push({ id: pairFlowId(pair.identity, 'second'), from: pair.secondCountry,
       to: pair.firstCountry, value: BigInt(run.firstTaken), readHour: read, incomplete: run.incomplete });
+    if (run.hourly) { hourly.add(flows[flows.length - 2]); hourly.add(flows[flows.length - 1]); }
   }
-  return { countries: [...countries].sort(compareTags), flows };
+  return { snapshot: { countries: [...countries].sort(compareTags), flows }, hourly };
+}
+
+interface PairSelection { readonly pairs: CasualtyPairsReply['pairs']; readonly hours: ReadonlyArray<number> }
+const ALL_TAGS: ReadonlySet<string> = new Set();
+const selections = new WeakMap<CasualtyPairsReply, WeakMap<ReadonlySet<string>, Map<boolean, PairSelection>>>();
+function pairSelection(reply: CasualtyPairsReply, tags: ReadonlySet<string> | null, between: boolean): PairSelection {
+  let byTags = selections.get(reply);
+  if (!byTags) selections.set(reply, byTags = new WeakMap());
+  const key = tags ?? ALL_TAGS;
+  let byMode = byTags.get(key);
+  if (!byMode) byTags.set(key, byMode = new Map());
+  let selection = byMode.get(between);
+  if (!selection) {
+    const pairs = tags === null ? reply.pairs : reply.pairs.filter(pair => between
+      ? tags.has(pair.firstCountry) && tags.has(pair.secondCountry) : tags.has(pair.firstCountry) || tags.has(pair.secondCountry));
+    const edges = new Set<number>();
+    for (const runs of [reply.observed, ...pairs.map(pair => pair.runs)]) for (const run of runs) {
+      edges.add(run.firstHour); edges.add(run.lastHour + 1);
+    }
+    selection = { pairs, hours: [...edges].sort((a, b) => a - b) };
+    byMode.set(between, selection);
+  }
+  return selection;
+}
+// Hourly confirmations change exact read dates while retaining the run's geometry.
+const geometry = new WeakMap<PairSnapshot, PairSnapshot>();
+export const pairGeometry = (snapshot: PairSnapshot): PairSnapshot => geometry.get(snapshot) ?? snapshot;
+
+export class CasualtyPairsCursor {
+  private held?: Readonly<{ reply: CasualtyPairsReply; tags: ReadonlySet<string> | null; between: boolean;
+    first: number; end: number; hourly: ReadonlySet<PairFlow>; hour: number; base: PairSnapshot; snapshot: PairSnapshot }>;
+
+  at(reply: CasualtyPairsReply, hour: number, tags: ReadonlySet<string> | null = null, between = false): PairSnapshot {
+    const held = this.held;
+    const same = held !== undefined && held.reply === reply && held.between === between && held.tags === tags;
+    if (same && hour >= held.first && hour < held.end) {
+      if (!held.hourly.size || held.hour === hour) return held.snapshot;
+      const snapshot = { countries: held.base.countries, flows: held.base.flows.map(flow => held.hourly.has(flow)
+        ? { ...flow, readHour: hour } : flow) };
+      geometry.set(snapshot, held.base);
+      this.held = { ...held, hour, snapshot };
+      return snapshot;
+    }
+    const { pairs, hours } = pairSelection(reply, tags, between);
+    let first = 0, last = hours.length;
+    while (first < last) {
+      const middle = (first + last) >>> 1;
+      if (hours[middle] <= hour) first = middle + 1;
+      else last = middle;
+    }
+    const { snapshot, hourly } = readCasualtyPairs(reply, hour, () => true, between, pairs);
+    const start = hours[first - 1] ?? -Infinity, end = hours[first] ?? Infinity;
+    this.held = { reply, tags, between, first: start, end, hourly, hour, base: snapshot, snapshot };
+    return snapshot;
+  }
 }
 
 export const exactCount = (value: number | bigint) => usNumber.format(value);

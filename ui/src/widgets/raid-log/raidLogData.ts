@@ -6,6 +6,7 @@ import { runAt } from '../../charts/series.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
+import { playbackRows, spanChanges } from '../../charts/playbackIntervals.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 
@@ -18,17 +19,17 @@ export function raidLogTypes(data: RaidsReply): { token: string; label: string; 
 
 /** Phase, result, type and target changes date the row; hourly preparation,
  * witness changes, artwork failures and a repeated read after a gap do not. */
-function changeRead(at: RaidAt['episode'], latest: RaidAt['latest']): RaidAt['latest'] {
-  const same = (a: RaidAt['latest'], b: RaidAt['latest']) => a.phase === b.phase && a.outcome === b.outcome
+const sameRaidChange = (a: RaidAt['latest'], b: RaidAt['latest']) => a.phase === b.phase && a.outcome === b.outcome
     && a.raider === b.raider && a.victim === b.victim && a.type === b.type && a.province === b.province && a.state === b.state
     && a.targetName === b.targetName;
+function changeRead(at: RaidAt['episode'], latest: RaidAt['latest']): RaidAt['latest'] {
   let index = at.runs.indexOf(latest);
-  while (index > 0 && same(at.runs[index - 1], latest)) index--;
+  while (index > 0 && sameRaidChange(at.runs[index - 1], latest)) index--;
   return at.runs[index];
 }
 
 export function raidLogRows(data: RaidsReply, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
-  from: number | null): LogRow<RaidAt>[] {
+  from: number | null): ReadonlyArray<LogRow<RaidAt>> {
   const selected = new Set(types);
   return newestFirst(data.episodes.flatMap(episode => {
     const latest = entryAt(episode.runs, hour);
@@ -39,6 +40,36 @@ export function raidLogRows(data: RaidsReply, hour: number, types: readonly stri
     return [{ id: episode.id, key: JSON.stringify([episode.id, change!.firstHour]), hour: change!.firstHour, by: true,
       item: { episode, latest, current: runAt(episode.runs, hour), hour } }];
   }));
+}
+
+export function raidPlayback(data: RaidsReply, types: readonly string[], matches: (tag: string | null, hour: number) => boolean, from: number | null) {
+  const selected = new Set(types);
+  function* changes() {
+    for (const episode of data.episodes) {
+      let changed = 0, previous = false, preparationIndex = 0;
+      for (let index = 0; index < episode.runs.length; index++) {
+        const run = episode.runs[index];
+        if (index === 0 || !sameRaidChange(episode.runs[changed], run)) changed = index;
+        const date = episode.runs[changed].firstHour;
+        const shown = (!selected.size || selected.has(run.type ?? '')) && matches(run.raider, date) && (from === null || date >= from);
+        if (shown) {
+          yield* spanChanges([run]);
+          if (run.phase === data.phasePreparing) {
+            while (preparationIndex < episode.preparation.length && episode.preparation[preparationIndex][1] < run.firstHour) preparationIndex++;
+            for (let at = preparationIndex; at < episode.preparation.length && episode.preparation[at][0] <= run.lastHour; at++) {
+              yield Math.max(run.firstHour, episode.preparation[at][0]);
+              yield Math.min(run.lastHour, episode.preparation[at][1]) + 1;
+            }
+          }
+        } else if (previous) yield run.firstHour;
+        previous = shown;
+      }
+    }
+  }
+  return playbackRows(changes(), hour => raidLogRows(data, hour, types, matches, from), (rows, hour) =>
+    rows.some(row => row.item.current?.phase === data.phasePreparing
+      && row.item.episode.preparation.some(([first, last, , step]) => first <= hour && hour <= last && step !== 0))
+      ? { first: hour, end: hour + 1 } : { first: -Infinity, end: Infinity });
 }
 
 export function raidStatus(data: RaidsReply, at: RaidAt): string {

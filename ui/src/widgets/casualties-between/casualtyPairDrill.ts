@@ -3,7 +3,7 @@ import type { CompactStackModel, StackRun } from '../../charts/stack';
 import { runAt } from '../../charts/series.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import type { CasualtyPairsReply } from '../../generated/dashboard';
+import type { CasualtyPairsReply } from './casualtyPairsData';
 import { DETAIL } from './definition.ts';
 import { pairFlowId } from './casualtyPairsData.ts';
 

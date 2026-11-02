@@ -2,6 +2,7 @@
 //! The native viewer owns map rendering; dashboard reads do not start it.
 
 use dashboard::{
+    QueryError,
     protocol::replay_revision,
     transport::{DataCommand, DataEvent, MapSettingsTarget, ProductRequest, ReplyAssembler},
 };
@@ -18,7 +19,7 @@ const MAX_PENDING: usize = 64;
 const CANCELLED: &str = "Dashboard request cancelled";
 
 struct PendingReply {
-    reply: oneshot::Sender<Result<String, String>>,
+    reply: oneshot::Sender<Result<String, QueryError>>,
     assembler: ReplyAssembler,
 }
 
@@ -43,7 +44,7 @@ impl Requests {
         }
     }
 
-    fn begin(&mut self, id: &str) -> Result<oneshot::Receiver<Result<String, String>>, String> {
+    fn begin(&mut self, id: &str) -> Result<oneshot::Receiver<Result<String, QueryError>>, String> {
         if id.is_empty() || id.len() > 128 || id.contains('\0') {
             return Err("Invalid dashboard request identifier".into());
         }
@@ -58,7 +59,8 @@ impl Requests {
             return Err(format!(
                 "{}. Retry this view.",
                 dashboard::transport::CAPACITY_REACHED
-            ));
+            )
+            .into());
         }
         if self.pending.contains_key(id) {
             return Err("Dashboard request identifier was reused".into());
@@ -81,7 +83,12 @@ pub struct DashboardService {
     runtime: Mutex<Option<Arc<dashboard::Service>>>,
     /// The folders and unverified-content choice content was last configured with, and what
     /// would bind content that is still unbound.
-    configured: Mutex<Option<((std::path::PathBuf, std::path::PathBuf, bool), Option<Unbound>)>>,
+    configured: Mutex<
+        Option<(
+            (std::path::PathBuf, std::path::PathBuf, bool),
+            Option<Unbound>,
+        )>,
+    >,
 }
 
 /// Why configured content is unbound, and so what binds it again without a new Apply.
@@ -106,7 +113,7 @@ impl DashboardService {
         window: &WebviewWindow,
         id: &str,
         command: DataCommand,
-    ) -> Result<oneshot::Receiver<Result<String, String>>, String> {
+    ) -> Result<oneshot::Receiver<Result<String, QueryError>>, String> {
         let runtime = self.runtime(window.app_handle())?;
         let mut requests = self.requests.lock().map_err(|error| error.to_string())?;
         let receive = requests.begin(id)?;
@@ -200,7 +207,7 @@ impl DashboardService {
         let pending = std::mem::take(&mut requests.pending);
         for (id, entry) in pending {
             requests.remember_cancel(&id);
-            let _ = entry.reply.send(Err(message.to_owned()));
+            let _ = entry.reply.send(Err(message.into()));
         }
     }
 
@@ -310,9 +317,9 @@ pub fn receive_data(app: &AppHandle, event: DataEvent) {
         .unwrap_or_else(|error| error.into_inner());
     let mut cancel = None;
     match event {
-        DataEvent::Error { id, message } => {
+        DataEvent::Error { id, error } => {
             if let Some(entry) = requests.pending.remove(&id) {
-                let _ = entry.reply.send(Err(message));
+                let _ = entry.reply.send(Err(error.into()));
             }
         }
         DataEvent::Chunk {
@@ -339,7 +346,7 @@ pub fn receive_data(app: &AppHandle, event: DataEvent) {
                             .pending
                             .remove(&id)
                             .expect("response still pending");
-                        let _ = entry.reply.send(Err(error));
+                        let _ = entry.reply.send(Err(error.into()));
                         cancel = Some(id);
                     }
                 }
@@ -378,7 +385,7 @@ async fn request(
     service: &DashboardService,
     id: String,
     command: DataCommand,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     let submit_window = window.clone();
     let submit_id = id.clone();
     let receive = tauri::async_runtime::spawn_blocking(move || {
@@ -410,7 +417,7 @@ pub async fn dashboard_open_source(
     service: State<'_, DashboardService>,
     path: String,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     let path = crate::replay_path(&path)?;
     let revision = replay_revision(&path).map_err(|error| error.to_string())?;
     request(
@@ -434,7 +441,7 @@ pub async fn dashboard_product(
     service: State<'_, DashboardService>,
     query: ProductRequest,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     query.validate()?;
     request(
         &window,
@@ -457,7 +464,7 @@ pub async fn dashboard_prepared_query(
     query: ProductRequest,
     refresh: Option<bool>,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     query.validate()?;
     request(
         &window,
@@ -480,7 +487,7 @@ pub async fn dashboard_preparation_preferences(
     service: State<'_, DashboardService>,
     enabled: Option<bool>,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     request(
         &window,
         &host,
@@ -502,7 +509,7 @@ async fn preparation_command(
     revision: String,
     request_id: String,
     action: dashboard::prepared::Action,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     request(
         window,
         host,
@@ -526,7 +533,7 @@ pub async fn dashboard_preparation_status(
     source_id: String,
     revision: String,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     preparation_command(
         &window,
         &host,
@@ -547,7 +554,7 @@ pub async fn dashboard_prepare_source(
     source_id: String,
     revision: String,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     preparation_command(
         &window,
         &host,
@@ -568,7 +575,7 @@ pub async fn dashboard_cancel_preparation(
     source_id: String,
     revision: String,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     preparation_command(
         &window,
         &host,
@@ -589,7 +596,7 @@ pub async fn dashboard_clear_preparation(
     source_id: String,
     revision: String,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     preparation_command(
         &window,
         &host,
@@ -615,7 +622,7 @@ pub async fn dashboard_map_settings(
     settings: Option<dashboard::protocol::CampaignMapSettings>,
     flip: Option<dashboard::protocol::MapSetting>,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     let saving = settings.is_some() || flip.is_some();
     let response = request(
         &window,
@@ -651,7 +658,7 @@ pub async fn dashboard_history_cache(
     service: State<'_, DashboardService>,
     clear: bool,
     request_id: String,
-) -> Result<Response, String> {
+) -> Result<Response, QueryError> {
     request(
         &window,
         &host,
@@ -697,7 +704,11 @@ mod tests {
             .map(|index| requests.begin(&format!("read-{index}")).unwrap())
             .collect();
         let refusal = requests.begin("late").unwrap_err();
-        assert!(refusal.starts_with(dashboard::transport::CAPACITY_REACHED));
+        assert!(
+            refusal
+                .to_string()
+                .starts_with(dashboard::transport::CAPACITY_REACHED)
+        );
         assert!(dashboard::transport::transient_error(&refusal));
         // The desktop's other refusals are not for want of room.
         assert!(!dashboard::transport::transient_error(CANCELLED));

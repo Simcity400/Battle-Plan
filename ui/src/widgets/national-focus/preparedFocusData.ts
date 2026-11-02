@@ -1,3 +1,5 @@
+import { failureText } from '../../dashboard/queryError.ts';
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import type { PreparationRequest, PreparationReply } from '../../shell/preparation/contract';
 import { validateProductReply } from '../../dashboard/client.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -14,7 +16,7 @@ export interface PreparedFocusHour {
   current: string | null; continuous: string | null; paused: boolean;
   completed: FocusPages; at: number; progressRaw: string; dailyGainRaw: string | null;
 }
-export interface PreparedFocusArt { artwork: Artwork; reason: string | null }
+export interface PreparedFocusArt { artwork: Artwork; reason: string | null; failure?: Failure; titleFailure?: Failure }
 export interface PreparedFocusSnapshot {
   hour: PreparedFocusHour; order: FocusEntry[]; page: bigint; displayHour: number;
   /** By `preparedArtKey`: completions are national, the active focus is in its own database. */
@@ -256,12 +258,12 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   if (active?.token) want(active.database, hour, active.token);
   const art = new Map<string, PreparedFocusArt>();
   const warnings = new Set<string>();
-  const staticReasons = new Map<FocusDatabase, string>();
+  const staticReasons = new Map<FocusDatabase, Failure>();
   const staticTokens = (database: FocusDatabase) => [...new Set([...(database === 'national' ? order.map(entry => entry.token) : []),
     ...(active?.token && active.database === database ? [active.token] : [])])].sort();
   const loadStatic = (database: FocusDatabase) => loadPreparedFocusStaticText(client, source, database, staticTokens(database), signal).catch(error => {
     if (signal.aborted) throw error;
-    staticReasons.set(database, error instanceof Error ? error.message : String(error)); return { text: [] as Artwork[], warnings: [] as string[] };
+    staticReasons.set(database, asFailure(error)); return { text: [] as Artwork[], warnings: [] as string[] };
   });
   const [national, continuous] = await Promise.all([loadStatic('national'), loadStatic('continuous'),
     Promise.all([...wanted.values()].map(async ({ database, date, tokens }) => {
@@ -271,8 +273,8 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
       for (const [token, item] of dated.art) art.set(preparedArtKey(database, date, token), item);
     } catch (error) {
       if (signal.aborted) throw error;
-      const reason = error instanceof Error ? error.message : String(error);
-      for (const token of tokens) art.set(preparedArtKey(database, date, token), placeholder(token, reason));
+      const reason = failureText(asFailure(error), 'Couldn’t load focus artwork.');
+      for (const token of tokens) art.set(preparedArtKey(database, date, token), { ...placeholder(token, reason), failure: asFailure(error), titleFailure: asFailure(error) });
     }
   }))]);
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
@@ -283,7 +285,7 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   const texts = { national: new Map(national.text.map(item => [item.token, item])), continuous: new Map(continuous.text.map(item => [item.token, item])) };
   for (const { database, date, tokens } of wanted.values()) for (const token of tokens) {
     const key = preparedArtKey(database, date, token), item = art.get(key)!;
-    art.set(key, { ...item, reason: item.reason ?? staticReasons.get(database) ?? null, artwork: { ...item.artwork,
+    art.set(key, { ...item, failure: item.failure ?? staticReasons.get(database), reason: item.reason ?? (staticReasons.has(database) ? failureText(staticReasons.get(database), 'Couldn’t load focus text.') : null), artwork: { ...item.artwork,
       description: item.artwork.description ?? texts[database].get(item.artwork.token)?.description ?? null } });
   }
   return { order, art, staticText: national.text, continuousStaticText: continuous.text, displayHour: hour, warnings: [...warnings] };

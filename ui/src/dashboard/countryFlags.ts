@@ -1,3 +1,4 @@
+import { asFailure, type Failure } from './queryError.ts';
 /** Country flags as preparation chose them. Each run of a recording branch's country timeline names
  * a flag choice (`flagIn`), and each distinct choice is drawn once per recording, content revision
  * and size (`country-flags`), whoever asks for it. A flag at an hour the timeline does not hold yet
@@ -5,27 +6,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryFlagChoice, CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
-import { FAILED_FACT, nameKey, retryDelay, transientError } from './countryFacts.ts';
+import { nameKey, retryDelay, transientError } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
-import { askableAt, askTimeline, flagIn, heldTimeline, watchTimeline } from './countryTimeline.ts';
+import { askableAt, askTimeline, flagIn, heldTimeline, timelineFailure, retryTimelines, watchTimeline } from './countryTimeline.ts';
 import { useContentRevision } from './contentRevision.ts';
 import { inFrame } from './frameUpdates.ts';
 import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products.ts';
 
 /** A flag as it is shown: drawn (its artwork URL and picture), or why there is none. */
-export type FlagRead = { url?: string; image?: CountryFlagImage; reason?: string };
+export type FlagRead = Readonly<{ url?: string; image?: CountryFlagImage; reason?: string }>;
 /** A country's flag at an hour of a branch. */
 export interface FlagAt { tag: string; branchId: string; hour: number }
-/** A flag read: drawn or why not, null when nothing was drawn for it, `FAILED_FACT` when its drawing failed. */
-export type FlagValue = FlagRead | null | typeof FAILED_FACT;
+/** A drawing or its refusal, null when nothing was drawn, or a failed request. */
+export type FlagValue = FlagRead | null | Failure;
 
 /** Choices one `country-flags` request draws at most. */
 export const FLAG_BATCH = 32;
 /** Requests drawing at once per client; the rest wait. */
 const MAX_DRAWING = 2;
 
-type Drawing = { read: FlagRead | null } | { failed: true };
+type Drawing = { read: FlagRead | null } | { failed: Failure };
 
 interface Drawings {
   /** The content revision drawn under; another discards every drawing. */
@@ -46,6 +47,15 @@ interface Drawings {
 
 const states = new WeakMap<DashboardClient, Drawings>();
 const choiceKeys = new WeakMap<CountryFlagChoice, string>();
+const unavailableReads = new WeakMap<DashboardClient, Map<string, FlagRead>>();
+
+function unavailableFlag(client: DashboardClient, reason: string): FlagRead {
+  let reasons = unavailableReads.get(client);
+  if (!reasons) unavailableReads.set(client, reasons = new Map());
+  let read = reasons.get(reason);
+  if (!read) reasons.set(reason, read = { reason });
+  return read;
+}
 
 function drawings(client: DashboardClient, content: number): Drawings {
   let state = states.get(client);
@@ -83,7 +93,7 @@ export function drawnFlag(client: DashboardClient, recording: Pick<DashboardSour
   choice: CountryFlagChoice): FlagValue | undefined {
   const state = states.get(client);
   const drawn = state?.content === content ? state.entries.get(drawKey(groupKey(recording, size), choice)) : undefined;
-  return drawn && ('failed' in drawn ? FAILED_FACT : drawn.read);
+  return drawn && ('failed' in drawn ? drawn.failed : drawn.read);
 }
 
 /** Draws `choices` not yet drawn or being drawn, in requests of at most [`FLAG_BATCH`]. */
@@ -116,11 +126,13 @@ async function draw(client: DashboardClient, state: Drawings, recording: Dashboa
   const owner = { sourceId: recording.id, controller: new AbortController() };
   state.controllers.add(owner);
   let reply: CountryFlagReply | undefined, retryable = false;
+  let failure: Failure = new Error('Flag drawing failed');
   try {
     reply = await loadTransientProduct<CountryFlagReply>(client, { sourceId: recording.id, revision: recording.revision, product: 'country-flags',
       params: { flags: batch.map(([, choice]) => choice), size } }, owner.controller.signal);
   } catch (error) {
     retryable = transientError(error);
+    failure = asFailure(error);
   }
   state.controllers.delete(owner);
   state.running--;
@@ -138,7 +150,7 @@ async function draw(client: DashboardClient, state: Drawings, recording: Dashboa
     } else {
       const count = (state.failures.get(key) ?? 0) + 1;
       state.failures.set(key, count);
-      state.entries.set(key, { failed: true });
+      state.entries.set(key, { failed: failure });
       // A failure for want of room is tried again after a wait; any other waits for `retryFlags`.
       if (retryable) setTimeout(() => {
         if (states.get(client) !== state || !('failed' in (state.entries.get(key) ?? {}))) return;
@@ -172,6 +184,7 @@ export function forgetFlags(client: DashboardClient, sourceId: string, settled =
 
 /** Drops a recording's failed drawings, so they are drawn again when wanted. */
 export function retryFlags(client: DashboardClient, sourceId: string): void {
+  retryTimelines(client, sourceId);
   const state = states.get(client);
   if (!state) return;
   for (const [key, entry] of [...state.entries]) {
@@ -207,14 +220,19 @@ export function useFlagReads(client: DashboardClient, recording: DashboardSource
     for (const [branchId, hour, tag] of wanted) {
       const timeline = heldTimeline(client, { sourceId, revision, branchId, content });
       const flag = timeline && flagIn(timeline, hour, tag);
-      if (!flag) { if (!unheld.has(branchId)) unheld.set(branchId, hour); continue; }
+      if (!flag) {
+        const error = timelineFailure(client, { sourceId, revision, branchId, content });
+        if (error) values.set(JSON.stringify([branchId, hour, tag]), error);
+        if (!unheld.has(branchId)) unheld.set(branchId, hour);
+        continue;
+      }
       const key = JSON.stringify([branchId, hour, tag]);
-      if ('reason' in flag) { values.set(key, { reason: flag.reason }); continue; }
+      if ('reason' in flag) { values.set(key, unavailableFlag(client, flag.reason)); continue; }
       const drawing = drawKey(group, flag.choice);
       const drawn = state?.content === content ? state.entries.get(drawing) : undefined;
       if (!drawn) { undrawn.push(flag.choice); awaited.add(drawing); continue; }
       // A failed drawing is awaited too: tried again, it is told.
-      if ('failed' in drawn) { values.set(key, FAILED_FACT); awaited.add(drawing); } else values.set(key, drawn.read);
+      if ('failed' in drawn) { values.set(key, drawn.failed); awaited.add(drawing); } else values.set(key, drawn.read);
     }
     return { values, unheld, undrawn, awaited };
   }, [client, sourceId, revision, content, size, wanted, version]);

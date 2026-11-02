@@ -1,10 +1,15 @@
+import { RefusedError } from './queryError.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { deepFreeze } from '../testFrozen.ts';
+import { CountryLabelIndex } from './countryLabelData.ts';
+import { nameReadFrom } from './nameReads.ts';
+import { nameKey } from './countryFacts.ts';
 import { drawFlags, drawnFlag, FLAG_BATCH, flagReadKey, forgetFlags, retryFlags, useFlagReads } from './countryFlags.ts';
 import type { FlagValue } from './countryFlags';
-import { FAILED_FACT, retryDelay } from './countryFacts.ts';
+import { retryDelay, isFailedFact } from './countryFacts.ts';
 import { heldStyles, heldTimeline } from './countryTimeline.ts';
 import type { CountryFactsReply, CountryFlagChoice, CountryFlagParams } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
@@ -41,7 +46,7 @@ test('each distinct flag is drawn once, in requests of at most the batch, whoeve
   await settle(); await settle();
   assert.deepEqual(asked.map(batch => batch.length), [FLAG_BATCH, 40 - FLAG_BATCH]);
   const drawn = drawnFlag(client, recording, 0, 'panel', choice('T39'));
-  assert.ok(drawn && drawn !== FAILED_FACT);
+  assert.ok(drawn && !isFailedFact(drawn));
   assert.equal(drawn.url, drawn.image?.png);
   assert.equal(drawn.image?.asset, 'gfx/flags/T39.tga');
   drawFlags(client, recording, 0, 'panel', choices);
@@ -73,10 +78,10 @@ test('a failed drawing stays failed until retried, and one that failed for want 
   } } as unknown as DashboardClient;
   drawFlags(client, recording, 0, 'panel', [choice('A')]);
   await settle(); await settle();
-  assert.equal(drawnFlag(client, recording, 0, 'panel', choice('A')), FAILED_FACT);
+  assert.ok(drawnFlag(client, recording, 0, 'panel', choice('A')) instanceof Error);
   t.mock.timers.tick(60_000);
   await settle();
-  assert.equal(drawnFlag(client, recording, 0, 'panel', choice('A')), FAILED_FACT, 'a refusal waits for a retry');
+  assert.ok(drawnFlag(client, recording, 0, 'panel', choice('A')) instanceof Error, 'a refusal waits for a retry');
   drawFlags(client, recording, 0, 'panel', [choice('A')]);
   await settle();
   assert.equal(asked.length, 1, 'nor is it asked again unbidden');
@@ -85,7 +90,7 @@ test('a failed drawing stays failed until retried, and one that failed for want 
   failure = () => new TypeError('Failed to fetch');
   drawFlags(client, recording, 0, 'panel', [choice('A')]);
   await settle(); await settle();
-  assert.equal(drawnFlag(client, recording, 0, 'panel', choice('A')), FAILED_FACT);
+  assert.ok(drawnFlag(client, recording, 0, 'panel', choice('A')) instanceof Error);
   t.mock.timers.tick(retryDelay(1));
   assert.equal(drawnFlag(client, recording, 0, 'panel', choice('A')), undefined, 'a transient failure is let go after its wait');
   failure = undefined;
@@ -162,6 +167,40 @@ test('a flag is read from its dated timeline and shown once drawn; unheld hours 
   assert.equal(growingAsked.length, 0, 'rendering asks for nothing');
 });
 
+test('real flag reads retain unavailable reasons and country label identities as requested hours advance', async () => {
+  const reply: CountryFactsReply = deepFreeze({ branchId: '1', known: [[10, 20]], names: ['Name'],
+    reasons: ['Flag not recorded', 'Different reason'], flags: [], warnings: [],
+    countries: [{ tag: 'country', runs: [[10, 0, -1, 0, -1], [15, 0, -1, 1, -1]] }] });
+  const { client: answering } = drawing();
+  const client = Object.assign(answering, { preparedQuery: async () => ({ ...reply,
+    coverage: { firstHour: 10, lastHour: 20, complete: true }, pending: [] }) });
+  const source = deepFreeze({ id: 'unavailable flags', revision: '1' }) as DashboardSource;
+  heldStyles(client, { sourceId: source.id, revision: source.revision, branchId: '1', content: 0 }, source, 10, ['country']);
+  await settle();
+  const labels = new CountryLabelIndex();
+  const at = (hour: number) => {
+    const wanted = deepFreeze([{ tag: 'country', branchId: '1', hour }]);
+    let flags: ReadonlyMap<string, FlagValue> = new Map();
+    const Probe = () => { flags = useFlagReads(client, source, wanted, true, 'panel'); return null; };
+    renderToStaticMarkup(createElement(Probe));
+    const flag = flags.get(flagReadKey(wanted[0]));
+    return { flag, label: labels.at(deepFreeze(new Map([[nameKey(hour, 'country'), nameReadFrom('Name', true)]])),
+      deepFreeze(new Map([[nameKey(hour, 'country'), flag!]])))(hour) };
+  };
+  const first = at(10);
+  assert.deepEqual(first.flag, { reason: 'Flag not recorded' });
+  for (let hour = 11; hour < 15; hour++) {
+    const next = at(hour);
+    assert.equal(next.flag, first.flag);
+    assert.equal(next.label, first.label);
+  }
+  const changed = at(15);
+  assert.notEqual(changed.flag, first.flag);
+  assert.notEqual(changed.label, first.label);
+  assert.equal(changed.label('country').flagReason, 'Different reason');
+  assert.equal(at(10).flag, first.flag);
+});
+
 test('lane looks show each country as the timeline names it and its flag once drawn: drawn, refused, failed or pending, and none for sorting-only names', async () => {
   const { useCountriesAt } = await import('./useCountriesAt.ts');
   const reply: CountryFactsReply = { branchId: '1', known: [[10, 20]], names: ['Germany', 'England', 'Italy', 'France', 'Soviet Union'], reasons: [],
@@ -197,4 +236,13 @@ test('lane looks show each country as the timeline names it and its flag once dr
   assert.equal(country('SOV').name, 'Soviet Union');
   assert.equal(country('SOV').flagPending, false, 'a country named only for sorting asks for no flag');
   assert.deepEqual(asked, ['country-flags', 'country-flags', 'country-flags'], 'names the timeline holds are never read hour by hour');
+});
+
+test('a failed flag drawing keeps its named refusal for the picker', async () => {
+  const refusal = new RefusedError('Synthetic flag content is unsupported');
+  const { client } = drawing(new Set(), new Set(), () => refusal);
+  drawFlags(client, recording, 0, 'panel', [choice('synthetic')]);
+  await settle(); await settle();
+  assert.equal(drawnFlag(client, recording, 0, 'panel', choice('synthetic')), refusal);
+  forgetFlags(client, recording.id);
 });

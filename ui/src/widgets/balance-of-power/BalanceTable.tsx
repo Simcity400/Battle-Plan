@@ -1,3 +1,4 @@
+import { nameReadText } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -9,7 +10,7 @@ import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
@@ -31,13 +32,12 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
 import BalanceCountryView from './BalanceCountryView';
 import { BALANCE_UNAVAILABLE, balanceRowsAt, chooseBalance, exactValue, nameWarnings, pendingSpans, RANGE_UNAVAILABLE, rangeName, ROW_VALUES, rowHolder,
-  rowStartUnseen, SIDE_UNAVAILABLE, sideName, validateHolderBalances } from './balanceOfPowerData';
+  rowStartUnseen, SIDE_UNAVAILABLE, sideName, validateHolderBalances } from './balanceOfPowerData.ts';
 import type { BalanceRow } from './balanceOfPowerData';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 
 const NO_ROWS: readonly BalanceRow[] = [];
 const rowKey = (row: BalanceRow) => row.key;
-const COUNTRY_NAME_UNAVAILABLE = 'Country name unavailable';
 
 /** The table's columns: members by `label` (sorted by the first's `sortName`), ranges and
  * sides by `rangeOf` and `sideOf`, the hiding columns' values in the row tooltip. */
@@ -47,7 +47,7 @@ export function balanceColumns(sortName: (tag: string) => string, label: Country
     { key: 'balance', header: 'Balance', label: 'Balance', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? BALANCE_UNAVAILABLE,
       render: row => <span data-tooltip={contentTitleHint(row.token)}>{row.name ?? BALANCE_UNAVAILABLE}</span> },
     { key: 'members', header: 'Members', label: 'Members', width: 'minmax(var(--table-name-min), 2fr)', priority: 1, inTooltip: true,
-      value: row => sortName(row.members[0].tag),
+      value: row => sortName(row.members[0].tag), text: row => row.members.map(member => label(member.tag).name).join(', '),
       render: row => <span className="balance-members">{row.members.map(member => <CountryCell key={member.holder} {...label(member.tag)} />)}</span> },
     { key: 'range', header: 'Range', label: 'Range', width: 'minmax(var(--table-name-min), 1fr)', priority: 2, inTooltip: true, value: rangeOf,
       render: row => <span data-tooltip={contentTitleHint(row.range)}>{rangeOf(row)}</span> },
@@ -124,12 +124,12 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const names = data?.names;
   const rangeOf = useCallback((row: BalanceRow) => row.range === null || !names ? null : rangeName(row.balance, row.range, names) ?? RANGE_UNAVAILABLE, [names]);
   const sideOf = useCallback((row: BalanceRow) => row.trending === null || !names ? null : sideName(row.balance, row.trending, names) ?? SIDE_UNAVAILABLE, [names]);
-  const columns = useMemo(() => balanceColumns(tag => countryNames.get(nameKey(hour, tag)) ?? COUNTRY_NAME_UNAVAILABLE, labelAt(hour), rangeOf, sideOf),
+  const columns = useMemo(() => balanceColumns(tag => nameReadText(countryNames.get(nameKey(hour, tag))), labelAt(hour), rangeOf, sideOf),
     [countryNames, labelAt, hour, rangeOf, sideOf]);
   const pending = useMemo(() => track && data ? pendingSpans(preparedPrefix(data)?.pending ?? [], data.lastHour, track.branch) : [], [track, data]);
   const unknown = useMemo(() => track ? unknownHours(track.branch.gaps, data?.known ?? [], track.branch.firstHour, data?.lastHour ?? null, pending) : [],
     [track, data, pending]);
-  const tooltip = useCallback((row: BalanceRow) => fitTooltip([{ title: row.name ?? BALANCE_UNAVAILABLE, rows: [
+  const tooltip = useCallback((row: BalanceRow) => fitTooltip([{ title: row.name ?? BALANCE_UNAVAILABLE, ...countryNameDetails(...row.members.map(member => labelAt(hour)(member.tag))), rows: [
     { label: 'Members', value: row.members.map(member => labelAt(hour)(member.tag).name).join(', ') },
     ...row.range === null ? [] : [{ label: 'Range', value: rangeOf(row)!, lookupKey: row.range }],
     { label: 'Value', value: exactValue(row.value), strong: true },
@@ -149,8 +149,8 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   let body;
   if (!track) body = <WidgetState kind="empty" icon="sliders" message="Load a campaign to see the balance of power." />;
   else if (!window || !inside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  else if (error && !data) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
-  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  else if (error && !data) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
+  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading the balance of power…" />;
   else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -167,7 +167,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const openName = choice?.balance ? choice.balance.name ?? data?.names[choice.balance.token] ?? BALANCE_UNAVAILABLE : '';
   return <div className="balance-of-power" ref={anchor}>
     {headerSlot && view && createPortal(<span className="pill balance-count">{usNumber.format(rows.length)} active</span>, headerSlot)}
-    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
+    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     <DrillHost mode="inline" open={!!choice?.balance} anchor={anchor} title={`${countryName}: ${openName}`} day={dayLabel(hour)} following={false} canFollow={false}
       onClose={() => setOpened(null)} onFollow={() => {}} main={body}>
       {track && data && openHolder && choice?.balance && <BalanceCountryView runtime={runtime} track={track} active={active} subject={openHolder} names={data.names}

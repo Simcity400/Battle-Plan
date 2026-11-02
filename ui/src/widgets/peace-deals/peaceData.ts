@@ -8,6 +8,7 @@ import { peaceDealHour, peaceDealKnownAt, peaceDealAt, peaceDealIsBy } from '../
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { setToken } from '../../dashboard/options.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
+import { playbackRows } from '../../charts/playbackIntervals.ts';
 
 /** `vp`: the state's victory points as an exact decimal, null when not recorded. */
 export interface PeaceChip { key: string; hour: number; state?: number; vp?: string | null; tag?: string; missing?: string; note?: string; derived: boolean }
@@ -225,6 +226,18 @@ export function peaceRowsAt(log: PeaceLog, until: number | null, from = -Infinit
     const deal = peaceDealAt(row.item.deal, end);
     return deal === row.item.deal ? row : { ...row, item: { ...row.item, deal } };
   });
+}
+
+export function peacePlayback(log: PeaceLog, from: number) {
+  const selected = { ...log, rows: log.rows.filter(row => row.hour >= from) };
+  function* changes() {
+    for (const row of selected.rows) {
+      yield Math.max(row.hour, row.item.knownAt);
+      const unavailable = (row.item.deal as PeaceDeal & { captureUnavailableHour?: number }).captureUnavailableHour;
+      if (unavailable != null) yield unavailable;
+    }
+  }
+  return playbackRows(changes(), hour => peaceRowsAt(selected, hour, from));
 }
 /** The gaps within the shown time, clipped so a later hour never shows. */
 export function peaceGapsIn(gaps: readonly HourSpan[], until: number, from = -Infinity): HourSpan[] {

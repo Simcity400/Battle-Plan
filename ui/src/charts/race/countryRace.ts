@@ -1,3 +1,4 @@
+import type { Failure } from '../../dashboard/queryError';
 /** Country races share presentation; a widget supplies only its recorded values. */
 import type { RaceItem } from './race';
 import type { CountryFlagLook } from '../../components/CountryFlag';
@@ -9,6 +10,7 @@ import type { CompactStackModel, StackModel } from '../stack';
 
 export interface CountryRaceLooks {
   name: (tag: string, hour?: number) => string;
+  nameFailure?: (tag: string, hour?: number) => Failure | undefined;
   color: (tag: string, hour?: number) => string;
   flag?: (tag: string) => string | undefined;
   /** Explicit native-country presence; generic entities leave this absent. */

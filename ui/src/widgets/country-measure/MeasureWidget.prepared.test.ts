@@ -51,7 +51,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__preparedBalanceFixture.styles;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour,tag) => JSON.stringify([hour,tag]);
-      export const useCountryNamesRead = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),row.tag]));`,
+      export const useCountryNamesAt = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),{kind:'value',value:row.tag}]));`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt:()=>tag=>({name:tag,known:true}),revision:0});',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({flag(){},flagPending:()=>false,flagReason(){}});',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => globalThis.__preparedBalanceFixture.tokens; export const useViewportHeight = () => 1000;',

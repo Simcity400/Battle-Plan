@@ -203,6 +203,18 @@ impl<O: Observer> Opened<'_, O> {
     }
 }
 
+pub(crate) fn published<O: Observer>(
+    opened: dashboard_base::prepared::published::Opened,
+    cancelled: &AtomicBool,
+) -> io::Result<Opened<'_, O>> {
+    let (scan, keys) = opened.read(cancelled, |_, directory| native::catalogued(directory))?;
+    Ok(Opened {
+        scan,
+        series: Series::Native(native::Opened { opened, keys }),
+        cancelled,
+    })
+}
+
 /// What a keyed product's query is given: the request, the recording and its
 /// content, the prepared files and the prefix of its gate that the reply
 /// answers from (marked on the reply by the caller).
@@ -245,15 +257,15 @@ impl Query<'_> {
 
     /// The family's publication on a native recording ([`native`]); None before its first.
     pub fn open_native<O: Observer>(&self) -> io::Result<Option<Opened<'_, O>>> {
-        Ok(
-            native::open::<O>(self.source, self.content, self.branch, self.cancelled)?.map(
-                |(scan, opened)| Opened {
-                    scan,
-                    series: Series::Native(opened),
-                    cancelled: self.cancelled,
-                },
-            ),
-        )
+        dashboard_base::prepared::published::open(
+            self.source,
+            self.content,
+            O::NAME,
+            native::SCHEMA,
+            self.branch,
+        )?
+        .map(|opened| published(opened, self.cancelled))
+        .transpose()
     }
 
     /// The requested window, `firstHour..=lastHour` of the params, within

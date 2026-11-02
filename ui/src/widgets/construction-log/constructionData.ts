@@ -5,6 +5,7 @@ import type { StateNameAt } from '../../dashboard/construction';
 import { readAt } from '../../dashboard/reads.ts';
 import type { LogRow } from '../../charts/log/logData';
 import { logCountryRequests, newestFirst } from '../../charts/log/logData.ts';
+import { playbackRows, spanChanges } from '../../charts/playbackIntervals.ts';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -269,7 +270,7 @@ export const inQueue = (at: ProjectAt) => at.status === 'building' || at.status 
  * newest first by its latest change (or its start), back to the windows held. A row
  * is keyed by its project and, ordered by change, by what is known of it, so a
  * project that reaches a new stage enters again at the top. */
-export function logRows(log: ConstructionLog, hour: number, filter: LogFilter, order: 'change' | 'start'): LogRow<ProjectAt>[] {
+export function logRows(log: ConstructionLog, hour: number, filter: LogFilter, order: 'change' | 'start'): ReadonlyArray<LogRow<ProjectAt>> {
   const types = new Set(filter.types);
   const from = Math.max(filter.from ?? -Infinity, log.held > 0 ? log.manifest.windows[log.held].firstHour : -Infinity);
   const rows: LogRow<ProjectAt>[] = [];
@@ -287,6 +288,23 @@ export function logRows(log: ConstructionLog, hour: number, filter: LogFilter, o
     rows.push({ key: order === 'start' ? project.id : `${project.id}:${at.stage}`, id: project.id, hour: date, by: order === 'change' && at.changedBy, item: at });
   }
   return newestFirst(rows);
+}
+
+export function constructionPlayback(log: ConstructionLog, filter: LogFilter, order: 'change' | 'start') {
+  const types = new Set(filter.types);
+  const selected = { ...log, projects: log.projects.filter(project => (!types.size || types.has(projectType(log, project)?.token ?? ''))
+    && filter.country(project.tag, project.firstRead)) };
+  const preparedFilter = { ...filter, types: [], country: () => true };
+  function* changes() {
+    for (const project of selected.projects) {
+      yield project.firstRead;
+      if (project.firstRepairTick != null) yield project.firstRepairTick;
+      if (project.end) yield project.end.knownAt;
+      yield* spanChanges(project.runs);
+      for (const levels of [project.built, project.unaccounted, project.possible, project.added]) for (const level of levels) yield level.knownAt;
+    }
+  }
+  return playbackRows(changes(), hour => logRows(selected, hour, preparedFilter, order));
 }
 
 /** The countries the drawn rows name, each at its project's first read, and as many
@@ -442,7 +460,7 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
     if (project.routeProvinces != null) detail.push({ label: 'Provinces on the route', value: String(project.routeProvinces) });
   }
   const place = placeName({ state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' }, hour, stateAt);
-  const notes = [...new Set([place.missing ? 'State name unavailable.' : null, output?.reason ? 'Output unavailable.' : null, output?.beforeObservation ? 'Earlier progress unknown.' : null, end?.unknown ? 'Completion unknown.' : null, end?.kind === 'removed' ? 'Removed from the queue.' : null,
+  const notes = [...new Set([place.missing ?? null, output?.reason ? 'Output unavailable.' : null, output?.beforeObservation ? 'Earlier progress unknown.' : null, end?.unknown ? 'Completion unknown.' : null, end?.kind === 'removed' ? 'Removed from the queue.' : null,
     at.earlierUnknown ? 'Earlier progress unknown.' : null,
     at.possible ? 'Completion count uncertain.' : null].filter(Boolean))].join(' ');
   const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${place.label}${at.kind === 'new' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };

@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -47,6 +48,6 @@ export function useProductionCountry(selection: DatedCountrySelection | null, ru
     ? datedCountrySpans(history.countryIdentities, selection, track.branch.firstHour, track.branch.lastHour) : null,
   [selection, history, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
   return { spans, error: history ? undefined : catalogue.error, identityError: history ? catalogue.error : undefined, retry: catalogue.retry,
-    reason: (history ? undefined : catalogue.error) ?? (!history ? 'Loading country…'
+    reason: (!history && catalogue.error ? failureText(catalogue.error, 'Couldn’t load country.') : undefined) ?? (!history ? 'Loading country…'
     : !spans ? 'Saved country selection unavailable. Open the breakdown again.' : null) };
 }

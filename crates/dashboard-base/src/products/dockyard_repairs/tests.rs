@@ -1,18 +1,24 @@
 use super::*;
 use crate::{
-    prepared::{
-        frame_changes::FrameChangeTracker,
-        series::{Run, tests::Fixture},
-    },
+    prepared::series::{Run, tests::Fixture},
     test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag},
 };
+use dashboard_world::World;
 use engine_executable::modifier_keys;
+use replay::{
+    columnar_frames::synthetic::{Input, Sample, Synthetic},
+    segments::{self, Operator},
+};
 use replay_data::rows::{
     CountryProductionModifiersRow, ModifierBreakdownNode, NavalRepairCountryRow,
     ProductionModifierTree, TableRows,
 };
-use replay_frame::frame::{FrameDecoder, FrameEncoder, TableView};
-use std::sync::Arc;
+use replay_data::{
+    format::FormatVersion,
+    rows::{TableSchema, tables},
+    scope::CaptureMode,
+};
+use replay_frame::frame::{DecodedFrame, TableView};
 
 fn tag() -> String {
     String::from_utf8(scale_tag(0)).unwrap()
@@ -65,21 +71,126 @@ fn frame(
     frame
 }
 
-fn observe(prepared: &mut Prepared, replay: &Replay, frames: &[DecodedFrame]) {
-    let mut encoder = FrameEncoder::default();
-    let mut decoder = FrameDecoder::default();
-    let mut tracker = FrameChangeTracker::new();
-    for (index, input) in frames.iter().enumerate() {
-        let raw = Arc::new(encoder.encode(input.clone(), index == 0).unwrap());
-        let frame = decoder.advance(&raw).unwrap();
-        let changes = tracker.observe_updates(frame, raw, replay.format);
-        prepared.observe(frame, replay, &changes).unwrap();
+fn write<T: TableSchema>(walk: &mut Synthetic, frame: &DecodedFrame) {
+    let index = T::ID.index();
+    let read = frame.metrics.table_ns[index] != 0;
+    let view = &frame.tables[index];
+    let sample = match view.sampled_at() {
+        Some(hour) if read && hour == frame.hour => Sample::FromReadBit,
+        Some(hour) => Sample::Carried(hour),
+        None => Sample::Reset,
+    };
+    let input = match &**view {
+        TableView::Complete(rows) => Input::Snapshot {
+            rows: rows.rows::<T>().unwrap(),
+            partial: None,
+            read,
+            sample,
+        },
+        TableView::Truncated { rows, missing } => Input::Snapshot {
+            rows: rows.rows::<T>().unwrap(),
+            partial: Some(*missing),
+            read,
+            sample,
+        },
+        TableView::Unavailable { reason } => Input::Unavailable {
+            reason,
+            read,
+            sample,
+        },
+        TableView::NotRecorded { .. } => Input::NotRecorded { read, sample },
+    };
+    walk.table(T::ID, input).unwrap();
+}
+
+fn project(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
+    project_with_visits(frames, starts).0
+}
+
+fn project_with_visits(frames: &[DecodedFrame], starts: &[i32]) -> (Vec<facts::Hour>, usize) {
+    let mut walk = Synthetic::new(facts::TABLES, 1, frames[0].hour).unwrap();
+    let mut world = None;
+    let mut projector = facts::Projector::new(FormatVersion::CURRENT).unwrap();
+    let mut hours = Vec::new();
+    let mut previous: Option<i32> = None;
+    let mut base_visits = 0;
+    for (ordinal, frame) in (0..).zip(frames) {
+        let gap = previous.is_some_and(|last| last.checked_add(1) != Some(frame.hour));
+        previous = Some(frame.hour);
+        if gap {
+            walk = Synthetic::new(facts::TABLES, 1, frame.hour).unwrap();
+        }
+        let cold = gap || starts.contains(&frame.hour);
+        if cold {
+            base_visits += projector.base_visits;
+            projector = facts::Projector::new(FormatVersion::CURRENT).unwrap();
+        }
+        macro_rules! write_tables { ($($table:ident),* $(,)?) => { $(write::<tables::$table>(&mut walk, frame);)* }; }
+        write_tables!(
+            Countries,
+            CountryLinks,
+            CountryAppearance,
+            LexicalTokens,
+            VariantDefinitions,
+            VariantModules,
+            VariantUpgrades,
+            VariantChanges,
+            NavalRepairCountries,
+            CountryProductionModifiers,
+            NavalBases,
+            NavalRepairBases,
+            NavalRepairQueue,
+            Ships,
+            ShipModels,
+            TaskForces,
+            Provinces,
+            FactionMembers,
+            WarRelations,
+            Subjects,
+            RelationLinks
+        );
+        walk.end(|state, manifest, _, first| {
+            let starts = first || cold;
+            let world = World::at(
+                &mut world,
+                starts,
+                &facts::needs(),
+                (FormatVersion::CURRENT, CaptureMode::Full),
+                state,
+                manifest,
+            )
+            .unwrap();
+            projector
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                        world,
+                    },
+                    &mut hours,
+                )
+                .unwrap();
+        })
+        .unwrap();
+    }
+    (hours, base_visits + projector.base_visits)
+}
+
+fn observe(prepared: &mut Publisher, replay: &Replay, frames: &[DecodedFrame]) {
+    for mut hour in project(frames, &[]) {
+        prepared.observe(replay, 1, (&mut hour).into()).unwrap();
     }
 }
 
-fn prepared(frames: &[DecodedFrame]) -> (Fixture, Prepared) {
+fn prepared(frames: &[DecodedFrame]) -> (Fixture, Publisher) {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
-    let mut prepared = Prepared::default();
+    let mut prepared = Publisher::default();
     observe(&mut prepared, &replay, frames);
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
@@ -261,7 +372,8 @@ fn gaps_withdraw_daily_carry_and_holder_changes_break_equal_rates() {
             },
         ]));
     let (fixture, state) = prepared(&frames);
-    let mut state: Prepared = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+    let mut state: Publisher =
+        serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
     let mut next = frames.last().unwrap().clone();
     next.hour = 7;
     frames.push(next.clone());
@@ -328,7 +440,7 @@ fn aliases_join_but_duplicate_slots_and_missing_country_links_are_unknown() {
 fn integral_arithmetic_is_checked_and_unrecorded_tables_have_no_values() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
-    let mut prepared = Prepared::default();
+    let mut prepared = Publisher::default();
     prepared.keys.insert(tag(), 0);
     prepared.rates.push(0, Run::new(0, 1, i128::MAX, true));
     prepared.catalogue.recorded = true;
@@ -365,10 +477,10 @@ fn balance_and_repair_budget_deltas_do_not_visit_countries_or_publish_rates() {
         rows[0].max_factories_for_repair = 10;
         rows[0].max_allowed_dockyards_to_repair = 20;
     }
-    let (_, prepared) = prepared(&[first, second]);
-    assert_eq!(prepared.country_visits, 1);
-    // The residual of use that no readable base assignment reconciles is
-    // observed unknown once and never sealed.
+    let frames = [first, second];
+    assert!(project(&frames, &[])[1].inputs.is_empty());
+    let (_, prepared) = prepared(&frames);
+    // An unknown residual is observed once and never sealed.
     assert_eq!(
         prepared.rates.key_visits, 3,
         "one observation and one flush seal for the total, one for the residual"
@@ -498,8 +610,12 @@ fn repair_split_parts_repeats_residual_new_design_zero_history_and_exact_span_su
         split_frame(2, 8, 8),
         split_frame(3, 0, 8),
     ];
-    let (fixture, state) = prepared(&frames);
-    assert_eq!(state.base_visits, 3, "zero use must not walk a queue");
+    assert_eq!(
+        project_with_visits(&frames, &[]).1,
+        3,
+        "zero use must not walk a queue"
+    );
+    let (fixture, _) = prepared(&frames);
     let flag = AtomicBool::new(false);
     let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
     let parts = reads.parts(&tag()).unwrap();
@@ -614,7 +730,7 @@ fn repair_split_refusals_missing_models_variants_and_prohibited_entries_stay_una
     assert_eq!(
         reads.allocation_mismatches(),
         0,
-        "an unread table is no mismatch"
+        "unread assignments contribute no mismatched country-hours"
     );
 }
 
@@ -632,7 +748,7 @@ fn repair_split_overselection_counts_unidentified_variants_and_withdraws_only_pa
     let flag = AtomicBool::new(false);
     let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
     assert_eq!(reads.integrals(&tag(), &[(0, 2)]).unwrap(), [Ok(7_000_000)]);
-    // Three assigned against two used, then one assigned against two used.
+    // One country mismatches in each of two observed hours.
     assert_eq!(reads.allocation_mismatches(), 2);
     for part in reads.parts(&tag()).unwrap() {
         assert_eq!(
@@ -695,11 +811,13 @@ fn repair_split_allied_recipient_is_charged_to_base_holder_and_output_changes_re
         &mut second,
         TableRows::CountryProductionModifiers(vec![modifiers(100_000, 50_000, 20_000)]),
     );
-    let (fixture, state) = prepared(&[first, second]);
+    let frames = [first, second];
     assert_eq!(
-        state.base_visits, 1,
+        project_with_visits(&frames, &[]).1,
+        1,
         "changing output must not reselect queues"
     );
+    let (fixture, _) = prepared(&frames);
     let flag = AtomicBool::new(false);
     let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
     assert_eq!(
@@ -909,22 +1027,26 @@ fn repair_split_churn_revisits_only_changed_and_using_holders() {
         })
         .collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let mut state = Prepared::default();
+    let mut state = Publisher::default();
     observe(&mut state, &replay, &frames);
-    // The first hour visits every holder; later hours only the three using
-    // dockyards and, from hour 25, the one whose use changed and then uses.
-    assert_eq!(state.country_visits, 24 + 24 * 3 + 25 * 4);
-    assert_eq!(state.base_visits, 50 * 3);
-    // Links, bases and access are indexed once, at the first hour: a
-    // changing hour does no country-wide work.
-    assert_eq!(state.joins.builds, 3);
+    let (projected, base_visits) = project_with_visits(&frames, &[]);
+    assert_eq!(
+        base_visits,
+        3 + 49,
+        "only the base queuing the changed ship is revisited"
+    );
+    assert_eq!(projected[0].inputs.len(), 24);
+    assert!(projected[1..25].iter().all(|hour| hour.inputs.is_empty()));
+    assert_eq!(projected[25].inputs.len(), 1);
+    assert_eq!(projected[25].inputs[0].0, 23);
+    assert!(projected[26..].iter().all(|hour| hour.inputs.is_empty()));
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
     let flag = AtomicBool::new(false);
     state.flush(&mut writer, 1, &flag).unwrap();
     writer.commit().unwrap();
     let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
-    // Its use has no base assignment behind it: counted, total kept, split refused.
+    // One country has no assignment in each of hours 25 through 49.
     assert_eq!(reads.allocation_mismatches(), 25);
     let late = String::from_utf8(scale_tag(23)).unwrap();
     assert_eq!(
@@ -946,4 +1068,374 @@ fn repair_split_churn_revisits_only_changed_and_using_holders() {
             .unwrap(),
         [Ok(50 * 1_000_000)]
     );
+}
+
+fn two_holders(hour: i32) -> DecodedFrame {
+    use replay_data::rows::*;
+    let mut frame = split_frame(hour, 1, 1);
+    let countries = scale_frame(1, hour, 2);
+    for table in [TableId::Countries, TableId::CountryLinks] {
+        frame.tables[table.index()] = countries.tables[table.index()].clone();
+    }
+    split_put(
+        &mut frame,
+        TableRows::NavalRepairCountries(
+            (0..2_u32)
+                .map(|slot| NavalRepairCountryRow {
+                    country: 100_000 + slot,
+                    num_used_dockyards: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::CountryProductionModifiers(
+            (0..2_u32)
+                .map(|slot| modifiers(100_000 + slot, 100_000, 0))
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::NavalBases(
+            (0..2_u32)
+                .map(|slot| NavalBaseRow {
+                    province: 7 + slot,
+                    country: 100_000 + slot,
+                    level: 10,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::NavalRepairBases(
+            (7..9)
+                .map(|province| NavalRepairBaseRow {
+                    province,
+                    allocated_dockyards: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::NavalRepairQueue(
+            (0..2_u32)
+                .map(|slot| NavalRepairQueueRow {
+                    province: 7 + slot,
+                    ordinal: 0,
+                    ship: u64::from(slot + 1),
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::Ships(
+            (0..2_u32)
+                .map(|slot| ShipRow {
+                    id: u64::from(slot + 1),
+                    task_force: u64::from(slot + 8),
+                    strength: 50,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::ShipModels(
+            (1..3)
+                .map(|ship| ShipModelRow {
+                    ship,
+                    variant: 20,
+                    counter: Some(ShipCounterInputs {
+                        maximum_strength: 100,
+                        ..Default::default()
+                    }),
+                    has_criticals: Some(0).into(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::TaskForces(
+            (0..2_u32)
+                .map(|slot| TaskForceRow {
+                    id: u64::from(slot + 8),
+                    province: slot + 7,
+                    roster_owner: 100_000 + slot,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    split_put(
+        &mut frame,
+        TableRows::Provinces(
+            (0..2_u32)
+                .map(|slot| ProvinceRow {
+                    id: slot + 7,
+                    controller: 100_000 + slot,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    frame
+}
+
+#[test]
+fn quiet_hours_send_nothing_and_changed_use_sends_only_its_holder() {
+    let first = two_holders(0);
+    let mut quiet = first.clone();
+    quiet.hour = 1;
+    quiet.metrics.table_ns[TableId::CountryProductionModifiers.index()] = 0;
+    quiet.metrics.table_ns[TableId::VariantDefinitions.index()] = 0;
+    let mut changed = quiet.clone();
+    changed.hour = 2;
+    if let TableView::Complete(TableRows::NavalRepairCountries(rows)) =
+        &mut *changed.tables[TableId::NavalRepairCountries.index()]
+    {
+        rows[1].num_used_dockyards = 2;
+    }
+    let mut quiet_again = changed.clone();
+    quiet_again.hour = 3;
+    let hours = project(&[first, quiet, changed, quiet_again], &[]);
+    assert_eq!(hours[0].inputs.len(), 2);
+    assert!(hours[1].inputs.is_empty());
+    assert_eq!(hours[2].inputs.len(), 1);
+    assert_eq!(hours[2].inputs[0].0, 1);
+    assert!(hours[3].inputs.is_empty());
+    assert!(hours[1..].iter().all(|hour| hour.roster.is_none()));
+}
+
+#[test]
+fn queued_strength_crossing_maximum_changes_only_its_base_holder() {
+    let first = two_holders(0);
+    let mut same_selection = first.clone();
+    same_selection.hour = 1;
+    same_selection.metrics.table_ns[TableId::CountryProductionModifiers.index()] = 0;
+    same_selection.metrics.table_ns[TableId::VariantDefinitions.index()] = 0;
+    if let TableView::Complete(TableRows::Ships(rows)) =
+        &mut *same_selection.tables[TableId::Ships.index()]
+    {
+        rows[0].strength = 99;
+    }
+    let mut full_strength = same_selection.clone();
+    full_strength.hour = 2;
+    if let TableView::Complete(TableRows::Ships(rows)) =
+        &mut *full_strength.tables[TableId::Ships.index()]
+    {
+        rows[0].strength = 100;
+    }
+    let mut damaged = full_strength.clone();
+    damaged.hour = 3;
+    if let TableView::Complete(TableRows::Ships(rows)) =
+        &mut *damaged.tables[TableId::Ships.index()]
+    {
+        rows[0].strength = 99;
+    }
+    let frames = [first, same_selection, full_strength, damaged];
+    let hours = project(&frames, &[]);
+    assert!(hours[1].inputs.is_empty());
+    for (hour, occurrences) in [(2, 0), (3, 1)] {
+        assert_eq!(hours[hour].inputs.len(), 1);
+        assert_eq!(hours[hour].inputs[0].0, 0);
+        assert_eq!(
+            hours[hour].inputs[0]
+                .1
+                .selection
+                .as_ref()
+                .unwrap()
+                .occurrences,
+            occurrences
+        );
+    }
+    let (fixture, _) = prepared(&frames);
+    let flag = AtomicBool::new(false);
+    let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
+    assert_eq!(
+        reads
+            .part_integrals(&tag(), RepairPart::Design(20), &[(0, 3)])
+            .unwrap(),
+        [Ok(3_000_000)]
+    );
+    assert_eq!(
+        reads
+            .part_integrals(&tag(), RepairPart::Unattributed, &[(0, 3)])
+            .unwrap(),
+        [Ok(1_000_000)]
+    );
+    let other = String::from_utf8(scale_tag(1)).unwrap();
+    assert_eq!(
+        reads
+            .part_integrals(&other, RepairPart::Design(20), &[(0, 3)])
+            .unwrap(),
+        [Ok(4_000_000)]
+    );
+}
+
+fn publish_walk(
+    replay: &Replay,
+    frames: &[DecodedFrame],
+    starts: &[i32],
+    resume: Option<i32>,
+) -> Fixture {
+    let fixture = Fixture::new();
+    let mut publisher = Publisher::default();
+    let flag = AtomicBool::new(false);
+    for mut hour in project(frames, starts) {
+        let at = hour.hour;
+        publisher.observe(replay, 1, (&mut hour).into()).unwrap();
+        if resume == Some(at) {
+            let mut writer = fixture.writer();
+            publisher.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            publisher = serde_json::from_slice(&serde_json::to_vec(&publisher).unwrap()).unwrap();
+        }
+    }
+    let mut writer = fixture.writer();
+    publisher.flush(&mut writer, 1, &flag).unwrap();
+    writer.commit().unwrap();
+    fixture
+}
+
+#[test]
+fn segment_cold_starts_and_publisher_resume_preserve_integrals_parts_and_origins() {
+    let mut frames: Vec<_> = (0..13)
+        .map(|hour| {
+            let (count, assigned) = match hour {
+                0..2 => (1, 1),
+                2..4 => (3, 3),
+                4..6 => (0, 3),
+                6..9 => (3, 2),
+                _ => (3, 3),
+            };
+            let mut frame = split_frame(hour, count, assigned);
+            frame.metrics.table_ns[TableId::VariantDefinitions.index()] =
+                u64::from([0, 6, 10].contains(&hour));
+            frame.metrics.table_ns[TableId::CountryProductionModifiers.index()] =
+                u64::from([0, 6, 10].contains(&hour));
+            frame
+        })
+        .collect();
+    frames[8].tables[TableId::NavalRepairBases.index()] = TableView::Unavailable {
+        reason: "Synthetic allocation refusal".into(),
+    }
+    .into();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let reference = publish_walk(&replay, &frames, &[], None);
+    let flag = AtomicBool::new(false);
+    let mut expected = RepairReads::new(&reference.store, &reference.key, 1, &flag).unwrap();
+    let spans: Vec<_> = (0..13)
+        .flat_map(|first| (first..13).map(move |last| (first, last)))
+        .collect();
+    for (starts, resume) in [
+        (&[1, 3, 5, 7, 10, 12][..], None),
+        (&[1, 3, 5, 7, 10, 12][..], Some(6)),
+    ] {
+        let fixture = publish_walk(&replay, &frames, starts, resume);
+        let mut actual = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
+        assert_eq!(actual.keys, expected.keys);
+        assert_eq!(
+            serde_json::to_value(&actual.catalogue).unwrap(),
+            serde_json::to_value(&expected.catalogue).unwrap()
+        );
+        assert_eq!(
+            actual.origin(&tag()).unwrap(),
+            expected.origin(&tag()).unwrap()
+        );
+        assert_eq!(
+            actual.parts(&tag()).unwrap(),
+            expected.parts(&tag()).unwrap()
+        );
+        assert_eq!(
+            actual.integrals(&tag(), &spans).unwrap(),
+            expected.integrals(&tag(), &spans).unwrap()
+        );
+        for part in expected.parts(&tag()).unwrap() {
+            assert_eq!(
+                actual.part_integrals(&tag(), part, &spans).unwrap(),
+                expected.part_integrals(&tag(), part, &spans).unwrap()
+            );
+        }
+        for (tag, key) in &actual.keys {
+            assert_eq!(
+                actual.rates.runs(*key, 0, 12).unwrap(),
+                expected.rates.runs(expected.keys[tag], 0, 12).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn an_alias_change_alone_numbers_new_design_parts_in_tag_order() {
+    let frames = [split_frame(0, 1, 1), split_frame(1, 1, 1)];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
+    let selection = |designs: &[u64]| Selection {
+        readable: true,
+        allocated: 1,
+        occurrences: 1,
+        designs: designs.iter().map(|&design| (design, 1)).collect(),
+    };
+    let inputs = |a: &[u64], z: &[u64]| {
+        [(1, a), (0, z)]
+            .map(|(slot, designs)| {
+                (
+                    slot,
+                    Inputs {
+                        count: Some(1),
+                        output: Some(1_000_000),
+                        selection: Some(selection(designs)),
+                    },
+                )
+            })
+            .to_vec()
+    };
+    // Tag A holds slot 1 and Z slot 0, so tag order and slot order differ.
+    let roster = |owners: Vec<(u32, u32)>| Roster {
+        ok: true,
+        tags: vec![
+            (b"A".to_vec(), Some((1, 11))),
+            (b"Z".to_vec(), Some((0, 10))),
+        ],
+        owners,
+    };
+    let mut publisher = Publisher::default();
+    for (hour, owners, inputs) in [
+        (0, vec![(10, 0), (11, 1)], inputs(&[], &[])),
+        (
+            1,
+            vec![(10, 0), (11, 1), (12, 0), (13, 1)],
+            inputs(&[41], &[42]),
+        ),
+    ] {
+        publisher
+            .observe(
+                &replay,
+                1,
+                Observed {
+                    hour,
+                    whole: hour == 0,
+                    roster: Some(roster(owners)),
+                    modifiers: (true, hour == 0),
+                    inputs: &inputs,
+                    variants: VariantHour::Carried { complete: true },
+                    built: Vec::new(),
+                    variants_whole: false,
+                },
+            )
+            .unwrap();
+    }
+    let parts = &publisher.catalogue.parts;
+    // The census visits every tag in tag order when only the aliases change.
+    assert!(parts["A"].designs[&41].key < parts["Z"].designs[&42].key);
 }

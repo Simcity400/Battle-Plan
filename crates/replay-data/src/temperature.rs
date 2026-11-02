@@ -20,10 +20,7 @@
 //! products and sums, truncating division, the fixed-point division guard that stores
 //! `0xFFFFFFFF`, and the date functions' 32-bit arithmetic.
 
-use std::{borrow::Cow, collections::BTreeMap};
-
-mod input;
-pub use input::Input;
+use std::collections::BTreeMap;
 
 use crate::rows::{Recorded, TemperatureRecord, WeatherProvinceRow};
 
@@ -52,6 +49,30 @@ pub fn average(sum: i64, active: i32) -> i64 {
     } else {
         sum.wrapping_mul(SCALE).wrapping_div(denominator)
     }
+}
+
+/// The reciprocal of an active neighbour count: `(m, shift)` with `m = ceil(2^shift / count)`
+/// and `shift = 31 + ceil(log2 count)`, which divides any magnitude below 2^31 exactly
+/// (Granlund and Montgomery); (0, 0) for none.
+fn reciprocal(count: u32) -> (u64, u32) {
+    if count == 0 {
+        return (0, 0);
+    }
+    let shift = 31 + (32 - (count - 1).leading_zeros());
+    let count = u128::from(count);
+    ((((1_u128 << shift) + count - 1) / count) as u64, shift)
+}
+
+/// [`average`] of `sum` over `active` neighbours, by `active`'s [`reciprocal`] where the sum is
+/// below 2^31 in magnitude, which is then exact: the fixed5 scale cancels without wrapping and
+/// no guarded word is that small.
+fn average_by(sum: i64, active: i32, (m, shift): (u64, u32)) -> i64 {
+    let magnitude = sum.unsigned_abs();
+    if m == 0 || magnitude >= 1 << 31 {
+        return average(sum, active);
+    }
+    let quotient = ((magnitude * m) >> shift) as i64;
+    if sum < 0 { -quotient } else { quotient }
 }
 
 /// Add the fixed5-scaled difference toward the neighbours' average to a staged
@@ -237,16 +258,28 @@ pub fn window(cursor: i32, window: i32, count: i32) -> Result<(Vec<u32>, i32), &
     Ok((slots, next))
 }
 
-/// FNV-1a over every slot's temperature in slot order, eight little-endian bytes each: the
-/// recorded witness that a derived hour equals the read one.
-pub fn checksum(temperatures: impl IntoIterator<Item = i64>) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for temperature in temperatures {
-        for byte in temperature.to_le_bytes() {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    hash
+/// The recorded witness that a derived hour equals the read one: the wrapping sum of every
+/// slot's [`province_witness`], slots numbered from zero, so a changed slot moves it by its own
+/// two terms alone.
+pub fn witness(temperatures: impl IntoIterator<Item = i64>) -> u64 {
+    temperatures
+        .into_iter()
+        .enumerate()
+        .fold(0, |sum, (slot, temperature)| {
+            sum.wrapping_add(province_witness(slot as u32, temperature))
+        })
+}
+
+/// One slot's term of [`witness`]: for each slot, a bijection of its temperature's bits.
+pub const fn province_witness(slot: u32, temperature: i64) -> u64 {
+    mix(mix((slot as u64).wrapping_add(0x9e37_79b9_7f4a_7c15)) ^ temperature as u64)
+}
+
+/// SplitMix64's finaliser, a bijection of 64-bit words.
+const fn mix(mut word: u64) -> u64 {
+    word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    word ^ (word >> 31)
 }
 
 /// Every province record's simulation words at one hour, and the update cursor.
@@ -267,28 +300,33 @@ impl Simulation {
         }
     }
 
-    pub fn checksum(&self) -> u64 {
-        checksum(self.states.iter().map(|state| state.temperature))
+    /// The [`witness`] of the words held.
+    pub fn witness(&self) -> u64 {
+        witness(self.states.iter().map(|state| state.temperature))
     }
 
     /// The next hour: the weather pass runs with the seed after its increment, or, for
     /// `None`, an hour whose suspended manager updated nothing.
     pub fn advance(&mut self, content: &Content, seed: Option<u32>) -> Result<(), String> {
-        self.advance_changed(content, seed, None)
+        self.advance_with(content, seed, &mut Vec::new(), None, &mut None)
     }
 
-    fn advance_changed(
+    /// [`Self::advance`] through `pass`, staging in `staged`, recording committed temperature
+    /// edits in `changed` and moving `witness`, where held, by every slot whose temperature changed.
+    fn advance_with<P: Pass + ?Sized>(
         &mut self,
-        content: &Content,
+        pass: &P,
         seed: Option<u32>,
+        staged: &mut Vec<(u32, State, bool)>,
         changed: Option<&mut Vec<(u32, i64, i64)>>,
+        witness: &mut Option<u64>,
     ) -> Result<(), String> {
         let hour = self
             .hour
             .checked_add(1)
             .ok_or("weather temperature hour overflow")?;
         if let Some(seed) = seed {
-            self.update_changed(content, hour, seed, changed)?;
+            self.update_with(pass, hour, seed, staged, changed, witness)?;
         }
         self.hour = hour;
         Ok(())
@@ -304,8 +342,21 @@ impl Simulation {
         content: &Content,
         hour: i32,
         seed: u32,
-        mut changed: Option<&mut Vec<(u32, i64, i64)>>,
+        changed: Option<&mut Vec<(u32, i64, i64)>>,
     ) -> Result<(), String> {
+        self.update_with(content, hour, seed, &mut Vec::new(), changed, &mut None)
+    }
+
+    fn update_with<P: Pass + ?Sized>(
+        &mut self,
+        pass: &P,
+        hour: i32,
+        seed: u32,
+        staged: &mut Vec<(u32, State, bool)>,
+        mut changed: Option<&mut Vec<(u32, i64, i64)>>,
+        witness: &mut Option<u64>,
+    ) -> Result<(), String> {
+        let content = pass.content();
         let count = self.states.len();
         if content.provinces.len() != count {
             return Err(format!(
@@ -314,101 +365,358 @@ impl Simulation {
             ));
         }
         let count = i32::try_from(count).map_err(|_| "weather province count exceeds i32")?;
-        let (slots, cursor) = window(self.cursor, content.settings.provinces_per_update, count)?;
-        // update_passes collects the active slots of the window.
-        let staged: Vec<(u32, State, bool)> = slots
-            .into_iter()
-            .filter(|&slot| content.provinces[slot as usize].active)
-            .map(|slot| {
-                self.stage(content, hour, seed, slot)
-                    .map(|(state, commit)| (slot, state, commit))
-            })
-            .collect::<Result<_, _>>()?;
+        let (span, cursor) =
+            window_span(self.cursor, content.settings.provinces_per_update, count)?;
+        let date = period_date(hour);
+        staged.clear();
+        staged
+            .try_reserve(span as usize)
+            .map_err(|error| format!("weather temperature pass: {error}"))?;
+        // update_passes collects the active slots of the window, from the cursor and wrapping.
+        let mut slot = self.cursor as u32;
+        for _ in 0..span {
+            if pass.active(slot) {
+                let staging = pass.slot(slot, hour, date, &self.states)?;
+                let (state, commit) = stage(
+                    &content.settings,
+                    self.states[slot as usize],
+                    slot,
+                    seed,
+                    staging,
+                );
+                staged.push((slot, state, commit));
+            }
+            slot += 1;
+            if slot == count as u32 {
+                slot = 0;
+            }
+        }
         // Commit temperatures only after every staging job joined.
-        for (slot, mut state, commit) in staged {
+        for &(slot, mut state, commit) in staged.iter() {
             if commit {
                 state.temperature = state.staged;
                 state.drift = state.working;
             }
             let before = self.states[slot as usize].temperature;
-            if before != state.temperature
-                && let Some(changed) = changed.as_deref_mut()
-            {
-                changed
-                    .try_reserve(1)
-                    .map_err(|error| format!("weather temperature changes: {error}"))?;
-                changed.push((slot, before, state.temperature));
+            if before != state.temperature {
+                if let Some(witness) = witness.as_mut() {
+                    *witness = witness
+                        .wrapping_sub(province_witness(slot, before))
+                        .wrapping_add(province_witness(slot, state.temperature));
+                }
+                if let Some(changed) = changed.as_deref_mut() {
+                    changed
+                        .try_reserve(1)
+                        .map_err(|error| format!("weather temperature changes: {error}"))?;
+                    changed.push((slot, before, state.temperature));
+                }
             }
             self.states[slot as usize] = state;
         }
         self.cursor = cursor;
         Ok(())
     }
+}
 
-    /// Temperature drift and neighbour smoothing for one slot, reading the committed words of the
-    /// hour before; whether the record's commit flag is set.
-    fn stage(
-        &self,
-        content: &Content,
-        hour: i32,
-        seed: u32,
-        slot: u32,
-    ) -> Result<(State, bool), String> {
-        let province = &content.provinces[slot as usize];
-        let settings = &content.settings;
-        let mut state = self.states[slot as usize];
-        if let Some(period) = content.period(slot, hour)? {
-            let (mut minimum, mut maximum) = (period.minimum, period.maximum);
-            let terrain = province
-                .terrain
-                .as_ref()
-                .map_err(|reason| format!("weather province {slot}: {reason}"))?;
-            if let Some(modifier) = terrain.and_then(|terrain| {
-                settings
+/// Temperature drift and neighbour smoothing for one slot from the committed words of the hour
+/// before: its bounds where a period holds it, and its active neighbours' sums and count;
+/// whether the record's commit flag is set.
+fn stage(
+    settings: &Settings,
+    mut state: State,
+    slot: u32,
+    seed: u32,
+    (bounds, (temperatures, drifts, active), divisor): Staging,
+) -> (State, bool) {
+    if let Some((minimum, maximum)) = bounds {
+        // id + pass index (zero) + seed, in 32-bit arithmetic.
+        let roll = i64::from(roll(slot.wrapping_add(seed)));
+        let step = (roll - 50_000).wrapping_mul(settings.variation) / SCALE;
+        state.working = state.working.wrapping_add(step.wrapping_mul(2));
+        let limit = settings.max_change;
+        let lower = limit.wrapping_neg();
+        if state.working < lower {
+            state.working = lower;
+        } else if state.working > limit {
+            state.working = limit;
+        }
+        let clamped = state.working;
+        let temperature = state.temperature.wrapping_add(clamped);
+        if temperature < minimum {
+            state.working = clamped.max(0);
+        } else if temperature > maximum {
+            state.working = clamped.min(0);
+        }
+        state.staged = temperature;
+    }
+    // Smoothing clears the commit flag and sets it only when an active neighbour exists.
+    if active <= 0 {
+        return (state, false);
+    }
+    // Both averages divide by the active count times 100000, each behind its own guard.
+    state.staged = smooth(
+        state.staged,
+        average_by(temperatures, active, divisor),
+        settings.smoothing,
+    );
+    state.working = smooth(
+        state.working,
+        average_by(drifts, active, divisor),
+        settings.change_smoothing,
+    );
+    (state, true)
+}
+
+/// A period's bounds, both moved by the terrain modifier `shift`.
+fn shifted(period: &Period, shift: Option<i64>) -> (i64, i64) {
+    match shift {
+        Some(value) => (
+            period.minimum.wrapping_add(value),
+            period.maximum.wrapping_add(value),
+        ),
+        None => (period.minimum, period.maximum),
+    }
+}
+
+/// A slot's bounds where a period holds it, its active neighbours' sums and count, and that
+/// count's reciprocal where known ((0, 0) otherwise).
+pub type Staging = (Option<(i64, i64)>, (i64, i64, i32), (u64, u32));
+
+/// What the hourly pass reads of one slot: [`Content`] itself, or its [`Planned`] layout.
+pub trait Pass {
+    fn content(&self) -> &Content;
+
+    /// Whether `slot`, inside the content, is an active province.
+    fn active(&self, slot: u32) -> bool;
+
+    /// What staging active `slot` at native date `hour` (period date `date`) reads, or the
+    /// first refusal it meets: of its period, its terrain where a period holds it, then its
+    /// neighbours.
+    fn slot(&self, slot: u32, hour: i32, date: i32, states: &[State])
+    -> Result<Staging, String>;
+}
+
+impl Pass for Content {
+    fn content(&self) -> &Content {
+        self
+    }
+
+    fn active(&self, slot: u32) -> bool {
+        self.provinces[slot as usize].active
+    }
+
+    fn slot(&self, slot: u32, hour: i32, _: i32, states: &[State]) -> Result<Staging, String> {
+        let bounds = match self.period(slot, hour)? {
+            Some(period) => {
+                let terrain = self.provinces[slot as usize]
                     .terrain
+                    .as_ref()
+                    .map_err(|reason| format!("weather province {slot}: {reason}"))?;
+                let shift = terrain.and_then(|terrain| {
+                    self.settings
+                        .terrain
+                        .iter()
+                        .find(|modifier| modifier.terrain == terrain)
+                        .map(|modifier| modifier.value)
+                });
+                Some(shifted(period, shift))
+            }
+            None => None,
+        };
+        Ok((bounds, self.neighbour_sums(slot, states)?, (0, 0)))
+    }
+}
+
+/// No region: the pass returns before the record.
+const NO_REGION: u32 = u32::MAX;
+
+/// The terrain modifier a slot's bounds move by.
+#[derive(Clone, Copy, Debug)]
+enum Shift {
+    None,
+    By(i64),
+    /// The content cannot settle the slot's terrain.
+    Refused,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    active: bool,
+    /// A neighbour lies outside the weather array.
+    broken: bool,
+    /// The slot's region's index in [`Plan::periods`], or [`NO_REGION`].
+    region: u32,
+    shift: Shift,
+    /// Its active neighbours: [`Plan::neighbours`]`[first..end]`, and their count's
+    /// [`reciprocal`].
+    first: u32,
+    end: u32,
+    divisor: (u64, u32),
+}
+
+/// A [`Content`] laid out for the hourly pass, found once: each slot's activity, region periods,
+/// terrain modifier and active neighbours. Its refusals are the content's own, found again from
+/// it where met.
+#[derive(Clone, Debug, Default)]
+pub struct Plan {
+    slots: Vec<Slot>,
+    neighbours: Vec<u32>,
+    /// Each region's periods in template order, by index; None where the content refuses them.
+    periods: Vec<Option<Vec<Period>>>,
+}
+
+impl Plan {
+    pub fn new(content: &Content) -> Self {
+        let count = content.provinces.len();
+        let mut regions = BTreeMap::new();
+        let mut periods = Vec::new();
+        let mut neighbours = Vec::new();
+        let slots = content
+            .provinces
+            .iter()
+            .map(|province| {
+                let region = match province.region {
+                    None => NO_REGION,
+                    Some(region) => *regions.entry(region).or_insert_with(|| {
+                        periods.push(
+                            content
+                                .periods
+                                .get(&region)
+                                .and_then(|periods| periods.as_ref().ok())
+                                .cloned(),
+                        );
+                        (periods.len() - 1) as u32
+                    }),
+                };
+                let shift = match &province.terrain {
+                    Err(_) => Shift::Refused,
+                    Ok(terrain) => terrain
+                        .and_then(|terrain| {
+                            content
+                                .settings
+                                .terrain
+                                .iter()
+                                .find(|modifier| modifier.terrain == terrain)
+                        })
+                        .map_or(Shift::None, |modifier| Shift::By(modifier.value)),
+                };
+                let first = neighbours.len() as u32;
+                let broken = province
+                    .neighbours
                     .iter()
-                    .find(|modifier| modifier.terrain == terrain)
-            }) {
-                minimum = minimum.wrapping_add(modifier.value);
-                maximum = maximum.wrapping_add(modifier.value);
-            }
-            // id + pass index (zero) + seed, in 32-bit arithmetic.
-            let roll = i64::from(roll(slot.wrapping_add(seed)));
-            let step = (roll - 50_000).wrapping_mul(settings.variation) / SCALE;
-            state.working = state.working.wrapping_add(step.wrapping_mul(2));
-            let limit = settings.max_change;
-            let lower = limit.wrapping_neg();
-            if state.working < lower {
-                state.working = lower;
-            } else if state.working > limit {
-                state.working = limit;
-            }
-            let clamped = state.working;
-            let temperature = state.temperature.wrapping_add(clamped);
-            if temperature < minimum {
-                state.working = clamped.max(0);
-            } else if temperature > maximum {
-                state.working = clamped.min(0);
-            }
-            state.staged = temperature;
+                    .any(|&neighbour| neighbour as usize >= count);
+                if !broken {
+                    neighbours.extend(
+                        province
+                            .neighbours
+                            .iter()
+                            .copied()
+                            .filter(|&neighbour| content.provinces[neighbour as usize].active),
+                    );
+                }
+                let end = neighbours.len() as u32;
+                Slot {
+                    active: province.active,
+                    broken,
+                    region,
+                    shift,
+                    first,
+                    end,
+                    divisor: reciprocal(end - first),
+                }
+            })
+            .collect();
+        Self {
+            slots,
+            neighbours,
+            periods,
         }
-        // Smoothing clears the commit flag and sets it only when an active neighbour exists.
-        let (temperatures, drifts, active) = content.neighbour_sums(slot, &self.states)?;
-        if active <= 0 {
-            return Ok((state, false));
+    }
+
+    /// The bytes it holds.
+    pub fn bytes(&self) -> usize {
+        self.slots.capacity() * size_of::<Slot>()
+            + self.neighbours.capacity() * size_of::<u32>()
+            + self.periods.capacity() * size_of::<Option<Vec<Period>>>()
+            + self
+                .periods
+                .iter()
+                .flatten()
+                .map(|periods| periods.capacity() * size_of::<Period>())
+                .sum::<usize>()
+    }
+}
+
+/// A content and the [`Plan`] made of it.
+#[derive(Clone, Copy)]
+pub struct Planned<'a> {
+    content: &'a Content,
+    plan: &'a Plan,
+}
+
+impl<'a> Planned<'a> {
+    /// `plan` must be [`Plan::new`] of `content`.
+    pub fn new(content: &'a Content, plan: &'a Plan) -> Self {
+        debug_assert_eq!(content.provinces.len(), plan.slots.len());
+        Self { content, plan }
+    }
+}
+
+/// The refusal `result` gives: the content's own, where the plan met one.
+fn refusal<T>(result: Result<T, String>) -> String {
+    match result {
+        Err(reason) => reason,
+        Ok(_) => "weather temperature plan differs from its content".into(),
+    }
+}
+
+impl Pass for Planned<'_> {
+    fn content(&self) -> &Content {
+        self.content
+    }
+
+    fn active(&self, slot: u32) -> bool {
+        self.plan.slots[slot as usize].active
+    }
+
+    fn slot(&self, slot: u32, hour: i32, date: i32, states: &[State]) -> Result<Staging, String> {
+        let at = self.plan.slots[slot as usize];
+        let bounds = if at.region == NO_REGION {
+            None
+        } else {
+            match &self.plan.periods[at.region as usize] {
+                None => return Err(refusal(self.content.period(slot, hour))),
+                Some(periods) => match periods
+                    .iter()
+                    .find(|period| period.start <= date && date <= period.end)
+                {
+                    None => None,
+                    Some(period) => Some(match at.shift {
+                        Shift::None => shifted(period, None),
+                        Shift::By(value) => shifted(period, Some(value)),
+                        Shift::Refused => {
+                            return Err(refusal(
+                                self.content.provinces[slot as usize]
+                                    .terrain
+                                    .as_ref()
+                                    .map_err(|reason| format!("weather province {slot}: {reason}")),
+                            ));
+                        }
+                    }),
+                },
+            }
+        };
+        if at.broken {
+            return Err(refusal(self.content.neighbour_sums(slot, states)));
         }
-        // Both averages divide by the active count times 100000, each behind its own guard.
-        state.staged = smooth(
-            state.staged,
-            average(temperatures, active),
-            settings.smoothing,
-        );
-        state.working = smooth(
-            state.working,
-            average(drifts, active),
-            settings.change_smoothing,
-        );
-        Ok((state, true))
+        let (mut temperatures, mut drifts, mut active) = (0_i64, 0_i64, 0_i32);
+        for &neighbour in &self.plan.neighbours[at.first as usize..at.end as usize] {
+            let state = &states[neighbour as usize];
+            temperatures = temperatures.wrapping_add(state.temperature);
+            drifts = drifts.wrapping_add(state.drift);
+            active = active.wrapping_add(1);
+        }
+        Ok((bounds, (temperatures, drifts, active), at.divisor))
     }
 }
 
@@ -430,7 +738,10 @@ pub struct Memo {
     changed: Vec<(u32, i64, i64)>,
     changed_credit: Option<engine_allocation::credit::Credit>,
     incremental: bool,
-    detached_words: Option<std::sync::Weak<input::Words>>,
+    /// The window an update stages, kept between hours.
+    staged: Vec<(u32, State, bool)>,
+    /// The kept derivation's witness once found; each update then moves it by the slots it changed.
+    witness: Option<u64>,
 }
 
 impl Memo {
@@ -470,6 +781,13 @@ impl Memo {
 
     pub fn change_bytes(&self) -> usize {
         self.changed.capacity() * size_of::<(u32, i64, i64)>()
+            + self.staged.capacity() * size_of::<(u32, State, bool)>()
+    }
+
+    /// Holds `simulation` as the kept derivation, whose witness is then found afresh.
+    fn keep(&mut self, simulation: Option<Simulation>) {
+        self.simulation = simulation;
+        self.witness = None;
     }
 
     /// The owner must trim held derivations to its live frames with [`Self::retain_held`].
@@ -483,7 +801,7 @@ impl Memo {
     /// Every slot's words at the frame's hour. Formats 93 to 101 recorded each temperature at
     /// its hour, which this returns with no other word. From format 102 the rows hold the words
     /// at the frame's anchor and slot zero the pass since; the derivation
-    /// steps through every recorded hour with the content and must reproduce the checksum of
+    /// steps through every recorded hour with the content and must reproduce the [`witness`] of
     /// the temperatures the collector read at the frame's hour ([`crate::rows::TemperaturePass`]).
     pub fn states(
         &mut self,
@@ -496,17 +814,16 @@ impl Memo {
     }
 
     /// `changed` certifies exactly the changed/deleted keys since this memo's last successful hour.
-    pub fn states_changed(
+    pub fn states_changed<P: Pass + ?Sized>(
         &mut self,
         branch: u64,
         hour: i32,
         rows: &[WeatherProvinceRow],
-        content: Result<&Content, &str>,
+        content: Result<&P, &str>,
         changed: Option<&[u128]>,
     ) -> Result<&[State], String> {
         self.incremental = false;
         self.changed.clear();
-        self.detached_words = None;
         let pass = rows.first().and_then(|row| match &row.temperature_pass {
             Recorded::Value(Some(pass)) => Some(pass),
             _ => None,
@@ -553,10 +870,10 @@ impl Memo {
                 }
                 self.anchor = None;
                 self.held.clear();
-                self.simulation = Some(Simulation::new(hour, 0, recorded));
+                self.keep(Some(Simulation::new(hour, 0, recorded)));
                 return Ok(&self.simulation.as_ref().unwrap().states);
             }
-            Some(Cow::Owned(anchored))
+            Some(anchored)
         };
         self.states_anchored(
             branch,
@@ -568,13 +885,13 @@ impl Memo {
         )
     }
 
-    fn states_anchored(
+    fn states_anchored<P: Pass + ?Sized>(
         &mut self,
         branch: u64,
         hour: i32,
-        anchored: Option<Cow<'_, [State]>>,
+        anchored: Option<Vec<State>>,
         pass: Option<&Recorded<Option<crate::rows::TemperaturePass>>>,
-        content: Result<&Content, &str>,
+        content: Result<&P, &str>,
         collect_changes: bool,
     ) -> Result<&[State], String> {
         let pass = match pass {
@@ -583,6 +900,12 @@ impl Memo {
                 return Err("the collector did not read this hour's temperature pass whole".into());
             }
             _ => return Err("WeatherProvinces temperature pass not recorded".into()),
+        };
+        let Some(recorded) = pass.witness.get() else {
+            return Err(format!(
+                "this recording predates the province temperature witness (format {}): no derived temperature can be certified",
+                crate::rows::compatibility::PROVINCE_WITNESS_FORMAT
+            ));
         };
         if i64::from(hour) - i64::from(pass.anchor) != pass.hours.len() as i64 {
             return Err(format!(
@@ -596,14 +919,14 @@ impl Memo {
             || self.anchor != Some((pass.anchor, pass.cursor))
             || anchored
                 .as_ref()
-                .is_some_and(|anchored| self.anchored.as_slice() != anchored.as_ref())
+                .is_some_and(|anchored| self.anchored.as_slice() != anchored.as_slice())
         {
             self.branch = branch;
             self.anchor = Some((pass.anchor, pass.cursor));
             self.consumed.clear();
-            self.simulation = None;
+            self.keep(None);
             self.held.clear();
-            self.anchored = anchored.map(Cow::into_owned).unwrap_or_default();
+            self.anchored = anchored.unwrap_or_default();
         }
         // Derivations past the shared seed prefix cannot certify this frame.
         let agreed = self
@@ -622,7 +945,7 @@ impl Memo {
             .as_ref()
             .is_some_and(|simulation| steps(simulation) > agreed)
         {
-            self.simulation = None;
+            self.keep(None);
         }
         // Resume only from the shared prefix, never from a later hour.
         let reach = pass.hours.len();
@@ -654,24 +977,28 @@ impl Memo {
             {
                 self.held.push(previous);
             }
-            self.simulation = Some(start);
+            self.keep(Some(start));
         }
         let from = steps(self.simulation.as_ref().unwrap());
         let incremental = collect_changes
             && continued
             && self.simulation.as_ref().unwrap().hour.checked_add(1) == Some(hour);
         if incremental {
-            self.admit_changes(content)
+            self.admit_changes(content.content())
                 .map_err(|error| error.to_string())?;
         }
         for at in from..reach {
             let entry = pass.hours[at];
             let simulation = self.simulation.as_mut().unwrap();
-            if let Err(reason) =
-                simulation.advance_changed(content, entry, incremental.then_some(&mut self.changed))
-            {
+            if let Err(reason) = simulation.advance_with(
+                content,
+                entry,
+                &mut self.staged,
+                incremental.then_some(&mut self.changed),
+                &mut self.witness,
+            ) {
                 self.anchor = None;
-                self.simulation = None;
+                self.keep(None);
                 self.held.clear();
                 return Err(reason);
             }
@@ -680,9 +1007,9 @@ impl Memo {
             }
         }
         let simulation = self.simulation.as_ref().unwrap();
-        if simulation.checksum() != pass.checksum {
+        if *self.witness.get_or_insert_with(|| simulation.witness()) != recorded {
             return Err(format!(
-                "derived temperatures at hour {hour} differ from the recorded checksum"
+                "derived temperatures at hour {hour} differ from the recorded witness"
             ));
         }
         if self.hold && !self.held.iter().any(|held| held.hour == simulation.hour) {

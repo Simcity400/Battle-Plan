@@ -162,7 +162,7 @@ pub struct Cursor {
 pub struct End {
     pub held: Held,
     pub hour: i32,
-    pub reason: String,
+    pub reason: dashboard_core::QueryError,
     /// The family whose refusal or loss ended it, when another's did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -399,7 +399,7 @@ pub fn holes(published: &Published, first: i32, last: i32) -> Vec<Interval> {
             first_hour: after.max(first),
             last_hour: last,
             held: end.held,
-            reason: end.reason.clone(),
+            reason: end.reason.to_string(),
         });
     }
     holes

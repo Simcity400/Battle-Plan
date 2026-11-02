@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
@@ -127,7 +128,7 @@ export function occupationTooltip(model: OccupationModel, tag: string, hour: num
   const at = occupationAt(model, tag, hour);
   if (!at) return null;
   const label = labelAt(hour)(tag);
-  return { title: label.name, subtitle: formatDateTime(hour), rows: [
+  return { ...countryNameDetails(label), title: label.name, subtitle: formatDateTime(hour), rows: [
     ...(shown !== 'compliance' ? [{ label: 'Average resistance', value: occupationPercent(at.run.resistanceRaw), strong: true }] : []),
     ...(shown !== 'resistance' ? [{ label: 'Average compliance', value: occupationPercent(at.run.complianceRaw), strong: true }] : []),
     { label: 'States', value: heldCoverage(at.run) },

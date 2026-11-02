@@ -1,5 +1,5 @@
 use super::{Inner, MAX_SERIALIZED_BYTES, Request, ThreadExit};
-use crate::transport::{DataEvent, MAX_REPLY_BYTES, ReplyChunks, bounded_text};
+use crate::transport::{DataEvent, MAX_REPLY_BYTES, ReplyChunks};
 use std::{
     collections::VecDeque,
     sync::{
@@ -48,7 +48,7 @@ pub(super) fn run_pump(inner: Arc<Inner>, emit: Arc<dyn Fn(DataEvent) -> bool + 
         drop(pending);
         let mut progressed = false;
         if let Some((request, message)) = error {
-            if !emit_error(&inner, &request, message, &*emit) {
+            if !emit_error(&inner, &request, message.into(), &*emit) {
                 return;
             }
             progressed = true;
@@ -75,7 +75,7 @@ pub(super) fn run_pump(inner: Arc<Inner>, emit: Arc<dyn Fn(DataEvent) -> bool + 
                         }
                     }
                     Err(message) => {
-                        if !emit_error(&inner, &request, message, &*emit) {
+                        if !emit_error(&inner, &request, message.into(), &*emit) {
                             return;
                         }
                     }
@@ -151,7 +151,7 @@ pub(super) fn deliver(
 pub(super) fn emit_error(
     inner: &Inner,
     request: &Arc<Request>,
-    message: String,
+    error: crate::QueryError,
     emit: &(dyn Fn(DataEvent) -> bool + Send + Sync),
 ) -> bool {
     // A source reply that cannot be delivered must not retain an unreachable
@@ -167,7 +167,7 @@ pub(super) fn emit_error(
         &inner.closed,
         DataEvent::Error {
             id: request.id.clone(),
-            message: bounded_text(&message, 2048),
+            error,
         },
         emit,
     );

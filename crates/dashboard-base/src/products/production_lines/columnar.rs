@@ -1529,7 +1529,7 @@ impl Branch {
         if directory.executable != engine_executable::executable_tables::is_initialized()
             || !pictures_hold_with(icons, directory.pictured, directory.visual.as_deref())
         {
-            return Err(invalid(
+            return Err(dashboard_core::refused(
                 "The production lines were prepared under other content",
             ));
         }

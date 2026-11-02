@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -28,7 +29,7 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
   const revision = useContentRevision(runtime.client);
   const request = track && window ? { sourceId: track.source.id, revision: track.source.revision, product: 'intel-details', params: { branchId: track.branch.id, hour, country, viewer } } : null;
   const key = JSON.stringify([request, revision]);
-  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: IntelDetailsReply; error?: string }>();
+  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: IntelDetailsReply; error?: Failure }>();
   const [attempt, retry] = useState(0);
   useEffect(() => {
     if (!active || !request) return;
@@ -38,7 +39,7 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
       if (data.hour !== request.params.hour || (country !== null && data.country !== country) || (viewer !== null && data.viewer !== viewer)) throw new Error('The intel reply belongs to another selection.');
       if (!controller.signal.aborted) setState({ client: runtime.client, key, data });
     }).catch(error => {
-      if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) });
+      if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) });
     });
     return () => controller.abort();
     // Identity includes hour, country, source revision and recorded content binding.
@@ -65,7 +66,7 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
         onChange={value => setChoice({ source: selectionSource, country: Number(value) })} /></label>
       <label>Show <Select label="Intel entries" value={group} options={groups.map(group => ({ value: group, label: group }))} onChange={setGroup} /></label></>}
     </div>
-    {current?.error ? <WidgetState kind="error" detail={current.error} onRetry={() => retry(value => value + 1)} /> : !data ? <WidgetState kind="loading" label="Loading country intel…" /> : <>
+    {current?.error ? <WidgetState kind="error" failure={current.error} onRetry={() => retry(value => value + 1)} /> : !data ? <WidgetState kind="loading" label="Loading country intel…" /> : <>
       {data.warnings.length > 0 && <details className="agency-unknown"><summary>Unavailable intel inputs ({data.warnings.length})</summary>{data.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}
       <Table label="Country intel" rows={rows} rowKey={keyOf} columns={columns} sort={{ column: 'group', direction: 'ascending' }} density="compact" narrow={narrowTableOf(widget.options)} tooltip={intelTooltip} parity={{ complete: true, item: row => row }} />
     </>}

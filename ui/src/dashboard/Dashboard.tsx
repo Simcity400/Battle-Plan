@@ -1,3 +1,4 @@
+import { asFailure, type Failure } from './queryError.ts';
 import { Popover, usePopover } from '../components/Popover';
 import { Select } from '../components/Select';
 import { newId } from '../shell/ids.ts';
@@ -77,7 +78,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const [defaultRoleId, setDefaultRoleId] = useState<string | null>(null);
   const [selectedCountries, setSelectedCountries] = useState<Record<string, string | null>>({});
   const [selectedBranches, setSelectedBranches] = useState<Record<string, number>>({});
-  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
+  const [loadErrors, setLoadErrors] = useState<Record<string, Failure>>({});
   const hasOpened = useRef(false);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
   // The campaign map's picker choices, sent back with its options so a restarted viewer keeps them.
@@ -347,7 +348,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   };
 
   /** Opens a recording into a campaign slot; resolves to the campaign's id once it is loaded. */
-  const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false, campaignId?: string): Promise<string | null> => {
+  const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false, campaignId?: string, onFailure?: (error: Failure) => void): Promise<string | null> => {
     // A rename reconnects its own campaign by id: another may briefly share the path.
     const known = campaignId === undefined
       ? campaignsRef.current.find((item) => sameCampaignPath(item.path, chosen))
@@ -374,13 +375,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         if (mounted.current && campaignsRef.current.includes(campaign)) {
           campaignsRef.current = campaignsRef.current.map(item => item === campaign ? known : item);
           setCampaigns(campaignsRef.current);
-          setLoadErrors(current => ({ ...current, [chosen]: errorMessage(cause) }));
+          setLoadErrors(current => ({ ...current, [chosen]: asFailure(cause) }));
         }
         return null;
       }
       if (!mounted.current || !campaignsRef.current.includes(campaign)) return null;
     }
-    const source = await roles.open(id, chosen, message => setLoadErrors(current => ({ ...current, [chosen]: message })));
+    const source = await roles.open(id, chosen, error => { setLoadErrors(current => ({ ...current, [chosen]: error })); onFailure?.(error); });
     if (!mounted.current || !campaignsRef.current.includes(campaign)) return null;
     campaignsRef.current = source ? campaignsRef.current.map(item => item === campaign ? { ...item, loading: false } : item)
       : campaignsRef.current.filter(item => item !== campaign);
@@ -424,9 +425,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       persistView(widget, changed);
     };
     if (chosen === null) { pick(null); return; }
-    const roleId = campaignsRef.current.find(item => item.id === chosen && !item.loading)?.id ?? await openCampaign(chosen);
+    let failure: Failure | undefined;
+    const roleId = campaignsRef.current.find(item => item.id === chosen && !item.loading)?.id
+      ?? await openCampaign(chosen, undefined, undefined, false, undefined, error => { failure = error; });
     if (!mounted.current) return;
     if (roleId) { pick(roleId); return; }
+    if (failure) throw failure;
     // openCampaign reports its own failures beside the sidebar; the picker says why nothing changed.
     throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
       ? 'That recording is still opening. Choose it again once it has loaded.'

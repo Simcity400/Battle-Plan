@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useEffect, useMemo } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
@@ -17,7 +18,7 @@ import './serviceRecord.css';
  * the Most decorated divisions drill. */
 export default function RecordView({ runtime, trackId, division, hour, show, log, live, active, onDiagnostics, caption, onAnswered }: {
   runtime: WidgetRuntime; trackId: string; division: string; hour: number; show: string; log: LogSettings; live: boolean; active: boolean;
-  onDiagnostics: WidgetProps['onDiagnostics']; caption?: string;
+  onDiagnostics: WidgetProps['onDiagnostics']; caption?: ReactNode;
   /** The hour the shown record answers, which a record kept while the next hour loads holds. */
   onAnswered?: (hour: number | undefined) => void;
 }) {
@@ -33,7 +34,7 @@ export default function RecordView({ runtime, trackId, division, hour, show, log
   }, [onAnswered, data?.hour]);
   const rows = useMemo(() => data ? recordRows(data, show) : [], [data, show]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a division’s record." />;
-  if (state.error) return <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  if (state.error) return <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the record…" />;
   if (data.absent) return <WidgetState kind="unavailable" message="This division is not in service at this date." />;
   const name = divisionName(data.name);

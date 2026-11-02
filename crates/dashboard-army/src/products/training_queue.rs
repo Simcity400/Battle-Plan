@@ -214,7 +214,7 @@ impl Product for TrainingQueue {
                     &[TableId::Countries, TableId::CountryLinks],
                     cancelled,
                 )?
-                .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
+                .ok_or_else(|| dashboard_core::refused("This hour is not recorded"))?;
                 let read = native::latest_read(
                     source,
                     branch,

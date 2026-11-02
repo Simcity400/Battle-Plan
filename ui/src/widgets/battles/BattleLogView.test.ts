@@ -128,7 +128,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
 });
 
 test('an adapter view gets the rows, an empty list, and names still loading told apart from unnamed places', async () => {
-  const host = globalThis as typeof globalThis & { __battleView?: { places: unknown; error?: string; rows: unknown[]; ranking?: unknown;
+  const host = globalThis as typeof globalThis & { __battleView?: { places: unknown; error?: Error; rows: unknown[]; ranking?: unknown;
     seen: { rows: unknown[]; pending: boolean[]; measure: string }[] } };
   host.__battleView = { places: undefined, rows: [], seen: [] };
   const replacements: Record<string, string> = {
@@ -169,7 +169,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     assert.deepEqual(render()?.pending, [true, true], 'nothing answered yet: both names are loading');
     host.__battleView.places = { places: [{ provinceId: 1, hour: 100, name: null, missing: 'no name' }], states: [], warnings: [] };
     assert.deepEqual(render()?.pending, [false, true], 'an answered place without a name is unnamed, not loading');
-    host.__battleView.error = 'Place names unavailable';
+    host.__battleView.error = new Error('Place names unavailable');
     assert.deepEqual(render()?.pending, [false, false], 'a failed lookup is not loading');
     // Biggest tells the view what the ranking ranked by, which falls back from the saved choice.
     host.__battleView.ranking = { censusHour: 125, effectiveMeasure: 'size', warnings: [], contentWarnings: [] };

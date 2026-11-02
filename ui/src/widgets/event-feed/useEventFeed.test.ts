@@ -175,7 +175,7 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
       assert.ok(feed.pages.length <= 2, 'a repeated cursor never grows the discovery chain');
       assert.ok(hooks.requests.length <= 1, 'a stalled continuation never requests another page');
     }
-    assert.match(feed.error!, /continuation made no progress/);
+    assert.match(feed.error!.message, /continuation made no progress/);
     inputs.set(a, { manifest: first, chunks: new Map([[1, { ...stalled, nextCursor: null }]]) });
     render(a, filter, true); hooks.commit();
     assert.equal(render(a, filter, true).error, undefined, 'a progressed reply clears the refusal');

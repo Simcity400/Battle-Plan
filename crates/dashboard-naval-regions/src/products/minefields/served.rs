@@ -10,7 +10,7 @@ pub static PLAN: Plan = Plan {
     unordered: &[],
 };
 
-/// The mined regions whose reports are asked.
+/// Regions sampled from each source of report choices.
 const REGIONS: usize = 4;
 
 fn queries(ask: &mut dyn Ask) -> io::Result<()> {
@@ -34,7 +34,15 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             .filter_map(|name| name.as_str()?.split_once('|')?.1.parse().ok())
             .collect();
         let mined: Vec<u32> = mined.into_iter().collect();
-        for region in served::spread(&mined, REGIONS) {
+        let choices: Vec<u32> = served::values_at(&whole, &["regions", "*", "id"])
+            .into_iter()
+            .filter_map(|id| id.as_str()?.parse().ok())
+            .collect();
+        let regions: BTreeSet<u32> = served::spread(&mined, REGIONS)
+            .into_iter()
+            .chain(served::spread(&choices, REGIONS))
+            .collect();
+        for region in regions {
             for hour in branch.hours() {
                 ask.ask(
                     "minefields",

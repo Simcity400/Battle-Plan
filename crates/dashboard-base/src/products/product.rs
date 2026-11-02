@@ -180,7 +180,7 @@ pub fn require_displayable_tags(
     if refused.is_empty() {
         return Ok(());
     }
-    Err(crate::invalid(format!(
+    Err(dashboard_core::refused(format!(
         "Country tags are not UTF-8 (bytes: observation count): {refused:?}; the census cannot be represented"
     )))
 }

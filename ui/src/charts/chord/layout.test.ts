@@ -7,13 +7,14 @@ import { foldChord } from './fold.ts';
 import { checkChord } from './check.ts';
 import { ChordFrames } from './frame.ts';
 import { chordTotals } from './totals.ts';
+import { deepFreeze } from '../../testFrozen.ts';
 
 const node = (id: string) => ({ id, label: id, color: 'recorded colour', flag: 'recorded flag' });
-const graph: ChordData = { nodes: [node('mod country with spaces'), node('removed:replacement'), node('dynamic | name')], flows: [
+const graph: ChordData = deepFreeze({ nodes: [node('mod country with spaces'), node('removed:replacement'), node('dynamic | name')], flows: [
   { id: 'forward', source: 'mod country with spaces', target: 'removed:replacement', value: 30 },
   { id: 'reverse', source: 'removed:replacement', target: 'mod country with spaces', value: 10 },
   { id: 'third', source: 'dynamic | name', target: 'removed:replacement', value: 20 },
-] };
+] });
 const near = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
 
 test('arc spans count directed in + out and each flow consumes matching segments', () => {
@@ -85,13 +86,13 @@ test('clear then set snaps the first layout, even after an empty gap frame', () 
 
 test('frame acceptance is atomic, retryable and snaps at a new segment', () => {
   const frames = new ChordFrames(); frames.accept({ data: graph, segment: 'a' }); frames.motion.advance(1, 0);
-  const refused = { ...graph, flows: [{ ...graph.flows[0], target: 'missing' }] };
+  const refused = deepFreeze({ ...graph, flows: [{ ...graph.flows[0], target: 'missing' }] });
   assert.throws(() => frames.accept({ data: refused, segment: 'a' }), /Unknown chord endpoint/);
   assert.equal(frames.data, graph, 'tooltips keep the accepted exact graph');
   assert.deepEqual(frames.motion.advance(1, 0).data, graph, 'refusal leaves motion intact');
-  refused.flows[0].target = graph.flows[0].target;
-  frames.accept({ data: refused, segment: 'a' });
-  assert.equal(frames.data, refused, 'the same refused identity can be retried');
+  const repaired = deepFreeze({ ...refused, flows: [{ ...refused.flows[0], target: graph.flows[0].target }] });
+  frames.accept({ data: repaired, segment: 'a' });
+  assert.equal(frames.data, repaired, 'a replacement repairs refused data');
   frames.accept({ data: graph, segment: 'b' });
   assert.equal(frames.motion.advance(16, 180).moving, false);
   frames.accept({ data: null }); assert.equal(frames.data, null);
@@ -186,6 +187,37 @@ test('malformed or ambiguous geometry is refused, never silently dropped', () =>
   for (const value of [-1, NaN, Infinity, Number.MAX_VALUE]) assert.throws(() => checkChord({ ...graph, flows: [{ ...graph.flows[0], value }] }));
   const motion = new ChordMotion(); motion.set(graph);
   assert.throws(() => motion.set({ ...graph, flows: [{ ...graph.flows[0], target: graph.nodes[2].id }] }));
+});
+
+test('equal frame targets validate once by identity and settled motion retains its geometry', () => {
+  let reads = 0;
+  const data: ChordData = deepFreeze({ nodes: graph.nodes, flows: graph.flows.map(flow => ({ ...flow,
+    get value() { reads++; return flow.value; } })) });
+  const total = checkChord(data);
+  const validated = reads;
+  assert.ok(validated > 0);
+  assert.equal(checkChord(data), total);
+  assert.equal(reads, validated);
+  assert.throws(() => Object.assign(data.flows[0], { value: -1 }), TypeError);
+  assert.throws(() => Object.assign(data.nodes[0], { id: 'changed' }), TypeError);
+  const frames = new ChordFrames();
+  frames.accept({ data });
+  const first = frames.motion.advance(1, 0);
+  const used = reads;
+  const geometry = layoutChord(first.data, frames.motion.presence, first.ringPresence);
+  assert.deepEqual(geometry, layoutChord(graph));
+  for (let tick = 0; tick < 100; tick++) {
+    frames.accept({ data, playing: true, revision: tick });
+    assert.equal(frames.motion.advance(1 / 60, 1), first);
+    assert.equal(frames.revision, tick);
+  }
+  assert.equal(reads, used);
+  frames.accept({ data, segment: 'seek' });
+  assert.deepEqual(layoutChord(frames.motion.advance(1, 0).data), geometry);
+  assert.equal(checkChord(data), total);
+  const different: ChordData = { ...data, flows: [{ ...graph.flows[0], value: -1 }] };
+  assert.throws(() => frames.accept({ data: different, segment: 'seek' }), /Invalid chord value/);
+  assert.equal(frames.data, data);
 });
 
 test('5,000 nodes retain positive geometry and a chosen fold preserves every flow', () => {

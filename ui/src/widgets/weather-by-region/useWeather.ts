@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import * as requests from '../../dashboard/batch5Requests';
@@ -73,7 +74,7 @@ export function useWeatherInView(widget: WidgetSpec, runtime: WidgetRuntime, act
   return { ...weather, onSummaryView };
 }
 
-interface DayRead { data?: WeatherReply; error?: string; at: number }
+interface DayRead { data?: WeatherReply; error?: Failure; at: number }
 
 /** Folded columns' days read exactly, once the pointer rests on one: each read is
  * transient, outside the shared product cache. Only finished days are kept, the
@@ -109,7 +110,7 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
       const controller = new AbortController();
       entry.controller = controller;
       void loadTransientProduct<unknown>(runtime.client, weatherDayRequest(widget, track, day, dayHours), controller.signal, track.source).then(
-        value => ({ data: validateWeather(value), at: Date.now() }), error => ({ error: error instanceof Error ? error.message : String(error), at: Date.now() }))
+        value => ({ data: validateWeather(value), at: Date.now() }), error => ({ error: asFailure(error), at: Date.now() }))
         .then((read: DayRead) => {
           if (controller.signal.aborted || cache.current !== owner) return;
           if (read.data && finalPreparedReply(read.data)) {

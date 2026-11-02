@@ -1531,7 +1531,7 @@ impl Inner {
                 Ok(())
             });
             if let (Err(error), Some(request)) = (result, request) {
-                self.error(request, error);
+                self.error(request, error.into());
             }
         }
     }
@@ -1651,12 +1651,12 @@ impl Inner {
                     }
                     bounded_json(&self.preparation_preferences(), &request.cancelled)
                 });
-                self.complete(request, result);
+                self.complete(request, result.map_err(Into::into));
             }
             LoadJob::MapSettings(job) => {
                 let request = Arc::clone(&job.request);
                 let result = self.map_settings_job(job);
-                self.complete(request, result);
+                self.complete(request, result.map_err(Into::into));
             }
             LoadJob::Product {
                 request,
@@ -1668,7 +1668,10 @@ impl Inner {
                     return;
                 }
                 let Some(product) = products::find(&body.product) else {
-                    self.error(request, format!("Unknown data product: {}", body.product));
+                    self.error(
+                        request,
+                        format!("Unknown data product: {}", body.product).into(),
+                    );
                     return;
                 };
                 let context = LoadContext {
@@ -1681,7 +1684,7 @@ impl Inner {
                     &context,
                     &request.cancelled,
                 );
-                self.complete(request, result);
+                self.complete(request, result.map_err(Into::into));
             }
             LoadJob::HistoryCache {
                 request,
@@ -1692,7 +1695,7 @@ impl Inner {
                     return;
                 }
                 let result = history_cache(&options, clear, &request.cancelled);
-                self.complete(request, result);
+                self.complete(request, result.map_err(Into::into));
             }
             LoadJob::PreparedQuery {
                 request,
@@ -1717,7 +1720,7 @@ impl Inner {
                         .as_ref(),
                         &request.cancelled,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::QueryError::from)
                 });
                 match answer {
                     Some(result) => self.complete(request, result),
@@ -1829,7 +1832,7 @@ impl Inner {
                     reply.background_enabled = self.background_preparation.load(Ordering::Acquire);
                     bounded_json(&reply, &request.cancelled)
                 });
-                self.complete(request, result);
+                self.complete(request, result.map_err(Into::into));
             }
             LoadJob::Open(job) => {
                 self.configure_game();
@@ -1944,7 +1947,7 @@ impl Inner {
                         }
                         Err(error) => pending
                             .errors
-                            .push_back((job.request, bounded_text(&error, 2048))),
+                            .push_back((job.request, bounded_text(&error, 2048).into())),
                     }
                 } else {
                     pending
@@ -1954,7 +1957,7 @@ impl Inner {
             }
             Err(error) => pending
                 .errors
-                .push_back((job.request, bounded_text(&error, 2048))),
+                .push_back((job.request, bounded_text(&error, 2048).into())),
         }
         drop(pending);
         self.signal.notify();

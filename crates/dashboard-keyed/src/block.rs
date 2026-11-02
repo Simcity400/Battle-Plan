@@ -82,6 +82,12 @@ pub trait Operands<O: Observer>: Send {
         let _ = (observer, table);
         false
     }
+    /// A native emit found the hour quiet and observes none of it: what the observer mirrors
+    /// of its keeper's hours goes on past it, publishing nothing.
+    fn skipped(&self, observer: &mut O) -> io::Result<()> {
+        let _ = observer;
+        Ok(())
+    }
     fn held(&self, bytes: &mut HeldBytes);
 }
 

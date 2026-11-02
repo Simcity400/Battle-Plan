@@ -5,7 +5,7 @@ import {
   errorMessage,
   openReplay,
   selectNativeView,
-} from './api';
+} from './api.ts';
 import { Icon } from '../components/Icons';
 import type { IconName } from '../components/Icons';
 import { loadable } from '../components/loadable';

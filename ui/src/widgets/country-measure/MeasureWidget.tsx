@@ -1,3 +1,5 @@
+import { nameReadMetadata } from '../../dashboard/nameReads.ts';
+import { failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Segmented } from '../../components/Segmented';
@@ -39,8 +41,8 @@ import { powerDecimals } from '../../dashboard/powerDecimals';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useFollowedProducts, useProduct } from '../../dashboard/products';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
+import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { powerBalanceIndex, powerBalanceKeyHours, powerBalanceRows, powerCoverageAt, powerSpendTicks, validatePowerBalance } from '../../dashboard/powerBalance';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -305,14 +307,15 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   // mounted legend entries and the exact hovered country rows.
   // Every membership marker date stays admitted, so a long history never leaves later names unread.
   const nameHours = useMemo(() => Math.max(MAX_NAME_HOURS, new Set(wantedLabels.map(item => item.hour)).size), [wantedLabels]);
-  const names = useCountryNamesRead(runtime.client, track, wantedLabels, active, nameHours);
+  const names = useCountryNamesAt(runtime.client, track, wantedLabels, active, nameHours);
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null ? [] : series.map(item => ({ tag: item.tag, hour: hoverHour })), active);
   const labelAt = useCallback((hour: number) => (tag: string) => {
     const name = names.get(nameKey(hour, tag));
-    return { ...hoverLabels.labelAt(hour)(tag), name: typeof name === 'string' ? name : name === undefined ? 'Loading name…' : 'Country name unavailable',
-      known: name === undefined ? undefined : typeof name === 'string', nameFailed: name === FAILED_FACT };
+    return { ...hoverLabels.labelAt(hour)(tag), ...(name ? nameReadMetadata(name) : {}) };
   }, [names, hoverLabels.labelAt]);
-  const labels = { labelAt, revision: names.size + hoverLabels.revision };
+  const labelVersion = useRef({ labelAt, revision: 0 });
+  if (labelVersion.current.labelAt !== labelAt) labelVersion.current = { labelAt, revision: labelVersion.current.revision + 1 };
+  const labels = { labelAt, revision: labelVersion.current.revision };
   const keyHours = useMemo(() => [...new Set(series.flatMap(item => [
     ...item.runs.map(run => run.firstHour), ...item.ticks.map(tick => tick.hour),
     ...(numericDetails.has(item.tag) ? powerBalanceKeyHours(numericDetails.get(item.tag)!) : []),
@@ -331,7 +334,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
     return { id: item.tag, label: labels.labelAt(at)(item.tag).name, color: item.hex,
       value: raw == null || !data ? 'Not recorded' : formatBalance(raw, data.decimals, digits),
       flag: <CountryFlagUrl className="country-flag" url={legendLooks.flag(item.tag, at)}
-        pending={legendLooks.flagPending(item.tag, at)} reason={legendLooks.flagReason(item.tag, at)} /> };
+        pending={legendLooks.flagPending(item.tag, at)} detail={legendLooks.flagDetail?.(item.tag, at)} reason={legendLooks.flagReason(item.tag, at)} /> };
   }), [series, head, labels.labelAt, data, legendLooks, digits]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   // The last hour drawn: the playhead, unless whole-campaign playback shows past it.
@@ -358,10 +361,10 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
     label={savedCountry && shownTag && drillAt !== null ? countryLabels.labelAt(Math.floor(drillAt))(shownTag) : null}
     reason={hasSavedCountry ? actorReason : 'Saved country unavailable.'} />, countrySlot) : null;
   const drillView = (mode: PowerBreakdown, at: number | null, pick?: (hour: number) => void) => error || (ledger.error && !drillDetail)
-    ? <WidgetState kind="error" what={pinnedMode ? undefined : 'the breakdown'} detail={error ?? ledger.error!} onRetry={error ? retry : ledger.retry} />
+    ? <WidgetState kind="error" what={pinnedMode ? undefined : 'the breakdown'} failure={error ?? ledger.error!} onRetry={error ? retry : ledger.retry} />
     : choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans)) ? <WidgetState kind="unavailable" message={actorReason!} />
-        : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+        : groups.error && !groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
           : !drillDetail || !data ? <WidgetState kind="loading" label="Loading income and causes..." />
           : <PowerDrill client={runtime.client} source={track?.source} branchId={track?.branch.id} bindings={actorSpans ?? undefined} countryId={selectedCountry?.countryId} index={drillDetail} digits={digits} pickOwner={pickOwner} presentationReady={selectedLedger !== undefined} mode={mode} hour={at} visibleThrough={Math.floor(drillThrough)} extent={extent}
             within={null} countries={countrySegments}
@@ -417,22 +420,22 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+  const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (resolved.reason) return <>{groupNotice}<WidgetState kind="empty" message={resolved.reason} /></>;
   // A group's members at hours still being prepared are not known yet: none is not proof of none.
   const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   const branchKnown = resolved.known(track.branch.firstHour, track.branch.lastHour);
   if (pinnedMode) return <div className="country-measure">
     {countryHeader}
-    {groups.error && groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
+    {groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {drillAt !== null && <p className="chart-line-key">{dayLabel(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
       onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
     {singleTag ? drillView(pinnedMode, drillAt, hour => setLocalHour(Math.floor(hour))) : branchKnown ? <WidgetState kind="empty" message="Choose one country to see income and causes." /> : preparing}
     {ledger.error && drillDetail && <button type="button" onClick={ledger.retry}>Retry income and causes</button>}
     {menu.menu}
   </div>;
-  if (error && !data) return <>{groupNotice}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (error && !data) return <>{groupNotice}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <>{groupNotice}<WidgetState kind="loading" label={`Loading ${config.noun}…`} /></>;
   if (!prepared.enabled && series.every(item => !item.runs.length)) return <>{groupNotice}{branchKnown
     ? <WidgetState kind="unavailable" message={`No ${config.noun} was recorded for these countries.`} /> : preparing}</>;
@@ -441,7 +444,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const hoursPerPixel = (frameWidth: number, span: number) => span / Math.max(1, frameWidth);
   const main = <div className="country-measure-view">
     {prepared.enabled && prepared.preparing && !prepared.summaries?.series.some(line => line.summary.approximate?.length) && <p className="chart-line-key" role="status">Preparing the requested balance hours…</p>}
-    {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
+    {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
     {prepared.summaries?.series.some(line => line.summary.approximate?.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
     {/* The dashed line is named, so it never rests on its dash pattern alone. */}
@@ -500,7 +503,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
             const detail = detailsAnswer(hour) ? details.get(item.tag) : undefined;
             if (series.length > 1) rows.push({ label: labels.labelAt(hour)(item.tag).name, strong: true, divider: true });
             if (detail) rows.push(...powerBalanceRows(detail, hour, Math.floor(detailsThrough), digits));
-            else rows.push({ label: 'Income and causes', value: ledger.error ? 'Couldn’t load income and causes.' : 'Loading…', tone: 'muted' });
+            else rows.push({ label: 'Income and causes', detail: ledger.error?.message, value: ledger.error ? failureText(ledger.error, 'Couldn’t load income and causes.') : 'Loading…', tone: 'muted' });
             const drop = item.drops.find(entry => entry.hour === hour);
             const cover = detail && powerCoverageAt(detail, hour);
             const captured = currency === 'Political' ? cover?.political : cover?.command;

@@ -8,7 +8,7 @@ import type { BattleLabels, BattleMeasure, BattleSideSummary } from '../battles/
 import { definition } from './definition';
 import LandBattleList from './LandBattleList';
 import { rankedLandBattleRows, landBattleRows, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking,
-  casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData';
+  casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData.ts';
 import type { LandBattleRow, LandBattlesRanking, LandBattlesWindow } from './landBattlesData';
 
 const LABELS: BattleLabels = { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',

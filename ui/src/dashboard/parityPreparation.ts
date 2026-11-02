@@ -5,7 +5,7 @@ export function parityWindowIndices(windows: readonly { firstHour: number; lastH
   return (windows ?? []).flatMap((window, index) => window.firstHour <= last && window.lastHour >= first ? [index] : []);
 }
 
-export function parityWindowCoverage<T>(wanted: readonly number[], data: ReadonlyMap<number, T>, errors: ReadonlyMap<number, string>) {
+export function parityWindowCoverage<T>(wanted: readonly number[], data: ReadonlyMap<number, T>, errors: ReadonlyMap<number, Error>) {
   const outcomes = wanted.map(index => ({ index, status: errors.has(index) ? 'failed' : data.has(index) ? 'complete' : 'pending',
     ...(errors.has(index) ? { error: errors.get(index) } : {}) }));
   return { complete: outcomes.every(row => row.status === 'complete'),

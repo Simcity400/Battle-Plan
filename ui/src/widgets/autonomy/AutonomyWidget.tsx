@@ -33,7 +33,7 @@ import { inSpans } from '../../charts/timeline/layout';
 import { mergePreparedAutonomy, overlayReachedAutonomy, validatePreparedAutonomy } from './preparedAutonomy';
 import { mix } from '../../shell/appearance/color';
 import { absentAt, autonomyUnprepared, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, runOf, subjectLane,
-  } from './autonomyData';
+  } from './autonomyData.ts';
 import type { SubjectLane } from './autonomyData';
 import { OPTIONS } from './definition';
 import './autonomy.css';
@@ -228,7 +228,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   }), [data, prepared.geometryReady, approximate, lanesData, numericLaneAt, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groupFailure = groups.error && (widget.countries.kind === 'group' || !identityRows)
-    ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+    ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   const content = (() => {
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -237,7 +237,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const reason = hourlyGroup ? selection.reason : filter.reason;
   if (widget.countries.kind === 'group' && !groups.data) return <WidgetState kind="loading" label="Loading country membership…" />;
   if (reason) return <WidgetState kind="empty" message={reason} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || !identities) return <WidgetState kind="loading" label="Loading autonomy…" />;
   if (!lanesData.length && (!prepared.geometryReady || autonomyUnprepared(data, { firstHour: first, lastHour: last }))) return <>
     <WidgetState kind="loading" label="Subject data is still being prepared." />

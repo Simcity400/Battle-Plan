@@ -47,14 +47,15 @@ function TopGeneralCareer(props: WidgetProps & { hour: number }) {
     [data, read, selection.countries]);
   const top = useMemo(() => topLeader(rows), [rows]);
   const country = useCountryNameAt(runtime.client, track, tag, read, active);
+  const nameDetail = dashboard && country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : undefined;
   if (dashboard && !tag) return <WidgetState kind="empty" message="Choose a dashboard country or a leader in the widget settings." />;
-  if (selection.group.error) return <WidgetState kind="error" detail={selection.group.error} onRetry={selection.group.retry} />;
+  if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
   if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data || selection.countries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;
-  if (top) return <CareerView {...props} reference={top.key} caption={dashboard ? `Following ${country}’s top general.` : 'Following the top general of these countries.'} />;
+  if (top) return <CareerView {...props} reference={top.key} caption={dashboard ? country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : `Following ${country.name}’s top general.` : 'Following the top general of these countries.'} />;
   if (!selection.known || pendingReplyAt(data, read)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (rows.length) return <WidgetState kind="unavailable" message="Generals’ skills weren’t recorded at this time." />;
-  if (!runAt(data.observed, read)?.leaders) return <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." />;
-  return <WidgetState kind="empty" message={dashboard ? `${country} has no generals yet.` : 'These countries have no generals yet.'} />;
+  if (rows.length) return <WidgetState kind="unavailable" message="Generals’ skills weren’t recorded at this time." detail={nameDetail} />;
+  if (!runAt(data.observed, read)?.leaders) return <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." detail={nameDetail} />;
+  return <WidgetState kind="empty" message={nameDetail ? 'No generals yet.' : dashboard ? `${country.name} has no generals yet.` : 'These countries have no generals yet.'} detail={nameDetail} />;
 }

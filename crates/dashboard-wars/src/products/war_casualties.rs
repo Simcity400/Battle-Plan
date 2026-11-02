@@ -1870,7 +1870,7 @@ fn span_push(spans: &mut Vec<HourSpan>, hour: i32) {
 
 fn check_cadence(cadence: Cadence) -> io::Result<()> {
     if cadence != Cadence::Hourly {
-        return Err(io::Error::other(
+        return Err(dashboard_core::refused(
             "Unsupported WarRelations cadence: casualty totals require hourly reads",
         ));
     }

@@ -22,7 +22,7 @@ test('parity espionage prepares every real history window behind an empty newest
     end: { byHour: 18, lastSeen: 17, reason: 'completed', completionHour: 17, completionSequence: null, typeKey: 'mod operation',
       outcome: null, outcomeUnrecorded: 'Outcome not recorded', ownerTag: 'mod owner', targetTag: 'mod target' } }];
   const state = { manifest, requested: false, wanted: [] as readonly number[], chunks: new Map(replies.map((reply, index) => [index, reply])),
-    errors: new Map<number, string>(), wantedCountries: [] as unknown[], log: undefined as LogListProps<OperationAt> | undefined };
+    errors: new Map<number, Error>(), wantedCountries: [] as unknown[], log: undefined as LogListProps<OperationAt> | undefined };
   const host = globalThis as typeof globalThis & { __parityEspionage?: typeof state };
   host.__parityEspionage = state;
   const replacements: Record<string, string> = {
@@ -54,16 +54,17 @@ test('parity espionage prepares every real history window behind an empty newest
         id: 'main', axisOffset: 0, branch: { id: '1', firstHour: 10, lastHour: 40 }, source: { id: 'synthetic', revision: '1' },
       }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(Widget, props));
+    const preparation = () => { const value = state.log!.paritySemantic?.preparation; assert.ok(value); return value; };
     render();
     assert.deepEqual(state.wanted, [1, 2], 'ordinary history demand stays bounded');
     assert.equal(state.log!.rows!.length, 0);
     assert.equal(state.log!.parityHistoryComplete, false, 'the empty newest view cannot certify the older history');
-    const id = state.log!.paritySemantic!.preparation.id;
-    state.log!.paritySemantic!.preparation.prepare();
+    const id = preparation().id;
+    preparation().prepare();
     render();
     assert.deepEqual(state.wanted, [0, 1, 2]);
     assert.equal(state.log!.paritySemantic!.complete, true);
-    assert.equal(state.log!.paritySemantic!.preparation.id, id, 'empty and populated captures retain their preparation identity');
+    assert.equal(preparation().id, id, 'empty and populated captures retain their preparation identity');
     assert.equal(state.log!.rows![0].item.operation.id, 'first-episode');
     assert.equal(state.log!.rows![0].hour, 17);
     const content = state.log!.paritySemantic!.content!(state.log!.rows![0]);
@@ -73,8 +74,8 @@ test('parity espionage prepares every real history window behind an empty newest
     assert.deepEqual(state.wantedCountries, [], 'complete model demand does not admit offscreen dated facts');
     state.chunks.delete(0); render();
     assert.equal(state.log!.parityHistoryComplete, false);
-    assert.equal(state.log!.paritySemantic!.preparation.ready(), false, 'missing real windows cannot certify completion');
-    state.errors.set(0, 'Synthetic history failure');
+    assert.equal(preparation().ready(), false, 'missing real windows cannot certify completion');
+    state.errors.set(0, new Error('Synthetic history failure'));
     assert.match(render(), /data-detail="Synthetic history failure"/, 'the original history reader exposes its named failure');
     state.errors.clear(); state.chunks.set(0, replies[0]);
     props.widget.time = { mode: 'range', firstOffset: 11, lastOffset: 30 };

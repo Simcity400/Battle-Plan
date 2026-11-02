@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { playbackRows } from '../../charts/playbackIntervals.ts';
+import { decisionPlaybackBounds } from './decisionsData.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import type { EventFeedItem, EventFeedKind, EventFeedRow, ScriptCost, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
@@ -23,6 +26,21 @@ const page = (occurrences: ScriptOccurrence[], items: EventFeedItem[] = [item]) 
   reply: { branchId: '1', firstHour: START, lastHour: END, occurrences, items, unavailable: [], warnings: [] }, nextCursor: null }).reply;
 const all: DecisionFilter = { country: () => true, allCountries: true, firstHour: null };
 const every = new Set<string>(STATUS_CHOICES.map(status => status.value));
+test('decision playback changes on timer display boundaries and retains expired cards across seeks', () => {
+  const start = day(3, 1), reply = deepFreeze(page([card([edge('decisionSelected', start, { days: 3 })])]));
+  const prepared = deepFreeze(prepareDecisions(reply, deepFreeze(all))), statuses = deepFreeze(new Set(every));
+  const at = (hour: number) => prepared.flatMap(row => { const shown = decisionAt(row, hour, [], statuses); return shown ? [shown] : []; });
+  const playback = playbackRows([start], at, decisionPlaybackBounds);
+  for (const hour of [start - 1, start, start + 23, start + 24, start + 47, start + 48, start + 71, start + 72, start + 100, start + 23]) {
+    const actual = playback.at(hour), expected = at(hour);
+    assert.deepEqual(actual.map(row => ({ ...row, item: { ...row.item, hour } })), expected);
+    assert.deepEqual(actual.map(row => lifecycleLine(row.item)), expected.map(row => lifecycleLine(row.item)));
+  }
+  assert.equal(playback.at(start), playback.at(start + 23));
+  assert.notEqual(playback.at(start + 23), playback.at(start + 24));
+  assert.equal(playback.at(start + 72), playback.at(start + 100));
+  assert.equal(daysLeft(playback.at(start + 71)[0].item), 1);
+});
 const at = (occurrences: ScriptOccurrence[], hour: number, statuses: ReadonlySet<string> = every, breaks = [] as ReturnType<typeof recordingBreaks>) =>
   prepareDecisions(page(occurrences), all).flatMap(row => { const shown = decisionAt(row, hour, breaks, statuses); return shown ? [shown.item] : []; });
 const one = (edges: ScriptEdge[], hour = END, opened = true) => at([card(edges, opened)], hour)[0];

@@ -63,7 +63,7 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
   const decimals = numbers.decimals;
   const layers = useMemo(()=>partLayers(parts,measure,tokens.categories,tokens.muted,prepared.enabled ? prepared.weights : undefined),[parts,measure,tokens.categories,tokens.muted,prepared.enabled,prepared.weights]);
   const parity = import.meta.env.MODE==='parity' ? usePartsParity(preparedBinding?.client ?? NO_PREPARED_CLIENT,preparedBinding?.source,preparedBinding?.branchId,preparedBinding?.tags ?? [],measure,extent,legacy,preparedBinding?.within) : undefined;
-  useEffect(()=>{onPreparedDiagnostics?.([...(prepared.summaries?.warnings ?? []),...(prepared.error ? [prepared.error] : [])]); return ()=>onPreparedDiagnostics?.([]);},[prepared.summaries,prepared.error,onPreparedDiagnostics]);
+  useEffect(()=>{onPreparedDiagnostics?.([...(prepared.summaries?.warnings ?? []),...(prepared.error ? [prepared.error.message] : [])]); return ()=>onPreparedDiagnostics?.([]);},[prepared.summaries,prepared.error,onPreparedDiagnostics]);
   const colorOf = useMemo(() => new Map(layers.flatMap(layer => layer.members.map(id => [id, layer.color] as const))), [layers]);
   // Exact prepared runs and legacy runs share the signed stack and drawing path.
   const segments = useMemo(() => partsStack(parts, layers, decimals, extent[0], extent[1]), [parts, layers, decimals, prepared.enabled, extent[0], extent[1]]);
@@ -136,6 +136,6 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
         onPick={onPick ? (picked, context?: ChartPick) => { if (context?.frame) onPick(picked); } : undefined} onContextMenu={onContextMenu} />
     </div>
     {prepared.enabled && prepared.geometry.approximate?.length ? <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p> : null}
-    {prepared.error && <WidgetState kind="error" detail={prepared.error} onRetry={prepared.retry} />}
+    {prepared.error && <WidgetState kind="error" failure={prepared.error} onRetry={prepared.retry} />}
   </div>;
 }

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { constructionPlayback } from './constructionData.ts';
 import type { ConstructionLogManifestReply, ConstructionLogReply, ConstructionOutputRun, ConstructionProject, ProjectOutput, SpendingGap } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
@@ -70,6 +72,18 @@ test('an older prefix window arriving later cannot replace the proven newest pro
 });
 
 const every: LogFilter = { types: [], projects: 'all', country: () => true, from: null };
+test('construction playback retains rows between native changes and matches uncached rows across seeks', () => {
+  const log = deepFreeze(logOf(structuredClone(PROJECTS))), filter = deepFreeze({ ...every, types: [] });
+  for (const order of ['change', 'start'] as const) {
+    const playback = constructionPlayback(log, filter, order);
+    for (const hour of [99, 100, 119, 124, 130, 147, 148, 151, 152, 172, 180, 125, 100])
+      assert.deepEqual(playback.at(hour), logRows(log, hour, filter, order));
+    const settled = playback.at(125);
+    assert.equal(playback.at(126), settled);
+    assert.equal(playback.at(130), settled);
+    assert.notEqual(playback.at(148), settled);
+  }
+});
 const fixtureNames: StateNameAt = (_hour, state) => ({ state, name: STATES.find(name => name.id === state)?.name ?? null, missing: null });
 const placeLabel = (_log: ConstructionLog, item: ConstructionProject) => datedPlaceLabel(item, 148, fixtureNames);
 const describeRow = (log: ConstructionLog, row: LogRow<ProjectAt>, country: string) => datedDescribeRow(log, row, country, 148, fixtureNames);

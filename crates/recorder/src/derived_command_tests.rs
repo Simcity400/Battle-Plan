@@ -10,7 +10,7 @@ use replay_frame::{frame::FrameDecoder, frame::TableUpdate, frame::TableView};
 use std::fs;
 
 #[test]
-fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
+fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
     let root = crate::test_support::allocation_test_directory("derived-verdict");
     let game = root.join("game");
     let user = root.join("user");
@@ -152,7 +152,9 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
                                 temperature_pass: Recorded::Value((id == 0).then_some(
                                     TemperaturePass {
                                         anchor: frame.hour,
-                                        checksum: replay_data::temperature::checksum([0, 0]),
+                                        witness: replay_data::rows::TemperatureWitness::new(
+                                            replay_data::temperature::witness([0, 0]),
+                                        ),
                                         ..Default::default()
                                     },
                                 )),
@@ -176,7 +178,7 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
             user.clone().into_os_string(),
         ]
     };
-    for (bad_checksum, missing_pass, bad_clock) in [
+    for (bad_witness, missing_pass, bad_clock) in [
         (false, false, false),
         (true, false, false),
         (false, true, false),
@@ -190,11 +192,12 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
             {
                 if missing_pass {
                     rows[0].temperature_pass = Recorded::Value(None);
-                } else if bad_checksum {
+                } else if bad_witness {
                     let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass else {
                         panic!("fixture must hold its pass");
                     };
-                    pass.checksum ^= 1;
+                    pass.witness =
+                        replay_data::rows::TemperatureWitness::new(pass.witness.get().unwrap() ^ 1);
                 } else if bad_clock {
                     rows[1].clock = DayNightClock::held(Clock {
                         local_hour: i32::MIN,
@@ -210,9 +213,9 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
         .unwrap();
         fs::write(&recording, replay.bytes()).unwrap();
         let outcome = crate::recording::command(args());
-        if bad_checksum || missing_pass || bad_clock {
+        if bad_witness || missing_pass || bad_clock {
             let error = outcome.unwrap_err();
-            let expected = if bad_checksum || bad_clock {
+            let expected = if bad_witness || bad_clock {
                 "3 mismatches; 0 incomplete comparisons"
             } else {
                 "0 mismatches; 3 incomplete comparisons"

@@ -154,16 +154,18 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
             .any(|table| changes.rows_changed[table.index()])
     }
 
-    /// Binds what an observation needs from the recording's content before a
-    /// block is folded or observed (a branch restored from its catalogue binds
-    /// again); most observers need nothing. `check` stops a cancelled run.
-    fn bind(
-        &mut self,
+    /// The recorded content shared by every branch of a run.
+    type Content: Send + Sync + 'static;
+
+    fn content(
         source: &dashboard_base::Source,
-        content: Option<&dashboard_core::config::ContentOptions>,
+        options: Option<&dashboard_core::config::ContentOptions>,
         check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        let _ = (source, content, check);
+    ) -> io::Result<Self::Content>;
+
+    /// Binds the run's content before the branch's first hour.
+    fn bind(&mut self, content: &std::sync::Arc<Self::Content>) -> io::Result<()> {
+        let _ = content;
         Ok(())
     }
 

@@ -12,7 +12,7 @@ test('equivalent count-cache descriptors keep the committed page array and loade
   const rows = [row('loaded', 9)];
   const previous = [page('loaded', 0, 1, rows), page('pending', 10, 5000)];
   assert.equal(stableLogPages(previous, previous.map(item => ({ ...item }))), previous);
-  for (const change of [{ key: 'other' }, { start: -1 }, { end: 8 }, { count: 2 }, { rows: [...rows] }, { error: 'unavailable' }]) {
+  for (const change of [{ key: 'other' }, { start: -1 }, { end: 8 }, { count: 2 }, { rows: [...rows] }, { error: new Error('unavailable') }]) {
     const next = [{ ...previous[0], ...change }, previous[1]];
     assert.equal(stableLogPages(previous, next), next);
   }
@@ -92,7 +92,7 @@ test('months are unknown over pending pages and loaded month sections keep uniqu
 });
 
 test('a failed page remains a counted virtual window and is wanted for caller retry', () => {
-  const failed = { ...page('failed opaque | page', 0, 5000), error: 'Unsupported content form: scripted icon' };
+  const failed = { ...page('failed opaque | page', 0, 5000), error: new Error('Unsupported content form: scripted icon') };
   const items = logPageItems([failed], false);
   assert.equal(items.length, 1);
   assert.equal(logOffsets(items, 'comfortable').at(-1), 5000 * ROW_HEIGHT.comfortable);

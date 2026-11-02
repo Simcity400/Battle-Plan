@@ -1,3 +1,4 @@
+import { failureText } from './queryError.ts';
 import { useMemo, useRef } from 'react';
 import type { CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
@@ -5,7 +6,7 @@ import { flagReadMetadata } from './countryFlagsAt.ts';
 import { useCountryFlagsRead } from './countryFlags.ts';
 import type { CountryLabel } from './countryFlagsAt';
 import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
-import { FAILED_FACT } from './countryFacts.ts';
+import { isFailedFact } from './countryFacts.ts';
 import type { FactSpec, NameAt } from './countryFacts';
 import { lookPlan } from './countryLooks.ts';
 import { sampledLooks } from './looks.ts';
@@ -52,8 +53,8 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const moment = Math.floor(hour);
   const shownHour = useThrottled(moment, FOLLOW_MS);
   const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : '';
-  const shown = useRef<{ trackKey: string; client: DashboardClient; looks: Map<string, Look>; segments: Map<string, number> }>({ trackKey, client, looks: new Map(), segments: new Map() });
-  if (shown.current.trackKey !== trackKey || shown.current.client !== client) shown.current = { trackKey, client, looks: new Map(), segments: new Map() };
+  const shown = useRef<{ trackKey: string; client: DashboardClient; looks: Map<string, Look>; segments: Map<string, number>; revision: number }>({ trackKey, client, looks: new Map(), segments: new Map(), revision: 0 });
+  if (shown.current.trackKey !== trackKey || shown.current.client !== client) shown.current = { trackKey, client, looks: new Map(), segments: new Map(), revision: 0 };
   const held = shown.current;
   const tagsKey = JSON.stringify(tags);
   const nameTagsKey = JSON.stringify(nameTags);
@@ -76,7 +77,7 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
     const next = sampledLooks(held, samples, sample => {
       const key = nameKey(sample.hour, sample.tag);
       const flag = flags.get(key);
-      return { style: styles.get(key), flag: flag === undefined ? undefined : flag === FAILED_FACT ? FAILED_FACT : flag?.url ?? null };
+      return { style: styles.get(key), flag: flag === undefined ? undefined : isFailedFact(flag) ? flag : flag?.url ?? null };
     }, segments);
     held.looks = next.looks;
     held.segments = next.segments;
@@ -89,20 +90,22 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
         const metadata = flagReadMetadata(flag);
         const sampleHour = sampleHours.get(tag);
         const style = sampleHour === undefined ? undefined : styles.get(nameKey(sampleHour, tag));
-        const heldName = looks.get(tag)?.name;
-        const pending = { name: heldName ?? (sampleHour === undefined ? wording?.missing ?? 'Country name unavailable' : wording?.pending ?? 'Loading name…'),
-          known: heldName != null ? true : sampleHour === undefined ? false : undefined, nameFailed: false };
-        return { ...countryReadName(style, pending, wording?.missing ?? 'Country name unavailable'), ...metadata, flag: looks.get(tag)?.flag ?? undefined,
-          flagPending: flagTags.has(tag) && metadata.flagPending };
+        const heldLook = looks.get(tag), heldName = heldLook?.name;
+        const reading = active && !!track && sampleHour !== undefined;
+        const pending = { name: heldName ?? (reading ? wording?.pending ?? 'Loading name…' : wording?.missing ?? 'Country name unavailable'),
+          known: heldName != null ? true : reading ? undefined : false, nameFailed: false };
+        return { ...countryReadName(style === undefined ? heldLook?.nameFailure : style, pending, wording?.missing ?? 'Country name unavailable'), ...metadata, flag: looks.get(tag)?.flag ?? undefined,
+          flagPending: active && !!track && flagTags.has(tag) && metadata.flagPending };
       },
-      revision: styles.size + flags.size * 1000 + looks.size * 1_000_000,
+      revision: ++held.revision,
     };
-  }, [samples, segments, wanted, styles, flags, held, shownHour, wording]);
+  }, [samples, segments, wanted, styles, flags, held, shownHour, wording, active, track]);
 }
 
 /** Native empty names stay known; only an absent or failed completed read is missing. */
-export function countryReadName(style: LookRead['style'], pending: ReturnType<CountryLabel>, missing: string): Pick<ReturnType<CountryLabel>, 'name' | 'known' | 'nameFailed'> {
-  return { name: style === undefined ? pending.name : style === FAILED_FACT ? missing : style?.name ?? missing,
-    known: style === undefined ? pending.known : style !== FAILED_FACT && typeof style?.name === 'string',
-    nameFailed: style === undefined ? pending.nameFailed : style === FAILED_FACT };
+export function countryReadName(style: LookRead['style'], pending: ReturnType<CountryLabel>, missing: string): Pick<ReturnType<CountryLabel>, 'name' | 'known' | 'nameFailed' | 'nameFailure' | 'nameDetail'> {
+  return { name: style === undefined ? pending.name : isFailedFact(style) ? failureText(style, 'Couldn’t load country name.') : style?.name ?? missing,
+    known: style === undefined ? pending.known : !isFailedFact(style) && typeof style?.name === 'string',
+    nameFailed: style === undefined ? pending.nameFailed : isFailedFact(style),
+    ...(isFailedFact(style) ? { nameFailure: style, nameDetail: style.message } : {}) };
 }

@@ -1,3 +1,4 @@
+import type { FactFailure } from './sharedFacts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
@@ -228,10 +229,10 @@ test('one hour read in pieces keeps the countries of the pieces that answered', 
     if (params.tags.includes('T64')) throw new Error('Country styles unavailable at this hour: synthetic');
     return { ...request, data: { branchId: '1', hour: params.hour, warnings: [], styles: params.tags.map(tag => ({ tag, name: tag, color: [1, 2, 3] })) } };
   } } as unknown as DashboardClient;
-  const told: { found: number | null; retryable?: boolean; failed?: ReadonlyMap<string, boolean> }[] = [];
+  const told: { found: number | null; retryable?: boolean; failed?: ReadonlyMap<string, FactFailure> }[] = [];
   await readFactBatch(client, { sourceId: 'pieces', revision: '1', branchId: '1' }, COLOURS, [[70, tags]], new AbortController().signal,
     (_hour, _tags, found, retryable, failed) => told.push({ found: found?.size ?? null, retryable, failed }));
-  assert.deepEqual(told, [{ found: 64, retryable: undefined, failed: new Map(tags.slice(64).map(tag => [tag, false])) }]);
+  assert.deepEqual(told.map(item => ({ ...item, failed: item.failed && new Map([...item.failed].map(([tag, failure]) => [tag, failure.retryable])) })), [{ found: 64, retryable: undefined, failed: new Map(tags.slice(64).map(tag => [tag, false])) }]);
 });
 
 test('each failed piece of an hour keeps its own retry, so a refusal for want of room is tried again', async () => {
@@ -242,10 +243,10 @@ test('each failed piece of an hour keeps its own retry, so a refusal for want of
     if (params.tags.includes('T128')) throw new Error('Country styles unavailable at this hour: synthetic');
     return { ...request, data: { branchId: '1', hour: params.hour, warnings: [], styles: params.tags.map(tag => ({ tag, name: tag, color: [1, 2, 3] })) } };
   } } as unknown as DashboardClient;
-  let failed: ReadonlyMap<string, boolean> | undefined;
+  let failed: ReadonlyMap<string, FactFailure> | undefined;
   await readFactBatch(client, { sourceId: 'retries', revision: '1', branchId: '1' }, COLOURS, [[70, tags]], new AbortController().signal,
     (_hour, _tags, _found, _retryable, unanswered) => { failed = unanswered; });
-  assert.deepEqual(failed, new Map([...tags.slice(64, 128).map(tag => [tag, true] as const), ...tags.slice(128).map(tag => [tag, false] as const)]));
+  assert.deepEqual(failed && new Map([...failed].map(([tag, failure]) => [tag, failure.retryable])), new Map([...tags.slice(64, 128).map(tag => [tag, true] as const), ...tags.slice(128).map(tag => [tag, false] as const)]));
 });
 
 test('a refusal at the remembered size lowers it', async () => {

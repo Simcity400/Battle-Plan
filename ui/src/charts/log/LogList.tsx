@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import type { PreparedCoverage } from '../../shell/preparation/contract';
 import { preparedRangeText } from '../prepared';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -14,7 +15,7 @@ import { logPageItems, logPageRange, logPageTarget, logPixelTarget, logRowOrdina
 import type { LogRowTarget } from './logPages';
 import { useParityRows } from '../../dashboard/parityRows';
 import type { ParityPreparation } from '../../dashboard/parityRows';
-import { EMPTY_LOG_REVEALS, logReveals, logVisibleEntries } from './logReveal.ts';
+import { EMPTY_LOG_REVEALS, logRevealHistory, logReveals, logVisibleEntries } from './logReveal.ts';
 import { logicalScroll, physicalScroll, scrollGeometry, scrollItemTop, wheelScrollDelta } from '../scrollGeometry.ts';
 import '../charts.css';
 import './log.css';
@@ -35,7 +36,7 @@ export interface LogListProps<T> {
   parityHistoryComplete?: boolean;
   /** Parity-only preparation retains the real complete ordered row model after
    * the visible capture. Deferred labels remain restricted to visible rows. */
-  paritySemantic?: { preparation: ParityPreparation; complete: boolean; rows?: readonly LogRow<T>[]; item?: (row: LogRow<T>) => unknown; content?: (row: LogRow<T>) => unknown; reads: unknown };
+  paritySemantic?: { preparation?: ParityPreparation; complete: boolean; rows?: readonly LogRow<T>[]; item?: (row: LogRow<T>) => unknown; content?: (row: LogRow<T>) => unknown; reads: unknown };
   /** The rows, newest first (`newestFirst`). The same array while unchanged. */
   rows?: readonly LogRow<T>[];
   /** Instead of eagerly loading every row, stable server windows with their
@@ -149,7 +150,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   const pagesByKey = useMemo(() => new Map(pages?.map(page => [page.key, page])), [pages]);
   const revealHistory = useRef(EMPTY_LOG_REVEALS);
   const reveals = useMemo(() => logReveals(revealHistory.current, items, playhead), [items, playhead]);
-  useLayoutEffect(() => { revealHistory.current = reveals.history; }, [reveals]);
+  useLayoutEffect(() => { revealHistory.current = logRevealHistory(revealHistory.current, reveals, playhead); }, [reveals, playhead]);
   const explicitMotion = pages !== undefined || playhead !== undefined;
   const continueMotion = animate && (playhead === undefined || (typeof playhead === 'number'
     && typeof revealHistory.current.playhead === 'number' && playhead >= revealHistory.current.playhead));
@@ -322,7 +323,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     clearTip();
     setPending({ pageKey: target.pageKey, offset: target.offset });
     const error = pagesByKey.get(target.pageKey)?.error;
-    setSpoken(error ? 'Couldn’t load rows.' : 'Loading rows.');
+    setSpoken(error ? failureText(error, 'Couldn’t load rows.') : 'Loading rows.');
     if (!scroller) return;
     const top = offsets[target.index] + target.offset * ROW_HEIGHT[density];
     setLogicalTop(scrollToShow([top, top + ROW_HEIGHT[density]], 0, scrollPosition.current.logical, scroller.clientHeight, sticky));
@@ -334,7 +335,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     else if (!pendingTarget) { setPending(null); setSpoken('No rows match in this window.'); }
     else {
       const error = pagesByKey.get(pending.pageKey)?.error;
-      setSpoken(error ? 'Couldn’t load rows.' : 'Loading rows.');
+      setSpoken(error ? failureText(error, 'Couldn’t load rows.') : 'Loading rows.');
     }
   }, [pending, pendingTarget, pagesByKey, focusRow]);
 
@@ -376,7 +377,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   const visibleEntries = useMemo(() => {
     // Preserve the initial-render rule of useRowMotion: already-present rows
     // do not arrive. A mounted animation then survives later staying phases.
-    const arriving = new Set(moving.filter(row => row.phase === 'entering' && reveals.entering.has(row.key)).map(row => row.key));
+    const arriving = new Set(moving.filter(row => row.phase === 'entering' && reveals.playhead === playhead && reveals.entering.has(row.key)).map(row => row.key));
     return logVisibleEntries(items, start, end, arriving, entryHistory.current.seen, entryHistory.current.entering, continueMotion);
   }, [items, start, end, reveals, continueMotion]);
   useLayoutEffect(() => { entryHistory.current = visibleEntries; }, [visibleEntries]);
@@ -424,7 +425,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
               const height = Math.max(0, bottom - top);
               const labelTop = Math.max(0, Math.min(Math.max(0, height - ROW_HEIGHT[density]), view.top - top));
               return <div key={moved.key} className="log-page" style={{ transform: `translateY(${scrollItemTop(geometry, top, view.top)}px)`, height }} aria-hidden="true">
-                <span style={{ transform: `translateY(${labelTop}px)` }}>{item.page.error ? 'Couldn’t load rows.' : 'Loading rows…'}</span>
+                <span data-detail={item.page.error?.message} style={{ transform: `translateY(${labelTop}px)` }}>{item.page.error ? failureText(item.page.error, 'Couldn’t load rows.') : 'Loading rows…'}</span>
               </div>;
             }
             const motion = !animate ? 'moving-row' : explicitMotion && layout === 'row' && item.kind === 'row' && moved.phase !== 'leaving'
@@ -456,7 +457,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
         </div>
       </div>
     </div>
-    <span className="sr-only" aria-live="polite">{spoken}</span>
+    <span className="sr-only" aria-live="polite" data-detail={pending ? pagesByKey.get(pending.pageKey)?.error?.message : undefined}>{spoken}</span>
     {actions.menu}
   </div>;
 }

@@ -97,7 +97,7 @@ fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
 }
 
 /// How the walk's frame holds the tables names and colours are read from.
-fn asks() -> io::Result<Vec<(TableId, Hold)>> {
+pub(crate) fn asks() -> io::Result<Vec<(TableId, Hold)>> {
     FIELDS
         .iter()
         .map(|&(table, names)| Ok((table, Hold::Fields(mask(table, names)?).of(table))))

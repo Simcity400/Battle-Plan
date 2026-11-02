@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { FocusEntry, FocusReply } from '../../generated/dashboard';
 import type { BoundTrack } from '../../dashboard/model';
@@ -28,7 +29,7 @@ export function useFocusMarks(client: FocusPreparedClient, track: BoundTrack | u
   const source = track?.source, branchId = track?.branch.id;
   const content = useContentRevision(client);
   const key = JSON.stringify([source?.id, source?.revision, branchId, tag, content]);
-  const [read, setRead] = useState<{ key: string; marks: FocusMarks | null; warnings: string[]; error?: string }>();
+  const [read, setRead] = useState<{ key: string; marks: FocusMarks | null; warnings: string[]; error?: Failure }>();
   const current = read?.key === key ? read : undefined;
   // Settled once preparation's marks or a failure are read; the history answers while it prepares.
   const settled = current !== undefined && (current.marks !== null || current.error !== undefined);
@@ -48,7 +49,7 @@ export function useFocusMarks(client: FocusPreparedClient, track: BoundTrack | u
       const tokens = [...new Set(reply.completions.map(entry => entry.token))].sort();
       const { text, warnings } = await loadPreparedFocusStaticText(client, source, 'national', tokens, signal);
       if (!signal.aborted) setRead({ key, marks: { completed: reply.completions, staticText: text }, warnings: [...new Set([...reply.warnings, ...warnings])] });
-    })().catch(error => { if (!signal.aborted) setRead({ key, marks: null, warnings: [], error: error instanceof Error ? error.message : String(error) }); });
+    })().catch(error => { if (!signal.aborted) setRead({ key, marks: null, warnings: [], error: asFailure(error) }); });
     return () => controller.abort();
   }, [active, client, source, branchId, tag, key, settled]);
   // Until preparation holds the whole branch, the history answers.

@@ -194,7 +194,7 @@ test('fixed correction waits for all 5,000-country style answers and ignores unc
   const data = prepareWars(warReply(tags));
   const branch = { firstHour: 0, lastHour: 39, gaps: [] };
   const plan = warsColourPlan(data, branch, 20, true);
-  const styles = new Map<string, CountryStyle | null | symbol>();
+  const styles = new Map<string, CountryStyle | null | Error>();
   for (const count of [0, 64, 4_999]) {
     for (const item of plan.wanted.slice(styles.size, count)) styles.set(nameKey(item.hour, item.tag), { tag: item.tag, name: null, color: [19, 41, 73] });
     assert.equal(warsFixedColourKey(plan, styles), null);

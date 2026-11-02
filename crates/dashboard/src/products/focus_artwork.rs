@@ -343,35 +343,31 @@ fn read_frame(
         .index
         .iter()
         .find(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
-        .ok_or_else(|| io::Error::other("Focus artwork hour was not recorded"))?;
+        .ok_or_else(|| dashboard_core::refused("Focus artwork hour was not recorded"))?;
     let mut selected = BTreeSet::from(BASIC_TABLES);
     if scoped {
         selected.extend(crate::scripted_text::TABLES.iter().copied());
         selected.insert(TableId::Clock);
     }
     let selected: Vec<_> = selected.into_iter().collect();
-    let decoded =
-        match replay.seek_selected_with(branch, hour, Some(&selected), || check_cancel(cancelled))? {
-            SeekResult::Frame(decoded) => decoded,
-            // The seek names a frame of another campaign, or a block it cannot read, as a gap.
-            SeekResult::Gap { reason, .. }
-                if reason == CAMPAIGN_DIFFERS || reason.starts_with("unreadable block") =>
-            {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, reason));
-            }
-            SeekResult::Gap { .. } => {
-                return Err(io::Error::other("Focus artwork hour was not recorded"));
-            }
-        };
+    let decoded = match replay
+        .seek_selected_with(branch, hour, Some(&selected), || check_cancel(cancelled))?
+    {
+        SeekResult::Frame(decoded) => decoded,
+        // The seek names a frame of another campaign, or a block it cannot read, as a gap.
+        SeekResult::Gap { reason, .. } => {
+            return Err(dashboard_base::prepared::query::frames::gap_error(
+                &reason,
+                "Focus artwork hour was not recorded",
+            ));
+        }
+    };
     validate_campaign(&decoded, replay)?;
     // Only a frame of a verified block is kept.
     replay.verify_block_with(block, || check_cancel(cancelled))?;
     check_cancel(cancelled)?;
     Ok(*decoded)
 }
-
-/// How a seek names a frame whose campaign is not the recording's.
-const CAMPAIGN_DIFFERS: &str = "frame campaign identity differs from replay header";
 
 impl Product for FocusArtwork {
     const KEY: &'static str = "focus-artwork";
@@ -1008,7 +1004,11 @@ mod tests {
                 assert_eq!(national.database, FocusDatabase::National);
                 for token in ["national_only", "shared"] {
                     let art = item(&national, token);
-                    assert_eq!(art.artwork.name.as_deref(), Some("National title"), "{token}");
+                    assert_eq!(
+                        art.artwork.name.as_deref(),
+                        Some("National title"),
+                        "{token}"
+                    );
                     if text_only {
                         assert_eq!(art.reason, None, "{token}");
                     }
@@ -1087,7 +1087,11 @@ mod tests {
             // A refused continuous file leaves the national focus as it was.
             assert_eq!(
                 texts(reply.static_text.as_deref().unwrap()),
-                [("shared".to_owned(), Some("National title".to_owned()), Some(14.0))]
+                [(
+                    "shared".to_owned(),
+                    Some("National title".to_owned()),
+                    Some(14.0)
+                )]
             );
             assert_eq!(
                 reply

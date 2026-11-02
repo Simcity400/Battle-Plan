@@ -1,3 +1,4 @@
+import { failureText, type Failure } from '../../dashboard/queryError.ts';
 import type { ResearchCoverage, ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDate, formatDateTime, gameDate, monthNames } from '../../dashboard/calendar.ts';
@@ -204,8 +205,14 @@ export interface ResearchText {
   /** Repeated technology definitions have distinct template indices. */
   name: (token: string, databaseIndex?: number | null) => string;
   icon: (token: string) => string | undefined;
+  artworkFailure?: (token: string) => Failure | undefined;
   /** Each recorded definition can belong to different folders. */
   folder: (token: string, databaseIndex?: number | null) => ResearchFolderLook | undefined;
+}
+
+function artworkFailureRows(text: ResearchText, token: string): TooltipRow[] {
+  const failure = text.artworkFailure?.(token);
+  return failure ? [{ label: failureText(failure, 'Couldn’t load artwork.'), detail: failure.message }] : [];
 }
 
 /** A completion's tooltip: the plain date's "by" bound, its start, the time it
@@ -219,6 +226,7 @@ export function completedTooltip(row: Extract<ResearchRow, { kind: 'completed' }
     ...row.tookHours !== null ? [{ label: 'Took', value: researchDays(row.tookHours) }] : [],
     { label: 'Slot', value: `${row.slot.index + 1}${row.startSlot !== null ? ` · started in slot ${row.startSlot + 1}` : ''}` },
   ];
+  rows.push(...artworkFailureRows(text, row.token));
   return { title: text.name(row.token, entry.databaseIndex), icon: text.icon(row.token), subtitle: text.folder(row.token, entry.databaseIndex)?.name, rows };
 }
 
@@ -234,6 +242,7 @@ export function heldTooltip(row: Extract<ResearchRow, { kind: 'held' }>, text: R
     ...progress ? [{ label: 'Last read', value: `${Math.round(progress.fraction * 100)}% on ${formatDateTime(progress.hour)}` }] : [],
     { label: 'Slot', value: `${slot.index + 1}` },
   ];
+  rows.push(...artworkFailureRows(text, row.token));
   return { title: text.name(row.token), icon: text.icon(row.token), subtitle: text.folder(row.token)?.name, rows,
     note: 'This recording does not say whether it finished.' };
 }
@@ -257,5 +266,6 @@ export function currentTooltip(token: string, slotIndex: number, progress: { fra
   const notes = [left !== null ? 'Days left is the game’s estimate at this hour’s research speed.' : null,
     aheadOf !== null ? 'Research ahead of its year is slower until then.' : null,
     joined ? null : 'This recording does not identify the assignment, so its history is unknown.'];
+  rows.push(...artworkFailureRows(text, token));
   return { title: text.name(token, databaseIndex), icon: text.icon(token), subtitle: text.folder(token, databaseIndex)?.name, rows, note: notes.filter(Boolean).join(' ') || undefined };
 }

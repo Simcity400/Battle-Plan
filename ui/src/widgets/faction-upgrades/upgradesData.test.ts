@@ -15,7 +15,7 @@ const reply: RulesReply = {
     { key: 'b', tag: 'mod:Ω', slot: 2, countryId: 9, group: 3, runs: [run(10, 20, 'earlier holder'), run(21, 99, null)] }],
   doctrines: [], groups: [{ group: 3, name: 'A mod upgrade group' }], unobserved: [], pending: [], warnings: [],
 } as unknown as RulesReply;
-const names = { groupName: (group: number) => group === 3 ? 'A mod upgrade group' : 'unnamed', country: (tag: string, hour: number) => `Country ${tag} at ${hour}` };
+const names = { groupName: (group: number) => group === 3 ? 'A mod upgrade group' : 'unnamed', country: (tag: string, hour: number) => ({ name: `Country ${tag} at ${hour}` }) };
 
 test('lanes sit under section headings, unrecorded selections draw nothing and Live cuts at the playhead', () => {
   const { lanes, info } = upgradeLanes(reply, 60, null, { endedProgrammes: true, ...names });
@@ -31,4 +31,12 @@ test('lanes sit under section headings, unrecorded selections draw nothing and L
   const live = upgradeLanes(reply, 40, 40, { endedProgrammes: true, ...names });
   assert.deepEqual(live.lanes.find(lane => lane.label === 'Rule 1')!.spans.map(span => [span.lastHour, span.openEnd]), [[40, true]], 'later selections are not shown yet');
   assert.equal(upgradeLanes(reply, 60, null, { endedProgrammes: false, ...names }).lanes.some(lane => lane.label === 'Programme 1'), false);
+});
+
+test('faction member lane info retains the country failure used in its tooltip subtitle', () => {
+  const failure = new Error('Synthetic faction member name decoder failure');
+  const { info } = upgradeLanes(reply, 60, null, { endedProgrammes: true, ...names,
+    country: () => ({ name: 'Couldn’t load country name.', nameFailure: failure }) });
+  assert.equal(info.get('member:a')?.nameFailure, failure);
+  assert.match(info.get('member:a')!.slot, /Couldn’t load country name/);
 });

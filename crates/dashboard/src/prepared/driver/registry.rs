@@ -136,8 +136,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["regional-weather"],
         queries: &["regional-weather"],
         gates: &["regional-weather"],
-        // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 3: hours certify against the province temperature witness; older recordings refuse.
+        version: 3,
         ..family("regional-weather")
     },
     Descriptor {
@@ -270,7 +270,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
         ],
-        version: 2,
+        version: 3,
         ..family("production")
     },
     Descriptor {
@@ -348,8 +348,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["dockyard-spending"],
         gates: &["dockyard-spending"],
         sections: &["dockyard-repairs"],
-        // 2: the repair census on the segment driver, its pages published as the walk's were.
-        version: 2,
+        // 3: native holder inputs; mismatches count country-hours.
+        version: 3,
         ..family("repairs")
     },
     Descriptor {
@@ -565,7 +565,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["idea-history"],
         // 2: holdings on the segment driver, published as a series root; additions are
         // classified as laws when read.
-        version: 2,
+        // 3: naming follows civil-war inputs, war end hours and reserved slot-zero tags.
+        version: 3,
         ..family(products::ideas::NAME)
     },
     Descriptor {
@@ -601,7 +602,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         // 2: a row whose buyer or receiver has no identity stands, those hours dated.
         // 3: on the segment driver, published as a series root; refusals count the hours held.
-        version: 3,
+        version: 4,
         ..family("market")
     },
     Descriptor {
@@ -823,10 +824,11 @@ pub(crate) static JOBS: &[Job] = &[
         gates: &[],
         sections: &[],
     },
+    // Prepared among the families by its native backend, its catalogue waiting for its coverage.
     Job {
         name: "land-owners",
         version: 1,
-        gates: &[],
+        gates: &["land-owners"],
         sections: &["land-owners"],
     },
     Job {

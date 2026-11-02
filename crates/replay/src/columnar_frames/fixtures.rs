@@ -484,7 +484,7 @@ pub fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>, Vec<Se
 /// each hour's tables as the native recorder writes them, stored as the converter stores them:
 /// each unit's manifests and sections, and a restart ending every `restart_units`th unit. The
 /// file, and what the writer saw of each hour, run after run.
-pub(crate) fn written(
+pub fn written(
     campaign: &[u8],
     runs: &[(u64, i32, u32)],
     restart_units: u32,
@@ -492,6 +492,69 @@ pub(crate) fn written(
     write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
     written_captured(campaign, None, runs, restart_units, streams, write)
+}
+
+/// One run of `ordinals` hours, `frame(ordinal)` each, written as the native recorder writes
+/// them: through the frame writer into the columnar file writer, a restart ending every
+/// `restart_units`th unit. The run is the first frame's branch from its hour.
+pub fn recorded(
+    campaign: &[u8],
+    ordinals: u32,
+    restart_units: u32,
+    mut frame: impl FnMut(u32) -> crate::frame::FrameInput,
+) -> Vec<u8> {
+    use crate::{
+        columnar_file::{FileWriter, Hour, Position, Settings},
+        native_frame::FrameWriter,
+    };
+    let mut writer = FrameWriter::new().unwrap();
+    let identity = Identity {
+        schema: envelope::schema_digest(&schema().unwrap()),
+        campaign: campaign.to_vec(),
+        content: Vec::new(),
+        capture_mode: CaptureMode::Full.byte(),
+    };
+    let settings = Settings {
+        restart_units,
+        ..Settings::RECORDING
+    };
+    let mut file = FileWriter::create(
+        std::io::Cursor::new(Vec::new()),
+        identity,
+        writer.columns().to_vec(),
+        settings,
+    )
+    .unwrap();
+    for ordinal in 0..ordinals {
+        let input = frame(ordinal);
+        if ordinal == 0 {
+            file.start_run(input.branch, envelope::epoch::START, input.hour).unwrap();
+        }
+        let prepared = writer.hour(&input).unwrap();
+        let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
+        let position = file
+            .hour(Hour {
+                hour: input.hour,
+                manifest: &prepared.manifest,
+                sections: &sections,
+                statuses: prepared.statuses(),
+                read: prepared.read(),
+            })
+            .unwrap();
+        drop(sections);
+        writer.commit(prepared).unwrap();
+        match position {
+            Position::Open => {}
+            Position::Full { restart: false } => {
+                file.close_position().unwrap();
+            }
+            Position::Full { restart: true } => {
+                let (strings, tables) = writer.restart().unwrap();
+                file.close_with_restart(&strings, &tables).unwrap();
+            }
+        }
+    }
+    file.finish(|_| Ok(())).unwrap().file.into_inner()
 }
 
 /// [`written`], its root's control records holding `capture` when given.

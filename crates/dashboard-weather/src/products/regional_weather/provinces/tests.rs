@@ -18,9 +18,9 @@ use installed_content_core::{content::ResolvedContent, test_support::Stack};
 use replay_data::{
     rows::{
         ProvinceNameRow, ProvinceRow, ProvinceTemperature, Recorded, TableRows, TemperaturePass,
-        WeatherProvinceRow,
+        TemperatureWitness, WeatherProvinceRow,
     },
-    temperature::{State, checksum},
+    temperature::{State, witness},
 };
 use replay_frame::frame::TableView;
 use serde_json::{Value, json};
@@ -144,7 +144,7 @@ fn weather(hour: i32) -> DecodedFrame {
     let pass = TemperaturePass {
         anchor: hour,
         cursor: 1,
-        checksum: checksum(words.iter().map(|state| state.temperature)),
+        witness: TemperatureWitness::new(witness(words.iter().map(|state| state.temperature))),
         ..Default::default()
     };
     *frame.tables[TableId::WeatherProvinces.index()] =
@@ -250,7 +250,7 @@ fn mod_overlay_membership_names_raw_scales_and_cold_prefix_are_exact() {
 }
 
 #[test]
-fn missing_raw_mud_and_bad_checksum_refuse_only_their_fields() {
+fn missing_raw_mud_and_bad_witness_refuse_only_their_fields() {
     let stack = content_stack();
     let mut frame = weather(10);
     let TableView::Complete(TableRows::WeatherProvinces(rows)) =
@@ -262,7 +262,7 @@ fn missing_raw_mud_and_bad_checksum_refuse_only_their_fields() {
     let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass else {
         unreachable!()
     };
-    pass.checksum ^= 1;
+    pass.witness = TemperatureWitness::new(pass.witness.get().unwrap() ^ 1);
     let source = source(vec![weather(10)]);
     let options = bind(&source, &stack);
     let fixture = Fixture::new();
@@ -312,7 +312,7 @@ fn missing_raw_mud_and_bad_checksum_refuse_only_their_fields() {
         &reply,
         "2 weather province fields not shown: temperature:"
     ));
-    assert!(warning(&reply, "checksum"));
+    assert!(warning(&reply, "differ from the recorded witness"));
     assert!(warning(
         &reply,
         "1 weather province fields not shown: raw mud:"
@@ -647,7 +647,7 @@ fn nonanchor_temperature_is_reconstructed_not_read_from_the_anchor_word() {
         unreachable!()
     };
     pass.hours = vec![Some(51)];
-    pass.checksum = simulation.checksum();
+    pass.witness = TemperatureWitness::new(simulation.witness());
     let source = source(vec![first, reached]);
     let options = bind(&source, &stack);
     let reply = answer(
@@ -684,7 +684,7 @@ fn wide_signed_values_remain_decimal_text_without_display_conversion() {
     let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass else {
         unreachable!()
     };
-    pass.checksum = checksum([0, -100_000, 0, i64::MAX]);
+    pass.witness = TemperatureWitness::new(witness([0, -100_000, 0, i64::MAX]));
     let source = source(vec![frame]);
     let options = bind(&source, &stack);
     let reply = answer(&Fixture::new(), &source, &params(10), None, Some(&options)).unwrap();

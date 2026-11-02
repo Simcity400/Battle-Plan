@@ -13,14 +13,14 @@ use installed_content_core::{
 use installed_content_regions::regions::{self, StrategicRegions};
 use replay_data::{
     rows::tables,
-    temperature::{Content, Memo, State},
+    temperature::{Content, Memo, Plan, Planned, State},
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
 };
 
 /// Membership is each region's native province vector, not the province's
@@ -30,6 +30,108 @@ struct Bound {
     inverse: Mutex<Option<Arc<Inverse>>>,
     pass: Content,
     warnings: Vec<String>,
+    /// `pass` laid out for the hourly pass, and the regions' layout, made at first use.
+    plan: OnceLock<Plan>,
+    layout: OnceLock<Layout>,
+}
+
+impl Bound {
+    fn planned(&self) -> Planned<'_> {
+        Planned::new(&self.pass, self.plan.get_or_init(|| Plan::new(&self.pass)))
+    }
+
+    fn layout(&self) -> &Layout {
+        self.layout
+            .get_or_init(|| Layout::new(&self.members, self.pass.provinces.len()))
+    }
+}
+
+/// The regions as dense indices, in id order: what aggregating a derivation needs of them.
+struct Layout {
+    ids: Vec<u32>,
+    /// Each region's membership count, duplicates counted.
+    totals: Vec<u32>,
+    /// Whether a derivation gives the region a mean: its membership is not empty and every
+    /// member is a weather slot.
+    complete: Vec<bool>,
+    /// How many regions never have one.
+    missing: u64,
+    /// Each province's memberships, by dense region index, once per membership:
+    /// `regions[starts[province]..starts[province + 1]]`.
+    starts: Vec<u32>,
+    regions: Vec<u32>,
+}
+
+impl Layout {
+    fn new(members: &BTreeMap<u32, Vec<u32>>, slots: usize) -> Self {
+        let ids = members.keys().copied().collect();
+        let totals = members
+            .values()
+            .map(|members| members.len() as u32)
+            .collect();
+        let complete: Vec<bool> = members
+            .values()
+            .map(|members| {
+                !members.is_empty() && members.iter().all(|&id| (id as usize) < slots)
+            })
+            .collect();
+        let missing = complete.iter().filter(|&&complete| !complete).count() as u64;
+        let provinces = members
+            .values()
+            .flatten()
+            .map(|&id| id as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let mut starts = vec![0_u32; provinces + 1];
+        for &id in members.values().flatten() {
+            starts[id as usize + 1] += 1;
+        }
+        for at in 1..starts.len() {
+            starts[at] += starts[at - 1];
+        }
+        let mut next = starts.clone();
+        let mut regions = vec![0; members.values().map(Vec::len).sum()];
+        for (index, members) in members.values().enumerate() {
+            for &id in members {
+                let at = &mut next[id as usize];
+                regions[*at as usize] = index as u32;
+                *at += 1;
+            }
+        }
+        Self {
+            ids,
+            totals,
+            complete,
+            missing,
+            starts,
+            regions,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// The dense index of each region `province` is a member of, once per membership.
+    fn regions(&self, province: u32) -> &[u32] {
+        match self.starts.get(province as usize..province as usize + 2) {
+            Some(&[first, end]) => &self.regions[first as usize..end as usize],
+            _ => &[],
+        }
+    }
+
+    /// Region `index`'s mean of `sum`, rounded toward zero, where it has one.
+    fn mean(&self, index: usize, sum: i128) -> Option<i64> {
+        if !self.complete[index] {
+            return None;
+        }
+        let total = i64::from(self.totals[index]);
+        // The mean of i64 temperatures is one.
+        Some(match i64::try_from(sum) {
+            Ok(sum) => sum / total,
+            Err(_) => (sum / i128::from(total)) as i64,
+        })
+    }
 }
 
 pub(super) fn membership(
@@ -168,6 +270,8 @@ fn read(layers: &ResolvedLayers, mut warnings: Vec<String>) -> io::Result<Bound>
         members,
         pass: installed_content_weather::weather::temperature::read_with(layers, &graph, &geometry)?,
         warnings,
+        plan: OnceLock::new(),
+        layout: OnceLock::new(),
     })
 }
 
@@ -218,6 +322,8 @@ pub(super) struct Observation {
     certified: Option<(u64, i32)>,
     #[serde(skip)]
     aggregates: Option<Aggregates>,
+    #[serde(skip)]
+    mirror: Option<kept::Mirror>,
 }
 
 struct RegionSum {
@@ -281,16 +387,71 @@ impl Aggregates {
     }
 }
 
+pub struct Resolved {
+    binding: (
+        dashboard_base::SourceKey,
+        Option<catalogue::RecordedBinding>,
+    ),
+    loaded: Result<Arc<Bound>, String>,
+}
+
+pub(super) fn resolve(
+    source: &Source,
+    options: Option<&ContentOptions>,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<Resolved> {
+    check()?;
+    let loaded = (|| {
+        let options = options.ok_or_else(|| dashboard_core::invalid("game folders are not chosen; temperature needs the recorded stack's province geometry, adjacency, terrain, weather settings and strategic-region membership/periods"))?;
+        source
+            .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_init(&catalogue::recorded_binding(options), |_| {
+                let mut warnings = Vec::new();
+                content::check_replay(
+                    source.replay_ref(),
+                    options.allow_unverified,
+                    &mut warnings,
+                )?;
+                let resolved = source.content(&options.options)?;
+                check()?;
+                let bound = read(&resolved.layers, warnings)?;
+                check()?;
+                Ok(bound)
+            })
+    })();
+    if loaded.as_ref().is_err_and(|error| {
+        matches!(
+            error.kind(),
+            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::OutOfMemory
+        )
+    }) {
+        return loaded.map(|_| unreachable!());
+    }
+    Ok(Resolved {
+        binding: (
+            source.key().clone(),
+            options.map(catalogue::recorded_binding),
+        ),
+        loaded: loaded.map_err(|error| error.to_string()),
+    })
+}
+
 impl Observation {
+    #[cfg(test)]
     pub(super) fn bind(
         &mut self,
         source: &Source,
         options: Option<&ContentOptions>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.bind_checked(source, options, &mut || {
-            dashboard_text::metadata::check_cancel(cancelled)
-        })
+        self.bind_in(
+            source,
+            options,
+            &mut || dashboard_text::metadata::check_cancel(cancelled),
+            &MemoryBudget::preparation(),
+        )
     }
 
     pub(super) fn bind_states(
@@ -311,15 +472,7 @@ impl Observation {
         result
     }
 
-    pub(super) fn bind_checked(
-        &mut self,
-        source: &Source,
-        options: Option<&ContentOptions>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.bind_in(source, options, check, &MemoryBudget::preparation())
-    }
-
+    #[cfg(test)]
     fn bind_in(
         &mut self,
         source: &Source,
@@ -344,6 +497,22 @@ impl Observation {
         result
     }
 
+    pub(super) fn bind_resolved(&mut self, resolved: &Resolved) -> io::Result<()> {
+        self.retire();
+        self.apply(resolved);
+        let result = (|| {
+            if let Some(content) = &self.content {
+                self.inverse =
+                    Some(content.lease_inverse(&MemoryBudget::preparation(), &mut || Ok(()))?);
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.retire();
+        }
+        result
+    }
+
     pub(super) fn retire(&mut self) {
         self.inverse = None;
         self.content = None;
@@ -351,6 +520,7 @@ impl Observation {
         self.memo = Memo::default();
         self.certified = None;
         self.aggregates = None;
+        self.mirror = None;
         self.status = None;
         self.content_warnings.clear();
     }
@@ -361,52 +531,31 @@ impl Observation {
         options: Option<&ContentOptions>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
-        check()?;
         let binding = (
             source.key().clone(),
             options.map(catalogue::recorded_binding),
         );
         if self.binding.as_ref() == Some(&binding) {
+            check()?;
             return Ok(());
         }
         self.retire();
-        let loaded = (|| {
-            let options = options.ok_or_else(|| dashboard_core::invalid("game folders are not chosen; temperature needs the recorded stack's province geometry, adjacency, terrain, weather settings and strategic-region membership/periods"))?;
-            source
-                .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get_or_init(&catalogue::recorded_binding(options), |_| {
-                    let mut warnings = Vec::new();
-                    content::check_replay(
-                        source.replay_ref(),
-                        options.allow_unverified,
-                        &mut warnings,
-                    )?;
-                    let resolved = source.content(&options.options)?;
-                    check()?;
-                    let bound = read(&resolved.layers, warnings)?;
-                    check()?;
-                    Ok(bound)
-                })
-        })();
-        if loaded.as_ref().is_err_and(|error| {
-            matches!(
-                error.kind(),
-                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::OutOfMemory
-            )
-        }) {
-            return loaded.map(|_| ());
-        }
-        self.binding = Some(binding);
+        let resolved = resolve(source, options, check)?;
+        self.apply(&resolved);
+        Ok(())
+    }
+
+    fn apply(&mut self, resolved: &Resolved) {
+        self.binding = Some(resolved.binding.clone());
         self.memo = Memo::default();
         self.certified = None;
         self.aggregates = None;
-        match loaded {
+        self.mirror = None;
+        match &resolved.loaded {
             Ok(content) => {
                 self.status = Some("available".into());
                 self.content_warnings = content.warnings.clone();
-                self.content = Some(content);
+                self.content = Some(Arc::clone(content));
             }
             Err(error) => {
                 self.status = Some(format!("Temperature unavailable: {error}"));
@@ -414,7 +563,6 @@ impl Observation {
                 self.content = None;
             }
         }
-        Ok(())
     }
 
     pub(super) fn status(&self) -> &str {
@@ -441,7 +589,7 @@ impl Observation {
             .map_err(|error| error.to_string())?;
         let states = self
             .memo
-            .states(frame.branch, frame.hour, rows, Ok(&content.pass))?;
+            .states_changed(frame.branch, frame.hour, rows, Ok(&content.planned()), None)?;
         if states.len() != content.pass.provinces.len() {
             return Err(format!(
                 "content has {} weather province slots, the recording {}",
@@ -474,7 +622,7 @@ impl Observation {
                     frame.branch,
                     frame.hour,
                     rows,
-                    Ok(&content.pass),
+                    Ok(&content.planned()),
                     changed,
                 )?;
                 if states.len() != content.pass.provinces.len() {
@@ -648,10 +796,14 @@ impl Observation {
                 bytes.heap(&region.name);
             }
         }
+        if let Some(mirror) = &self.mirror {
+            bytes.add(mirror.bytes());
+        }
     }
 }
 
-mod retained;
+mod kept;
+pub(super) use kept::{Derived, Deriving};
 
 #[cfg(test)]
 mod tests;

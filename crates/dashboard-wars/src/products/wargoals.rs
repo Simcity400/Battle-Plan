@@ -161,9 +161,12 @@ impl Product for Wargoals {
                 source, branch, p.hour, tables, cancelled,
             )? {
                 SeekResult::Frame(frame) => Ok(frame),
-                SeekResult::Gap { reason, .. } => Err(io::Error::other(format!(
-                    "War goals not recorded: {reason}"
-                ))),
+                SeekResult::Gap { reason, .. } => {
+                    Err(dashboard_base::prepared::query::frames::gap_error(
+                        &reason,
+                        format!("War goals not recorded: {reason}"),
+                    ))
+                }
             }
         };
         let mut tables = TABLES.to_vec();
@@ -453,7 +456,7 @@ fn inventory(
     let mut goal_name = |token, actor, recipient| -> String {
         match literals
             .get(&token)
-            .ok_or_else(|| invalid("War-goal type spelling not recorded"))
+            .ok_or_else(|| dashboard_core::refused("War-goal type spelling not recorded"))
             .and_then(|literal| name(literal, actor, recipient))
         {
             Ok(name) => name,
@@ -734,7 +737,10 @@ mod tests {
         }];
         frame.tables[TableId::WarOwnedRelations.index()] =
             TableView::Complete(TableRows::WarOwnedRelations(relations.clone())).into();
-        assert_eq!(standings(&frame, &pairs)[0].standing, Some(WargoalStanding::AtWar));
+        assert_eq!(
+            standings(&frame, &pairs)[0].standing,
+            Some(WargoalStanding::AtWar)
+        );
         relations[0].retired = 1;
         frame.tables[TableId::WarOwnedRelations.index()] =
             TableView::Complete(TableRows::WarOwnedRelations(relations)).into();
@@ -755,7 +761,10 @@ mod tests {
                 ]))
                 .into();
             let result = standings(&frame, &pairs);
-            assert_eq!(result[0].standing, (id != 0).then_some(WargoalStanding::SameFaction));
+            assert_eq!(
+                result[0].standing,
+                (id != 0).then_some(WargoalStanding::SameFaction)
+            );
         }
         for table in [TableId::WarOwnedRelations, TableId::FactionMembers] {
             frame.tables[table.index()] = TableView::Unavailable {
@@ -853,7 +862,10 @@ mod tests {
         frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(links)).into();
         let unresolved = inventory(&frame, &p, |_, _, _| Ok("name".into())).unwrap_err();
-        assert!(unresolved.to_string().contains("unresolved"), "{unresolved}");
+        assert!(
+            unresolved.to_string().contains("unresolved"),
+            "{unresolved}"
+        );
     }
 
     #[test]
@@ -917,7 +929,10 @@ mod tests {
             "Actor republic claims Target kingdom"
         );
         assert!(
-            reply.warnings.iter().all(|why| !why.contains("description")),
+            reply
+                .warnings
+                .iter()
+                .all(|why| !why.contains("description")),
             "no authored gate is described"
         );
         assert_eq!(reply.standings.len(), 1);

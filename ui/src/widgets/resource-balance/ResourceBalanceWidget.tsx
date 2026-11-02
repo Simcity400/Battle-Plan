@@ -45,7 +45,7 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { usePlaybackHour } from '../../dashboard/playback';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import { balanceOf, barParts, barScale, changeHours, chosenLines, chosenResources, dealsKnown, orderResources, overTimeTooltip, resourceName,
-  resourcePartGroups, resourceParts, RESOURCE_PARTS, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt } from './balanceData';
+  resourcePartGroups, resourceParts, RESOURCE_PARTS, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt } from './balanceData.ts';
 import type { Balance, RowOrder } from './balanceData';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { useResourceBalance, useResourceCountry } from './useResourceBalance';
@@ -162,7 +162,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
     : selectedCountry ? actor.reason ?? (headerTag ? null : 'Country unavailable at this time.') : null;
   const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && !headerReason && headerTag && drillAt !== null
     ? [{ tag: headerTag, hour: drillAt }] : [], active);
-  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={drillAt} reason={headerReason}
+  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip failure={actor.error} hour={drillAt} reason={headerReason}
     label={!headerReason && headerTag && drillAt !== null ? header.labelAt(drillAt)(headerTag) : null} />, countrySlot) : null;
   const detailScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, data?.tag, picked?.id, options.show]);
   const selectedCountryKey = JSON.stringify(selectedCountry);
@@ -176,7 +176,19 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
     setWantedPartners(previous => previous.length === wanted.length && previous.every((item, index) =>
       item.tag === wanted[index].tag && item.hour === wanted[index].hour) ? previous : wanted);
   }, []);
-  const partners = useCountryLabelsAt(runtime.client, track, saved || drill.breakdown ? [] : wantedPartners, active);
+  const shownPartners = useMemo<NameAt[]>(() => {
+    if (saved || options.view === 'time' || !data || !dealsKnown(data, head)) return [];
+    const index = tradeIndex(data);
+    return data.resources.flatMap(resource => {
+      const deals = tradesAt(index, resource.id, head);
+      return [...deals.imports, ...deals.exports].map(trade => ({ tag: trade.partner, hour: head }));
+    });
+  }, [data, head, saved, options.view]);
+  const partnerKey = JSON.stringify([...new Set([...shownPartners, ...wantedPartners].map(item => JSON.stringify([item.hour, item.tag])))].sort());
+  const partnerRequests = useMemo<NameAt[]>(() => (JSON.parse(partnerKey) as string[]).map(key => {
+    const [hour, tag] = JSON.parse(key) as [number, string]; return { hour, tag };
+  }), [partnerKey]);
+  const partners = useCountryLabelsAt(runtime.client, track, partnerRequests, active);
   const menu = useContextMenu('Resource actions');
   useEffect(() => {
     onDiagnostics(contentPending ? ['Resource names and artwork are updating from the recorded content.']
@@ -201,7 +213,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its resources." /></>;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading resources…" /></>;
   if ((!data.series.some(series => series.runs.length) && !(data as PreparedResourceReply).summaries?.some(item => item.supply.buckets.some(Boolean) || item.demand.buckets.some(Boolean)))
     || !data.resources.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Resources weren’t recorded for this country." /></>;
@@ -225,9 +237,9 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
         hideEmpty={options.hideEmpty === true} owner={`resource-balance:${widget.id}:${tag}`} breakdown={breakdown} onPartners={onPartners} active={active}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} onPick={open} />}
   </>;
-  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.identityRetry} /> : null;
+  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = saved && !savedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
-    : selectedCountry && actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
+    : selectedCountry && actor.error ? <WidgetState kind="error" failure={actor.error} onRetry={actor.retry} />
     : selectedCountry && actor.preparing ? <WidgetState kind="loading" label={actor.reason!} />
     : selectedCountry && actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
     : picked && detailData ? <ResourceBreakdown data={detailData} resource={picked} hour={drillAt} tokens={tokens}

@@ -105,7 +105,7 @@ test('mounted preparation failure preserves its partial publication without cach
   try {
     hook.render(); await flush();
     assert.equal(hook.render().data, partial);
-    assert.equal(hook.render().error, 'synthetic preparation failure');
+    assert.equal(hook.render().error?.message, 'synthetic preparation failure');
     assert.equal(await loadProduct(client, request, new AbortController().signal, undefined, source), complete);
     assert.equal(queries, 3, 'failed partial was never installed in the cache');
   } finally { hook.unmount(); }
@@ -125,19 +125,19 @@ test('in a widget frame a failure after a publication keeps the reply, said once
     const failed = hook.render();
     assert.equal(failed.data, partial, 'the published reply stays');
     assert.equal(failed.error, undefined, 'the body says an error only when nothing was published');
-    assert.deepEqual(frame.read(), ['synthetic preparation failure'], 'the frame says the failure');
+    assert.deepEqual(frame.read().map(error => error.message), ['synthetic preparation failure'], 'the frame says the failure');
     hook.render();
     assert.equal(heard, 1, 'the same failure is said once');
     const asked = queries;
-    frame.retry('synthetic preparation failure');
+    frame.retry(new Error('synthetic preparation failure'));
     assert.equal(hook.render().data, undefined, 'Retry asks again');
-    assert.deepEqual(frame.read(), [], 'the notice leaves while the reply is asked again');
+    assert.deepEqual(frame.read().map(error => error.message), [], 'the notice leaves while the reply is asked again');
     await flush();
     assert.ok(queries > asked);
     assert.equal(hook.render().data, partial);
-    assert.deepEqual(frame.read(), ['synthetic preparation failure']);
+    assert.deepEqual(frame.read().map(error => error.message), ['synthetic preparation failure']);
   } finally { hook.unmount(); unsubscribe(); }
-  assert.deepEqual(frame.read(), [], 'a reader that leaves takes its notice with it');
+  assert.deepEqual(frame.read().map(error => error.message), [], 'a reader that leaves takes its notice with it');
 });
 
 test('in a widget frame a failure with nothing published stays the body\'s own error', async () => {
@@ -149,8 +149,8 @@ test('in a widget frame a failure with nothing published stays the body\'s own e
     hook.render(); await flush();
     const failed = hook.render();
     assert.equal(failed.data, undefined);
-    assert.equal(failed.error, 'synthetic query failure');
-    assert.deepEqual(frame.read(), [], 'nothing is said twice');
+    assert.equal(failed.error?.message, 'synthetic query failure');
+    assert.deepEqual(frame.read().map(error => error.message), [], 'nothing is said twice');
   } finally { hook.unmount(); }
 });
 
@@ -177,15 +177,15 @@ test('a request of several that failed stays said while another publishes again,
     const stopped = hook.render();
     assert.deepEqual(rows(stopped), ['A prefix', 'B prefix'], 'both prefixes were published');
     assert.equal(stopped.error, undefined);
-    assert.deepEqual(frame.read(), ['A stopped'], 'A stopped after publishing');
+    assert.deepEqual(frame.read().map(error => error.message), ['A stopped'], 'A stopped after publishing');
     accepted.resolve(); await flush();
     const later = hook.render();
     assert.deepEqual(rows(later), ['A prefix', 'B complete'], 'B publishes again');
     assert.equal(later.error, undefined);
-    assert.deepEqual(frame.read(), ['A stopped'], 'A is still stopped, and still said with its Retry');
-    frame.retry('A stopped');
+    assert.deepEqual(frame.read().map(error => error.message), ['A stopped'], 'A is still stopped, and still said with its Retry');
+    frame.retry(new Error('A stopped'));
     hook.render();
-    assert.deepEqual(frame.read(), [], 'Retry asks again');
+    assert.deepEqual(frame.read().map(error => error.message), [], 'Retry asks again');
   } finally { hook.unmount(); accepted.resolve(); }
 });
 
@@ -246,7 +246,7 @@ test('source release cancels a mounted prepared read through the shared cache li
     assert.equal(nativeSignal.aborted, true);
     await flush();
     assert.equal(hook.render().data, partial, 'source teardown does not invent or cache a final reply');
-    assert.equal(hook.render().error, 'source released');
+    assert.equal(hook.render().error?.message, 'source released');
     assert.deepEqual({ queries, statuses }, { queries: 1, statuses: 1 });
   } finally { hook.unmount(); }
 });

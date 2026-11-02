@@ -205,7 +205,7 @@ pub enum DataEvent {
     },
     Error {
         id: String,
-        message: String,
+        error: crate::QueryError,
     },
 }
 

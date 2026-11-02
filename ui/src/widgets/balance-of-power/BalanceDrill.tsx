@@ -26,7 +26,7 @@ export default function BalanceDrill({ runtime, track, history, tag, at, token, 
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const parts = useMemo(() => record && hour !== null ? driftParts(record, labelAt(hour)) : null, [record, hour, labelAt]);
   if (hour === null) return <p className="drill-empty">Choose a day.</p>;
-  if (details.error) return <WidgetState kind="error" what="the weekly change" detail={details.error} onRetry={details.retry} />;
+  if (details.error) return <WidgetState kind="error" what="the weekly change" failure={details.error} onRetry={details.retry} />;
   if (!details.data || !state) return <WidgetState kind="loading" label="Loading the weekly change…" />;
   if (state.kind === 'unread') return <WidgetState kind="unavailable" message="The balance of power was not recorded at this date." />;
   if (state.kind === 'preparing') return <WidgetState kind="loading" label="This range is still being prepared." />;

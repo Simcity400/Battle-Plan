@@ -11,7 +11,7 @@ import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
 import { captureModeFixed, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, promptTitle, recordingName, recordsAutomatically, sessionLength,
-  settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status';
+  settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
 import type { Compression } from './compression';
 import './recorder.css';

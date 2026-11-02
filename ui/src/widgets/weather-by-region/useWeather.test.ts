@@ -32,7 +32,7 @@ export function useEffect(effect, deps) { const index = cursor++; if (changed(sl
 `;
 
 interface Load { request: ProductRequest; signal: AbortSignal; resolve: (value: unknown) => void; reject: (error: Error) => void }
-interface Fixture { loads: Load[]; products: (ProductRequest | null)[]; product: (request: ProductRequest | null) => { data?: unknown; error?: string }; content?: number }
+interface Fixture { loads: Load[]; products: (ProductRequest | null)[]; product: (request: ProductRequest | null) => { data?: unknown; error?: Error }; content?: number }
 const host = globalThis as typeof globalThis & { __weatherHooks?: Fixture };
 
 async function mountHooks() {
@@ -107,7 +107,7 @@ test('a folded day is read through the transient route after its dwell, supersed
     mock.timers.tick(hooks.DWELL_MS);
     fixture.loads[4].reject(new Error('Synthetic failure'));
     await flush();
-    assert.equal(days().get(8)?.error, 'Synthetic failure');
+    assert.equal(days().get(8)?.error?.message, 'Synthetic failure');
     days().want(8);
     mock.timers.tick(hooks.DWELL_MS);
     assert.equal(fixture.loads.length, 5, 'no retry loop while the pointer stays');
@@ -121,9 +121,9 @@ test('a folded day is read through the transient route after its dwell, supersed
     // Leaving the chart forgets a failed read too, so coming back reads it again.
     fixture.loads[6].reject(new Error('Synthetic failure'));
     await flush();
-    assert.equal(days().get(8)?.error, 'Synthetic failure');
+    assert.equal(days().get(8)?.error?.message, 'Synthetic failure');
     days().hover(8);
-    assert.equal(days().get(8)?.error, 'Synthetic failure', 'still on the failed day: no retry loop');
+    assert.equal(days().get(8)?.error?.message, 'Synthetic failure', 'still on the failed day: no retry loop');
     days().hover(null);
     assert.equal(days().get(8), undefined);
     days().want(8);

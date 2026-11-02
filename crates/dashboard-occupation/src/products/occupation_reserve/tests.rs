@@ -628,7 +628,7 @@ fn the_native_publication_holds_what_the_walks_scan_holds() {
     }
     let hours = dashboard_keyed::native::testing::operate::<OccupationReserveObserver>(
         &frames,
-        &[10],
+        &dashboard_keyed::native::testing::resuming(&frames, &[10], Some(140)),
         native_tables,
     );
     let published =

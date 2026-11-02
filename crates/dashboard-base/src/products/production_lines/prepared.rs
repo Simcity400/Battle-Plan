@@ -3912,7 +3912,7 @@ pub(super) fn open(
         || directory.executable != engine_executable::executable_tables::is_initialized()
         || !pictures_serve_with(icons, directory.pictured, directory.visual.as_deref())
     {
-        return Err(crate::invalid(
+        return Err(dashboard_core::refused(
             "Production lines need preparation for the current content",
         ));
     }

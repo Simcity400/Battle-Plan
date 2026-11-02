@@ -105,7 +105,7 @@ test('actual product and window hooks scope ready, late and retried results to t
         if (mode === 'windows') assert.equal(writes - before, 1, 'windows landing in one frame commit together');
         const ready = render(a.client);
         if (outcome === 'data') assert.deepEqual(owners(ready), requests.map(() => 'A'));
-        else assert.equal(ready.error, 'Previous client failed');
+        else assert.equal(ready.error?.message, 'Previous client failed');
         absent(render(b.client)); // Must mask A even before the old effect is cleaned up.
         fixture.commit(); await settle();
         assert.equal(b.calls.length, requests.length);
@@ -154,7 +154,7 @@ test('actual product and window hooks scope ready, late and retried results to t
       return windowHooks.useProductWindows<Payload>(retrying.client, 'same-source-revision-branch', () => request, [0], true);
     };
     retryWindows(); fixture.commit(); await settle(); retrying.calls[0].fail(); await settle();
-    const failed = retryWindows(); assert.equal(failed.errors.get(0), 'Previous client failed');
+    const failed = retryWindows(); assert.equal(failed.errors.get(0)?.message, 'Previous client failed');
     failed.retry(); assert.equal(retryWindows().errors.size, 0); fixture.commit(); await settle();
     assert.equal(retrying.calls.length, 2, 'the current owner can retry its failed window');
     retrying.calls[1].answer('Retried'); await settle();

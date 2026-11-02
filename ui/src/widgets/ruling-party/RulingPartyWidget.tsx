@@ -167,7 +167,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   if (!track || !tag) return <WidgetState kind="empty" icon="palette" message="Load a campaign and choose a country to see its politics." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading parties…" />;
   if (!list.length && !data.leaders.length) return <WidgetState kind="unavailable" message="Party data is unavailable." />;
 
@@ -266,7 +266,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       <div className="chart-line-key"><button type="button" className="button small" disabled={!governments.previous} onClick={governments.previous}>Previous</button>
         <span>{governments.cluster.count} recorded changes</span><button type="button" className="button small" disabled={!governments.next} onClick={governments.next}>Next</button></div>
     </section>}
-    {governmentReply.error && <WidgetState kind="error" what="government changes" detail={governmentReply.error} onRetry={governmentReply.retry} />}
+    {governmentReply.error && <WidgetState kind="error" what="government changes" failure={governmentReply.error} onRetry={governmentReply.retry} />}
     {menu.menu}
   </div>;
 }

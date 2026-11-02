@@ -62,7 +62,7 @@ test('drill choices retain later aliases absent from the first canonical-slot ro
   const choices = allowedCountryChoices(metadata, ['GER', 'ITA', 'GER'], { branchId: '2', hour: 150 });
   assert.deepEqual(choices.map(choice => choice.country.tag).sort(), ['GER', 'ITA']);
   const renamed = choices.find(choice => choice.country.tag === 'GER')!.country;
-  assert.equal(renamed.name, 'Country name unavailable');
+  assert.equal(renamed.name, 'Loading name…');
   assert.equal(renamed.id, undefined);
   assert.equal(renamed.observedBranchId, '2');
   assert.equal(renamed.observedHour, 150);
@@ -77,13 +77,13 @@ test('drill choices retain later aliases absent from the first canonical-slot ro
   assert.ok(filterChoices(many, 'later4999').some(choice => choice.country.tag === 'LATER4999'));
 });
 
-test('restricted chooser searches the historical name it displays, with an unavailable title before loading and tag search retained', () => {
+test('restricted chooser searches the historical name it displays, with an absent title before requesting and tag search retained', () => {
   const metadata = [{ id: '1', tag: 'ONE', name: 'New Republic', observedBranchId: '1', observedHour: 200 }];
   const at = { branchId: '1', hour: 100 };
   const before = allowedCountryChoices(metadata, ['ONE', 'LATER'], at);
   assert.equal(before.find(choice => choice.country.tag === 'ONE')!.country.name, 'Country name unavailable');
   assert.deepEqual(filterChoices(before, 'New Republic'), []);
-  const seen = new Map([['ONE', 'Old Empire']]);
+  const seen = new Map([['ONE', { kind: 'value' as const, value: 'Old Empire' }]]);
   const choices = allowedCountryChoices(metadata, ['ONE', 'LATER'], at, seen);
   assert.deepEqual(filterChoices(choices, 'Old Empire').map(choice => choice.country.tag), ['ONE']);
   assert.equal(filterChoices(choices, 'Old Empire')[0].country.name, 'Old Empire');

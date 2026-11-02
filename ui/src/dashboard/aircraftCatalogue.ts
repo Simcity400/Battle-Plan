@@ -1,3 +1,4 @@
+import { asFailure } from './queryError.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AircraftCatalogueParams, AircraftCatalogueReply, AircraftEntry, AircraftReference, AircraftRefusalCount, AircraftScope } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardSource } from './client';
@@ -28,7 +29,7 @@ export class AircraftPages {
   warnings: string[] = [];
   private readonly pages = new Map<number, AircraftEntry[]>();
   private readonly pending = new Set<number>();
-  private readonly failed = new Map<number, string>();
+  private readonly failed = new Map<number, Error>();
 
   constructor(identity: string, size = AIRCRAFT_PAGE) {
     this.identity = identity;
@@ -54,7 +55,7 @@ export class AircraftPages {
   accept(page: number, reply: AircraftCatalogueReply): boolean {
     this.pending.delete(page);
     if (reply.first !== page * this.size) {
-      this.failed.set(page, `The catalogue answered rows from ${reply.first} for rows from ${page * this.size}`);
+      this.failed.set(page, new Error(`The catalogue answered rows from ${reply.first} for rows from ${page * this.size}`));
       return false;
     }
     this.pages.set(page, reply.entries);
@@ -66,12 +67,12 @@ export class AircraftPages {
     return true;
   }
 
-  fail(page: number, message: string): void { this.pending.delete(page); this.failed.set(page, message); }
+  fail(page: number, message: Error): void { this.pending.delete(page); this.failed.set(page, message); }
   /** Forgets a failed page so it is asked again. */
   retry(page: number): void { this.failed.delete(page); }
-  error(page: number): string | undefined { return this.failed.get(page); }
+  error(page: number): Error | undefined { return this.failed.get(page); }
   /** The first failure, for the listing's own notice. */
-  firstError(): string | undefined { return this.failed.values().next().value; }
+  firstError(): Error | undefined { return this.failed.values().next().value; }
   loading(): boolean { return this.pending.size > 0; }
 }
 
@@ -148,7 +149,7 @@ export function useAircraftCatalogue(client: DashboardClient, source: DashboardS
     const params: AircraftCatalogueParams = { scope, query: asked.trim(), first: page * pages.size, count: pages.size };
     void loadTransientProduct<AircraftCatalogueReply>(client, { sourceId: source.id, revision: source.revision, product: 'aircraft-catalogue', params }, controller.signal, source)
       .then(reply => { if (!controller.signal.aborted) pages.accept(page, reply); },
-        error => { if (!controller.signal.aborted) pages.fail(page, error instanceof Error ? error.message : String(error)); })
+        error => { if (!controller.signal.aborted) pages.fail(page, asFailure(error)); })
       .finally(() => {
         controllers.delete(controller);
         if (!controller.signal.aborted && current.current?.pages === pages) setVersion(version => version + 1);

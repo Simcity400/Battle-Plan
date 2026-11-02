@@ -61,7 +61,7 @@ test('government replies authenticate the requested actor and preserve exact nat
 
 test('registered ruling-party renderer requests causes conditionally, respects Pin and keeps parties on refusal', async () => {
   const host = globalThis as typeof globalThis & { __governmentParty?: PartyHistoryReply; __governmentLedger?: PoliticsLedgerReply;
-    __governmentError?: string; __governmentRequests?: ProductRequest<Record<string, unknown>>[];
+    __governmentError?: Error; __governmentRequests?: ProductRequest<Record<string, unknown>>[];
     __governmentChart?: { badges?: EventBadge[]; markSummaries?: MarkSummary[]; tooltip: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent } };
   host.__governmentParty = { ...parties, parties: ['mod_old', 'mod_new'].map(token => ({ token,
     runs: [{ firstHour: 24, lastHour: 30, valueRaw: '5000000', startsSegment: true }] })),
@@ -118,7 +118,7 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 1, lastOffset: 1 } } }; hour = 30; render();
     assert.deepEqual(requests.filter(request => request.product === 'country-people').at(-1)?.params, { branchId: '1', tag: parties.tag, hour: 25 });
     assert.ok(host.__governmentChart?.badges?.every(badge => !badge.label.includes('Coup')));
-    props.widget.time = { mode: 'follow' }; host.__governmentError = 'Synthetic government refusal';
+    props.widget.time = { mode: 'follow' }; host.__governmentError = new Error('Synthetic government refusal');
     const refused = render(); assert.match(refused, /Couldn’t load government changes/); assert.match(refused, /Native party name/);
     assert.match(refused, />Retry</);
     assert.doesNotMatch(refused.replace(/<[^>]*>/g, ' '), /Synthetic government refusal/);

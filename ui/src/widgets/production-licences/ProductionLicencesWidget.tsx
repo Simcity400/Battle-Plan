@@ -13,7 +13,7 @@ import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -100,7 +100,7 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     const node = (tag: string, side: 'source' | 'target'): FlowNode => tag === OTHER ? { id: `${side}:${OTHER}`, side, label: 'Other', color: tokens.muted, order: '~', last: true }
       : tag === UNNAMED ? { id: `${side}:${UNNAMED}`, side, label: UNNAMED_COUNTRY, color: tokens.muted, order: '~~', last: true }
       : { id: `${side}:${tag}`, side, label: looks.name(tag, hour), color: colour(tag, hour), flag: looks.flag(tag, hour), order: tag,
-        countryFlag: { flag: looks.flag(tag, hour), flagReason: looks.flagReason?.(tag, hour), flagPending: looks.flagPending?.(tag, hour) } };
+        countryFlag: { nameFailure: looks.nameFailure?.(tag, hour), flagDetail: looks.flagDetail?.(tag, hour), flag: looks.flag(tag, hour), flagReason: looks.flagReason?.(tag, hour), flagPending: looks.flagPending?.(tag, hour) } };
     const nodeMap = new Map<string, FlowNode>();
     const linkMap = new Map<string, FlowLink>();
     for (const pair of pairs) {
@@ -121,11 +121,11 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     const chosen = hit.kind === 'node' ? rows.filter(row => inside(row, hit.node.id, hit.node.side === 'source' ? 'licensor' : 'licensee'))
       : rows.filter(row => inside(row, hit.link.source, 'licensor') && inside(row, hit.link.target, 'licensee'));
     const title = hit.kind === 'node' ? hit.node.label : `${nodes.find(node => node.id === hit.link.source)?.label} → ${nodes.find(node => node.id === hit.link.target)?.label}`;
-    return fitTooltip([{ title, subtitle: dayLabel(hour), rows: chosen.flatMap(row => [{ label: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED, strong: true },
+    return fitTooltip([{ title, ...countryNameDetails(...chosen.flatMap(row => [row.licensor, row.licensee].map(tag => ({ nameFailure: tag === null ? undefined : looks.nameFailure?.(tag, hour) })))), subtitle: dayLabel(hour), rows: chosen.flatMap(row => [{ label: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED, strong: true },
       { label: `${partyName(row.licensor)} → ${partyName(row.licensee)}`, tone: 'muted' as const },
       { label: 'Civilian factories', value: row.lent === null ? '—' : row.lent.toString() },
       ...row.since !== null ? [{ label: 'Since', value: dayLabel(row.since) }] : []]) }], viewport);
-  }, [rows, nodes, partyName, hour, viewport]);
+  }, [rows, nodes, partyName, looks, hour, viewport]);
   const openCountry = (node: FlowNode) => {
     const tag = node.id.slice(node.id.indexOf(':') + 1);
     if (tag === OTHER || tag === UNNAMED || !data) return;
@@ -133,11 +133,15 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     dispatch({ type: 'open', breakdown: COUNTRY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;
+  const drillAt = drill.follow ? hour : at;
+  const drillTag = data && picked ? picked.holders.map(holder => tagAt(data.holders[holder], drillAt)).find(tag => tag !== null) ?? null : null;
+  const titleRead = picked ? { tag: drillTag ?? picked.tag, hour: drillTag === null ? picked.hour : drillAt } : null;
+  const titleNames = useCountryLabelsAt(runtime.client, track, titleRead ? [titleRead] : [], active);
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see licences." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></>;
@@ -158,13 +162,10 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
       onContextMenu={(hit, x, y) => { if (hit?.kind === 'node') menu.open(x, y, [{ label: 'Show licences', run: () => openCountry(hit.node) }]); }} />
     {menu.menu}
   </div>;
-  const drillAt = drill.follow ? hour : at;
-  // The picked holders' tag at the drill's hour; null before any of them was read with one.
-  const drillTag = picked ? picked.holders.map(holder => tagAt(data.holders[holder], drillAt)).find(tag => tag !== null) ?? null : null;
   return <div ref={anchor} className="production-licences-host">{groupFailure}
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
-      title={picked ? `${drillTag === null ? looks.name(picked.tag, picked.hour) : looks.name(drillTag, drillAt)}: licences` : COUNTRY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+      title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && <CountryLicences data={data} holders={picked.holders} tag={drillTag} hour={drillAt} runtime={runtime} track={track} active={active} narrow={narrowTableOf(options)} />}
     </DrillHost>

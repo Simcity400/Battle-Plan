@@ -10,7 +10,7 @@ import { battleValueText } from '../battles/battleRows';
 import { definition } from './definition';
 import { navalBattleRows, rankedNavalBattleRows,
   validateNavalBattlesManifest, validateNavalBattlesReply, validateNavalBattlesRanking,
-  navalBattleSize, navalBattleMeasureText, NAVAL_BATTLE_SIZE_LABELS } from './navalBattlesData';
+  navalBattleSize, navalBattleMeasureText, NAVAL_BATTLE_SIZE_LABELS } from './navalBattlesData.ts';
 import type { NavalBattleRow } from './navalBattlesData';
 import { navalDetailKey, navalFleetDescription, navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDetails';
 

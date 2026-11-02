@@ -1,12 +1,12 @@
 import { barFraction } from '../../charts/table/logic';
 
 /** The compact value-and-bar grid belongs to this scoreboard. */
-export function AttributesHeader({ names }: { names: readonly string[] }) {
+export function attributesHeader({ names }: { names: readonly string[] }) {
   return <span className="leader-attributes" aria-label="Attributes">{names.map((name, i) =>
     <span key={i} title={name}>{name}</span>)}</span>;
 }
 
-export function Attributes({ values, maxima, names, bars }: {
+export function attributeCells({ values, maxima, names, bars }: {
   values: readonly (number | null)[]; maxima: readonly number[]; names: readonly string[]; bars: boolean;
 }) {
   return <span className="leader-attributes">{values.map((value, i) =>

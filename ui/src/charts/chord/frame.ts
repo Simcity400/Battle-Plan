@@ -3,10 +3,12 @@ import { ChordMotion } from './motion.ts';
 
 export interface ChordFrame {
   /** Null means unavailable, never zero. */
-  data: ChordData | null;
-  playing?: boolean;
+  readonly data: ChordData | null;
+  readonly playing?: boolean;
   /** Change at a gap, seek or source change. */
-  segment?: unknown;
+  readonly segment?: unknown;
+  /** Exact tooltip data can advance without changing geometry. */
+  readonly revision?: unknown;
 }
 
 /** Commit exact tooltip data only after the whole target has been accepted.
@@ -14,6 +16,7 @@ export interface ChordFrame {
 export class ChordFrames {
   readonly motion = new ChordMotion();
   data: ChordData | null = null;
+  revision: unknown;
   private segment: unknown;
 
   accept(frame: ChordFrame): void {
@@ -23,7 +26,8 @@ export class ChordFrames {
       this.motion.set(frame.data);
       this.data = frame.data;
     }
+    this.revision = frame.revision;
   }
 
-  clear(): void { this.motion.clear(); this.data = null; }
+  clear(): void { this.motion.clear(); this.data = null; this.revision = undefined; }
 }

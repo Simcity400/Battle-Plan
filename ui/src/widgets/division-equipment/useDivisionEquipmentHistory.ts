@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -35,7 +36,7 @@ export function useDivisionEquipmentHistory(client: DashboardClient, track: Boun
       void loadProduct<DivisionEquipmentHistory | null>(client, request, controller.signal, validateDivisionEquipmentHistory, track.source, attempt > 0, publish)
         .then(publish, error => {
           if (controller.signal.aborted) return;
-          const message = error instanceof Error ? error.message : String(error);
+          const message = asFailure(error);
           change(part, item => splitPart(item, message, track.branch) ?? [{ ...item, error: message }]);
         });
     }

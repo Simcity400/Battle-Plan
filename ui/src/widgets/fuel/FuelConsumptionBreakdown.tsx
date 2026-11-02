@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillParts from '../../charts/drill/DrillParts';
@@ -22,7 +23,7 @@ import { usePreparedFuel, fuelSummaryRuns, useFuelSeriesParity } from './prepare
 import FuelConsumptionStack from './FuelConsumptionStack';
 import { useDetailView } from './FuelBreakdown';
 import { consumptionAt, consumptionBasis, consumptionCoverage, consumptionForActor, consumptionGeometry, consumptionHistoryNumbers,
-  consumptionLevelAvailable, consumptionParts, consumptionRuns, consumptionSelection, demandNumbers, mergeConsumptionWindows, siteLevel, validateFuelConsumption, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption';
+  consumptionLevelAvailable, consumptionParts, consumptionRuns, consumptionSelection, demandNumbers, mergeConsumptionWindows, siteLevel, validateFuelConsumption, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption.ts';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
 
 type HistoryChart = Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>;
@@ -114,9 +115,9 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
     return families.every(kind => current.reasons[kind] === null) && (!levelName.startsWith('command:') || data.topologyReason === null);
   }, [inventory, current, data, availableLevel, levelName, displayed.length]);
   return <div ref={parity}>
-    {product.error && <WidgetState kind="error" what="consumption" detail={product.error} onRetry={product.retry} />}
+    {product.error && <WidgetState kind="error" what="consumption" failure={asFailure(product.error)} onRetry={product.retry} />}
     {!summary && !product.error && <WidgetState kind="loading" label="Loading current consumption..." />}
-    {detail.error && <WidgetState kind="error" what="consumers" detail={detail.error} onRetry={detail.retry} />}
+    {detail.error && <WidgetState kind="error" what="consumers" failure={detail.error} onRetry={detail.retry} />}
     {current && <DrillParts positiveBars showShares={false} active={chart.active} parts={current.nativeDailyRaw.map((raw, kind) => ({ id: String(kind),
       label: `${reply.consumerNames[kind] ?? 'Consumer name unavailable'} demand per day`, value: raw === null ? null : Number(raw) / reply.gainScale,
       raw: raw === null ? null : BigInt(raw), text: raw === null ? 'Unavailable' : formatFuelPart(BigInt(raw), BigInt(reply.gainScale), digits) }))} format={String}
@@ -217,7 +218,7 @@ function ConsumptionHistory({ runtime, track, reply, selection, coverage, hour, 
       label: currentName?.recordedName ?? 'Name unavailable', value: current?.amountRaw !== null && current ? Number(current.amountRaw) / reply.gainScale : null,
       raw: current?.amountRaw !== null && current ? BigInt(current.amountRaw) : null, text: hour === null ? 'Not recorded' : format(hour) }]} />
     {chart.active && wanted.some(window => !windows.data.has(window) && !windows.errors.has(window)) && <p className="drill-empty">Loading consumption history…</p>}
-    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="consumption history" detail={reason} onRetry={windows.retry} />)}
+    {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="consumption history" failure={reason} onRetry={windows.retry} />)}
     <BreakdownChart {...chart} within={allowed} pickOwner={owner} series={series} selectedHour={hour} keyHours={numericRuns.map(run => run.firstHour)}
       onViewChange={onViewChange}
       label="Individual current consumption required per day" axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: 0, yMax: null, log: false }} />

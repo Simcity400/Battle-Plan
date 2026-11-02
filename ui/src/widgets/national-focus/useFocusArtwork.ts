@@ -1,13 +1,14 @@
+import { failureText, type Failure } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import type { Artwork, DatedFocusArtwork, FocusArtworkParams, FocusDatabase } from '../../generated/dashboard';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts';
+import { nameKey, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { FactSpec, NameAt } from '../../dashboard/countryFacts';
 import { useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { validateFocusArtworkReply } from './focusData';
 
-type FocusArtworkFact = DatedFocusArtwork & { warnings: readonly string[]; titlePending?: boolean; titleReason?: string; imagePending?: boolean; imageReason?: string };
+type FocusArtworkFact = DatedFocusArtwork & { warnings: readonly string[]; titlePending?: boolean; titleReason?: string; titleFailure?: Failure; imagePending?: boolean; imageReason?: string; imageFailure?: Failure; descriptionFailure?: Failure };
 type FocusFactsMode = 'titles' | 'images' | 'details';
 const NO_DETAILS: readonly NameAt[] = [];
 const NO_STATIC_TEXT: readonly Artwork[] = [];
@@ -32,8 +33,9 @@ function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, c
     Math.max(1, new Set(wanted.map(item => item.hour)).size));
   const warnings = useMemo(() => {
     const warnings = new Set<string>();
-    for (const item of read.values()) if (item && item !== FAILED_FACT) {
-      for (const warning of item.warnings) warnings.add(warning);
+    for (const item of read.values()) {
+      if (isFailedFact(item)) warnings.add(item.message);
+      else if (item) for (const warning of item.warnings) warnings.add(warning);
     }
     return [...warnings];
   }, [read]);
@@ -55,31 +57,36 @@ function useDatedFocusArtwork(client: DashboardClient, track: BoundTrack | undef
   const text = useFocusFacts(client, track, country, database, titleWanted, active, 'titles');
   const images = useFocusFacts(client, track, country, database, wanted, active, 'images');
   const details = useFocusFacts(client, track, country, database, detailsWanted, active, 'details');
+  const reading = active && !!track && !!country;
   const read = useMemo(() => {
     const merged = new Map(text.read);
     for (const item of wanted) {
       const key = nameKey(item.hour, item.tag), image = images.read.get(key), title = text.read.get(key), description = details.read.get(key);
       const known = staticTitles.get(item.tag);
-      const titleArt = known ? { artwork: known, reason: null, warnings: NO_WARNINGS } : title && title !== FAILED_FACT ? title : null;
-      const imageArt = image && image !== FAILED_FACT ? image : null;
-      const detailArt = description && description !== FAILED_FACT ? description : null;
+      const titleArt = known ? { artwork: known, reason: null, warnings: NO_WARNINGS } : title && !isFailedFact(title) ? title : null;
+      const imageArt = image && !isFailedFact(image) ? image : null;
+      const detailArt = description && !isFailedFact(description) ? description : null;
       const base = titleArt ?? imageArt ?? detailArt;
-      if (base) merged.set(key, {
-        ...base, artwork: { ...base.artwork, name: titleArt?.artwork.name ?? null,
-          description: detailArt?.artwork.description ?? base.artwork.description, icon: imageArt?.artwork.icon ?? null },
+      if (base || [title, image, description].some(isFailedFact)) merged.set(key, {
+        ...base, warnings: base?.warnings ?? NO_WARNINGS,
+        artwork: { token: item.tag, baseDurationDays: null, ...base?.artwork, name: titleArt?.artwork.name ?? null,
+          description: detailArt?.artwork.description ?? base?.artwork.description ?? null, icon: imageArt?.artwork.icon ?? null },
         // Images and descriptions cannot settle the independent title read.
-        titlePending: !known && title === undefined,
-        titleReason: known ? undefined : title === FAILED_FACT ? 'Focus name request failed.'
+        titlePending: reading && !known && title === undefined,
+        titleReason: known ? undefined : isFailedFact(title) ? failureText(title, 'Focus name request failed.')
           : title === null ? 'Focus name was not recorded at this hour.' : title?.reason ?? undefined,
+        titleFailure: !known && isFailedFact(title) ? title : undefined,
+        imageFailure: isFailedFact(image) ? image : undefined,
+        descriptionFailure: isFailedFact(description) ? description : undefined,
         reason: null,
-        imagePending: image === undefined,
-        imageReason: image === FAILED_FACT ? 'Game artwork request failed.'
+        imagePending: reading && image === undefined,
+        imageReason: isFailedFact(image) ? failureText(image, 'Game artwork request failed.')
           : image === null ? 'Game artwork was not recorded at this hour.'
           : image?.reason ?? undefined,
       });
     }
     return merged;
-  }, [text.read, images.read, details.read, wanted, staticTitles]);
+  }, [text.read, images.read, details.read, wanted, staticTitles, reading]);
   return { read, details: details.read, warnings: useMemo(() => [...new Set([...text.warnings, ...images.warnings, ...details.warnings])],
     [text.warnings, images.warnings, details.warnings]) };
 }

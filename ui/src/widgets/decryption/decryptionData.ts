@@ -4,7 +4,7 @@ import { runAt } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDate, gameDate } from '../../dashboard/calendar.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import { fitTooltip } from '../../charts/tooltip.ts';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 
@@ -208,11 +208,11 @@ export const cipherStatus = (row: RaceRow) => row.run.broken === true ? `${CIPHE
 export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>, target: ReturnType<CountryLabel>, height: number): TooltipContent {
   const bonus = activeBonusDays(row.run);
   const content: TooltipContent = { title: 'Decryption', rows: [
-    { label: 'Decryptor', value: owner.name, countryFlag: row.tags.ownerTag === null ? undefined : {
-      flag: owner.flag, flagReason: owner.flagReason, flagPending: owner.flagPending,
+    { ...countryNameDetails(owner), label: 'Decryptor', value: owner.name, countryFlag: row.tags.ownerTag === null ? undefined : {
+      flag: owner.flag, flagReason: owner.flagReason, ...(owner.flagDetail !== undefined ? { flagDetail: owner.flagDetail } : {}), flagPending: owner.flagPending,
     } },
-    { label: 'Target', value: target.name, countryFlag: row.tags.targetTag === null ? undefined : {
-      flag: target.flag, flagReason: target.flagReason, flagPending: target.flagPending,
+    { ...countryNameDetails(target), label: 'Target', value: target.name, countryFlag: row.tags.targetTag === null ? undefined : {
+      flag: target.flag, flagReason: target.flagReason, ...(target.flagDetail !== undefined ? { flagDetail: target.flagDetail } : {}), flagPending: target.flagPending,
     } },
     { label: 'Progress', value: progressText(row.run) },
     { label: 'Started', value: fieldPreparing(row.run, 'started') ? 'Still being prepared' : observationDate(row.run.started, row.hour) },

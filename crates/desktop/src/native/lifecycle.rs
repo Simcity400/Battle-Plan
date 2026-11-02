@@ -166,8 +166,12 @@ impl NativeHost {
         } else {
             std::env::args_os().skip(1).collect()
         };
+        let mut command = Command::new(&executable);
+        if inner.popout.is_some() {
+            command.env_remove("BATTLE_PLAN_VIEWER_FRAMES");
+        }
         drop(inner);
-        let mut child = Command::new(&executable)
+        let mut child = command
             .args(forwarded)
             .args(folders)
             .env("BATTLE_PLAN_VIEWER_PARENT", parent.to_string())

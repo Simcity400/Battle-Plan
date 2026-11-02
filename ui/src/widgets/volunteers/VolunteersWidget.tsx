@@ -17,8 +17,9 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useContextMenu } from '../../components/ContextMenu';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { nameReadText, useHolderLooks } from '../../dashboard/holderLooks';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
+import { useHolderLooks } from '../../dashboard/holderLooks.ts';
+import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { lookHour } from '../../dashboard/countryLooks';
 import { selectedTags } from '../../dashboard/countrySelection';
@@ -91,10 +92,10 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const nodeTags = useMemo(() => [...new Set([...summed.nodes.flatMap(node => node.tag ? [tagOf.get(node.tag)!] : []), ...(drillListed ? drillRows : [])])],
     [summed.nodes, tagOf, drillListed, drillRows]);
   // Names for every partner (tooltips list Other's members); flags only for drawn nodes.
-  const names = useCountryNamesRead(runtime.client, track, useMemo(() => [...holders.map(holder => ({ hour: at, tag: holder.tag })),
+  const names = useCountryNamesAt(runtime.client, track, useMemo(() => [...holders.map(holder => ({ hour: at, tag: holder.tag })),
     ...(pickedTag && drill.hour !== null ? [{ hour: drill.hour, tag: pickedTag }] : [])], [holders, at, pickedTag, drill.hour]), active);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, useMemo(() => nodeTags.map(tag => ({ hour: at, tag })), [nodeTags, at]), active);
-  const label = useCallback((tag: string, hour = at) => ({ ...labelAt(hour)(tag), name: nameReadText(names.get(nameKey(hour, tag))) }), [labelAt, at, names]);
+  const label = useCallback((tag: string, hour = at) => ({ ...labelAt(hour)(tag), ...(names.has(nameKey(hour, tag)) ? nameReadMetadata(names.get(nameKey(hour, tag))) : {}) }), [labelAt, at, names]);
   const colours = useMemo(() => countryFlowColours(holders.map(holder => holder.key), key => looks.color(key), tokens.surface, tokens.countryColours === 'fixed'),
     [holders, looks, tokens.surface, tokens.countryColours]);
   const nodeName = useCallback((node: SummedNode) => node.tag ? label(tagOf.get(node.tag)!).name : `Other (${node.members.length})`, [label, tagOf]);
@@ -134,7 +135,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   ], [label]);
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see volunteers." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  const groupFailure = !all && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = !all && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="empty" message={match.reason} /></>;
   if (!all && groups.data && !tags?.length) {
@@ -145,7 +146,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
       : <>{groupFailure}<WidgetState kind={state.kind} message={state.message} /></>;
   }
   if (!all && !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading volunteers…" /></>;
-  if (reply.error) return <>{groupFailure}<WidgetState kind="error" detail={reply.error} onRetry={reply.retry} /></>;
+  if (reply.error) return <>{groupFailure}<WidgetState kind="error" failure={reply.error} onRetry={reply.retry} /></>;
   if (!reply.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading volunteers…" /></>;
   if (!current.links.length && pendingAt(preparedPrefix(reply.data), at)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   const covers = (span: { firstHour: number; lastHour: number }) => span.firstHour <= at && at <= span.lastHour;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createElement, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -11,6 +11,10 @@ import { movingRowClass, useRowMotion } from '../useRowMotion';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
+import ProgressMeter from '../meter/ProgressMeter.tsx';
+import { sameContent, useEqualContent, useMemoRows } from '../memoRows.tsx';
+import { useTableAppearance } from './useTableAppearance.ts';
+import { defineCellWidth, renderedCellWidth } from './cellWidth.ts';
 import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, treeRows, visibleRange } from './logic.ts';
 import type { ColumnFit, RankChange, Sort, TableGroup, TableTree, TreeRow } from './logic';
 import { cellContent, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
@@ -30,6 +34,38 @@ const NO_RANKS: ReadonlyMap<string, RankChange> = new Map();
 /** How long a rank marker shows once its row moves. */
 const RANK_HOLD_MS = 2500;
 const NO_COLUMNS: readonly TableColumn<never>[] = [];
+const PAINT_STYLES = new Set(['color', 'background', 'backgroundColor', 'backgroundImage', 'borderColor', 'borderTopColor', 'borderRightColor',
+  'borderBottomColor', 'borderLeftColor', 'outlineColor', 'textDecorationColor', 'fill', 'fillOpacity', 'stroke', 'strokeOpacity', 'opacity', 'boxShadow', 'textShadow',
+  'cursor', 'pointerEvents', 'userSelect', 'caretColor', 'backgroundPosition', 'backgroundSize', 'backgroundRepeat']);
+const PAINT_PROPS = new Set(['ref', 'title', 'role', 'tabIndex', 'data-tooltip', 'color', 'fill', 'stroke', 'src', 'srcSet', 'alt', 'loading', 'decoding', 'crossOrigin']);
+
+function widthContent(content: ReactNode): ReactNode {
+  if (content == null || typeof content === 'boolean' || content === '') return null;
+  if (typeof content === 'number' || typeof content === 'bigint') return String(content);
+  if (Array.isArray(content)) return content.map(widthContent);
+  if (!isValidElement<Record<string, unknown>>(content)) return content;
+  const rendered = renderedCellWidth(content.type, content.props);
+  if (rendered) return widthContent(rendered.content);
+  const native = typeof content.type === 'string';
+  const props: Record<string, unknown> = Object.fromEntries(Object.entries(content.props).filter(([key]) => key !== 'ref'
+    && (!native || (!PAINT_PROPS.has(key) && !key.startsWith('aria-') && !/^on[A-Z]/.test(key)))));
+  if (content.type === CellBar) { props.value = null; props.maximum = 0; }
+  if (content.type === ProgressMeter && !(content.props.marks as readonly unknown[] | undefined)?.length) {
+    props.value = null; props.state = 'idle'; props.sweep = false; props.label = undefined; props.marks = undefined; props.markProps = undefined;
+  }
+  if (content.props.style) props.style = Object.fromEntries(Object.entries(content.props.style).filter(([key, value]) => !PAINT_STYLES.has(key)
+    && (key !== 'visibility' || value === 'collapse')));
+  if ('children' in content.props) props.children = widthContent(content.props.children as ReactNode);
+  return createElement(content.type, props);
+}
+
+interface WidthColumn {
+  key: string; width: string | undefined; numeric: boolean | undefined; align: TableColumn<unknown>['align']; header: ReactNode;
+  cells: readonly { key: string; content: ReactNode }[];
+}
+const sameWidthColumn = (before: WidthColumn | undefined, next: WidthColumn) => before != null && before.key === next.key && before.width === next.width
+  && before.numeric === next.numeric && before.align === next.align && sameContent(before.header, next.header, true) && before.cells.length === next.cells.length
+  && before.cells.every((cell, index) => cell.key === next.cells[index].key && sameContent(cell.content, next.cells[index].content, true));
 /** Unchanged markers keep their state, so new row objects in the same order do not re-render the table. */
 const sameRanks = (before: ReadonlyMap<string, RankChange>, next: ReadonlyMap<string, RankChange>) => before.size === next.size
   && [...next].every(([key, change]) => { const held = before.get(key); return held?.rank === change.rank && held.delta === change.delta && held.until === change.until; });
@@ -74,20 +110,20 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const scroll = useRef<HTMLDivElement>(null);
   const tableElement = useRef<HTMLTableElement>(null);
   const [view, setView] = useState({ top: 0, height: 0, width: 0, rowHeight: 0, headerHeight: 0 });
+  const currentView = useRef(view);
+  useLayoutEffect(() => { currentView.current = view; }, [view]);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [description, setDescription] = useState<{ key: string; text: string } | null>(null);
   const tipCache = useRef<{ row: T; build: TableProps<T>['tooltip']; hidden: readonly TableColumn<T>[]; shown: readonly TableColumn<T>[];
     key: string; viewport: number; content: TooltipContent | null } | null>(null);
   const activeTip = useRef<{ key: string; origin: 'pointer' | 'keyboard'; x: number; y: number } | null>(null);
   const [localSort, setLocalSort] = useState<Sort | null>(null);
-  const { tableSize, tableFont, wrapping } = useMemo(() => {
-    if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return { tableSize: 12, tableFont: 'sans-serif', wrapping: true };
-    const rootStyle = getComputedStyle(document.documentElement);
-    return { tableSize: parseFloat(rootStyle.getPropertyValue('--type-sm')) || 12,
-      tableFont: rootStyle.getPropertyValue('--font-tables'), wrapping: document.documentElement.dataset.wordWrap !== 'false' };
-  }, [tokens]);
-  const widthScope = JSON.stringify([density, tableFont, tableSize, wrapping, columns.map(column => [column.key, column.label, column.width])]);
+  const { tableSize, headerSize, tableFont, wrapping, comfortable, compact, headerMinimum, fonts } = useTableAppearance(scroll);
+  const columnScope = JSON.stringify(columns.map(column => [column.key, column.label, column.width]));
+  const widthScope = JSON.stringify([density, tableFont, tableSize, headerSize, wrapping, comfortable, compact, headerMinimum, columnScope]);
   const [natural, setNatural] = useState<{ scope: string; widths: ReadonlyMap<string, number> }>({ scope: widthScope, widths: new Map() });
+  const currentNatural = useRef(natural);
+  useLayoutEffect(() => { currentNatural.current = natural; }, [natural]);
   const heightScope = `${widthScope}/${view.width}/${rowHeight ?? ''}`;
   const bottomAnchor = useRef(false);
   const focusAnchor = useRef(false);
@@ -98,8 +134,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const sort = { column: sortedColumn?.key ?? '', direction: sortedColumn?.direction ?? requestedSort.direction };
   // The row's identity (the first column) and the column it is sorted by never hide;
   // rows kept in their given order have no sort column.
-  const order = useMemo(() => narrow === 'hide' ? hideOrder(columns).filter(key => (unsorted || key !== sort.column) && key !== columns[0]?.key) : [],
-    [narrow, columns, sort.column, unsorted]);
+  const order = useEqualContent(narrow === 'hide' ? hideOrder(columns).filter(key => (unsorted || key !== sort.column) && key !== columns[0]?.key) : []);
   const [fit, setFit] = useState<{ scope: string; fit: ColumnFit }>({ scope: '', fit: FULL_FIT });
   // Widths each column needed hold only for the same tracks and typography.
   // The rank track takes width from the other columns too.
@@ -190,30 +225,28 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   useLayoutEffect(() => {
     const element = scroll.current;
     if (!element) return;
-    const css = getComputedStyle(element);
-    const comfortable = parseFloat(css.getPropertyValue('--table-comfortable-height'));
-    const compact = parseFloat(css.getPropertyValue('--table-compact-height'));
+    if (!comfortable) return;
     const base = rowHeight != null && Number.isFinite(rowHeight) && rowHeight > 0 ? rowHeight : comfortable;
     // The stylesheet's row heights are for 12px text, the default interface's --type-sm.
     const measuredHeight = densityRowHeight(base, density, compact / comfortable) * tableSize / 12;
-    const headerHeight = Math.max(parseFloat(css.getPropertyValue('--table-header-min-height')), tableSize * 1.5 + 6);
+    const headerHeight = Math.max(headerMinimum, tableSize * 1.5 + 6);
     const measure = () => {
       const top = element.scrollTop, height = element.clientHeight, width = element.clientWidth;
-      setView(before => before.top === top && before.height === height && before.width === width && before.rowHeight === measuredHeight
-        && before.headerHeight === headerHeight ? before : { top, height, width, rowHeight: measuredHeight, headerHeight });
+      const next = { top, height, width, rowHeight: measuredHeight, headerHeight };
+      if (!sameContent(currentView.current, next)) { currentView.current = next; setView(next); }
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [density, rowHeight, tableSize, tableFont]);
+  }, [density, rowHeight, tableSize, comfortable, compact, headerMinimum]);
   const count = moving.reduce((count, row) => tokens.reducedMotion && row.phase === 'leaving' ? count : Math.max(count, row.slot + 1), ordered.length);
   const leavingSlots = JSON.stringify(moving.filter(row => row.phase === 'leaving' && row.slot >= items.length).map(row => [row.slot, row.key]));
-  const slotKeys = useMemo(() => {
+  const slotKeys = useEqualContent(useMemo(() => {
     const keys = Array.from({ length: count }, (_, slot) => items[slot]?.key ?? '');
     for (const [slot, key] of JSON.parse(leavingSlots) as [number, string][]) keys[slot] = key;
     return keys;
-  }, [count, items, leavingSlots]);
+  }, [count, items, leavingSlots]));
   const offsets = useMemo(() => wrapping
     ? measuredRowOffsets(slotKeys, rowMeasurements.scope === heightScope ? rowMeasurements.heights : new Map(), view.rowHeight, view.headerHeight)
     : rowOffsets(count, view.rowHeight, view.headerHeight), [wrapping, slotKeys, rowMeasurements, heightScope, count, view.rowHeight, view.headerHeight]);
@@ -236,6 +269,26 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const departing = previousWindow?.items === items ? previousWindow.departing : NO_KEYS;
   const mounted = shownMotion(moving, start, end, !tokens.reducedMotion,
     row => row.key === focusedKey || (!tokens.reducedMotion && (departing.has(row.key) || crossing?.has(row.key) === true)));
+  const memoRow = useMemoRows();
+  const maxima = useMemo(() => new Map(columns.filter(column => column.bar != null).map(column => [column.key,
+    column.bar === 'visible' ? barMaximum(ordered, column.value) : column.bar as number | bigint])), [columns, ordered]);
+  const cells = new Map(mounted.map(row => [row.key, shownColumns.map((column, index) => {
+    const value = column.value(row.item.value), missing = isMissing(value), node = nesting?.get(row.key);
+    const cell = cellContent(column, row.item.value, value);
+    const content = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={node.count} open={node.open}>{cell}</TreeCell> : cell;
+    const key = column.widthKey ? column.widthKey(row.item.value) : widthContent(cell);
+    const width = node && index === 0 ? <TreeCell level={node.level} group={node.group} count={0} open={false}>{key}</TreeCell> : key;
+    return column.bar != null ? { content: <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
+      maximum={maxima.get(column.key) ?? 0}>{content}</CellBar>, width: <CellBar value={null} maximum={0}>{width}</CellBar> } : { content, width };
+  })]));
+  const headers = shownColumns.map(column => column.sortable === false || unsorted ? column.header
+    : <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true"
+      style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>);
+  const widthRows = mounted.map(row => row.key).sort();
+  const layoutColumns = useEqualContent(shownColumns.map((column, index): WidthColumn => ({ key: column.key, width: column.width, numeric: column.numeric,
+    align: column.align, header: widthContent(headers[index]), cells: widthRows.map(key => ({ key, content: cells.get(key)![index].width })) })),
+  (before, next) => before.length === next.length && before.every((column, index) => sameWidthColumn(column, next[index])));
+  const mountedKeys = useEqualContent(mounted.map(row => row.key));
   useLayoutEffect(() => {
     const before = committedWindow.current;
     committedWindow.current = { items, keys: new Set(items.slice(start, end).map(row => row.key)),
@@ -254,20 +307,24 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     reported.current = { rows: visible, callback: onVisibleRows };
     onVisibleRows?.(visible);
   }, [visible, onVisibleRows]);
-  // Each mounted header/cell is observed once. Coalesce its readings before the
-  // next paint so changing tracks cannot feed back into observer delivery.
-  const naturalCells = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);
+  const naturalCells = useRef<{ observer: ResizeObserver; observed: Map<Element, { key: string; padding?: number }>;
+    columns: ReadonlyMap<string, typeof layoutColumns[number]> } | null>(null);
   useLayoutEffect(() => {
     const pending = new Map<Element, { key: string; width: number }>();
+    const observed = new Map<Element, { key: string; padding?: number }>();
     let frame = 0;
     const observer = new ResizeObserver(entries => {
-      for (const { target } of entries) {
+      for (const { target, contentRect } of entries) {
         if (!target.isConnected) continue;
         const element = target as HTMLElement;
-        const css = getComputedStyle(element.closest('th, td')!);
-        // Keep fractional layout pixels; offsetWidth rounds down and can trigger ellipsis.
-        const width = parseFloat(getComputedStyle(element).width) + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
-        pending.set(target, { key: element.dataset.tableNatural!, width: Math.max(pending.get(target)?.width ?? 0, width) });
+        const cell = observed.get(target);
+        if (!cell) continue;
+        if (cell.padding === undefined) {
+          const css = getComputedStyle(element.closest('th, td')!);
+          cell.padding = parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
+        }
+        const width = contentRect.width + cell.padding;
+        pending.set(target, { key: cell.key, width: Math.max(pending.get(target)?.width ?? 0, width) });
       }
       if (frame) return;
       frame = requestAnimationFrame(() => {
@@ -275,23 +332,30 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
         const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
         pending.clear();
         if (!readings.length) return;
-        flushSync(() => setNatural(before => {
-          const previous = before.scope === widthScope ? before.widths : new Map<string, number>();
-          const widths = growColumnWidths(previous, readings);
-          return before.scope === widthScope && widths === previous ? before : { scope: widthScope, widths };
-        }));
+        const before = currentNatural.current;
+        const previous = before.scope === widthScope ? before.widths : new Map<string, number>();
+        const widths = growColumnWidths(previous, readings);
+        if (before.scope === widthScope && widths === previous) return;
+        const next = { scope: widthScope, widths };
+        currentNatural.current = next;
+        flushSync(() => setNatural(next));
       });
     });
-    naturalCells.current = { observer, observed: new Set() };
+    naturalCells.current = { observer, observed, columns: new Map() };
     return () => { observer.disconnect(); cancelAnimationFrame(frame); naturalCells.current = null; };
   }, [widthScope]);
   useLayoutEffect(() => {
-    const { observer, observed } = naturalCells.current!;
-    for (const element of observed) if (!element.isConnected) { observer.unobserve(element); observed.delete(element); }
+    const held = naturalCells.current!;
+    const { observer, observed } = held;
+    const changed = new Set(layoutColumns.filter(column => !sameWidthColumn(held.columns.get(column.key), column)).map(column => column.key));
+    held.columns = new Map(layoutColumns.map(column => [column.key, column]));
+    for (const element of observed.keys()) if (!element.isConnected) { observer.unobserve(element); observed.delete(element); }
     for (const element of scroll.current?.querySelectorAll('[data-table-natural]') ?? []) {
-      if (!observed.has(element)) { observed.add(element); observer.observe(element); }
+      const key = (element as HTMLElement).dataset.tableNatural!;
+      if (!observed.has(element)) { observed.set(element, { key }); observer.observe(element); }
+      else if (changed.has(key)) { observer.unobserve(element); observer.observe(element); }
     }
-  }, [columns, shownColumns, visible, widthScope]);
+  }, [layoutColumns, widthScope]);
   const measuredRows = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);
   // Measure only mounted rows. Prefix geometry uses the last measured height of
   // each identity; new rows use the minimum until they enter the viewport.
@@ -331,16 +395,12 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     for (const row of scroll.current?.querySelectorAll('tbody tr') ?? []) {
       if (!held.observed.has(row)) { held.observed.add(row); held.observer.observe(row); }
     }
-  }, [mounted, heightScope, wrapping]);
+  }, [mountedKeys, heightScope, wrapping]);
   useEffect(() => {
     const live = new Set(slotKeys);
-    setRowMeasurements(before => {
-      if ([...before.heights.keys()].every(key => live.has(key))) return before;
-      return { ...before, heights: new Map([...before.heights].filter(([key]) => live.has(key))) };
-    });
-  }, [slotKeys]);
-  const maxima = useMemo(() => new Map(columns.filter(column => column.bar != null).map(column => [column.key,
-    column.bar === 'visible' ? barMaximum(ordered, column.value) : column.bar as number | bigint])), [columns, ordered]);
+    if ([...rowMeasurements.heights.keys()].some(key => !live.has(key)))
+      setRowMeasurements({ ...rowMeasurements, heights: new Map([...rowMeasurements.heights].filter(([key]) => live.has(key))) });
+  }, [slotKeys, rowMeasurements]);
   useEffect(() => () => hideTooltip(owner), [owner]);
   // A scrollable tooltip this table owns takes the wheel, as the chart kits' do; the layer
   // itself ignores the pointer. Registered natively so the page scroll can be prevented.
@@ -384,8 +444,9 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     }
     const focused = focusedKey === null ? undefined : ordered.find(row => rowKey(row) === focusedKey);
     const content = focused === undefined ? null : contentFor(focused);
-    setDescription(content && focusedKey !== null ? { key: focusedKey, text: tooltipText(content) } : null);
-  }, [ordered, rowKey, focusedKey, contentFor, owner]);
+    const next = content && focusedKey !== null ? { key: focusedKey, text: tooltipText(content) } : null;
+    if (!sameContent(description, next)) setDescription(next);
+  }, [ordered, rowKey, focusedKey, contentFor, owner, description]);
   const open = (row: T, x: number, y: number) => {
     const items = rowMenu?.(row);
     if (!items?.length) return false;
@@ -403,17 +464,17 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     scroll.current?.scrollTo({ top });
     requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`tr[aria-rowindex="${slot + 2}"]:not([aria-hidden="true"])`)?.focus());
   };
-  const grid = tableGrid(shownColumns, rank, natural.scope === widthScope ? natural.widths : new Map());
+  const tracks = useEqualContent(shownColumns.map(column => ({ key: column.key, width: column.width })));
+  const grid = useMemo(() => tableGrid(tracks, rank, natural.scope === widthScope ? natural.widths : new Map()),
+    [tracks, rank, natural, widthScope]);
   // Hide or restore one prioritised column per pass before paint, until the table itself fits (the scroller's padding masks a little overflow).
   useLayoutEffect(() => {
     const element = tableElement.current ?? scroll.current;
     if (!element || !order.length) return;
-    setFit(before => {
-      const held = before.scope === fitScope ? before.fit : FULL_FIT;
-      const next = fitColumns(held, order, element.clientWidth, element.scrollWidth);
-      return next === held && before.scope === fitScope ? before : { scope: fitScope, fit: next };
-    });
-  }, [order, fitScope, fit, grid, view.width]);
+    const held = fit.scope === fitScope ? fit.fit : FULL_FIT;
+    const next = fitColumns(held, order, element.clientWidth, element.scrollWidth);
+    if (next !== held || fit.scope !== fitScope) setFit({ scope: fitScope, fit: next });
+  }, [order, fitScope, fit, grid, view.width, layoutColumns, rowHeight, fonts]);
   const naturalContent = (column: TableColumn<T>, content: ReactNode) => column.width === 'max-content'
     ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
   return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
@@ -422,19 +483,19 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
     <table ref={tableElement} aria-label={label} aria-rowcount={ordered.length + 1} role={tree ? 'treegrid' : undefined}>
-      <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{shownColumns.map(column => <th key={column.key} scope="col"
+      <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{shownColumns.map((column, index) => <th key={column.key} scope="col"
         className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label} data-tooltip={column.hint}
         aria-sort={column.sortable === false || unsorted ? undefined : sort.column === column.key ? sort.direction : 'none'}>
-        {column.sortable === false || unsorted ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
+        {column.sortable === false || unsorted ? naturalContent(column, headers[index]) : <button type="button" aria-label={column.label} onClick={() => {
           const next = nextSort(sort, column.key, column.numeric ? 'descending' : 'ascending', column.direction);
           if (setOption) setOption('tableSort', sortOptionValue(next)); else setLocalSort(next);
-        }}>{naturalContent(column, <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true" style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>)}</button>}
+        }}>{naturalContent(column, headers[index])}</button>}
       </th>)}</tr></thead>
       <tbody style={{ height: offsets[count] - view.headerHeight }}>{mounted.map(row => {
         const change = ranks.get(row.key)?.delta ?? 0;
         const node = nesting?.get(row.key);
         const opens = node?.group === true && node.count > 0;
-        return <tr key={row.key} data-table-row={row.key} className={`${movingRowClass(row)}${muted?.(row.item.value) ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
+        return memoRow(row.key, <tr data-table-row={row.key} className={`${movingRowClass(row)}${muted?.(row.item.value) ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
           aria-hidden={row.phase === 'leaving' || undefined} aria-rowindex={row.slot + 2}
           aria-level={node?.level} aria-setsize={node?.size} aria-posinset={node?.position} aria-expanded={opens ? node.open : undefined}
           aria-describedby={description?.key === row.key ? `${owner}-description` : undefined}
@@ -482,16 +543,11 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
           }} onPointerDown={() => { keyboardMenu.current = false; }}>
           {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
           {shownColumns.map((column, index) => {
-            const value = column.value(row.item.value);
-            const missing = isMissing(value);
-            const cell = cellContent(column, row.item.value, value);
-            const content = node && index === 0 ? <TreeCell node={node}>{cell}</TreeCell> : cell;
             return <td key={column.key} className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`}>
-              {naturalContent(column, column.bar != null ? <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
-                maximum={maxima.get(column.key) ?? 0}>{content}</CellBar> : content)}
+              {naturalContent(column, cells.get(row.key)![index].content)}
             </td>;
           })}
-        </tr>;
+        </tr>);
       })}</tbody>
     </table>
     {description && <span id={`${owner}-description`} className="sr-only">{description.text}</span>}
@@ -500,10 +556,10 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
 }
 
 /** A nested row's first cell, indented by depth; a group header row carries the timeline lanes' disclosure mark. */
-function TreeCell({ node, children }: { node: TreeRow; children: ReactNode }) {
-  return <span className={`table-tree${node.group ? ' is-group' : ''}`} style={{ '--table-tree-depth': node.level - 1 } as CSSProperties}>
-    {node.group && <svg className="table-disclosure" viewBox="-6 -6 12 12" aria-hidden="true">
-      {node.count > 0 && <path d={node.open ? 'M-4 -2L4 -2L0 3Z' : 'M-2 -4L3 0L-2 4Z'} />}</svg>}
+function TreeCell({ level, group, count, open, children }: Pick<TreeRow, 'level' | 'group' | 'count' | 'open'> & { children: ReactNode }) {
+  return <span className={`table-tree${group ? ' is-group' : ''}`} style={{ '--table-tree-depth': level - 1 } as CSSProperties}>
+    {group && <svg className="table-disclosure" viewBox="-6 -6 12 12" aria-hidden="true">
+      {count > 0 && <path d={open ? 'M-4 -2L4 -2L0 3Z' : 'M-2 -4L3 0L-2 4Z'} />}</svg>}
     <span className="table-tree-content">{children}</span></span>;
 }
 
@@ -515,9 +571,11 @@ export function CellBar({ value, maximum, children }: {
     style={{ width: `${barFraction(value, maximum) * 100}%` }} />}<span>{children}</span></span>;
 }
 
-export function CountryCell({ name, flag, flagReason, flagPending }: {
-  name: string; flag?: string; flagReason?: string; flagPending?: boolean;
+export function CountryCell({ name, nameFailure, flag, flagReason, flagDetail, flagPending }: {
+  name: string; nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean;
 }) {
-  return <span className="table-country" title={name}><CountryFlagUrl className="table-country-flag"
-    url={flag} reason={flagReason} pending={flagPending} /><span>{name}</span></span>;
+  return <span className="table-country" data-detail={nameFailure?.message} title={name}><CountryFlagUrl className="table-country-flag"
+    url={flag} detail={flagDetail} reason={flagReason} pending={flagPending} fixedSize /><span>{name}</span></span>;
 }
+
+defineCellWidth(CountryCell, ({ name }) => <span className="table-country"><span className="table-country-flag" /><span>{name}</span></span>);

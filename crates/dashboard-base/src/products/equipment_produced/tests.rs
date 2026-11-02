@@ -61,6 +61,7 @@ pub(crate) fn assert_published(
             .collect();
         amounts.sort_by_key(|amount| (amount.variant, amount.purpose));
         SourceEndpoint {
+            spending_since: source.head.spending_since,
             slot: head.slot,
             country_id: head.country_id,
             observation: head.observation,

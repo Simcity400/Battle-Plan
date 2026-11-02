@@ -196,7 +196,7 @@ test('playback 100 to 101 to 102 starts no new look requests and holds every pen
 
 test('a failed appearance read shows unknown, never the old look or an empty answer', () => {
   const result = nextLooks(new Map([['ABC', germany]]), ['ABC'], () => ({ style: FAILED_FACT, flag: FAILED_FACT }));
-  assert.deepEqual(result.get('ABC'), { name: null, color: null, flag: null });
+  assert.deepEqual(result.get('ABC'), { name: null, color: null, flag: null, nameFailure: FAILED_FACT, flagFailure: FAILED_FACT });
 });
 
 test('facts are asked for by the set of countries, so a re-ranking never cancels a read', () => {
@@ -238,5 +238,5 @@ test('exact dated looks use every row read hour while preserving identity and re
   assert.equal(pending.looks.has('changed holder'), false);
   assert.equal(pending.looks.get('first'), germany);
   const missing = sampledLooks(pending, plan.samples, () => ({ style: null, flag: FAILED_FACT }));
-  assert.deepEqual(missing.looks.get('first'), { name: null, color: null, flag: null });
+  assert.deepEqual(missing.looks.get('first'), { name: null, color: null, flag: null, flagFailure: FAILED_FACT });
 });

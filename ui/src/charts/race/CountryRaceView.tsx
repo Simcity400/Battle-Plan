@@ -29,7 +29,7 @@ import type { ChartStrip } from '../TimeChart';
 import { CHART_LAYOUT } from '../tokens';
 import type { ChartTokens } from '../tokens';
 import type { PlotFrame } from '../frame';
-import { fitTooltip, tooltipText } from '../tooltip';
+import { countryNameDetails, fitTooltip, tooltipText } from '../tooltip.ts';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { shownUntil } from '../view';
@@ -154,9 +154,9 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const looks = useCountryLooks(runtime.client, track, tags, moment, active, segmentAt,
     lookHours, countryLookHour !== undefined || (view === 'race' && countryLookHours !== undefined));
   const countryColour = useCountryColours(tags, looks.color, tokens, looks);
-  const entity = entityLooks ?? { name: looks.name, flag: looks.flag, color: countryColour,
+  const entity = entityLooks ?? { name: looks.name, nameFailure: looks.nameFailure, flag: looks.flag, color: countryColour,
     countryFlag: presentation.countryLooks === false ? undefined : (tag: string, at?: number) => ({
-      flag: looks.flag(tag, at), flagReason: looks.flagReason?.(tag, at), flagPending: looks.flagPending?.(tag, at) }) };
+      nameFailure: looks.nameFailure?.(tag, at), flag: looks.flag(tag, at), flagDetail: looks.flagDetail?.(tag, at), flagReason: looks.flagReason?.(tag, at), flagPending: looks.flagPending?.(tag, at) }) };
   const country = entity.color;
   const nameOf = useCallback((tag: string, hour?: number) => entityLooks
     ? entityLooks.name(tag, hour ?? (linesView ? hours.get(tag) ?? moment : moment)) : looks.name(tag, hour), [entityLooks, looks, linesView, hours, moment]);
@@ -282,7 +282,12 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const tipAt = (tag: string, hour: number, name: string, hovered: readonly EventBadge[] = []) => {
     const forms = tooltip(tag, hour, name, colours, labelAt)
       ?? (hovered.length ? [{ title: formatDateTime(hour), rows: [] }] : null);
-    return forms ? fitForms(forms, hovered, presentation.tooltipKeep ?? 1) : null;
+    if (!forms) return null;
+    const detail = countryNameDetails(labelAt(hour)(tag), { nameFailure: entity.nameFailure?.(tag, hour) });
+    function* withNameDetails() {
+      for (const form of forms!) yield { ...form, ...countryNameDetails({ nameDetail: form.detail }, { nameDetail: detail.detail }) };
+    }
+    return fitForms(withNameDetails(), hovered, presentation.tooltipKeep ?? 1);
   };
   const common = { extent, playhead, playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24,
     hoursPerSecond, branchStart: track.branch.firstHour, active, onContextMenu: jump,
@@ -293,12 +298,12 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     : !(linesView ? keyHours : mixHours).length ? <WidgetState kind="unavailable" message={mixEmpty.unavailable(mixName)} /> : null : null;
   const legend = (shown: readonly CountryRacePart[], map: ReadonlyMap<string, string>) => <Legend label={partsLabel} windowed={presentation.windowedLegend}
     items={shown.map(part => ({ id: part.id, label: part.label, color: part.color ?? map.get(part.id) ?? tokens.muted, value: part.value }))} />;
-  return <div className="country-race">
+  return <div className="country-race" data-detail={[...new Set(tags.flatMap(tag => [entity.nameFailure?.(tag)?.message, entity.countryFlag?.(tag)?.flagDetail]).filter(Boolean))].join("\n") || undefined}>
     {view === 'mix' && mix && <p className={`country-race-country${presentation.strongMixName ? ' is-strong' : ''}`}>{mixName}</p>}
     {view === 'race' && legend(raceLegendParts, colours)}
     {view === 'mix' && !linesView && presentation.mixLegend !== false && legend(mixParts, mixColours)}
     {view === 'lines' && !endLabels && (presentation.countryLooks !== false || entityLooks) && <Legend label={lineLegendLabel} windowed={presentation.windowedLegend}
-      items={[...new Set(lines.map(line => line.tag))].map(tag => ({ id: tag, label: nameOf(tag), color: country(tag) }))} />}
+      items={[...new Set(lines.map(line => line.tag))].map(tag => ({ id: tag, label: nameOf(tag), detail: entity.nameFailure?.(tag)?.message, color: country(tag) }))} />}
     {beforeChart}
     {view !== 'race' && <PreparedKey pending={pending} approximate={linesView
       ? [...(lineSummaries?.values() ?? [])].flatMap(summary => summary.approximate ?? []) : mixApproximate} />}

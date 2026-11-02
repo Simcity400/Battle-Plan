@@ -1,5 +1,5 @@
 import { dayLabel } from '../../charts/draw.ts';
-import { fitTooltip } from '../../charts/tooltip.ts';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
@@ -59,12 +59,14 @@ export function ribbonTooltip(link: SideLink, source: SideNode, target: SideNode
   const listTrades = parts.length > 1;
   ask([source.identity, target.identity, ...(listTrades || soleAggregated ? parts.slice(0, TOOLTIP_LIMIT).flatMap(flow => [flow.sellerIdentity, flow.buyerIdentity]) : [])]);
   const title = soleAggregated ? `${named(parts[0].sellerIdentity).name} → ${named(parts[0].buyerIdentity).name}` : `${name(source)} → ${name(target)}`;
-  const head = { title, icon: link.resource.icon ?? undefined, subtitle: `${resourceName(link.resource)} · ${subtitle}`, note };
+  const titleCountries = soleAggregated ? [named(parts[0].sellerIdentity), named(parts[0].buyerIdentity)]
+    : [source.identity ? named(source.identity) : null, target.identity ? named(target.identity) : null];
+  const head = { title, ...countryNameDetails(...titleCountries), icon: link.resource.icon ?? undefined, subtitle: `${resourceName(link.resource)} · ${subtitle}`, note };
   const rows = measureRows(link.flows, measure, from, hour, decimals);
   function* forms(): Generator<TooltipContent> {
     if (!listTrades) { yield { ...head, rows }; return; }
     for (let count = Math.min(TOOLTIP_LIMIT, parts.length); count >= 1; count--) {
-      const listed: TooltipRow[] = parts.slice(0, count).map((flow, index) => ({ label: `${named(flow.sellerIdentity).name} → ${named(flow.buyerIdentity).name}`,
+      const listed: TooltipRow[] = parts.slice(0, count).map((flow, index) => ({ ...countryNameDetails(named(flow.sellerIdentity), named(flow.buyerIdentity)), label: `${named(flow.sellerIdentity).name} → ${named(flow.buyerIdentity).name}`,
           value: amount([flow]), indent: true, short: true, divider: index === 0 }));
       const more = parts.length - count;
       yield { ...head, rows: [...rows, ...listed, ...(more ? [{ label: `${usNumber.format(more)} more`, tone: 'muted' as const, indent: true }] : [])] };

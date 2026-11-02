@@ -60,7 +60,7 @@ const demandStack: FuelDemandStackReply = { branchId: '1', tag: 'AAA', hour: 100
     runs: [{ firstHour: 100, lastHour: 123, startsSegment: true, amountRaw: part.amountRaw, reason: null, recordedName: part.recordedName, nameReason: null }] })) };
 const host = globalThis as typeof globalThis & {
   __fuelPinRequests?: ProductRequest[]; __fuelRetainedRecipient?: FuelRecipientSelection | null; __fuelDrillState?: DrillState;
-  __fuelFixture?: { reply?: FuelReply; awards?: FuelAwardsReply; consumption?: FuelConsumptionReply; demand?: FuelDemandReply; demandStack?: FuelDemandStackReply; error?: string; awardsError?: string; demandError?: string };
+  __fuelFixture?: { reply?: FuelReply; awards?: FuelAwardsReply; consumption?: FuelConsumptionReply; demand?: FuelDemandReply; demandStack?: FuelDemandStackReply; error?: Error; awardsError?: Error; demandError?: Error };
   __fuelNumberStore?: (client: object, kind: 'main' | 'awards') => unknown;
   __fuelPlot?: { lines: CountryRaceLine[]; pickOwner: { scope: string; numbers?: FuelReply[] }; onPick: (hour: number, tag?: string) => void };
   __fuelCharts?: TimeChartProps[]; __fuelHistoryIdentities?: string[];
@@ -265,9 +265,9 @@ test('content pending and label-only recovery keep the actual Fuel plot, held re
     assert.equal(host.__fuelPlot!.pickOwner.scope, original.scope);
     assert.equal(host.__fuelHistoryIdentities![0], historyIdentity);
     assert.deepEqual(host.__fuelCharts!.at(-1)!.layers[0].extent!([100, 123]), [0, 1]);
-    host.__fuelFixture = { reply: recovered, awardsError: 'Synthetic recipient-name failure' };
+    host.__fuelFixture = { reply: recovered, awardsError: new Error('Synthetic recipient-name failure') };
     assert.match(render(), /Synthetic recipient-name failure/);
-    host.__fuelFixture = { error: 'Synthetic content failure' };
+    host.__fuelFixture = { error: new Error('Synthetic content failure') };
     assert.match(render(), /Synthetic content failure/);
     host.__fuelDrillState = { breakdown: 'gain', follow: false, hour: 100 };
     const gain = { ...widget, options: { ...widget.options, show: 'gain' } };
@@ -400,7 +400,7 @@ test('the default drill routes to current individual demand and its actual selec
     assert.deepEqual(host.__fuelCharts!.at(-1)!.layers[0].extent!([100, 123]), [0, 2.4]);
     host.__fuelFixture = { reply, consumption, demand: { ...demand, warnings: ['Synthetic current site/topology finding'] } };
     assert.doesNotMatch(render(), /Synthetic current site\/topology finding/, 'data notes are not shown in the drill');
-    host.__fuelFixture = { reply, consumption, demandError: 'Synthetic current inventory failure' };
+    host.__fuelFixture = { reply, consumption, demandError: new Error('Synthetic current inventory failure') };
     const failed = render();
     assert.doesNotMatch(failed, />Synthetic current inventory failure</);
     assert.match(failed, /Couldn’t load consumers/);

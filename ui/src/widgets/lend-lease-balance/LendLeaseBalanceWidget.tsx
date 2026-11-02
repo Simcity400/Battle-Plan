@@ -13,15 +13,16 @@ import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { extentOfAll } from '../../charts/series';
 import type { Run } from '../../charts/series';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryColours } from '../../charts/race/countryColours';
 import Legend from '../../charts/Legend';
 import { useCountryLooks } from '../../dashboard/countryLooks';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt.ts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
+import { groupReasonAt, preparedAt, tagAt } from '../../dashboard/economyHistory.ts';
 import { MEMBERSHIP_PREPARING, membersKnown } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -75,7 +76,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   const scale = data?.scale ?? 100000;
   const items = useMemo<BalanceItem[]>(() => (rows ?? []).map(row => ({
     id: row.holder, label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour),
-    countryFlag: { flag: looks.flag(row.tag, hour), flagReason: looks.flagReason?.(row.tag, hour), flagPending: looks.flagPending?.(row.tag, hour) },
+    countryFlag: { nameFailure: looks.nameFailure?.(row.tag, hour), flagDetail: looks.flagDetail?.(row.tag, hour), flag: looks.flag(row.tag, hour), flagReason: looks.flagReason?.(row.tag, hour), flagPending: looks.flagPending?.(row.tag, hour) },
     color: colour(row.tag, hour), left: barValue(row.received), right: barValue(row.sent),
     leftText: amountLabel(row.received, scale), rightText: amountLabel(row.sent, scale), ratioText: '', segment: row.holder, row,
   })), [rows, looks, colour, hour, scale]);
@@ -84,7 +85,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   const tooltip = (item: BalanceItem): TooltipContent => {
     const history = histories.get(item.row.holder);
     const first = history ? firstRecorded(history) : null;
-    return { title: item.label, subtitle: dayLabel(hour), rows: [
+    return { ...countryNameDetails(item.countryFlag), title: item.label, subtitle: dayLabel(hour), rows: [
       { label: 'Sent', value: amountText(item.row.sent, scale) }, { label: 'Received', value: amountText(item.row.received, scale) },
       ...first !== null ? [{ label: `Not recorded before ${dayLabel(first)}`, tone: 'muted' as const }] : [],
     ] };
@@ -95,11 +96,15 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   };
   const playbackHour = Math.floor(playbackHour2) + (track?.axisOffset ?? 0);
   const at = drillHour(drill, playbackHour) ?? hour;
+  const pickedHistory = picked ? histories.get(picked.holder) : undefined;
+  const pickedTag = pickedHistory ? tagAt(pickedHistory.tags, at) : null;
+  const pickedNames = useCountryLabelsAt(runtime.client, track, pickedTag ? [{ tag: pickedTag, hour: at }] : [], active);
+  const pickedName = pickedTag ? pickedNames.labelAt(at)(pickedTag).name : 'Country name unavailable';
 
   if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see lend-lease." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !rows) return <>{groupFailure}<WidgetState kind="loading" label="Loading lend-lease…" /></>;
   if (!preparedAt(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
@@ -130,18 +135,18 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   </div>;
   return <div ref={anchor} className="lend-lease-balance-host">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? `${looks.name(picked.tag, at)}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={dayLabel(at)}
+      title={picked ? `${pickedName}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={dayLabel(at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
-      {picked && <Partners widget={widget} runtime={runtime} active={active} holder={picked.holder} tag={picked.tag} measure={measure} hour={at}
+      {picked && <Partners widget={widget} runtime={runtime} active={active} holder={picked.holder} name={pickedName} measure={measure} hour={at}
         onPick={pick => dispatch({ type: 'pick', hour: pick })} />}
     </DrillHost>
   </div>;
 }
 
 /** One country's records of each partner at the drill's hour, and its totals over time. */
-function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick }: {
-  widget: WidgetProps['widget']; runtime: WidgetProps['runtime']; active: boolean; holder: string; tag: string;
+function Partners({ widget, runtime, active, holder, name, measure, hour, onPick }: {
+  widget: WidgetProps['widget']; runtime: WidgetProps['runtime']; active: boolean; holder: string; name: string;
   measure: BalanceMeasure; hour: number; onPick: (hour: number) => void;
 }) {
   const tokens = useChartTokens();
@@ -157,7 +162,7 @@ function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick 
   const colour = useCountryColours(tags, looks.color, tokens, looks);
   const scale = data?.scale ?? 100000;
   const items = useMemo(() => rows.sort((a, b) => { const x = (a.sent ?? 0n) + (a.received ?? 0n), y = (b.sent ?? 0n) + (b.received ?? 0n); return x === y ? 0 : x > y ? -1 : 1; })
-    .map(row => ({ id: row.holder, label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
+    .map(row => ({ id: row.holder, nameFailure: looks.nameFailure?.(row.tag, hour), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
       left: barValue(row.received), right: barValue(row.sent), leftText: amountLabel(row.received, scale), rightText: amountLabel(row.sent, scale),
       ratioText: '', segment: row.holder })), [rows, looks, colour, hour, scale]);
   const own = totals.data?.histories.find(history => history.holder === holder);
@@ -171,18 +176,18 @@ function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick 
       return end ? [{ text: line.label, y: end.y, from: end.y, color: line.color }] : []; });
     drawEndLabels(ctx, frame, chartTokens, ends);
   }, extent: x => extentOfAll(lines.map(line => line.plotted), x[0], x[1]) }], [lines, pending]);
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading lend-lease…" />;
   return <div className="lend-lease-partners">
-    {!items.length ? <p className="drill-empty">No partner was recorded for {tag} at this date.</p>
-      : <div className="lend-lease-partner-bars"><ButterflyChart label={`Lend-lease partners of ${tag}`} items={items} leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel=""
+    {!items.length ? <p className="drill-empty">No partner was recorded for {name} at this date.</p>
+      : <div className="lend-lease-partner-bars"><ButterflyChart label={`Lend-lease partners of ${name}`} items={items} leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel=""
         active={active} hoursPerSecond={hoursPerSecond} showRatio={false}
         tooltip={item => { const row = rows.find(each => each.holder === item.id);
-          return fitTooltip([{ title: item.label, subtitle: dayLabel(hour), rows: [{ label: 'Sent', value: amountText(row?.sent ?? null, scale) }, { label: 'Received', value: amountText(row?.received ?? null, scale) }] }], viewport); }} /></div>}
+          return fitTooltip([{ ...countryNameDetails(item), title: item.label, subtitle: dayLabel(hour), rows: [{ label: 'Sent', value: amountText(row?.sent ?? null, scale) }, { label: 'Received', value: amountText(row?.received ?? null, scale) }] }], viewport); }} /></div>}
     {own && <>
       <Legend label="Totals" items={lines.map(line => ({ id: line.label, label: line.label, color: line.color }))} />
       <div className="lend-lease-partner-time">
-        <TimeChart label={`Lend-lease of ${tag} over time`} extent={[track.branch.firstHour, track.branch.lastHour]} playhead={hour} playback="cursor"
+        <TimeChart label={`Lend-lease of ${name} over time`} extent={[track.branch.firstHour, track.branch.lastHour]} playhead={hour} playback="cursor"
           afterPlayhead hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour} padding={{ right: 72 }}
           axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} active={active} pickOwner={holder}
           revision={`${holder}:${measure}:${lines.length}:${pending.length}`}

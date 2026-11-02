@@ -116,7 +116,7 @@ test('a country’s flag or name opens its whole trade, reading its own reply on
   const state = { slot: 0, states: [] as unknown[], drill: CLOSED as DrillState, requests: [] as unknown[], reply: undefined as TradeFlowsReply | undefined,
     flow: undefined as FlowDiagramProps | undefined, host: undefined as ComponentProps<typeof DrillHost> | undefined,
     country: undefined as { holder: string; trade: { reply: TradeFlowsReply } } | undefined, menu: [] as Item[],
-    pointHour: undefined as number | undefined, pointError: undefined as string | undefined };
+    pointHour: undefined as number | undefined, pointError: undefined as Error | undefined };
   const globals = globalThis as typeof globalThis & { __tradeCountry?: typeof state };
   globals.__tradeCountry = state;
   const replacements: Record<string, string> = {
@@ -211,7 +211,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
 
     // A hovered hour whose own read fails says so beside the country's history.
     (props.runtime.client as { preparedQuery?: () => void }).preparedQuery = () => {};
-    state.pointHour = 130; state.pointError = 'refused';
+    state.pointHour = 130; state.pointError = new Error('refused');
     markup = render();
     assert.ok(state.requests.some(request => (request as { params: { hours?: number[] } }).params.hours?.[0] === 130), 'the hovered hour is read');
     assert.match(markup, /Couldn’t load this hour’s trade\./);

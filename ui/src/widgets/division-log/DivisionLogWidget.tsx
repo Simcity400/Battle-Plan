@@ -30,7 +30,7 @@ import { battleWindowIndex, battleWindows } from '../land-battles/landBattlesDat
 import { placeKey, validatePlaceNamesReply } from '../../dashboard/placeNamesData';
 import { OPTIONS } from './definition';
 import { divisionName, divisionStatus, divisionRows, divisionTooltip, selectedTemplates, templateToken,
-  validateDivisionLog, validateDivisionManifest, validateDivisionTotals } from './divisionLogData';
+  validateDivisionLog, validateDivisionManifest, validateDivisionTotals } from './divisionLogData.ts';
 import type { DivisionLogItem } from './divisionLogData';
 import './divisionLog.css';
 
@@ -147,8 +147,8 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its divisions." />;
-  if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
-  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (manifest.error) return <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!window) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
@@ -157,7 +157,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   if (!manifest.data.lossesAvailable && events === 'lost' && preparedPrefix(manifest.data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} /></>;
   if (!manifest.data.available || events === 'lost' && !manifest.data.lossesAvailable) return <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></>;
   const error = history.errors.get(browseIndex);
-  if (error) return <>{groupFailure}<WidgetState kind="error" detail={error} onRetry={history.retry} /></>;
+  if (error) return <>{groupFailure}<WidgetState kind="error" failure={error} onRetry={history.retry} /></>;
   if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading division log…" /></>;
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
@@ -165,15 +165,15 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   const renderRow = ({ item: row }: LogRow<DivisionLogItem>) => {
     const { country, killer, place } = labels(row);
     return <><span className="log-art" aria-hidden="true">{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}</span>
-      <span className="log-text">{row.tag !== null && <CountryFlagUrl className="log-flag" url={country.flag} reason={country.flagReason} pending={country.flagPending} />}<b>{country.name}</b>: <b>{divisionName(row)}</b>
+      <span className="log-text">{row.tag !== null && <CountryFlagUrl className="log-flag" url={country.flag} detail={country.flagDetail} reason={country.flagReason} pending={country.flagPending} />}<b>{country.name}</b>: <b>{divisionName(row)}</b>
         {' · '}{row.templateName ?? 'Template not recorded'}{' · '}{row.placeAtEvent ? 'at ' : 'last seen at '}{place}
-        {row.killerTag !== null && <>{' · by '}<CountryFlagUrl className="log-flag" url={killer.flag} reason={killer.flagReason} pending={killer.flagPending} />{killer.name}</>}
+        {row.killerTag !== null && <>{' · by '}<CountryFlagUrl className="log-flag" url={killer.flag} detail={killer.flagDetail} reason={killer.flagReason} pending={killer.flagPending} />{killer.name}</>}
       </span><span className="log-tag">{divisionStatus(row)}</span></>;
   };
   return <div className="log-widget division-log">{groupFailure}
     <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} exact={(history.data.get(browseIndex) as { exact?: number } | undefined)?.exact} />
     {options.totals === true && <div ref={parityTotalsRoot} className="division-log-summary" aria-live="polite">
-      {totals.error ? <WidgetState kind="error" what="division totals" detail={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : fieldPreparing(totals.data, 'created') ? 'Totals are still being prepared.' : <>
+      {totals.error ? <WidgetState kind="error" what="division totals" failure={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : fieldPreparing(totals.data, 'created') ? 'Totals are still being prepared.' : <>
         {events !== 'lost' && <span><b>{(totals.data.created?.toLocaleString() ?? 'Still being prepared')}</b> created</span>}
         {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? (totals.data.lost?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> lost / removed</span>
           <span><b>{manifest.data.lossesAvailable ? (totals.data.transferred?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> transferred / merged</span></>}

@@ -32,7 +32,7 @@ export default function ManpowerHistory({ runtime, track, faction, tag, picked, 
       drawLine(ctx, frame, tokens, line, colour, { held: true, dash: index ? SECONDARY_DASH : undefined, until: state.playhead ?? undefined }); },
     extent: (x: readonly [number, number]) => extentOfAll([line], x[0], x[1]),
   }))], [lines, colour, pending]);
-  if (reply.error) return <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />;
+  if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
   if (!reply.data) return <WidgetState kind="loading" label="Loading manpower history…" />;
   // The picked hour still being prepared proves nothing yet: the history is loading, not unrecorded.
   if (!lines.some(line => line.length)) return pending?.some(span => span.firstHour <= picked && picked <= span.lastHour)

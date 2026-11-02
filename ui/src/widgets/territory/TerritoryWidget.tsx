@@ -1,3 +1,4 @@
+import { asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -172,9 +173,9 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
 
   if (!track) return <WidgetState kind="empty" icon="map" message="Load a campaign to see its territory." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error && !(factions && factionData)) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (view === 'share' && countryProduct.error && !(factions && data)) return <WidgetState kind="error" detail={countryProduct.error} onRetry={countryProduct.retry} />;
-  const groupFailure = (grouped || factions) && groupReply.error ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} /> : null;
+  if (error && !(factions && factionData)) return <WidgetState kind="error" failure={asFailure(error)} onRetry={retry} />;
+  if (view === 'share' && countryProduct.error && !(factions && data)) return <WidgetState kind="error" failure={countryProduct.error} onRetry={countryProduct.retry} />;
+  const groupFailure = (grouped || factions) && groupReply.error ? <WidgetState kind="error" failure={groupReply.error} onRetry={groupReply.retry} /> : null;
   if (groupFailure && !groupData) return groupFailure;
   if (!factions && resolved.reason) return <>{groupFailure}<WidgetState kind="empty" icon="map" message={resolved.reason} /></>;
   // A group with no member found yet asks for no country totals, so no reply will come; the
@@ -190,7 +191,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   if (!lines.length && view !== 'share' && view!=='lines') return factions || resolved.known(extent[0], extent[1])
     ? <>{groupFailure}<WidgetState kind="unavailable" message="Territory totals are unavailable for this selection." /></> : preparing;
   if (factions && factionLooks.loading && !shareFactionColours.size) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction colours…" /></>;
-  if (factions && !lines.every(line => shareFactionColours.has(line.tag))) return <>{groupFailure}<WidgetState kind="unavailable" message={factionColourError ? 'Couldn’t load faction colours.' : 'Faction colours are unavailable.'} /></>;
+  if (factions && !lines.every(line => shareFactionColours.has(line.tag))) return <>{groupFailure}<WidgetState kind="error" what="faction colours" failure={factionColourError ?? undefined} /></>;
   const measureName = MEASURES.find(item => item.value === measure)!.label;
   const unit = factions ? factionData?.unit : data?.areaUnit;
   const countName = territoryMeasureLabel(measure, rule, unit);

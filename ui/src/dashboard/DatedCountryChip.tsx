@@ -1,20 +1,24 @@
+import { failureText, type Failure } from './queryError.ts';
 import { CountryFlag, CountryFlagUrl } from '../components/CountryFlag';
 import { formatDateTime } from './calendar';
 import type { CountryLabel } from './countryFlagsAt';
 
 /** Callers resolve the native country and supply the label at the displayed hour. */
-export default function DatedCountryChip({ label, hour, reason }: {
-  label: ReturnType<CountryLabel> | null; hour: number | null; reason: string | null;
+export default function DatedCountryChip({ label, hour, reason, failure }: {
+  label: ReturnType<CountryLabel> | null; hour: number | null; reason: string | null; failure?: Failure | null;
 }) {
   const qualified = label !== null && hour !== null && reason === null;
   const named = label?.known === true && !label.nameFailed;
-  const loading = qualified && label.known === undefined && !label.nameFailed;
+  const failed = failure ?? label?.nameFailure;
+  const hasFailure = !!failed || label?.nameFailed === true;
+  const errorText = hasFailure ? failureText(failed, "Couldn’t load country name.") : undefined;
+  const loading = !hasFailure && qualified && label.known === undefined && !label.nameFailed;
   const unavailable = !qualified || label.nameFailed || label.known === false;
   const date = hour === null ? '' : `As of ${formatDateTime(hour)}`;
-  return <span className="dash-widget-country" data-tooltip={[unavailable ? 'Name unavailable' : null, date].filter(Boolean).join(' · ')}>
+  return <span className="dash-widget-country" data-detail={failed?.message ?? label?.nameDetail} data-tooltip={[hasFailure ? errorText : unavailable ? 'Name unavailable' : null, date].filter(Boolean).join(' · ')}>
     <CountryFlagUrl className="country-flag" url={qualified ? label?.flag : undefined}
-      reason={qualified ? label?.flagReason ?? undefined : undefined} pending={qualified ? label?.flagPending : undefined} />
-    <span>{named && qualified ? label!.name : loading ? 'Loading…' : 'Unavailable'}</span>
+      detail={qualified ? label?.flagDetail : undefined} reason={qualified ? label?.flagReason ?? undefined : undefined} pending={qualified ? label?.flagPending : undefined} />
+    <span>{hasFailure ? errorText : named && qualified ? label!.name : loading ? 'Loading…' : 'Unavailable'}</span>
   </span>;
 }
 

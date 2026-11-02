@@ -718,7 +718,7 @@ impl Product for FocusArt {
         check_cancel(cancelled)?;
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
         if !recorded(source, branch, params.hour) {
-            return Err(io::Error::other("Focus art hour was not recorded"));
+            return Err(dashboard_core::refused("Focus art hour was not recorded"));
         }
         art_at(
             source,

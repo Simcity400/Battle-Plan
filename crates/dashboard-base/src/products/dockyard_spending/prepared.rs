@@ -73,7 +73,7 @@ pub fn query(
             .as_array_mut()
             .ok_or_else(|| crate::invalid("Dockyard spending warnings are not a list"))?
             .push(json!(format!(
-                "{mismatches} repair reads had naval base assignments that did not sum to their country's dockyards in use; repairs there are not split by design."
+                "{mismatches} country-hours had naval base assignments that did not sum to their country's dockyards in use; repairs there are not split by design."
             )));
     }
     match input.view {

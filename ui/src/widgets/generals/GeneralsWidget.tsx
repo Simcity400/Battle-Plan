@@ -21,8 +21,8 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import CareerView from '../general-career/CareerView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { Attributes, AttributesHeader } from './Attributes';
-import { LeaderIdentity, SkillStars } from './LeaderIdentity';
+import { attributeCells, attributesHeader } from './Attributes.tsx';
+import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps, SkillStars } from './LeaderIdentity.tsx';
 import { firstSeenHour, leaderKey as rowKey, leadersAt, leaderName, leaderSkill as skillValue, leaderTooltip, pinnedCareer, attributeNames, recordedSince } from './generalsData';
 import type { LeaderRow } from './generalsData';
 import { useLeaderCountries, useLeaders } from './useLeaders';
@@ -82,13 +82,14 @@ export default function GeneralsWidget(props: WidgetProps) {
   const columns = useMemo<readonly TableColumn<LeaderRow>[]>(() => {
     return [
       { key: 'leader', header: 'Leader', label: 'Leader', sortable: false, width: 'minmax(190px, 2fr)', value: leaderName,
-        render: row => data && <LeaderIdentity art={portraits.at(row)} row={row} country={row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' }} /> },
+        render: row => data && <LeaderIdentity {...leaderIdentityProps(row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })} {...leaderPortraitProps(portraits.at(row))} /> },
       { key: 'skill', header: 'Skill', label: 'Skill', width: '92px', value: skillValue,
         renderMissing: true, render: r => <SkillStars level={r.value.skill} maximum={r.value.maximumSkill} /> },
-      { key: 'attributes', header: <AttributesHeader names={attributeMaxima.map((_, i) =>
-          [...new Set(rows.map(row => attributeNames(row.value)[i]))].join(' / ') || 'Name not recorded')} />,
+      { key: 'attributes', header: attributesHeader({ names: attributeMaxima.map((_, i) =>
+          [...new Set(rows.map(row => attributeNames(row.value)[i]))].join(' / ') || 'Name not recorded') }),
         label: 'Attributes', sortable: false, width: '150px', priority: 4, inTooltip: true, value: () => null, renderMissing: true,
-        render: row => <Attributes values={row.value.components} maxima={attributeMaxima} names={attributeNames(row.value)} bars={options.cellBars === true} /> },
+        widthKey: row => JSON.stringify([row.value.components, attributeNames(row.value)]),
+        render: row => attributeCells({ values: row.value.components, maxima: attributeMaxima, names: attributeNames(row.value), bars: options.cellBars === true }) },
       { key: 'traits', header: 'Traits', label: 'Traits', sortable: false, width: '1.1fr', priority: 5, inTooltip: true, value: r => r.value.traits?.length,
         renderMissing: true, render: r => <span className="leader-traits">{r.value.traits == null ? <span className="leader-missing">Not recorded</span> : r.value.traits.map(token => {
           const trait = r.traitCatalogue[token]; const name = contentTitle(trait?.name, trait?.token ?? token, 'Trait name unavailable');
@@ -111,8 +112,8 @@ export default function GeneralsWidget(props: WidgetProps) {
   const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })], viewportHeight), [labelAt, viewportHeight]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see its leaders." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (selection.group.error) return <WidgetState kind="error" detail={selection.group.error} onRetry={selection.group.retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
   if (display.selectionReason) return <WidgetState kind="unavailable" message={display.selectionReason} />;
   if (!data) return <WidgetState kind="loading" label="Loading leaders…" />;
   const observed = data.observed.find(r => r.firstHour <= shown && shown <= r.lastHour);

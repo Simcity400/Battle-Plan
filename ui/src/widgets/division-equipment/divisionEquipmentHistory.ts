@@ -1,3 +1,4 @@
+import { type Failure } from '../../dashboard/queryError.ts';
 import { keyedKnown, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
 import type { KeyedRun, KeyedWindow } from '../../dashboard/keyedHistory';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, EquipmentVariant, KeptReason } from '../../generated/dashboard';
@@ -159,14 +160,14 @@ const encoder = new TextEncoder();
 const replyBytes = (reply: DivisionEquipmentReply) => encoder.encode(JSON.stringify(reply)).length;
 
 /** The history's reply at `hour`, and whether the reached product must be asked instead. */
-export function historyAnswer(prepared: boolean, history: { data?: DivisionEquipmentHistory | null; error?: string }, hour: number)
+export function historyAnswer(prepared: boolean, history: { data?: DivisionEquipmentHistory | null; error?: Failure }, hour: number)
   : { held: DivisionEquipmentReply | null; asked: boolean } {
   const held = prepared && history.data ? divisionEquipmentAt(history.data, hour) : null;
   return { held, asked: !held && (!prepared || history.error !== undefined || history.data !== undefined) };
 }
 
 /** One asked range of a country's history; a null end is open. */
-export interface HistoryPart { firstHour: number | null; lastHour: number | null; data?: DivisionEquipmentHistory | null; error?: string }
+export interface HistoryPart { firstHour: number | null; lastHour: number | null; data?: DivisionEquipmentHistory | null; error?: Failure }
 
 const OVER_BUDGET = /exceeds the transport reply budget/;
 export const WHOLE: readonly HistoryPart[] = [{ firstHour: null, lastHour: null }];
@@ -175,8 +176,8 @@ export const partAt = (parts: readonly HistoryPart[], hour: number) =>
   parts.find(part => (part.firstHour === null || part.firstHour <= hour) && (part.lastHour === null || hour <= part.lastHour));
 
 /** A range refused as over the reply budget, asked again as its two halves; null when it cannot split. */
-export function splitPart(part: HistoryPart, error: string, branch: { firstHour: number; lastHour: number }): HistoryPart[] | null {
-  if (!OVER_BUDGET.test(error)) return null;
+export function splitPart(part: HistoryPart, error: Failure, branch: { firstHour: number; lastHour: number }): HistoryPart[] | null {
+  if (!OVER_BUDGET.test(error.message)) return null;
   const first = part.firstHour ?? branch.firstHour, last = part.lastHour ?? branch.lastHour;
   if (last <= first) return null;
   const middle = first + Math.floor((last - first) / 2);

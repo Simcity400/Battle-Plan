@@ -202,7 +202,7 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
       globalThis.__occupiedR2.wanted = wanted; return { labelAt: hour => tag => ({ name: tag + '@' + hour, flag: tag + '-flag@' + hour }) }; };`,
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => hour + ':' + tag;
       export const useCountryNamesAt = (_client, _track, wanted) => { globalThis.__occupiedR2.sorting = wanted;
-      return new Map(wanted.map(({ hour, tag }) => [nameKey(hour, tag), tag + '@' + hour])); };`,
+      return new Map(wanted.map(({ hour, tag }) => [nameKey(hour, tag), {kind:'value',value:tag + '@' + hour}])); };`,
     '/charts/table/Table.tsx': 'export default props => { globalThis.__occupiedR2.table = props; return null; }; export const CountryCell = props => props.name; export const CellBar = props => props.children;',
     '/components/WidgetState.tsx': 'export default props => { globalThis.__occupiedR2.state = props; return props.message ?? props.label; };',
   };

@@ -1,3 +1,4 @@
+import { failureText } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import type { WidgetMeta, WidgetPresets, WidgetRuntime } from '../../dashboard/definitions';
 import { useIdeaHistory } from '../../dashboard/ideaHistory';
@@ -16,9 +17,9 @@ export function useIdeaTimelinePresets(definition: WidgetMeta, runtime: WidgetRu
   const categories = data ? timelineCategories(data.categories) : [];
   const reason = !track ? 'Load a campaign to list its idea categories.'
     : !tag ? 'Choose a country to list this campaign’s idea categories.'
-    : !data ? error ?? 'Loading this campaign’s idea categories…'
+    : !data ? error ? failureText(error, 'Couldn’t load idea categories.') : 'Loading this campaign’s idea categories…'
       : !categories.length ? 'This campaign’s content has no political-screen idea categories with slots.' : null;
-  if (reason !== null) return { presets: [], reason };
+  if (reason !== null) return { presets: [], reason, detail: error?.message };
   return { reason: null, presets: categories.map(category => {
     // A known empty name keeps the widget's own editable title rather than an invented one.
     const name = contentTitle(category.name, category.token, 'Category name unavailable');

@@ -218,7 +218,12 @@ fn write<R: RowCodec>(walk: &mut Synthetic, hour: i32, table: TableId, rows: Opt
 /// native branch fed the projected hours of a projector starting cold at each of `starts` and
 /// at each walk's first hour (after a gap the walk starts again). Each flushes after each of
 /// `cuts`, and at `resume` both go on from what they saved.
-fn prepare(hours: &[Tables], starts: &[i32], cuts: &[i32], resume: Option<i32>) {
+fn prepare(
+    hours: &[Tables],
+    starts: &[i32],
+    cuts: &[i32],
+    resume: Option<i32>,
+) -> (Vec<(EndpointPage, Option<i32>)>, Fixture) {
     let format = FormatVersion::CURRENT;
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
@@ -360,6 +365,168 @@ fn prepare(hours: &[Tables], starts: &[i32], cuts: &[i32], resume: Option<i32>) 
                 tracker.invalidate();
             }
         }
+    }
+    (row.completed, fixtures.into_iter().next().unwrap())
+}
+
+#[test]
+fn design_witness_keeps_the_empty_census_country_run_first_hour() {
+    let census = start() + 8;
+    let edit = census + 5;
+    let mut hours: Vec<_> = scenario()
+        .into_iter()
+        .filter(|tables| (census..census + 14).contains(&tables.hour))
+        .collect();
+    for tables in &mut hours {
+        tables.changes = (tables.hour == edit)
+            .then(|| VariantChangeRow {
+                sequence: 1,
+                hour: edit,
+                variant: 1,
+                flags: Some([1, 1, 1]),
+                ..Default::default()
+            })
+            .into_iter()
+            .collect();
+        if tables.hour >= edit {
+            tables.definitions[0].obsolete = 1;
+            tables.definitions.push(VariantDefinitionRow {
+                id: 3,
+                equipment_token: 1,
+                creator_link: 1,
+                display_name: b"new design".to_vec(),
+                ..Default::default()
+            });
+        }
+    }
+    let (completed, fixture) = prepare(&hours, &[], &[], None);
+    assert!(completed.iter().any(|(page, _)| page.first_hour == edit));
+    let page = &completed.last().unwrap().0;
+    assert_eq!((page.first_hour, page.last_hour), (edit, census + 13));
+    let empty = page.countries.iter().find(|row| row.tag == "CCC").unwrap();
+    let equipment = empty.equipment.as_ref().unwrap();
+    assert_eq!(equipment.read_hour, census);
+    assert_eq!(equipment.present, Some(false));
+    assert!(equipment.amounts.is_empty());
+    assert_eq!(equipment.spending_since, census);
+    let data = spending(&fixture, &hours, "CCC", Some(edit + 1));
+    for field in ["total", "equipmentTotal", "production"] {
+        assert_eq!(data[field][0]["firstHour"], census, "{field}");
+    }
+    assert_eq!(data["production"][0]["emptyCensusHour"], census);
+}
+
+fn spending(
+    fixture: &Fixture,
+    hours: &[Tables],
+    tag: &str,
+    from: Option<i32>,
+) -> serde_json::Value {
+    use crate::products::production_spending::{
+        Purposes,
+        prepared::{Params, read_pages},
+    };
+    let index = read::read_index(&fixture.store, &fixture.key, 1)
+        .unwrap()
+        .unwrap();
+    let classes = read::Classes::new(&index, Named::default());
+    let last = hours.last().unwrap().hour;
+    read_pages(
+        None,
+        &index,
+        &classes,
+        &fixture.store,
+        &fixture.key,
+        (hours[0].hour, last),
+        &Params {
+            branch_id: "1".into(),
+            tag: tag.into(),
+            refits: false,
+            from,
+            hour: Some(last),
+            end: Some(last),
+        },
+        last,
+        last,
+        Purposes::Split,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+#[test]
+fn own_spending_change_starts_a_new_country_run() {
+    let census = start() + 8;
+    let next = census + 24;
+    let hours: Vec<_> = scenario()
+        .into_iter()
+        .filter(|tables| (census..next + 5).contains(&tables.hour))
+        .collect();
+    for resume in [None, Some(next + 1)] {
+        let (completed, fixture) = prepare(&hours, &[], &[next + 1], resume);
+        let source = completed
+            .last()
+            .unwrap()
+            .0
+            .countries
+            .iter()
+            .find(|row| row.tag == "AAA")
+            .unwrap()
+            .equipment
+            .as_ref()
+            .unwrap();
+        assert_eq!(source.spending_since, next);
+        let data = spending(&fixture, &hours, "AAA", Some(next + 2));
+        assert_eq!(data["equipmentTotal"][0]["firstHour"], next);
+    }
+}
+
+#[test]
+fn whole_branch_rocket_run_survives_an_unrelated_cut() {
+    let census = start() + 8;
+    let cut = census + 5;
+    let mut hours: Vec<_> = scenario()
+        .into_iter()
+        .filter(|tables| (census..census + 14).contains(&tables.hour))
+        .collect();
+    for tables in &mut hours {
+        if tables.hour >= cut {
+            tables.definitions[0].display_name = b"unrelated name".to_vec();
+        }
+        tables.changes = (tables.hour == cut)
+            .then(|| VariantChangeRow {
+                sequence: 1,
+                hour: cut,
+                variant: 1,
+                flags: Some([1, 1, 1]),
+                ..Default::default()
+            })
+            .into_iter()
+            .collect();
+    }
+    for resume in [None, Some(cut + 1)] {
+        let (completed, fixture) = prepare(&hours, &[], &[cut + 1], resume);
+        assert!(completed.iter().any(|(page, _)| page.first_hour == cut));
+        let rocket = completed
+            .last()
+            .unwrap()
+            .0
+            .countries
+            .iter()
+            .find(|row| row.tag == "CCC")
+            .unwrap()
+            .rocket
+            .as_ref()
+            .unwrap();
+        let read = crate::test_fixtures::slot_hour(TableId::RocketProductionOutput);
+        let expected = census + (read - census).rem_euclid(24);
+        assert!(expected < cut);
+        assert_eq!(rocket.read_hour, expected);
+        assert_eq!(rocket.spending_since, expected);
+        let data = spending(&fixture, &hours, "CCC", None);
+        assert_eq!(data["rocketTotal"][0]["firstHour"], expected);
+        assert_eq!(data["rocketTotal"][0]["totalRaw"], "0");
+        assert_eq!(data["rocketReads"], serde_json::json!([expected]));
     }
 }
 

@@ -89,7 +89,7 @@ pub fn query_hour(
         .index
         .iter()
         .find(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
-        .ok_or_else(|| crate::invalid("Prepared focus hour was not recorded"))?;
+        .ok_or_else(|| dashboard_core::refused("Prepared focus hour was not recorded"))?;
     let start = reader
         .latest_event(actor + 2, block.first_hour)?
         .map(|(_, row)| serde_json::from_value::<Progress>(row))
@@ -220,7 +220,7 @@ pub fn order_page(
     page: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<serde_json::Value> {
-    let unavailable = || crate::invalid("Prepared focus data is unavailable at this hour");
+    let unavailable = || dashboard_core::refused("Prepared focus data is unavailable at this hour");
     let Some((actor, mut reader)) = country_reader(store, key, branch, tag, cancelled)? else {
         return Err(unavailable());
     };

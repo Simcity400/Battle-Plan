@@ -236,9 +236,9 @@ test('actual dated lane and hover hooks retain empty names without widening requ
     hover.ask(20, visible); await settle(); renderHover(); fixture.commit(); await settle(); hover = renderHover();
     hoverTransport.calls.find(call => call.input.product === 'country-styles' && (call.input.params as { hour: number }).hour === 20)!.fail();
     await settle();
-    assert.equal(renderHover(wording.missing).labelAt(20)(visible[0]).name, wording.missing);
+    assert.equal(renderHover(wording.missing).labelAt(20)(visible[0]).name, 'Couldn’t load country name.');
     assert.equal(renderHover(wording.missing).labelAt(20)(visible[0]).nameFailed, true);
-    assert.equal(renderHover().labelAt(20)(visible[0]).name, 'Country name unavailable', 'a failed name read does not show its country tag');
+    assert.equal(renderHover().labelAt(20)(visible[0]).name, 'Couldn’t load country name.', 'a failed name read does not show its country tag');
     assert.deepEqual(hover.labelAt(10)(visible[0]), fallback(visible[0]), 'a different supplying hour never borrows this answer');
     hoverTransport.calls.find(call => call.input.product === 'country-styles' && hourOf(call) === 0)!.answer({ styles: [{ tag: visible[0], name: 'Sampled', color: null }] });
     hover.ask(30, visible); await settle(); renderHover(); fixture.commit(); await settle(); hover = renderHover();

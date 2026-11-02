@@ -6,7 +6,7 @@ import { Icon } from './Icons';
 import { Popover, usePopover } from './Popover';
 import './Select.css';
 
-export interface SelectOption { value: string; label: string; disabled?: boolean; reason?: string }
+export interface SelectOption { value: string; label: string; disabled?: boolean; reason?: string; detail?: string }
 
 /** A dropdown drawn like the app's other menus, where a native select would show the
  * system's list. Arrow keys move through the options, Enter picks and Escape closes. */
@@ -19,7 +19,7 @@ export function Select({ id: triggerId, label, value, options, disabled = false,
   const selected = options.find(option => option.value === value);
   return <>
     <button ref={menu.trigger} id={triggerId} type="button" className="select-trigger" popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
-      aria-label={label} disabled={disabled} data-tooltip={selected?.reason}>
+      aria-label={label} disabled={disabled} data-detail={selected?.detail} data-tooltip={selected?.reason}>
       <span>{selected?.label ?? value}</span><Icon name="chevron-down" /></button>
     {/* Kept in place: inside another popover this keeps native light-dismiss nested. */}
     <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}>
@@ -138,7 +138,7 @@ function SelectMenu({ label, value, options, onChoose }: { label: string; value:
             else nodes.current.delete(at);
           }}
           style={{ position: 'absolute', top: index.offset(at), minHeight: OPTION_HEIGHT, left: 0, right: 0 }}
-          disabled={option.disabled} data-tooltip={option.reason ?? option.label} data-option-index={at}
+          disabled={option.disabled} data-detail={option.detail} data-tooltip={option.reason ?? option.label} data-option-index={at}
           data-popover-autofocus={at === active || undefined} onFocus={() => setActiveValue(option.value)} onClick={() => onChoose(option.value)}>
           <span className="menu-item-label">{option.label}</span>{option.value === value && <Icon name="check" />}
         </button>;

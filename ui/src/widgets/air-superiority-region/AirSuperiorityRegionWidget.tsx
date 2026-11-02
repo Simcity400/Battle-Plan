@@ -69,7 +69,7 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   if (!air.window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (pendingReplyAt(air.data, air.hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (air.data?.available === false) return <WidgetState kind="unavailable" />;
-  if (air.error) return <WidgetState kind="error" detail={air.error} onRetry={air.retry} />;
+  if (air.error) return <WidgetState kind="error" failure={air.error} onRetry={air.retry} />;
   if (!air.data) return <WidgetState kind="loading" label="Loading air superiority…" />;
   if (order === 'name' && !air.choices) return <WidgetState kind="loading" label="Loading air regions…" />;
   if (air.readHour == null) return <WidgetState kind="unavailable" message="Not recorded at this time." />;

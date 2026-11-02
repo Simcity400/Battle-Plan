@@ -61,7 +61,7 @@ export async function prepareParityLists(root: Element, timeout: number) {
       const provider = current.get(selectedProvider.id);
       if (!provider) throw new Error('Prepared list unmounted');
       const error = provider.error?.();
-      if (error) throw new Error(error);
+      if (error) throw error;
       if (!provider.ready?.()) ready = false;
     }
     if (ready) return;

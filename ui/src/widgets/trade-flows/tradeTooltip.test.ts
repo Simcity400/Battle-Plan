@@ -32,6 +32,13 @@ test('a sole trade through either other node names and flags both countries at t
     assert.deepEqual(asked, [[{ tag: 'C', hour: 5 }, { tag: 'X', hour: 5 }]]);
     assert.equal(tip.title, `${reverse ? 'X' : 'C'} at 5 → ${reverse ? 'C' : 'X'} at 5`);
     assert.ok(!tip.rows.some(row => row.label === 'Seller' || row.label === 'Buyer'));
+    const failure = new Error('Synthetic trade country name decoder failure');
+    const failed = ribbonTooltip(link, source, target, { measure: 'current', from: 0, hour: 5, decimals: 0, viewport: 1000,
+      nodeName: node => `${node.members.length} other countries`,
+      labelAt: () => () => ({ name: 'Couldn’t load country name.', nameFailure: failure }),
+      countryAt: (id, hour) => identityCountryAt(data, id, hour), ask() {} });
+    assert.equal(failed.detail, failure.message);
+    assert.match(failed.title, /Couldn’t load country name/);
   }
 });
 
@@ -59,6 +66,13 @@ test('node tooltips share dated labels and bound their sorted country requests',
         labelAt: (hour: number) => (tag: string) => ({ name: `${tag} at ${hour}`, flag: `flag:${tag}:${hour}` }),
         countryAt: (id: string, hour: number) => identityCountryAt(data, id, hour), ask: (wanted: readonly NameAt[]) => { asked.push(wanted); } };
       const tip = nodeTooltip(node, diagram.links, options);
+      const failure = new Error('Synthetic folded trade name decoder failure');
+      const ribbon = diagram.links.find(link => link.flows.length > 1)!;
+      const failed = ribbonTooltip(ribbon, diagram.nodes.find(node => node.id === ribbon.source)!, diagram.nodes.find(node => node.id === ribbon.target)!,
+        { ...options, labelAt: () => () => ({ name: 'Couldn’t load country name.', nameFailure: failure }) });
+      const failedNames = failed.rows.filter(row => row.label.includes('Couldn’t load country name.'));
+      assert.ok(failedNames.length > 0);
+      assert.ok(failedNames.every(row => row.detail === failure.message));
       assert.equal(TOOLTIP_LIMIT, 8);
       assert.deepEqual(asked, [countries.slice(1, 9).map(tag => ({ tag, hour: tipHour }))]);
       assert.equal(tip.title, 'Other countries');

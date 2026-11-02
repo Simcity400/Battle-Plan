@@ -1,3 +1,4 @@
+import { asFailure, type Failure } from './queryError.ts';
 /** Facts about countries as recorded at given hours (their names, their flags,
  * their colours), for labels, tooltips and charts dated to a moment. Pure parts,
  * shared by the dated fact hooks: a store bounded to the hours used most recently,
@@ -9,6 +10,7 @@ import type { DashboardClient, DashboardSource } from './client';
 import { loadTransientProduct } from './products.ts';
 import { replySize, setReplySize } from './replySizes.ts';
 import { sharedFacts } from './sharedFacts.ts';
+import type { FactFailure } from './sharedFacts';
 import { inFrame } from './frameUpdates.ts';
 import { askTimeline } from './countryTimeline.ts';
 import type { HeldLookup } from './countryTimeline';
@@ -19,7 +21,10 @@ export interface NameAt { hour: number; tag: string }
 export const nameKey = (hour: number, tag: string) => JSON.stringify([hour, tag]);
 
 /** A failed read is unknown, distinct from an answered fact with no value. */
-export const FAILED_FACT = Symbol('failed fact');
+export const FAILED_FACT = new Error('Fact request failed');
+export function isFailedFact(value: unknown): value is Failure {
+  return value instanceof Error;
+}
 
 /** How many hours no longer wanted a store keeps; callers that bound the hours they
  * ask about also use it as their floor. */
@@ -163,7 +168,7 @@ export function planRequests<V>(store: HourStore<V>, wanted: readonly NameAt[], 
 export function transientError(error: unknown): boolean {
   if (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof TypeError) return true;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = asFailure(error).message;
   return TRANSIENT_ERRORS.some(refusal => message.startsWith(refusal));
 }
 
@@ -175,7 +180,7 @@ export type FactPlan = readonly (readonly [number, readonly string[]])[];
  * of the read failed, each with whether it may retry; the others are answered. */
 export type FactRead<V> = (plan: FactPlan, signal: AbortSignal,
   onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null, retryable?: boolean,
-    failed?: ReadonlyMap<string, boolean>) => void) => Promise<void>;
+    failed?: ReadonlyMap<string, FactFailure>, failure?: Failure) => void) => Promise<void>;
 
 /** Reads one store runs at once: a sweep of a tooltip across hours never piles up
  * requests past the desktop's limit. */
@@ -227,7 +232,7 @@ export class FactRequests<V> {
   /** The countries they read, by `nameKey`. */
   private readonly keys = new Set<string>();
   /** Failures in a row, and when each may be tried again, by `nameKey`. */
-  private readonly failures = new Map<string, { count: number; at: number }>();
+  private readonly failures = new Map<string, { count: number; at: number; error: Failure }>();
   private wantedKeys = new Set<string>();
   private wanted: readonly NameAt[] = [];
   private maxHours = MAX_NAME_HOURS;
@@ -267,11 +272,12 @@ export class FactRequests<V> {
   get running(): number { return this.reading.size; }
 
   /** Completed values, explicit missing values, and failures; pending reads are absent. */
-  pickRead(wanted: readonly NameAt[]): Map<string, V | null | typeof FAILED_FACT> {
-    const picked: Map<string, V | null | typeof FAILED_FACT> = this.store.pickRead(wanted);
+  pickRead(wanted: readonly NameAt[]): Map<string, V | null | Failure> {
+    const picked: Map<string, V | null | Failure> = this.store.pickRead(wanted);
     for (const item of wanted) {
       const key = nameKey(item.hour, item.tag);
-      if (this.failures.has(key)) picked.set(key, FAILED_FACT);
+      const failed = this.failures.get(key);
+      if (failed) picked.set(key, failed.error);
     }
     return picked;
   }
@@ -377,17 +383,17 @@ export class FactRequests<V> {
     for (const [hour, tags] of chunks) for (const tag of tags) this.keys.add(nameKey(hour, tag));
     let failed = false;
     // Product/configuration errors wait for retry; transient errors back off.
-    const fail = (hour: number, tags: readonly string[], retryable: boolean) => {
+    const fail = (hour: number, tags: readonly string[], retryable: boolean, error: Failure) => {
       failed = true;
       const at = this.clock.now();
       for (const tag of tags) {
         const key = nameKey(hour, tag);
         if (!this.wantedKeys.has(key)) continue;
         const count = (this.failures.get(key)?.count ?? 0) + 1;
-        this.failures.set(key, { count, at: retryable ? at + retryDelay(count) : Infinity });
+        this.failures.set(key, { count, at: retryable ? at + retryDelay(count) : Infinity, error });
       }
     };
-    const done = (found: ReadonlyMap<string, V> | null, retryable = true, unanswered?: ReadonlyMap<string, boolean>) => {
+    const done = (found: ReadonlyMap<string, V> | null, retryable = true, unanswered?: ReadonlyMap<string, FactFailure>, error: Failure = FAILED_FACT) => {
       if (controller.signal.aborted || this.reading.get(id) !== read) return;
       const [hour, tags] = chunks[read.told++];
       for (const tag of tags) this.keys.delete(nameKey(hour, tag));
@@ -399,14 +405,17 @@ export class FactRequests<V> {
         const answered = unanswered?.size ? tags.filter(tag => !unanswered.has(tag)) : tags;
         for (const tag of answered) this.failures.delete(nameKey(hour, tag));
         this.store.record(hour, answered, found);
-        if (unanswered?.size) for (const again of [true, false]) fail(hour, tags.filter(tag => unanswered.get(tag) === again), again);
-      } else fail(hour, tags, retryable);
+        for (const tag of tags) {
+          const failure = unanswered?.get(tag);
+          if (failure) fail(hour, [tag], failure.retryable, failure.error);
+        }
+      } else fail(hour, tags, retryable, error);
       this.tell();
       if (last) this.pump(failed);
     };
     // A read that ends without telling a chunk failed it.
-    const end = () => { while (this.reading.get(id) === read && !controller.signal.aborted) done(null); };
-    void this.read(chunks, controller.signal, (_hour, _tags, found, retryable, unanswered) => done(found, retryable, unanswered)).then(end, end);
+    const end = (error?: unknown) => { while (this.reading.get(id) === read && !controller.signal.aborted) done(null, true, undefined, error === undefined ? FAILED_FACT : asFailure(error)); };
+    void this.read(chunks, controller.signal, (_hour, _tags, found, retryable, unanswered, error) => done(found, retryable, unanswered, error)).then(end, end);
   }
 
   private tell(): void {
@@ -526,7 +535,7 @@ async function readBatch<V>(client: DashboardClient, source: FactSource, spec: B
       params: spec.params(source.branchId, plan) }, signal, recording);
   } catch (error) {
     if (signal.aborted) return;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = asFailure(error).message;
     if (spec.oversize !== undefined && plan.length > 1 && message.startsWith(spec.oversize)) {
       // A refusal at the size kept lowers it: half is the size tried next.
       const size = (spec.size ?? pairs)(plan), held = replySize(client, source.sourceId, scope);
@@ -537,7 +546,7 @@ async function readBatch<V>(client: DashboardClient, source: FactSource, spec: B
       return;
     }
     const retryable = transientError(error);
-    for (const [hour, tags] of plan) onChunk(hour, tags, null, retryable);
+    for (const [hour, tags] of plan) onChunk(hour, tags, null, retryable, undefined, asFailure(error));
     return;
   }
   if (signal.aborted) return;
@@ -548,12 +557,14 @@ async function readBatch<V>(client: DashboardClient, source: FactSource, spec: B
     setReplySize(client, source.sourceId, scope, size < held.refused ? { fits: Math.max(held.fits, size), refused: held.refused } : { fits: size, refused: Infinity });
   }
   let found: ReadonlyMap<number, ReadonlyMap<string, V>> | null = null;
+  let failure: Failure | undefined;
   try {
     found = spec.extract(data, plan);
-  } catch {
-    // A reply that cannot be understood is a failure, never a refusal to try again.
+  } catch (error) { failure = asFailure(error); }
+  for (const [hour, tags] of plan) {
+    const values = found?.get(hour) ?? null;
+    onChunk(hour, tags, values, false, undefined, values ? undefined : failure ?? new Error('Fact reply lacks the requested hour'));
   }
-  for (const [hour, tags] of plan) onChunk(hour, tags, found?.get(hour) ?? null, false);
 }
 
 /** One hour's countries read with `spec`, in as many requests as it allows, told as
@@ -566,17 +577,20 @@ async function readChunk<V>(client: DashboardClient, source: FactSource, spec: F
   for (let start = 0; start < tags.length; start += size) pieces.push([hour, tags.slice(start, start + size)]);
   const found = new Map<string, V>();
   // Each failed country, and whether its request may be tried again.
-  const failed = new Map<string, boolean>();
-  await readFacts(client, source, spec, pieces, signal, (_hour, part, values, again = true, partly) => {
+  const failed = new Map<string, FactFailure>();
+  await readFacts(client, source, spec, pieces, signal, (_hour, part, values, again = true, partly, error = FAILED_FACT) => {
     if (values) {
       for (const [tag, value] of values) found.set(tag, value);
       for (const [tag, retry] of partly ?? []) failed.set(tag, retry);
-    } else for (const tag of part) failed.set(tag, again);
+    } else {
+      const failure = { retryable: again, error };
+      for (const tag of part) failed.set(tag, failure);
+    }
   }, recording);
   if (signal.aborted) return;
   const alike = new Set(failed.values());
   if (!failed.size) onChunk(hour, tags, found);
-  else if (failed.size === tags.length && alike.size === 1) onChunk(hour, tags, null, [...alike][0]);
+  else if (failed.size === tags.length && alike.size === 1) onChunk(hour, tags, null, [...alike][0].retryable, undefined, [...alike][0].error);
   else onChunk(hour, tags, found, undefined, failed);
 }
 
@@ -598,15 +612,17 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
       if (known) { onChunk(hour, tags, known); continue; }
       let found: ReadonlyMap<string, V> | null = null;
       let retryable = false;
+      let failure: Failure | undefined;
       try {
         const params = spec.params(source.branchId, hour, tags);
         const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal, recording);
         found = await spec.extract(data, params, source);
       } catch (error) {
         retryable = transientError(error);
+        failure = asFailure(error);
       }
       if (signal.aborted) return;
-      onChunk(hour, tags, found, retryable);
+      onChunk(hour, tags, found, retryable, undefined, failure);
     }
     return;
   }
@@ -618,7 +634,7 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
       const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, asked, recording);
       return await spec.extract(data, params, source);
     } catch (error) {
-      return { failed: transientError(error) };
+      return { failed: { retryable: transientError(error), error: asFailure(error) } };
     }
   });
   for (const [hour, tags] of plan) {
@@ -628,7 +644,7 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
     if (!read || signal.aborted) return;
     const alike = new Set(read.failed.values());
     if (!read.failed.size) onChunk(hour, tags, read.found);
-    else if (read.failed.size === tags.length && alike.size === 1) onChunk(hour, tags, null, [...alike][0]);
+    else if (read.failed.size === tags.length && alike.size === 1) onChunk(hour, tags, null, [...alike][0].retryable, undefined, [...alike][0].error);
     else onChunk(hour, tags, read.found, undefined, read.failed);
   }
 }

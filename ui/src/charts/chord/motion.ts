@@ -9,11 +9,13 @@ export class ChordMotion {
   private flows = new Map<string, { flow: ChordFlow; target: number; value: number }>();
   private readonly nodeOrder = new Map<string, number>();
   private readonly flowOrder = new Map<string, { order: number; source: string; target: string }>();
-  readonly presence = new Map<string, number>();
+  private readonly nodePresence = new Map<string, number>();
+  readonly presence: ReadonlyMap<string, number> = this.nodePresence;
   private ring = 0;
   private ringTarget = 0;
   private snapNext = false;
   private snapOnAdvance = false;
+  private settled: ReturnType<ChordMotion['advance']> | null = null;
 
   set(data: ChordData): void {
     const total = checkChord(data);
@@ -21,6 +23,7 @@ export class ChordMotion {
       const identity = this.flowOrder.get(flow.id);
       if (identity && (identity.source !== flow.source || identity.target !== flow.target)) throw new Error(`Chord flow changed endpoints: ${flow.id}`);
     }
+    this.settled = null;
     this.snapOnAdvance ||= this.snapNext;
     this.snapNext = false;
     this.ringTarget = Number(total > 0);
@@ -48,12 +51,14 @@ export class ChordMotion {
 
   /** A recording gap or a change of source resets presentation immediately. */
   clear(): void {
+    this.settled = null;
     this.nodes.clear(); this.flows.clear(); this.nodeOrder.clear(); this.flowOrder.clear();
-    this.presence.clear(); this.ring = this.ringTarget = 0;
+    this.nodePresence.clear(); this.ring = this.ringTarget = 0;
     this.snapNext = true; this.snapOnAdvance = false;
   }
 
-  advance(dt: number, tau: number): { data: ChordData; moving: boolean; ringPresence: number } {
+  advance(dt: number, tau: number): Readonly<{ data: ChordData; moving: boolean; ringPresence: number }> {
+    if (this.settled) return this.settled;
     if (this.snapOnAdvance) { tau = 0; this.snapOnAdvance = false; }
     this.ring = approach(this.ring, this.ringTarget, dt, tau);
     let moving = this.ring !== this.ringTarget;
@@ -71,9 +76,11 @@ export class ChordMotion {
       state.presence = approach(state.presence, state.target, dt, tau);
       moving ||= state.presence !== state.target;
       if (state.presence > 0 || state.target > 0 || endpoints.has(id)) {
-        this.presence.set(id, state.presence); nodes.push(state.node);
-      } else { this.nodes.delete(id); this.presence.delete(id); }
+        this.nodePresence.set(id, state.presence); nodes.push(state.node);
+      } else { this.nodes.delete(id); this.nodePresence.delete(id); }
     }
-    return { data: { nodes, flows }, moving, ringPresence: this.ring };
+    const frame = { data: { nodes, flows }, moving, ringPresence: this.ring };
+    if (!moving) this.settled = frame;
+    return frame;
   }
 }

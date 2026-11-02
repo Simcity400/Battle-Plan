@@ -1950,6 +1950,14 @@ impl Viewer {
         }
     }
 
+    pub(crate) fn reset_drawn_frame(&mut self) {
+        self.drew_frame = false;
+    }
+
+    pub(crate) fn drew_frame(&self) -> bool {
+        self.drew_frame
+    }
+
     /// Advances independently of the builders, for both the live host clock
     /// and the deterministic playback sweep. The branch end is always exact.
     fn tick_playhead(&mut self, seconds: f64, last: i32) {
@@ -5653,6 +5661,31 @@ impl eframe::App for Viewer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(recorder) = viewer_foundation::frame_writer::recorder() {
+            let mut recording = Some(recorder.pass());
+            let drawn = self.update(ui, frame, &mut recording);
+            if let Some(recording) = recording {
+                recording.record(
+                    self.document
+                        .as_ref()
+                        .map(|document| (document.playback.hour(), document.hour_fraction)),
+                    drawn,
+                    "campaign",
+                );
+            }
+        } else {
+            self.update(ui, frame, &mut None);
+        }
+    }
+}
+
+impl Viewer {
+    fn update(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &mut eframe::Frame,
+        recording: &mut Option<viewer_foundation::frame_writer::Pass<'_>>,
+    ) -> bool {
         // The hide command may arrive in logic after eframe chose to draw
         // this pass. Skip it as well as all later hidden passes.
         if self
@@ -5665,7 +5698,12 @@ impl eframe::App for Viewer {
             if let Some(dashboard) = &mut self.dashboard {
                 dashboard.release_audio();
             }
-            return;
+            if self.dashboard_active
+                && let Some(recording) = recording.take()
+            {
+                recording.record(None, false, "-");
+            }
+            return false;
         }
         if ui.input(|input| input.events.iter().any(is_diagnostics_shortcut)) {
             self.toggle_diagnostics();
@@ -5682,7 +5720,7 @@ impl eframe::App for Viewer {
             && let Some(dashboard) = &mut self.dashboard
         {
             dashboard.ui_scale = self.ui_scale;
-            dashboard.ui(ui, frame);
+            dashboard.ui(ui, frame, recording.take());
             if let Some(embedded) = &mut self.embedded {
                 embedded.report_maps(dashboard.states());
                 for (view, event) in dashboard.take_view_events() {
@@ -5696,7 +5734,7 @@ impl eframe::App for Viewer {
                     }
                 }
             }
-            return;
+            return false;
         }
         // The campaign map's picker changes go to the host as a widget's do, under its own view
         // id, and come back in its Configure options.
@@ -5724,7 +5762,7 @@ impl eframe::App for Viewer {
         if !profiling() || self.capture.is_none() {
             self.profile_playback.configure(None, false);
         }
-        if let Some(mut document) = self.document.take() {
+        let drawn = if let Some(mut document) = self.document.take() {
             if profiling() && self.capture.is_some() {
                 // Deterministic diagnostic sweep, including at a replay's final
                 // hour. Ordinary playback follows the host's clock.
@@ -5843,15 +5881,21 @@ impl eframe::App for Viewer {
                 }
             }
             self.lap("profile_sweep");
-            central_panel.show(ui, |ui| {
-                let result = self.map(ui, frame, &mut document);
-                self.after_frame_with_visual_mods(&document, result.as_ref().err());
-                if let Err(error) = result {
-                    self.failed_window_capture(&error, ui.ctx());
-                    self.error = Some(error);
-                }
-            });
+            let drawn = central_panel
+                .show(ui, |ui| {
+                    let result = self.map(ui, frame, &mut document);
+                    self.after_frame_with_visual_mods(&document, result.as_ref().err());
+                    if let Err(error) = result {
+                        self.failed_window_capture(&error, ui.ctx());
+                        self.error = Some(error);
+                        false
+                    } else {
+                        self.drew_frame
+                    }
+                })
+                .inner;
             self.document = Some(document);
+            drawn
         } else {
             // No map is shown, while a replacement loads or after it failed:
             // what the previous one played stops.
@@ -5868,9 +5912,11 @@ impl eframe::App for Viewer {
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
                 }
             });
-        }
+            false
+        };
         self.report_embedded(ui.ctx());
         mark_frame_end();
+        drawn
     }
 }
 
@@ -7112,6 +7158,7 @@ pub(crate) mod tests {
             None,
         );
         viewer.dashboard_map = true;
+        viewer.drew_frame = true;
         let mut owner = viewer_audio::System::shared().owner();
         owner.claim();
         viewer.audio = Some(owner);
@@ -7143,8 +7190,14 @@ pub(crate) mod tests {
             .run_ui(Default::default(), |ui| viewer.map_ui(ui, &frame, &target));
         output.textures_delta.clear();
         assert!(viewer.error.is_some());
+        assert!(viewer.drew_frame());
         assert!(!viewer.audio.as_ref().unwrap().owns());
         assert!(viewer.audio_reset);
+        viewer.reset_drawn_frame();
+        let mut output = egui::Context::default()
+            .run_ui(Default::default(), |ui| viewer.map_ui(ui, &frame, &target));
+        output.textures_delta.clear();
+        assert!(!viewer.drew_frame());
     }
 
     /// A capture that waits on the builders for its hour feeds every hour it

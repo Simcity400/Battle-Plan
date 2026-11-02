@@ -1,6 +1,7 @@
 import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
 import type { LandBattlesManifestReply, CountryGroupReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import type { LandBattle, LandBattlesWindow } from './landBattlesData.ts';
@@ -29,6 +30,19 @@ const countryGroups = (): CountryGroupReply => ({ branchId: '1', warnings: [], i
     { tag: 'other', identities: [{ firstHour: 10, lastHour: 40, slot: 2, countryId: 22 }] },
     { tag: 'former/other', identities: [{ firstHour: 1, lastHour: 9, slot: 2, countryId: 22 }] },
   ],
+});
+
+test('land battle playback retains settled rows and still advances ongoing duration and range admission', () => {
+  const windows = deepFreeze(new Map([[0, reply()]])), matches = countryMatch({ kind: 'all' }, [], undefined, 40).matches;
+  const at = (hour: number, from: number | null = null) => landBattleRows(windows, hour, matches, true, from);
+  for (const hour of [9, 10, 15, 20, 21, 22, 40, 15])
+    assert.deepEqual(at(hour), landBattleRows(deepFreeze(new Map(windows)), hour, matches, true));
+  assert.notEqual(at(15), at(16));
+  assert.equal(at(22), at(40));
+  assert.equal(at(14, 15).length, 0);
+  assert.equal(at(15, 15).length, 1);
+  const ranking = deepFreeze({ rows: windows.get(0)!.rows, censusHour: 40, effectiveMeasure: 'Length', warnings: [], contentWarnings: [] });
+  assert.equal(rankedLandBattleRows(ranking, 22), rankedLandBattleRows(ranking, 40));
 });
 
 test('recorded final winners wait for their supplying hour and terminal-only rosters stay unknown', () => {

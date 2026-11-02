@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
     build: { outDir: 'dist', emptyOutDir: true, target: 'es2022', rolldownOptions: { input: {
       main: fileURLToPath(new URL('index.html', import.meta.url)),
       recorder: fileURLToPath(new URL('recorder.html', import.meta.url)),
+    }, output: {
+      // Name widget chunks for the playback benchmark's per-widget CPU attribution.
+      chunkFileNames: chunk => {
+        const kind = chunk.facadeModuleId?.replace(/\\/g, '/').match(/(?:^|\/)ui\/src\/widgets\/([^/]+)\/index\.tsx?$/)?.[1];
+        return kind ? `assets/widget-${kind}-[hash].js` : 'assets/[name]-[hash].js';
+      },
     } } },
   };
 });

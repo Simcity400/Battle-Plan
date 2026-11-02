@@ -62,7 +62,7 @@ test('one scale all campaign never fits the moment while its scale is unread or 
       sellerIdentity: '[1,101]', buyerIdentity: '[2,102]', sellerTags: [0], buyerTags: [1], firstHours: [span.firstHour], lastHours: [span.lastHour],
       deliveredRaw: ['10'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] }],
     countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, runs: [{ ...span, slot: index + 1, countryId: index + 101 }] })) };
-  const state: { scaleData?: TradeFlowsReply; scaleError?: string } = {};
+  const state: { scaleData?: TradeFlowsReply; scaleError?: Error } = {};
   const host = globalThis as typeof globalThis & { __tradeScale?: typeof state }; host.__tradeScale = state;
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/trade-flows/TradeFlowsWidget.tsx', {
     '/widgets/trade-flows/useTradeFlows.ts': `import { decodeTrade, tradeScope } from './tradeData.ts';
@@ -94,7 +94,7 @@ test('one scale all campaign never fits the moment while its scale is unread or 
     assert.match(pending, /aria-label="Loading the campaign-wide ribbon scale…"/);
     assert.doesNotMatch(pending, /Ribbon scale/, 'no diagram sized to the moment instead');
     assert.match(render({ scale: 'moment' }), /Ribbon scale null/, 'fitting the moment needs no campaign scale');
-    state.scaleError = 'refused';
+    state.scaleError = new Error('refused');
     const failed = render({});
     assert.match(failed, /Couldn’t load the campaign-wide ribbon scale\./);
     assert.doesNotMatch(failed, /Ribbon scale/);

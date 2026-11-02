@@ -35,6 +35,7 @@ pub const TABLES: &[TableId] = &[
     TableId::Characters,
     TableId::LexicalTokens,
     TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
     TableId::CountryCivilWars,
     TableId::CountryWars,
     TableId::WarRelations,
@@ -62,6 +63,13 @@ fn asks() -> io::Result<Vec<(TableId, Hold)>> {
     }
     let owned = columns::field(TableId::CountryCounterInputs, "owned_state_count")?;
     asks.push((TableId::CountryCounterInputs, Hold::Fields(1u64 << owned)));
+    asks.push((
+        TableId::ReservedCountryNaming,
+        Hold::Fields(mask(
+            TableId::ReservedCountryNaming,
+            &["tag", "original_tag", "original_tag_reference"],
+        )?),
+    ));
     Ok(asks)
 }
 
@@ -230,6 +238,9 @@ struct Fields {
     characters: u64,
     /// A country's name and cosmetic tags and its original tag.
     appearance: u64,
+    civil: Vec<(TableId, u64, bool)>,
+    start_hour: usize,
+    end_hour: usize,
 }
 
 fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
@@ -291,6 +302,7 @@ pub struct Projector {
     readers: Vec<Reader>,
     characters: HashMap<u32, Vec<usize>>,
     spellings: HashMap<u32, Vec<usize>>,
+    dynamic: HashSet<usize>,
     /// The modifier definitions last handed, and the spellings they name.
     definitions: Option<Arc<Definitions>>,
     named: HashSet<u32>,
@@ -326,6 +338,12 @@ impl Projector {
                         "original_tag_reference",
                     ],
                 )?,
+                civil: dashboard_text::identity::civil_war_reads()
+                    .into_iter()
+                    .map(|read| (read.table, read.fields, read.ends))
+                    .collect(),
+                start_hour: columns::field(TableId::WarRelations, "start_hour")?,
+                end_hour: columns::field(TableId::WarRelations, "end_hour")?,
             },
             cold: true,
             last: None,
@@ -335,6 +353,7 @@ impl Projector {
             readers: Vec::new(),
             characters: HashMap::new(),
             spellings: HashMap::new(),
+            dynamic: HashSet::new(),
             definitions: None,
             named: HashSet::new(),
         })
@@ -363,7 +382,31 @@ impl Projector {
         self.readers = tags.iter().map(|_| Reader::default()).collect();
         self.characters.clear();
         self.spellings.clear();
+        self.dynamic.clear();
         self.roster = Arc::from(tags);
+    }
+
+    fn civil_touched(&self, hour: &segments::Hour<'_, World>) -> io::Result<bool> {
+        for &(table, fields, ends) in &self.fields.civil {
+            if hour.world.touched(table, fields) {
+                return Ok(true);
+            }
+            if !ends || !columns::complete(hour.state, table) {
+                continue;
+            }
+            let held = columns::table(hour.state, table)?;
+            let starts = columns::plain::<i32>(held, self.fields.start_hour)?;
+            let ends = columns::plain::<i32>(held, self.fields.end_hour)?;
+            if held.live().ones().any(|slot| {
+                match (starts.get(slot as usize), ends.get(slot as usize)) {
+                    (Some(&start), Some(&end)) => end > start && end == hour.hour,
+                    _ => false,
+                }
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The tags whose holder the links resolve `raw` to.
@@ -477,6 +520,15 @@ impl Projector {
                     .map(|at| &rows[at])
             });
         let naming = NamingCountry::read_with_appearance(frame, &country, appearance);
+        if naming
+            .look
+            .as_ref()
+            .is_some_and(|look| !look.name_tag.is_empty())
+        {
+            self.dynamic.insert(index);
+        } else {
+            self.dynamic.remove(&index);
+        }
         self.keep(index, reader);
         Ok(Read {
             tag,
@@ -550,6 +602,7 @@ impl Projector {
             + (self.characters.capacity() + self.spellings.capacity())
                 * (size_of::<(u32, Vec<usize>)>() + size_of::<usize>())
             + self.named.capacity() * 4
+            + self.dynamic.capacity() * size_of::<usize>()
             + self.definitions.as_ref().map_or(0, |definitions| definitions.len() * 160)
     }
 }
@@ -657,6 +710,14 @@ impl Operator<World> for Projector {
                         dirty.extend(tags.iter().copied());
                     }
                 }
+            }
+            if world.touched(TableId::ReservedCountryNaming, u64::MAX)
+                && let Some(tags) = self.slots.get(&0)
+            {
+                dirty.extend(tags.iter().copied());
+            }
+            if !self.dynamic.is_empty() && self.civil_touched(hour)? {
+                dirty.extend(self.dynamic.iter().copied());
             }
         }
         let busy = whole || !dirty.is_empty() || written.iter().any(|keys| !keys.is_empty());

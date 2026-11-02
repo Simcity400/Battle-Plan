@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -61,8 +62,8 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
     const day = dayAt(hour);
     if (day?.readHour == null || !tag) return supremacyTooltip(region, null, viewer, LABELS, data.scale, dayLabel(Math.floor(hour)), null);
     ask(day.readHour, [tag]);
-    return supremacyTooltip(region, regionDay(series.get(region.id), day.at), labelAt(day.readHour)(tag).name, LABELS, data.scale,
-      dayLabel(Math.floor(hour)), dayLabel(day.readHour));
+    return { ...supremacyTooltip(region, regionDay(series.get(region.id), day.at), labelAt(day.readHour)(tag).name, LABELS, data.scale,
+      dayLabel(Math.floor(hour)), dayLabel(day.readHour)), ...countryNameDetails(labelAt(day.readHour)(tag)) };
   }, [data, regions, dayAt, series, viewer, tag, ask, labelAt]);
   const onMenu = useCallback((hour: number, x: number, y: number) => {
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, dayAt(hour)?.readHour ?? hour)]);
@@ -71,7 +72,7 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see naval supremacy." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
   if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading naval supremacy…" />;
   if (!rows.length) return <WidgetState kind="empty" message="No sea regions match these filters." />;
   const prefix = preparedPrefix(data);

@@ -24,6 +24,16 @@ static FAMILY: Family = crate::block::family::<Mines>(
 );
 
 impl Observer for Mines {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "test-mines";
     const TABLES: &'static [TableId] = &[
         TableId::Countries,
@@ -196,6 +206,16 @@ static VOUCHING: Family = crate::block::family::<Vouching>(
 );
 
 impl Observer for Vouching {
+    type Content = ();
+
+    fn content(
+        _source: &dashboard_base::Source,
+        _options: Option<&dashboard_core::config::ContentOptions>,
+        _check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        Ok(())
+    }
+
     const NAME: &'static str = "test-vouching";
     const TABLES: &'static [TableId] = &[TableId::NavalRegionalMines];
     const READ: TableId = TableId::NavalRegionalMines;
@@ -288,6 +308,20 @@ pub(crate) struct Changing<O> {
 }
 
 impl<O: Observer> Observer for Changing<O> {
+    type Content = O::Content;
+
+    fn content(
+        source: &dashboard_base::Source,
+        options: Option<&dashboard_core::config::ContentOptions>,
+        check: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Self::Content> {
+        O::content(source, options, check)
+    }
+
+    fn bind(&mut self, content: &std::sync::Arc<Self::Content>) -> std::io::Result<()> {
+        self.inner.bind(content)
+    }
+
     const NAME: &'static str = O::NAME;
     const TABLES: &'static [TableId] = O::TABLES;
     const READ: TableId = O::READ;

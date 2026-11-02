@@ -222,7 +222,7 @@ fn check_country_tags(countries: &[replay_data::rows::CountryRow]) -> io::Result
         .filter(|country| country.tag.contains(&0) || std::str::from_utf8(&country.tag).is_err())
         .count();
     if unsupported != 0 {
-        return Err(invalid(format!(
+        return Err(dashboard_core::refused(format!(
             "Air comparison cannot represent {unsupported} recorded country tags: tags must be UTF-8 without NUL bytes"
         )));
     }

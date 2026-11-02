@@ -156,8 +156,8 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   if (!track) return <WidgetState kind="empty" message={'Load a campaign to see ' + title.toLowerCase() + '.'} />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = grouped && groups.error ? <WidgetState kind="error" what="country groups" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} /></>;
   if (militaryAirPreparing(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;

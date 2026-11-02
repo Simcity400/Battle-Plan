@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from './queryError.ts';
 import { defaultCountryTag } from './countrySelection';
 import type { DashboardClient } from './client';
 import type { WidgetRuntime } from './definitions';
@@ -24,7 +25,7 @@ export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, activ
 export function usePreparedIdeaHistory(client: DashboardClient, track: BoundTrack | undefined, tag: string | undefined, through: number | undefined, held: boolean, active: boolean) {
   const content = useContentRevision(client);
   const key = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, through, held, content]) : '';
-  const [state, setState] = useState<{ client: typeof client; key: string; data?: IdeaHistoryFirstView; error?: string }>();
+  const [state, setState] = useState<{ client: typeof client; key: string; data?: IdeaHistoryFirstView; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !track || !tag) return;
@@ -39,7 +40,7 @@ export function usePreparedIdeaHistory(client: DashboardClient, track: BoundTrac
         data => { if (!controller.signal.aborted) setState({ client, key, data }); },
         error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
           data: previous?.client === client && previous.key === key ? previous.data : undefined,
-          error: error instanceof Error ? error.message : String(error) })); },
+          error: asFailure(error) })); },
       );
     return () => controller.abort();
     // The structured key owns source, branch, country and content revision.

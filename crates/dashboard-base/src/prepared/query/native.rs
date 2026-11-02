@@ -22,8 +22,10 @@ use std::{
 };
 
 /// The refusal of `label`, whose data a native recording holds but nothing prepares from it yet.
-pub fn unprepared(label: &str) -> String {
-    format!("{label} is not prepared from native recordings yet")
+pub fn unprepared(label: &str) -> io::Error {
+    dashboard_core::refused(format!(
+        "{label} is not prepared from native recordings yet"
+    ))
 }
 
 /// The folder of `source`'s prepared store holding its change-run index.
@@ -62,7 +64,7 @@ const CURSOR_MEMORY: usize = 1 << 30;
 /// unless it indexes the recording and holds `tables`.
 fn open(source: &Source, held: &mut Held, tables: &[TableId]) -> io::Result<Arc<IndexFile>> {
     let not_indexed = || {
-        io::Error::other(format!(
+        dashboard_core::refused(format!(
             "The recording holds {tables:?} in its native capture, whose change-run index is not prepared yet"
         ))
     };
@@ -116,7 +118,7 @@ fn unheld(source: &Source, file: &IndexFile, branch: u64, hour: i32) -> io::Erro
         .pending(source.replay_ref())
         .into_iter()
         .find_map(|(held, session)| (held == branch).then_some(session));
-    io::Error::other(match session {
+    dashboard_core::refused(match session {
         Some(session) => format!(
             "session {session} is still being recorded: its hours are read once its native recording lands"
         ),
@@ -193,7 +195,8 @@ fn leaves(
         return Ok(false);
     };
     // The row reader's supplying search reads this same block selection.
-    if let Some(reads) = super::frames::block(source, block, &[TableId::Campaign, table], cancelled)?
+    if let Some(reads) =
+        super::frames::block(source, block, &[TableId::Campaign, table], cancelled)?
     {
         return Ok(reads
             .iter()
@@ -372,15 +375,28 @@ mod tests {
                 .collect()
         };
         let cancelled = AtomicBool::new(false);
-        let held = frames(&|| TableView::Complete(replay_data::rows::TableRows::ProjectPrograms(Vec::new())));
+        let held = frames(&|| {
+            TableView::Complete(replay_data::rows::TableRows::ProjectPrograms(Vec::new()))
+        });
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, held)]).unwrap();
         let (rows, root) = file_source(replay);
         for hour in [0, 3, 4, 29] {
-            assert_eq!(read_hour(&rows, 1, hour, table, 24, &cancelled).unwrap(), None);
+            assert_eq!(
+                read_hour(&rows, 1, hour, table, 24, &cancelled).unwrap(),
+                None
+            );
             assert_eq!(
                 latest_read(&rows, 1, hour, table, 24, &[table], &cancelled).unwrap(),
-                super::super::progressive::latest_read(&rows, 1, hour, table, 24, &[table], &cancelled)
-                    .unwrap()
+                super::super::progressive::latest_read(
+                    &rows,
+                    1,
+                    hour,
+                    table,
+                    24,
+                    &[table],
+                    &cancelled
+                )
+                .unwrap()
             );
         }
         std::fs::remove_dir_all(root).ok();
@@ -396,7 +412,10 @@ mod tests {
             "The recording holds [ProjectPrograms] in its native capture, whose change-run index is not prepared yet"
         );
         // An hour no block records is the row reader's, which finds no read.
-        assert_eq!(read_hour(&native, 1, 30, table, 24, &cancelled).unwrap(), None);
+        assert_eq!(
+            read_hour(&native, 1, 30, table, 24, &cancelled).unwrap(),
+            None
+        );
         std::fs::remove_dir_all(root).ok();
     }
 }

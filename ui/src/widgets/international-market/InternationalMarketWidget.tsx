@@ -1,3 +1,5 @@
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import { nameReadText } from '../../dashboard/nameReads.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -9,7 +11,7 @@ import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -96,13 +98,13 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     .filter((tag): tag is string => tag !== null))].map(tag => ({ hour, tag })), [contracts, offers, hour]);
   const names = useCountryNamesAt(runtime.client, track, sort.column === 'seller' || sort.column === 'buyer' ? allTags : [], active);
   const art = useVariantArt(runtime, track, fallback[0] ?? visibleTags[0] ?? null, hour, visibleVariants, active);
-  const name = useCallback((tag: string | null) => tag === null ? 'Country name unavailable' : names.get(nameKey(hour, tag)) ?? tag, [names, hour]);
+  const name = useCallback((tag: string | null) => tag === null ? 'Country name unavailable' : nameReadText(names.get(nameKey(hour, tag))), [names, hour]);
   // Tooltips and titles name a shown row's countries as its cells do; `name` is read only to sort.
   const label = useCallback((tag: string | null) => tag === null ? 'Country name unavailable' : labelAt(hour)(tag).name, [labelAt, hour]);
   const country = useCallback((key: 'seller' | 'buyer', header: string, priority?: number) => ({ key, header, label: header, priority,
     width: 'minmax(4em, 1fr)', renderMissing: true,
-    value: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? null : name(tag); }, text: (row: ContractRow | OfferRow) => name((row as ContractRow)[key] ?? null),
-    render: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? 'Country name unavailable' : <CountryCell {...labelAt(hour)(tag)} />; } }), [name, labelAt, hour]);
+    value: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? null : name(tag); }, text: (row: ContractRow | OfferRow) => label((row as ContractRow)[key] ?? null),
+    render: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? 'Country name unavailable' : <CountryCell {...labelAt(hour)(tag)} />; } }), [name, label, labelAt, hour]);
   const contractColumns = useMemo<readonly TableColumn<ContractRow>[]>(() => view === 'contracts' ? [
     country('seller', 'Seller'), country('buyer', 'Buyer'),
     { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 1.4fr)', renderMissing: true,
@@ -136,18 +138,8 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     { key: 'level', header: 'Price level', label: 'Price level', width: 'max-content', priority: 1, renderMissing: true,
       value: row => row.level, text: row => levelText(row.level), render: row => levelText(row.level) },
   ], [country, art, offers]);
-  const contractTooltip = useCallback((row: ContractRow) => {
-    const lines: TooltipRow[] = [];
-    for (const item of row.equipment) lines.push({ label: item.name ?? EQUIPMENT_UNNAMED, value: units(item.amount), lookupKey: item.variant });
-    for (const item of row.prices) lines.push({ label: `Agreed price · ${item.name ?? EQUIPMENT_UNNAMED}`, value: cic(item.amount) });
-    for (const item of row.levels) lines.push({ label: 'Price level', value: levelText(item.level) });
-    if (row.assigned !== null) lines.push({ label: 'Convoys assigned', value: `${row.assigned} of ${row.convoys ?? '—'}` });
-    if (row.collected !== null) lines.push({ label: 'Payment collected', value: cic(row.collected) });
-    if (row.deliveries !== null) lines.push({ label: 'Completed deliveries', value: row.deliveries.toString() });
-    return fitTooltip([{ title: `${label(row.seller)} → ${label(row.buyer)}`, subtitle: dayLabel(hour), rows: lines }], viewport);
-  }, [label, hour, viewport]);
-  const offerTooltip = useCallback((row: OfferRow) => fitTooltip([{ title: row.name ?? EQUIPMENT_UNNAMED, subtitle: `${label(row.seller)} · ${dayLabel(hour)}`,
-    rows: [{ label: 'On market', value: units(row.amount) }, { label: 'Price level', value: levelText(row.level) }] }], viewport), [label, hour, viewport]);
+  const contractTip = useCallback((row: ContractRow) => contractTooltip(row, tag => tag === null ? { name: 'Country name unavailable' } : labelAt(hour)(tag), hour, viewport), [labelAt, hour, viewport]);
+  const offerTip = useCallback((row: OfferRow) => offerTooltip(row, tag => tag === null ? { name: 'Country name unavailable' } : labelAt(hour)(tag), hour, viewport), [labelAt, hour, viewport]);
   const playing = runtime.clock.getSnapshot().playing;
   const open = (title: string, rowTags: (string | null)[], selected: string | null, holders: readonly (string | null)[]) => {
     const parties = data ? partiesOf(data.holders, holders) : [];
@@ -162,8 +154,8 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
 
   if (!track) return <WidgetState kind="empty" icon="globe" message="Load a campaign to see the market." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   const header = headerSlot && createPortal(<>
@@ -184,10 +176,10 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     ? <WidgetState kind="unavailable" message={view === 'inventory' ? 'Market inventory was not recorded.' : 'Contract terms unavailable.'} />
     : view === 'inventory'
       ? offers.length ? <Table key={`${track.source.id}:${track.branch.id}:inventory`} label="Listed equipment" rows={offers} columns={offerColumns} rowKey={row => row.key}
-        tooltip={offerTooltip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${label(row.seller)}: market`, [row.seller], null, [row.offer.seller])} {...common} />
+        tooltip={offerTip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${label(row.seller)}: market`, [row.seller], null, [row.offer.seller])} {...common} />
         : <WidgetState kind="empty" icon="globe" message="Nothing listed." />
       : contracts.length ? <Table key={`${track.source.id}:${track.branch.id}:${view}`} label={view === 'contracts' ? 'Market contracts' : 'Market requests'}
-        rows={contracts} columns={contractColumns} rowKey={row => row.key} tooltip={contractTooltip} onVisibleRows={onVisibleContracts}
+        rows={contracts} columns={contractColumns} rowKey={row => row.key} tooltip={contractTip} onVisibleRows={onVisibleContracts}
         onRowClick={row => open(`${label(row.seller)} → ${label(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.contract.id}`,
           [row.contract.seller, valueAt(row.contract.buyer, hour)])} {...common} />
         : listed.unattributed ? <WidgetState kind="unavailable" message={`Some ${view === 'contracts' ? 'contracts' : 'requests'}' countries were not recorded at this date.`} />
@@ -201,4 +193,22 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
         : <WidgetState kind="unavailable" message={picked.parties && picked.parties.length > 1 ? 'Neither party was recorded at this hour.' : 'This seller was not recorded at this hour.'} />)}
     </DrillHost>
   </div>;
+}
+
+export function contractTooltip(row: ContractRow, label: (tag: string | null) => ReturnType<CountryLabel>, hour: number, viewport: number) {
+  const seller = label(row.seller), buyer = label(row.buyer);
+  const lines: TooltipRow[] = [];
+  for (const item of row.equipment) lines.push({ label: item.name ?? EQUIPMENT_UNNAMED, value: units(item.amount), lookupKey: item.variant });
+  for (const item of row.prices) lines.push({ label: `Agreed price · ${item.name ?? EQUIPMENT_UNNAMED}`, value: cic(item.amount) });
+  for (const item of row.levels) lines.push({ label: 'Price level', value: levelText(item.level) });
+  if (row.assigned !== null) lines.push({ label: 'Convoys assigned', value: `${row.assigned} of ${row.convoys ?? '—'}` });
+  if (row.collected !== null) lines.push({ label: 'Payment collected', value: cic(row.collected) });
+  if (row.deliveries !== null) lines.push({ label: 'Completed deliveries', value: row.deliveries.toString() });
+  return fitTooltip([{ title: `${seller.name} → ${buyer.name}`, subtitle: dayLabel(hour), ...countryNameDetails(seller, buyer), rows: lines }], viewport);
+}
+
+export function offerTooltip(row: OfferRow, label: (tag: string | null) => ReturnType<CountryLabel>, hour: number, viewport: number) {
+  const seller = label(row.seller);
+  return fitTooltip([{ title: row.name ?? EQUIPMENT_UNNAMED, subtitle: `${seller.name} · ${dayLabel(hour)}`, ...countryNameDetails(seller),
+    rows: [{ label: 'On market', value: units(row.amount) }, { label: 'Price level', value: levelText(row.level) }] }], viewport);
 }

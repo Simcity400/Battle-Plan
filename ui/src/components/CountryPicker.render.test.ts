@@ -64,7 +64,7 @@ test('renaming an open recording retains the top-bar and list flags without re-r
         if (file.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ open: true, trigger: { current: null } }); export const Popover = props => props.children;';
         if (file.endsWith('/dashboard/products.ts')) return 'export const loadProduct = (...args) => globalThis.__pickerRename.product(...args); export const loadTransientProduct = loadProduct;';
         if (file.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
-        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'const names = new Map(); export const useCountryNamesAt = () => names; export const useCountryNamesRead = () => globalThis.__pickerRename.reads; export const nameKey = () => "";';
+        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'export const useCountryNamesAt = () => globalThis.__pickerRename.reads; export const nameKey = () => "";';
       },
     }] });
   try {
@@ -94,10 +94,10 @@ test('renaming an open recording retains the top-bar and list flags without re-r
     props.allowedTags = undefined;
     await settle();
     assert.equal(ownerSource, props.source, 'campaign-wide owner discovery uses the prepared polling source');
-    fixture.reads.set('', 'Dated name');
+    fixture.reads.set('', { kind: 'value', value: 'Dated name' });
     await settle();
     assert.ok(texts(output).includes('Dated name'), 'the top bar names the country at the playback day');
-    fixture.reads.set('', null);
+    fixture.reads.set('', { kind: 'absent' });
     await settle();
     assert.ok(texts(output).includes('Country name unavailable'), 'a day without a recorded name says so');
   } finally { fixture.unmount(); await vite.close(); delete host.__pickerRename; }
@@ -123,7 +123,7 @@ test('playback days reuse the held flag timeline and a branch switch clears the 
         if (file.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ open: false, trigger: { current: null } }); export const Popover = props => props.children;';
         if (file.endsWith('/dashboard/products.ts')) return 'export const loadProduct = (...args) => globalThis.__pickerFlags.product(...args); export const loadTransientProduct = loadProduct;';
         if (file.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
-        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'const names = new Map(); export const useCountryNamesAt = () => names; export const useCountryNamesRead = () => globalThis.__pickerFlags.reads; export const nameKey = () => "";';
+        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'export const useCountryNamesAt = () => globalThis.__pickerFlags.reads; export const nameKey = () => "";';
       },
     }] });
   try {

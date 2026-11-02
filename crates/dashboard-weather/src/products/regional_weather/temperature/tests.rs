@@ -6,10 +6,7 @@ use crate::products::regional_weather::{
 use dashboard_base::{prepared::series::tests::Fixture, products::country_groups::HourSpan};
 use dashboard_keyed::{
     Observer as _, Scan,
-    native::{
-        Emit,
-        testing::{operate, publish_bound},
-    },
+    native::testing::{Binding, operate_bound, publish_bound},
     query::KeyedWindow,
 };
 use replay::columnar_frames::synthetic::Synthetic;
@@ -23,6 +20,24 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 use serde_json::json;
+
+fn bind_observer(
+    observer: &mut block::Observer,
+    source: &Source,
+    options: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let resolved = resolve(source, options, &mut || {
+        dashboard_text::metadata::check_cancel(cancelled)
+    });
+    match resolved {
+        Ok(content) => dashboard_keyed::Observer::bind(observer, &Arc::new(content)),
+        Err(error) => {
+            observer.retire();
+            Err(error)
+        }
+    }
+}
 
 fn bound(members: &[(u32, Vec<u32>)], count: usize) -> Bound {
     let members: BTreeMap<_, _> = members.iter().cloned().collect();
@@ -45,6 +60,8 @@ fn bound(members: &[(u32, Vec<u32>)], count: usize) -> Bound {
             ..Default::default()
         },
         warnings: vec![],
+        plan: OnceLock::new(),
+        layout: OnceLock::new(),
     }
 }
 
@@ -76,7 +93,7 @@ fn temperatures(
         anchor,
         cursor: 1,
         hours: seeds,
-        checksum: simulation.checksum(),
+        witness: replay_data::rows::TemperatureWitness::new(simulation.witness()),
         ..Default::default()
     };
     let rows = words
@@ -201,14 +218,14 @@ fn memo_reconstructs_committed_words_not_anchor_and_checks_every_hour() {
         &mut *bad.tables[TableId::WeatherProvinces.index()]
         && let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass
     {
-        pass.checksum ^= 1;
+        pass.witness = replay_data::rows::TemperatureWitness::new(pass.witness.get().unwrap() ^ 1);
     }
     assert!(observe(&mut observation, &bad).is_empty());
     assert!(
         observation
             .warnings()
             .iter()
-            .any(|warning| warning.contains("checksum"))
+            .any(|warning| warning.contains("differ from the recorded witness"))
     );
     // A valid later hour recovers without reusing an unchecked result.
     let next = temperatures(
@@ -344,9 +361,7 @@ fn prepared_temperature_runs_query_selection_prefix_daily_and_rebound_continuati
     let source = source(frames.clone());
     let options = install_cached(&source, content);
     let mut scan = Scan::<block::Observer>::default();
-    scan.observer
-        .bind(&source, Some(&options), &cancelled)
-        .unwrap();
+    bind_observer(&mut scan.observer, &source, Some(&options), &cancelled).unwrap();
     for frames in [&frames[..2], &frames[2..]] {
         let mut writer = fixture.writer();
         for frame in frames {
@@ -364,9 +379,7 @@ fn prepared_temperature_runs_query_selection_prefix_daily_and_rebound_continuati
         .unwrap()
         .1;
         // Runtime memo/content are absent after restore; rebind before folding.
-        scan.observer
-            .bind(&source, Some(&options), &cancelled)
-            .unwrap();
+        bind_observer(&mut scan.observer, &source, Some(&options), &cancelled).unwrap();
     }
     let reply = answer(
         &fixture,
@@ -427,9 +440,7 @@ fn province_refusals_keep_flags_and_do_not_carry_temperature_through_an_unknown_
     let source = source(frames.clone());
     let options = install_cached(&source, content);
     let mut scan = Scan::<block::Observer>::default();
-    scan.observer
-        .bind(&source, Some(&options), &cancelled)
-        .unwrap();
+    bind_observer(&mut scan.observer, &source, Some(&options), &cancelled).unwrap();
     let mut writer = fixture.writer();
     for frame in &frames {
         scan.prepare(FormatVersion::CURRENT, frame, true).unwrap();
@@ -464,9 +475,7 @@ fn province_refusals_keep_flags_and_do_not_carry_temperature_through_an_unknown_
 fn content_binding_failure_is_precise_independent_retryable_on_new_binding_and_cached() {
     let source = source(vec![frame(10, Some(vec![row(71)]))]);
     let mut observer = block::Observer::default();
-    observer
-        .bind(&source, None, &AtomicBool::new(false))
-        .unwrap();
+    bind_observer(&mut observer, &source, None, &AtomicBool::new(false)).unwrap();
     assert!(
         observer
             .temperature_status()
@@ -484,17 +493,24 @@ fn content_binding_failure_is_precise_independent_retryable_on_new_binding_and_c
     );
     assert_eq!(values.len(), 14);
     let options = install_cached(&source, bound(&[(71, vec![1])], 2));
-    observer
-        .bind(&source, Some(&options), &AtomicBool::new(false))
-        .unwrap();
+    bind_observer(
+        &mut observer,
+        &source,
+        Some(&options),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert_eq!(observer.temperature_status(), "available");
-    observer
-        .bind(&source, Some(&options), &AtomicBool::new(false))
-        .unwrap();
+    bind_observer(
+        &mut observer,
+        &source,
+        Some(&options),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     let cancelled = AtomicBool::new(true);
     assert_eq!(
-        observer
-            .bind(&source, Some(&options), &cancelled)
+        bind_observer(&mut observer, &source, Some(&options), &cancelled)
             .unwrap_err()
             .kind(),
         io::ErrorKind::Interrupted
@@ -616,10 +632,22 @@ fn bind_reads_recorded_layered_temperature_content_once_and_refuses_unverified_s
     source.set_test_content(options.options.clone(), layers);
     let cancelled = AtomicBool::new(false);
     let mut a = Observation::default();
-    a.bind(&source, Some(&options), &cancelled).unwrap();
+    a.bind_resolved(
+        &resolve(&source, Some(&options), &mut || {
+            dashboard_text::metadata::check_cancel(&cancelled)
+        })
+        .unwrap(),
+    )
+    .unwrap();
     assert!(a.status().contains("unverified content"), "{}", a.status());
     options.allow_unverified = true;
-    a.bind(&source, Some(&options), &cancelled).unwrap();
+    a.bind_resolved(
+        &resolve(&source, Some(&options), &mut || {
+            dashboard_text::metadata::check_cancel(&cancelled)
+        })
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(a.status(), "available", "{:?}", a.warnings());
     let content = a.content.as_ref().unwrap();
     assert_eq!(
@@ -641,7 +669,13 @@ fn bind_reads_recorded_layered_temperature_content_once_and_refuses_unverified_s
         BTreeMap::from([("71|temp".into(), 200_000), ("72|temp".into(), -100_000)])
     );
     let mut b = Observation::default();
-    b.bind(&source, Some(&options), &cancelled).unwrap();
+    b.bind_resolved(
+        &resolve(&source, Some(&options), &mut || {
+            dashboard_text::metadata::check_cancel(&cancelled)
+        })
+        .unwrap(),
+    )
+    .unwrap();
     assert!(Arc::ptr_eq(
         a.content.as_ref().unwrap(),
         b.content.as_ref().unwrap()
@@ -670,9 +704,13 @@ fn unchanged_pass_at_a_new_hour_is_rechecked_not_carried_as_proven_temperature()
     let source = source(vec![first.clone(), stale.clone()]);
     let options = install_cached(&source, content);
     let mut scan = Scan::<block::Observer>::default();
-    scan.observer
-        .bind(&source, Some(&options), &AtomicBool::new(false))
-        .unwrap();
+    bind_observer(
+        &mut scan.observer,
+        &source,
+        Some(&options),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     let mut changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
     for frame in [&first, &stale] {
         let facts = changes.observe(frame, FormatVersion::CURRENT);
@@ -827,9 +865,7 @@ fn native_bound_publication_holds_whole_observation_through_refusal_and_resume()
         assert_eq!(whole.temperature_status(), "available");
         expected.insert(hour, (values, serde_json::to_value(&whole).unwrap()));
     }
-    let mut bind = |emit: &mut Emit<block::Observer>| {
-        emit.bind(&source, Some(&options), &mut || Ok(())).unwrap();
-    };
+    let binding = Binding::<block::Observer>::new(&source, Some(&options)).unwrap();
     let first = frames[0].hour;
     for (starts, cuts, resume) in [
         (&[][..], &[17][..], None),
@@ -843,8 +879,9 @@ fn native_bound_publication_holds_whole_observation_through_refusal_and_resume()
         ),
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
-        let hours = operate::<block::Observer>(&frames, starts, walked_weather);
-        let published = publish_bound(hours, 1, cuts, resume, &mut bind);
+        let hours =
+            operate_bound::<block::Observer>(&frames, starts, walked_weather, Some(&binding));
+        let published = publish_bound(hours, 1, cuts, resume, Some(&binding));
         for (&cut, published) in cuts.iter().zip(&published) {
             let (scan, window) = published.read::<block::Observer>(first, cut, None);
             assert_eq!(
@@ -1301,5 +1338,175 @@ fn final_inverse_retirement_and_concurrent_rebind_fit_one_allocation() {
     drop(current);
     assert_eq!(budget.used(), 0);
     assert!(allocation.freed());
+    assert!(cached.inverse.lock().unwrap().is_none());
+}
+
+fn weather(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame: &DecodedFrame) {
+    dashboard_keyed::native::testing::write::<tables::WeatherRegions>(walk, frame);
+    dashboard_keyed::native::testing::write::<tables::WeatherProvinces>(walk, frame);
+}
+
+/// The native publication, its temperatures derived by each segment's keeper, holds what the
+/// walk's scan holds and counts the same refusals, wherever segments start (mid-anchor ones
+/// deriving from the anchor), the publisher cuts and the emit resumes: two anchors, an
+/// unavailable hour, a wrong witness, a gap, overlapping, duplicate and missing members.
+#[test]
+fn segment_keepers_derive_the_temperatures_the_walk_derives() {
+    let mut content = bound(
+        &[
+            (71, vec![1, 2, 1]),
+            (72, vec![2, 3]),
+            (73, vec![]),
+            (74, vec![9]),
+        ],
+        4,
+    );
+    content.pass.settings.provinces_per_update = 2;
+    content.pass.settings.smoothing = 50_000;
+    content.pass.settings.change_smoothing = 30_000;
+    content.pass.provinces[1].neighbours = vec![2];
+    content.pass.provinces[2].neighbours = vec![3, 1];
+    content.pass.provinces[3].neighbours = vec![1];
+    let first = states(&[0, 100_001, -500_000, 900_000]);
+    let second = states(&[0, -300_000, 250_000, 40_000]);
+    let seeds = |count: i32| -> Vec<Option<u32>> {
+        (0..count)
+            .map(|at| (at % 4 != 2).then_some(at as u32 * 13 + 7))
+            .collect()
+    };
+    let mut frames = Vec::new();
+    for hour in 10..=17 {
+        frames.push(temperatures(1, 10, hour, &first, seeds(hour - 10), &content.pass));
+    }
+    let mut refused = frame(18, Some(vec![row(71), row(72)]));
+    *refused.tables[TableId::WeatherProvinces.index()] = TableView::Unavailable {
+        reason: "synthetic native temperature refusal".into(),
+    };
+    frames.push(refused);
+    for hour in 19..=25 {
+        let mut frame = temperatures(1, 19, hour, &second, seeds(hour - 19), &content.pass);
+        if hour == 23 {
+            let rows = match &mut *frame.tables[TableId::WeatherProvinces.index()] {
+                TableView::Complete(TableRows::WeatherProvinces(rows)) => rows,
+                _ => unreachable!(),
+            };
+            if let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass {
+                pass.witness =
+                    replay_data::rows::TemperatureWitness::new(pass.witness.get().unwrap() ^ 1);
+            }
+        }
+        frames.push(frame);
+    }
+    for hour in 28..=31 {
+        frames.push(temperatures(1, 28, hour, &first, seeds(hour - 28), &content.pass));
+    }
+    for frame in &mut frames {
+        frame.metrics.table_ns[TableId::WeatherRegions.index()] = 1;
+        frame.metrics.table_ns[TableId::WeatherProvinces.index()] = 1;
+    }
+    let source = source(frames.clone());
+    let options = install_cached(&source, content);
+    let binding = Binding::<block::Observer>::new(&source, Some(&options)).unwrap();
+    for (starts, cuts, resume) in [
+        (&[][..], &[31][..], None),
+        (&[3, 9, 12][..], &[12, 22, 31][..], Some(22)),
+        (&[5, 10, 15][..], &[17, 19, 25, 31][..], Some(19)),
+        (&(1..frames.len()).collect::<Vec<_>>()[..], &[23, 31][..], Some(23)),
+    ] {
+        let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
+        let (native, walked) =
+            dashboard_keyed::native::testing::assert_bound_published_as_walked::<block::Observer>(
+                &frames,
+                weather,
+                starts,
+                cuts,
+                resume,
+                &label,
+                Some(&binding),
+            );
+        assert_eq!(
+            native.observer.temperature_warnings(),
+            walked.observer.temperature_warnings(),
+            "{label}: refusals"
+        );
+        assert_eq!(native.observer.temperature_status(), "available", "{label}");
+        let warnings = native.observer.temperature_warnings();
+        for refusal in ["synthetic native temperature refusal", "recorded witness"] {
+            assert!(
+                warnings.iter().any(|warning| warning.contains(refusal)),
+                "{label}: {refusal} in {warnings:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_binding_preserves_source_binding_status_and_warnings() {
+    for case in 0..3 {
+        let source = source(vec![frame(10, Some(vec![row(71)]))]);
+        let options = match case {
+            0 => {
+                let mut content = bound(&[(71, vec![1])], 2);
+                content.warnings.push("synthetic content warning".into());
+                Some(install_cached(&source, content))
+            }
+            1 => None,
+            _ => {
+                let mut options = install_cached(&source, bound(&[(71, vec![1])], 2));
+                options.options.game_dir = "unavailable-temperature-stack".into();
+                source
+                    .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
+                    .lock()
+                    .unwrap()
+                    .get_or_init(&catalogue::recorded_binding(&options), |_| {
+                        Err(dashboard_core::invalid(
+                            "synthetic unavailable recorded stack",
+                        ))
+                    })
+                    .err()
+                    .expect("unavailable stack");
+                Some(options)
+            }
+        };
+        let mut old = block::Observer::default();
+        old.bind(&source, options.as_ref(), &AtomicBool::new(false))
+            .unwrap();
+        let resolved = Arc::new(resolve(&source, options.as_ref(), &mut || Ok(())).unwrap());
+        let mut observer = block::Observer::default();
+        dashboard_keyed::Observer::bind(&mut observer, &resolved).unwrap();
+        assert_eq!(observer.temperature_status(), old.temperature_status());
+        assert_eq!(observer.temperature_warnings(), old.temperature_warnings());
+        if case == 0 {
+            assert_eq!(observer.temperature_status(), "available");
+            assert_eq!(
+                observer.temperature_warnings(),
+                ["synthetic content warning"]
+            );
+        } else {
+            assert!(
+                observer
+                    .temperature_status()
+                    .starts_with("Temperature unavailable: ")
+            );
+        }
+    }
+}
+
+#[test]
+fn native_bindings_use_resolved_content_without_the_source_cache() {
+    let source = source(vec![frame(10, Some(vec![row(71)]))]);
+    let options = install_cached(&source, bound(&[(71, vec![1, 2])], 3));
+    let resolved = Arc::new(resolve(&source, Some(&options), &mut || Ok(())).unwrap());
+    let cached = cached_bound(&source, &options);
+    let cache = source.state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>();
+    let _locked = cache.lock().unwrap();
+    let mut keeper = <block::Observer as dashboard_keyed::Observer>::native_keeper().unwrap();
+    keeper.bind(&resolved).unwrap();
+    assert!(cached.inverse.lock().unwrap().is_none());
+    let mut emit =
+        dashboard_keyed::native::Emit::<block::Observer>::new(FormatVersion::CURRENT, 1).unwrap();
+    emit.bind(&resolved).unwrap();
+    assert!(cached.inverse.lock().unwrap().is_some());
+    drop(emit);
     assert!(cached.inverse.lock().unwrap().is_none());
 }

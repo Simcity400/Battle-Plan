@@ -7,7 +7,7 @@ import { useParityRows } from '../dashboard/parityRows';
 import './charts.css';
 
 export interface LegendItem {
-  id: string; label: string; color?: string; tooltip?: string; value?: string; flag?: ReactNode;
+  id: string; label: string; detail?: string; color?: string; tooltip?: string; value?: string; flag?: ReactNode;
   /** A value read out to assistive technology only, where the look shows names alone. */
   spokenValue?: string;
   /** Makes the swatch a colour picker, as faction swatches are; the choice applies campaign-wide. */
@@ -34,7 +34,7 @@ export default function Legend({ items, label, always = false, windowed = false,
   }, [items, always, windowed, onVisibleItems]);
   if (items.length < (always ? 1 : 2)) return null;
   if (windowed) return <WindowedLegend items={items} label={label} onVisibleItems={onVisibleItems} />;
-  return <ul className="chart-legend" aria-label={label} ref={root}>{items.map(item => <li key={item.id} data-tooltip={item.tooltip}><Entry item={item} /></li>)}</ul>;
+  return <ul className="chart-legend" aria-label={label} ref={root}>{items.map(item => <li key={item.id} data-detail={item.detail} data-tooltip={item.tooltip}><Entry item={item} /></li>)}</ul>;
 }
 
 function WindowedLegend({ items, label, onVisibleItems }: { items: readonly LegendItem[]; label: string; onVisibleItems?: (items: readonly LegendItem[]) => void }) {
@@ -43,7 +43,7 @@ function WindowedLegend({ items, label, onVisibleItems }: { items: readonly Lege
   const visible = useCallback((rows: readonly MovingRow<LegendItem>[]) => onVisibleItems?.(rows.map(row => row.item)), [onVisibleItems]);
   return <div className="chart-legend-window" style={{ height: Math.min(items.length * rowHeight, rowHeight * 3) }}>
     <WindowedRows items={rows} rowHeight={rowHeight} label={label} className="chart-legend chart-legend-rows" onVisibleRows={visible}>
-      {({ item }) => <div className="chart-legend-entry" tabIndex={0} data-tooltip={item.tooltip}><Entry item={item} /></div>}
+      {({ item }) => <div className="chart-legend-entry" tabIndex={0} data-detail={item.detail} data-tooltip={item.tooltip}><Entry item={item} /></div>}
     </WindowedRows>
   </div>;
 }

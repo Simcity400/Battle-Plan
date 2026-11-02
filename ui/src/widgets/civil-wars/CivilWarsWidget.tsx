@@ -36,7 +36,7 @@ import { mix } from '../../shell/appearance/color';
 import { warsCountryColours } from '../wars/warsColours';
 import { OPTIONS } from './definition';
 import { civilWarLanes, civilWarsAt, jumpHours, laneCountries, NAME_LOADING, NAME_NOT_KNOWN, sideNameHour, sideTooltip, summaryText,
-  tooltipCountries, unknownLook, validateCivilWarsReply, warTooltip } from './civilWarsData';
+  tooltipCountries, unknownLook, validateCivilWarsReply, warTooltip } from './civilWarsData.ts';
 import type { CivilWarLaneInfo, Look } from './civilWarsData';
 import './civilWars.css';
 import { motionOf } from '../../charts/easing.ts';
@@ -86,6 +86,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   useEffect(() => { setCollapsed(new Set()); }, [track?.source.id, track?.branch.id]);
   const [inView, setInView] = useState<[number, number]>([0, 24]);
   const [wanted, setWanted] = useState<{ live: string[]; dated: NameAt[] }>({ live: [], dated: [] });
+  const [nameWanted, setNameWanted] = useState<{ live: string[]; dated: NameAt[] }>({ live: [], dated: [] });
   // Countries a tooltip names at fixed hours, asked for only while it shows.
   const [tipWanted, setTipWanted] = useState<NameAt[]>([]);
   const tipKey = useRef('');
@@ -98,16 +99,17 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
   // Sides still listed are named and coloured at the shown hour; the rest at a fixed hour each.
-  const { country, revision } = useCountriesAt(runtime.client, track, wanted.live, at, active, wanted.live, segmentAt, WORDS);
+  const { country, revision } = useCountriesAt(runtime.client, track, wanted.live, at, active, nameWanted.live, segmentAt, WORDS);
   const looks = useCountryLooks(runtime.client, track, wanted.live, at, active, segmentAt);
   const datedWanted = useMemo(() => {
     const pairs = new Map<string, NameAt>();
-    for (const pair of [...wanted.dated, ...tipWanted]) pairs.set(nameKey(pair.hour, pair.tag), pair);
+    for (const pair of [...nameWanted.dated, ...tipWanted]) pairs.set(nameKey(pair.hour, pair.tag), pair);
     return [...pairs.values()];
-  }, [wanted.dated, tipWanted]);
+  }, [nameWanted.dated, tipWanted]);
   const datedHours = Math.max(MAX_NAME_HOURS, new Set(datedWanted.map(pair => pair.hour)).size);
   const styles = useCountryFactsRead(runtime.client, track, datedWanted, active, STYLES, datedHours);
-  const flags = useCountryFlagsRead(runtime.client, track, datedWanted, active);
+  const flagWanted = useMemo(() => [...wanted.dated, ...tipWanted], [wanted.dated, tipWanted]);
+  const flags = useCountryFlagsRead(runtime.client, track, flagWanted, active);
   const fixed = tokens.countryColours === 'fixed';
   const colours = useMemo(() => {
     const keys = [...wanted.live, ...wanted.dated.map(pair => nameKey(pair.hour, pair.tag))];
@@ -115,7 +117,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
       ...wanted.live.map(tag => [tag, looks.color(tag, at)] as const),
       ...wanted.dated.map(pair => {
         const style = styles.get(nameKey(pair.hour, pair.tag));
-        return [nameKey(pair.hour, pair.tag), style && typeof style === 'object' ? style.color : null] as const;
+        return [nameKey(pair.hour, pair.tag), style && !(style instanceof Error) ? style.color : null] as const;
       }),
     ]);
     return warsCountryColours(keys, key => recorded.get(key) ?? null, tokens.surface, fixed);
@@ -130,10 +132,11 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const neutral = mix(tokens.text, tokens.surface, 0.45);
   const { lanes, info } = useMemo(() => view ? civilWarLanes(view.wars, collapsed, { side, dated, day: dayLabel, neutral, positive: tokens.positive }, branchFirst, unread)
     : { lanes: [], info: new Map<string, CivilWarLaneInfo>() }, [view, collapsed, side, dated, neutral, tokens.positive, branchFirst, unread]);
-  // Names and flags only for the lanes in view, with the shared margin.
+  // The spoken description names every lane; flag artwork follows the viewport.
   const requests = laneRequests(lanes, inView);
-  const wantedKey = JSON.stringify(laneCountries(requests.looks, info));
+  const wantedKey = JSON.stringify(laneCountries(requests.looks, info)), nameWantedKey = JSON.stringify(laneCountries(requests.names, info));
   useEffect(() => { setWanted(JSON.parse(wantedKey) as { live: string[]; dated: NameAt[] }); }, [wantedKey]);
+  useEffect(() => { setNameWanted(JSON.parse(nameWantedKey) as { live: string[]; dated: NameAt[] }); }, [nameWantedKey]);
   const onLanesInView = useCallback((start: number, end: number) => setInView([start, end]), []);
   const activate = useCallback((lane: TimelineLane) => {
     const about = info.get(lane.id);
@@ -166,8 +169,8 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
     if (!track) return <WidgetState kind="empty" icon="flag-torn" message="Load a campaign to see its civil wars." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-    if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
-    if (narrowing && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    if (product.error) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
+    if (narrowing && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (!data || !view || narrowing && !identities) return <WidgetState kind="loading" label="Loading civil wars…" />;
     if (narrowing && filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
     if (!lanes.length) {
@@ -219,7 +222,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   })();
   return <div className="civil-wars-widget">
     {header}
-    {narrowing && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
+    {narrowing && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {body}
     {menu.menu}
   </div>;

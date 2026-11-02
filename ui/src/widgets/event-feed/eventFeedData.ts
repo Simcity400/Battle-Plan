@@ -124,7 +124,7 @@ export const eventCountryHour = (event: EventFeedRow): number =>
 
 /** Prepare each page/filter once. Playback only cuts this ordered result by its
  * supplying reads; it never repeats country matching or sorting on each tick. */
-export function filteredEventRows(reply: EventFeedReply, filter: FeedFilter): LogRow<FeedEvent>[] {
+export function filteredEventRows(reply: EventFeedReply, filter: FeedFilter): ReadonlyArray<LogRow<FeedEvent>> {
   const occurrences = new Map<string, number>();
   return newestFirst(reply.rows.filter(event => (filter.firstHour === null || event.hour >= filter.firstHour)
     && filter.categories.has(event.category)

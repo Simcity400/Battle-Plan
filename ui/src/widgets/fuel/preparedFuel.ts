@@ -1,3 +1,5 @@
+import { asFailure } from '../../dashboard/queryError.ts';
+import { type Failure } from '../../dashboard/queryError.ts';
 import type { RefObject } from 'react';
 import { useParityRows } from '../../dashboard/parityRows';
 import type { ParityList } from '../../dashboard/parityRows';
@@ -119,7 +121,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   const [view,setView]=useState<{owner:typeof owner;from:number;to:number;width:number}>();
   const [hover,setHover]=useState<number|null>(null);
   const [states,setStates]=useState<{owner:typeof owner;data:FuelStates}>();
-  const [error,setError]=useState<{owner:typeof owner;message:string;reads?:string}>();
+  const [error,setError]=useState<{owner:typeof owner;failure: Error;reads?:string}>();
   const [attempt,setAttempt]=useState(0);
   const [keyboard,setKeyboard]=useState<{owner:typeof owner;hour:number|null;revision:number}>();
   const requests=useRef(new Set<AbortController>());
@@ -143,7 +145,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   useViewRead<typeof reads,null>(enabled ? JSON.stringify([identity,content,attempt]) : null,reads,readKey,active,(at,signal,publish)=>
     preparedSeriesQuery(client,track!.source,'series-state',{branchId:track!.branch.id,family:{kind:'country-fuel'},reads:at},signal,attempt>0,undefined,undefined,
       value=>{if(!signal.aborted && alive.current===owner){const data=validateFuelStates(value);fuelStateIndex(data,at);setStates({owner,data});publish(null);}})
-      .then(()=>null,reason=>{if(!signal.aborted && alive.current===owner)setError({owner,message:String(reason),reads:JSON.stringify(at)});return null;}),client);
+      .then(()=>null,reason=>{if(!signal.aborted && alive.current===owner)setError({owner,failure: asFailure(reason),reads:JSON.stringify(at)});return null;}),client);
   useEffect(()=>()=>{for(const controller of requests.current)controller.abort();requests.current.clear();},[owner,active]);
   const exactAt=useCallback(async(at:number)=>{
     if(!enabled || !active)return null;
@@ -154,7 +156,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
       if(controller.signal.aborted || alive.current!==owner)return null;
       fuelStateIndex(data,reads);
       setHover(Math.floor(at));setStates({owner,data});return data;
-    }catch(reason){if(!controller.signal.aborted && alive.current===owner)setError({owner,message:String(reason)});return null;}
+    }catch(reason){if(!controller.signal.aborted && alive.current===owner)setError({owner,failure: asFailure(reason)});return null;}
     finally{requests.current.delete(controller);}
   },[owner,enabled,active,attempt,content]);
   const onNavigateHour=useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((key,from,x,until)=>{
@@ -165,7 +167,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
       key,from,firstHour:x[0],lastHour:Math.min(x[1],until??x[1]),within:within && Object.fromEntries(within)},controller.signal,attempt>0)
       .then(value=>{if(!object(value) || value.hour!==null && (typeof value.hour!=='number' || !Number.isFinite(value.hour)))throw new Error('Prepared fuel navigation is malformed.');
         if(!controller.signal.aborted && alive.current===owner)setKeyboard(previous=>({owner,hour:value.hour as number|null,revision:(previous?.revision??0)+1}));})
-      .catch(reason=>{if(!controller.signal.aborted && alive.current===owner)setError({owner,message:String(reason)});}).finally(()=>requests.current.delete(controller));
+      .catch(reason=>{if(!controller.signal.aborted && alive.current===owner)setError({owner,failure: asFailure(reason)});}).finally(()=>requests.current.delete(controller));
   },[owner,enabled,active,attempt]);
   const current=states?.owner===owner ? states.data : undefined;
   const data=useMemo(()=>reachedFuel(current) ?? currentSummary?.replies,[current,currentSummary]);
@@ -177,7 +179,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
     onSummaryView,onHover:setHover,onNavigateHour,keyboardHour:keyboard?.owner===owner?keyboard.hour:undefined,
     keyboardRevision:keyboard?.owner===owner?keyboard.revision:undefined,exactAt,
     // A state read's failure belongs to the reads it asked for; a newer set is still loading.
-    error:(error?.owner===owner && (error.reads===undefined || error.reads===readKey)?error.message:undefined)
+    error:(error?.owner===owner && (error.reads===undefined || error.reads===readKey)?error.failure:undefined)
       ?? (summaries.errorKey===JSON.stringify([currentView?.from,currentView?.to,currentView?.width]) ? summaries.error : undefined),retry:()=>{setError(undefined);setAttempt(value=>value+1);summaries.retry();}};
 }
 
@@ -201,7 +203,7 @@ export function useFuelSeriesParity(root: RefObject<Element | null>, client: Das
   label: string, legacy: readonly FuelReply[] | readonly FuelConsumptionReply[] | undefined, consumption = false) {
   const {requested,prepare}=useParityPreparation();
   const key=JSON.stringify([track?.source.id,track?.source.revision,track?.branch.id,tags,extent,within && [...within],label,consumption]);
-  const [answer,setAnswer]=useState<{key:string;client:DashboardClient;model?:ParityList;error?:string}>();
+  const [answer,setAnswer]=useState<{key:string;client:DashboardClient;model?:ParityList;error?: Failure}>();
   useEffect(()=>{
     if(!requested || !track) return;
     const controller=new AbortController();
@@ -222,7 +224,7 @@ export function useFuelSeriesParity(root: RefObject<Element | null>, client: Das
         }
       }
       if(!controller.signal.aborted)setAnswer({key,client,model:{kind:'chart',label,complete:true,total:rows.length,rows}});
-    })().catch(reason=>{if(!controller.signal.aborted)setAnswer({key,client,error:String(reason)});});
+    })().catch(reason=>{if(!controller.signal.aborted)setAnswer({key,client,error: asFailure(reason)});});
     return ()=>controller.abort();
   },[requested,key,client,legacy]);
   const current=answer?.key===key && answer.client===client ? answer : undefined;

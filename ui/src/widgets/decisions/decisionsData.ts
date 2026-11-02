@@ -1,5 +1,6 @@
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
+import type { PlaybackBounds } from '../../charts/playbackIntervals';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { formatPowerChange, formatSpent } from '../../dashboard/powerDecimals.ts';
@@ -68,7 +69,7 @@ export interface DecisionFilter {
 
 /** Each page's rows once per filter, newest first by the date selected. A fact
  * whose selection was not recorded is its own row. */
-export function prepareDecisions(reply: ScriptOccurrenceReply, filter: DecisionFilter): LogRow<DecisionAt>[] {
+export function prepareDecisions(reply: ScriptOccurrenceReply, filter: DecisionFilter): ReadonlyArray<LogRow<DecisionAt>> {
   return newestFirst(reply.occurrences.flatMap(occurrence => {
     const first = occurrence.edges[0];
     if (filter.firstHour !== null && first.row.hour < filter.firstHour) return [];
@@ -112,6 +113,20 @@ export function daysLeft(at: DecisionAt): number | null {
   if (at.status !== 'active' || !at.timer) return null;
   const left = Math.ceil((at.timer.from + at.timer.days * 24 - at.hour) / 24);
   return left > 0 ? left : null;
+}
+
+export function decisionPlaybackBounds(rows: ReadonlyArray<LogRow<DecisionAt>>, hour: number): PlaybackBounds {
+  let first = -Infinity, end = Infinity;
+  for (const row of rows) if (row.item.status === 'active' && row.item.timer) {
+    const timer = row.item.timer, deadline = timer.from + timer.days * 24;
+    if (!Number.isFinite(deadline)) continue;
+    if (hour >= deadline) first = Math.max(first, deadline);
+    else {
+      const previous = deadline + Math.floor((hour - deadline) / 24) * 24;
+      first = Math.max(first, previous); end = Math.min(end, previous + 24);
+    }
+  }
+  return { first, end };
 }
 
 /** The muted line under the name: how it started, ran or ended. */

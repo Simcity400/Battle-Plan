@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deepFreeze } from '../../testFrozen.ts';
+import { espionagePlayback } from './espionageData.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -23,6 +25,24 @@ const fixture = (): EspionageLogReply => ({ branchId: '1', window: 0, windows: [
   types: [{ key: 'mod operation/été', name: 'Opération des étoiles', icon, iconMissing: null }], operations: [{ definitionToken: 42, id: 'handle:10', firstRead: 10, startHour: 12, startKnownAt: 12,
     runs: [{ ...run(10, 11), durationDays: 0, startHour: null, elapsedDays: null }, run(12, 20), run(25, 30)], end: null }] });
 const filter = { types: [], country: () => true, role: 'owner', from: null, live: true, runningOrder: 'start' } as const;
+test('operation playback follows read and gap boundaries but retains completed rows across unrelated reads', () => {
+  const original = fixture(), first = original.operations[0];
+  const data = deepFreeze({ ...original, readHours: [10, 12, 15, 16, 17, 18, 19, 20, 25, 26, 27, 28, 29, 30],
+    operations: [{ ...first, runs: [run(10, 20)], startKnownAt: 12, end: ending(16, 15, 'completed') }] });
+  const windows = deepFreeze(new Map([[0, data]])), playback = espionagePlayback(windows, deepFreeze(filter));
+  for (const hour of [9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 25, 30, 31, 11])
+    assert.deepEqual(playback.at(hour), windowedOperationRows(windows, hour, filter));
+  const firstRead = playback.at(12);
+  assert.equal(playback.at(14), firstRead);
+  assert.notEqual(playback.at(15), firstRead);
+  const completed = playback.at(16);
+  assert.equal(playback.at(17), completed);
+  assert.equal(playback.at(19), completed);
+  assert.equal(playback.at(25), completed);
+  const gapWindows = deepFreeze(new Map([[0, fixture()]])), gap = espionagePlayback(gapWindows, filter);
+  for (const hour of [20, 21, 24, 25, 24]) assert.deepEqual(gap.at(hour), windowedOperationRows(gapWindows, hour, filter));
+  assert.equal(gap.at(21), gap.at(24));
+});
 
 test('operation rows retain a fallback picture and progress while stating status once', async () => {
   const data = fixture();
@@ -551,7 +571,7 @@ test('ending values use the actual supplying read before a clipped daily window'
 
 test('a content revision releases held names for the same requested metadata window', () => {
   const identity = operationWindowIdentity('source', 'revision', 'branch', 1);
-  const held = { identity, data: new Map([[3, 'Old localized name']]), errors: new Map<number, string>() };
+  const held = { identity, data: new Map([[3, 'Old localized name']]), errors: new Map<number, Error>() };
   assert.equal(keepWanted(held, identity, new Set([3])), held);
   const refreshed = keepWanted(held, operationWindowIdentity('source', 'revision', 'branch', 2), new Set([3]));
   assert.equal(refreshed.data.size, 0); assert.equal(refreshed.errors.size, 0);

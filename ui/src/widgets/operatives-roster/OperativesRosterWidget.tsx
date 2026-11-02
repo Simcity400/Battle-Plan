@@ -149,8 +149,8 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its operatives." />;
   else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
-  else if (groups.error && !groups.data) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
+  else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading operatives…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
@@ -173,7 +173,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     {preparing && rows.length > 0 && <p className="chart-line-key">This roster is still being prepared.</p>}
     {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unavailable.</p>}
     {data?.countries.some(country => country.operatives.some(entry => fieldPreparing(entry, 'joinedHour'))) && <p className="chart-line-key">First presence, departure and earlier departed operatives are still being prepared.</p>}
-    {groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
+    {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {body}
   </div>;
 }

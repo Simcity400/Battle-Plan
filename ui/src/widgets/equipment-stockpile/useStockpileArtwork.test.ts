@@ -46,7 +46,7 @@ test('stockpile artwork masks another client before effects and keeps cancelled 
     assert.equal(render(second), undefined);
     state.requests[2].reject(new Error('second client failed'));
     await settle();
-    assert.equal(render(second)?.error, 'second client failed');
+    assert.equal(render(second)?.error?.message, 'second client failed');
     assert.equal(render(first), undefined, 'errors also belong to their client');
     cleanupReturn?.();
   } finally {

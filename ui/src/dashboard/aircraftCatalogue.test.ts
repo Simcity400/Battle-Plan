@@ -50,13 +50,13 @@ test('a page answered for other rows is refused, and a failed page waits for a r
   pages.begin(2);
   assert.ok(!pages.accept(2, reply(100, ['wrong'], 300)));
   assert.equal(pages.entry(200), undefined);
-  assert.match(pages.error(2) ?? '', /rows from 100 for rows from 200/);
+  assert.match(pages.error(2)?.message ?? '', /rows from 100 for rows from 200/);
   assert.ok(!pages.wants(2), 'a failed page is not asked again by itself');
   pages.retry(2);
   assert.ok(pages.wants(2));
   pages.begin(1);
-  pages.fail(1, 'The data service stopped');
-  assert.equal(pages.firstError(), 'The data service stopped');
+  pages.fail(1, new Error('The data service stopped'));
+  assert.equal(pages.firstError()?.message, 'The data service stopped');
   assert.ok(!pages.loading());
 });
 

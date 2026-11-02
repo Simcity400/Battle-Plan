@@ -22,10 +22,10 @@ const prepared = (pendingFrom: number): FactionGoalsReply => ({
   unobserved: [], pending: pendingFrom <= 200 ? [{ firstHour: pendingFrom, lastHour: 200 }] : [],
   coverage: { schema: 34, firstHour: 0, lastHour: Math.min(pendingFrom - 1, 200), complete: pendingFrom > 200 }, channels: [], warnings: [],
 });
-type Part = { firstHour: number | null; lastHour: number | null; data?: FactionGoalsReply; error?: string };
-type State = { hour: number; faction: string; parts: Record<string, Part[]>; error?: string; details: [string, number][]; rows: unknown[];
+type Part = { firstHour: number | null; lastHour: number | null; data?: FactionGoalsReply; error?: Error };
+type State = { hour: number; faction: string; parts: Record<string, Part[]>; error?: Error; details: [string, number][]; rows: unknown[];
   retries: number; held: unknown[]; diagnostics: unknown[]; states: { kind: string; detail?: string; onRetry?: () => void }[];
-  detailError?: string };
+  detailError?: Error };
 
 async function mount() {
   const host = globalThis as typeof globalThis & { __goals?: State };
@@ -78,7 +78,7 @@ test('an hour before the first run, or still being prepared, asks its own detail
   const { state, render, close } = await mount();
   try {
     // Unrecorded: the hour's details answer it, including their own failure.
-    state.detailError = 'Faction details unavailable at this hour';
+    state.detailError = new Error('Faction details unavailable at this hour');
     const before = render(5);
     assert.deepEqual(before.details, [['9', 5]]);
     assert.equal(before.states.at(-1)?.detail, 'Faction details unavailable at this hour');
@@ -111,8 +111,8 @@ test('a proven absence is an error whose retry asks only that hour, never the wh
 test('a failed history range falls back to each hour, names the failure and offers the history retry', async () => {
   const { state, render, close } = await mount();
   try {
-    state.parts['9'] = [{ firstHour: null, lastHour: 99, data: prepared(181) }, { firstHour: 100, lastHour: null, error: 'Background preparation is off.' }];
-    state.error = 'Background preparation is off.';
+    state.parts['9'] = [{ firstHour: null, lastHour: 99, data: prepared(181) }, { firstHour: 100, lastHour: null, error: new Error('Background preparation is off.') }];
+    state.error = new Error('Background preparation is off.');
     const failed = render(120);
     assert.deepEqual(failed.details, [['9', 120]]);
     assert.deepEqual(failed.rows, [[['Mod detail_goal', null]]]);

@@ -10,7 +10,7 @@ use crate::prepared::{
     State as Phase,
     driver::{
         plan::{self, Backend, Plan},
-        publication::{Family, Own, Publisher, Resume, Stage, Stopped},
+        publication::{Family, Hours, Made, Own, Publisher, Resume, Stage, Stopped},
         registry::{self, Descriptor, FamilyId},
     },
     pipeline,
@@ -258,7 +258,7 @@ impl Operator<World> for Looking {
     fn hour(&mut self, hour: &Hour<'_, World>, out: &mut dyn Sink<Fact>) -> io::Result<()> {
         match self.trip {
             Some(Trip::Refuse(at)) if at == hour.hour => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "probe refused"));
+                return Err(crate::refused("probe refused"));
             }
             Some(Trip::Break(at)) if at == hour.hour => {
                 return Err(io::Error::other("probe broke"));
@@ -304,7 +304,7 @@ impl Native for Probe {
     ) -> io::Result<()> {
         match self.trip {
             Some(Trip::Reject(at)) if at == fact.hour => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "probe rejected"));
+                return Err(crate::refused("probe rejected"));
             }
             Some(Trip::Fail(at)) if at == fact.hour => {
                 return Err(io::Error::other("probe failed"));
@@ -327,10 +327,7 @@ impl Native for Probe {
         if let Some(Trip::Flush(at)) = self.trip
             && state.contains(&at)
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "probe could not flush",
-            ));
+            return Err(crate::refused("probe could not flush"));
         }
         let hours: Vec<u8> = state.drain(..).flat_map(i32::to_le_bytes).collect();
         stage
@@ -690,7 +687,11 @@ fn a_refusal_ends_its_family_s_branch_there_by_name() {
             .unwrap()
             .frontier;
         let end = ended.end.unwrap();
-        assert_eq!((end.hour, end.reason.as_str()), (refused, reason));
+        assert!(matches!(end.reason, crate::QueryError::Refused { .. }));
+        assert_eq!(
+            (end.hour, end.reason.to_string().as_str()),
+            (refused, reason)
+        );
         assert_eq!(ended.last_hour, shape.get(1).last_hour);
         assert!(
             publisher
@@ -793,7 +794,7 @@ fn a_failing_family_fails_alone() {
             "{stage}"
         );
         let why = walks.failed[&alpha_id].clone();
-        assert!(why.contains(error), "{stage}: {why}");
+        assert!(why.to_string().contains(error), "{stage}: {why}");
         let before: BTreeMap<u64, Option<Published>> = shape
             .branches()
             .keys()
@@ -852,8 +853,8 @@ fn a_failing_family_fails_alone() {
                 .find(|&hour| published.is_none_or(|last| hour > last));
             assert_eq!(Some(end.hour), next, "{stage}: alpha's branch {branch}");
             assert_eq!(
-                (end.held, end.reason.as_str()),
-                (Held::Refused, why.as_str())
+                (end.held, end.reason.to_string().as_str()),
+                (Held::Refused, why.to_string().as_str())
             );
             // Its queries refuse from there by its own error; the other family's refuse none.
             let published = gates::decode(&fixture.store, None).unwrap().unwrap();
@@ -1027,11 +1028,16 @@ fn a_native_plan_refuses_a_family_without_a_backend_by_name() {
                 .unwrap()
                 .unwrap();
             assert_eq!(hour, extent.first_hour);
-            assert_eq!(error, "gamma is not prepared from native recordings yet");
+            assert_eq!(
+                error,
+                crate::QueryError::Refused {
+                    text: "gamma is not prepared from native recordings yet".into()
+                }
+            );
             let (_, error) = pipeline::refusal_from(&published, branch, "production-lines")
                 .unwrap()
                 .unwrap();
-            assert!(error.contains("production-lines"), "{error}");
+            assert!(error.to_string().contains("production-lines"), "{error}");
             assert!(
                 pipeline::refusal_from(&published, branch, "alpha-product")
                     .unwrap()
@@ -1110,7 +1116,10 @@ fn a_job_with_a_native_backend_is_prepared_among_the_families() {
     assert!(super::names().contains(&job));
     assert_eq!(FamilyId::publisher(job).unwrap().name(), job);
     assert!(FamilyId::parse(job).is_err());
-    assert!(!super::names().contains(&"map"), "the map is indexed before the run");
+    assert!(
+        !super::names().contains(&"map"),
+        "the map is indexed before the run"
+    );
     assert!(plan.stamp(job).is_some());
     assert_eq!(plan.gating("production-line-detail"), Some(job));
     assert!(status::refused(plan).iter().all(|(name, _)| *name != job));
@@ -1134,7 +1143,11 @@ fn a_job_with_a_native_backend_is_prepared_among_the_families() {
         })
         .unwrap();
     let published = gates::decode(&fixture.store, None).unwrap().unwrap();
-    assert!(published.gate(1, job).is_none_or(|gate| gate.id().is_none()));
+    assert!(
+        published
+            .gate(1, job)
+            .is_none_or(|gate| gate.id().is_none())
+    );
     let mut stage = publisher.stage(FamilyId::publisher(job).unwrap()).unwrap();
     let pages = stage.pages().unwrap();
     let own = dashboard_base::products::production_lines::prepared::directory_section(1);
@@ -1170,9 +1183,76 @@ fn a_job_with_a_native_backend_is_prepared_among_the_families() {
     assert_eq!(listed[&branch.to_string()].last_hour, 0);
     assert!(!listed[&branch.to_string()].complete);
     assert!(accepted.sections.iter().all(|section| section.id != job));
-    assert!(accepted.coverage.is_empty(), "a job holds back no hour of the timeline");
+    assert!(
+        accepted.coverage.is_empty(),
+        "a job holds back no hour of the timeline"
+    );
     let pending = status::accepted(plan, &shape, &[id], &|_, _| None, &Default::default(), 0);
     assert!(pending.families[job].is_empty());
+}
+
+/// The land-owner catalogue's native backend makes it a member of the run, gated on its own
+/// coverage; a plan without the backend refuses it by name.
+#[test]
+fn the_land_owner_catalogue_is_prepared_among_the_families() {
+    let plan = plan::native();
+    let job = "land-owners";
+    assert!(plan.jobs().contains(&job));
+    assert!(super::names().contains(&job));
+    assert_eq!(FamilyId::publisher(job).unwrap().name(), job);
+    assert_eq!(plan.gating(job), Some(job));
+    assert!(status::refused(plan).iter().all(|(name, _)| *name != job));
+    let bare = plan::test_native(&[], &[]).unwrap();
+    assert!(status::refused(bare).iter().any(|(name, _)| *name == job));
+}
+
+#[test]
+fn a_land_owner_refusal_is_published_by_name() {
+    let plan = plan::native();
+    let job = "land-owners";
+    let (recording, _) = opened(&RUNS);
+    let shape = Shape::new(&recording).unwrap();
+    let fixture = Fixture::new();
+    let (publisher, _) = fixture.open(plan, &[job], &recording, &shape);
+    let placed = *shape.get(0);
+    let mut stage = publisher.stage(FamilyId::publisher(job).unwrap()).unwrap();
+    stage
+        .processed(
+            Hours {
+                branch: placed.branch,
+                run: placed.run,
+                first: placed.first,
+                last: placed.last,
+                first_hour: placed.first_hour,
+                last_hour: placed.last_hour,
+                ends_segment: true,
+                ends_branch: placed.ends_branch,
+                proof: shape.proof(&recording, 0),
+            },
+            Made::Refused {
+                hour: placed.first_hour,
+                reason: crate::QueryError::Refused {
+                    text: "Unsupported ownership data".into(),
+                },
+                from: None,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    stage.send().unwrap();
+    stage.settle().unwrap();
+    let mark = status::mark(plan, &shape);
+    publisher
+        .coordinate(|writer| status::coordinate(writer, plan, &shape, &mark))
+        .unwrap();
+    let published = gates::decode(&fixture.store, None).unwrap().unwrap();
+    assert_eq!(
+        pipeline::refusal_from(&published, placed.branch, job).unwrap(),
+        Some((placed.first_hour, crate::QueryError::Refused {
+            text: "Unsupported ownership data".into(),
+        }))
+    );
 }
 
 /// What a tally's operator hands its emit of an hour: a digest of what the walk shows of it,

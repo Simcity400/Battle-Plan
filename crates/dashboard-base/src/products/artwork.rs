@@ -1786,12 +1786,12 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
     catalogue::draw(
         || "nuclear stockpile icon".to_owned(),
         catalogue,
-        |catalogue| draw_nuke_icon(catalogue).map_err(|error| error.to_string()),
+        |catalogue| draw_nuke_icon(catalogue).map_err(dashboard_core::QueryError::from),
     )
     .get()
     .clone()
     .map(Some)
-    .map_err(invalid)
+    .map_err(io::Error::from)
 }
 
 /// [`nuke_icon`] drawn through `catalogue` alone.
@@ -1804,9 +1804,9 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
     )?;
     let container = root
         .find_recursive(Kind::Container, "nukes")
-        .ok_or_else(|| invalid("nukes artwork: topbar/nukes container unavailable"))?;
+        .ok_or_else(|| dashboard_core::refused("nukes artwork: topbar/nukes container unavailable"))?;
     if !root.refusals().is_empty() {
-        return Err(invalid(format!(
+        return Err(dashboard_core::refused(format!(
             "nukes artwork: topbar has {} unsupported GUI fields: {:?}",
             root.refusals().len(),
             root.refusals()
@@ -1816,13 +1816,13 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
     let mut icons = Vec::new();
     while let Some(element) = stack.pop() {
         if element.hide {
-            return Err(invalid(format!(
+            return Err(dashboard_core::refused(format!(
                 "nukes artwork: {} is hidden; its client visibility state is not recorded",
                 element.path
             )));
         }
         if !element.refusals().is_empty() {
-            return Err(invalid(format!(
+            return Err(dashboard_core::refused(format!(
                 "nukes artwork: {} has {} unsupported GUI fields: {:?}",
                 element.path,
                 element.refusals().len(),
@@ -1835,7 +1835,7 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
         stack.extend(element.nested());
     }
     if icons.len() != 1 {
-        return Err(invalid(format!(
+        return Err(dashboard_core::refused(format!(
             "nukes artwork: topbar/nukes has {} icons; their semantic role is not recorded: {}",
             icons.len(),
             icons
@@ -1858,7 +1858,7 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
             .ok_or_else(|| invalid("nukes artwork: frame overflow"))?,
     )
     .map_err(|_| {
-        invalid(format!(
+        dashboard_core::refused(format!(
             "nukes artwork: {} has unsupported frame {}",
             icons[0].path, icon.frame
         ))

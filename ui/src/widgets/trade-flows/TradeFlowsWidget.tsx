@@ -1,3 +1,4 @@
+import { nameReadFrom, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -15,7 +16,7 @@ import { usNumber } from '../../charts/numberFormat';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount } from '../../charts/valueAxis';
-import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
+import { MAX_NAME_HOURS, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { flagReadMetadata, useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -38,7 +39,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import { mix, toHex } from '../../shell/appearance/color';
 import { mergePreparedTrade, buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, heldScale, knownHours, emptyMessage, knownSpanAt, unrecordedMessage, measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt,
-  resourceName, selectFlows, validateTradeFlowsReply } from './tradeData';
+  resourceName, selectFlows, validateTradeFlowsReply } from './tradeData.ts';
 import type { Flow, HeldScale, Measure, SideNode, SideLink } from './tradeData';
 import TradeDrill from './TradeDrillView';
 import TradeCountryView, { resourceLegendItems } from './TradeCountryView';
@@ -163,7 +164,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     const next = sampledLooks(held.current, samples, sample => {
       const fact = lookFacts.get(sample.tag)!;
       const read = flags.get(nameKey(fact.hour, fact.tag));
-      return { style: styles.get(nameKey(fact.hour, fact.tag)), flag: read === FAILED_FACT ? FAILED_FACT : read === undefined ? undefined : read?.url ?? null };
+      return { style: styles.get(nameKey(fact.hour, fact.tag)), flag: isFailedFact(read) ? read : read === undefined ? undefined : read?.url ?? null };
     });
     held.current.looks = next.looks; held.current.segments = next.segments;
     return next.looks;
@@ -183,9 +184,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const labelOf = useCallback((identity: string): Label => {
     const fact = lookFacts.get(identity);
     const look = heldLooks.get(identity);
-    return { name: look?.name ?? 'Country name unavailable',
+    const pending = active && !!track && !!fact && (!fixed || colourPlan.wanted.some(item => item.hour === fact.hour && item.tag === fact.tag)) && !styles.has(nameKey(fact.hour, fact.tag));
+    return { ...nameReadMetadata(nameReadFrom(look?.nameFailure ?? look?.name ?? (pending ? undefined : null), pending)),
       ...(fact ? flagReadMetadata(flags.get(nameKey(fact.hour, fact.tag))) : {}), flag: look?.flag ?? undefined, color: look?.color ?? null };
-  }, [lookFacts, heldLooks, flags]);
+  }, [lookFacts, heldLooks, flags, active, track, styles, fixed, colourPlan]);
   const [hoverWanted, setHoverWanted] = useState<readonly NameAt[]>([]);
   const hoverKey = useRef('');
   const askHover = useCallback((wanted: readonly NameAt[]) => {
@@ -233,7 +235,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       const label = node.identity ? labelOf(node.identity) : undefined;
       return { id: node.id, side: node.side, label: nodeName(node), color: colour.get(node.id) ?? otherColour,
         flag: label ? label.flag ?? null : undefined,
-        countryFlag: label ? { flag: label.flag, flagReason: label.flagReason, flagPending: label.flagPending } : undefined,
+        countryFlag: label ? { flag: label.flag, flagReason: label.flagReason, ...(label.flagDetail !== undefined ? { flagDetail: label.flagDetail } : {}), flagPending: label.flagPending } : undefined,
         order: node.identity ? String(ranks[node.side].get(node.identity) ?? 0).padStart(7, '0') : OTHER, last: !node.identity,
         trade: { selection: selections.get(node.id)!, node, links: diagram.links, hour: moment, from } };
     });
@@ -385,11 +387,11 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   if (!track) return <>{pinnedHeader}<WidgetState kind="empty" icon="flows" message="Load a campaign to see who trades with whom." /></>;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  const groupFailure = (widget.countries.kind === 'group' || marketView && !all) && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = (widget.countries.kind === 'group' || marketView && !all) && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return <>{pinnedHeader}{groupFailure}</>;
   if (marketView) {
     if (incoming.marketReason) return <>{groupFailure}<WidgetState kind="unavailable" message={incoming.marketReason} /></>;
-    if (incoming.market?.error) return <>{groupFailure}<WidgetState kind="error" detail={incoming.market.error} onRetry={incoming.market.retry} /></>;
+    if (incoming.market?.error) return <>{groupFailure}<WidgetState kind="error" failure={incoming.market.error} onRetry={incoming.market.retry} /></>;
     if (!incoming.market?.data || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading market and lend-lease…" /></>;
     const pickedMarket = pinnedView ? savedSelection?.kind === 'market' ? savedSelection.key : null : marketSelection;
     if (pinnedView && !pickedMarket) return <>{groupFailure}<WidgetState kind="unavailable" message="This market selection is unavailable. Select it again." /></>;
@@ -411,7 +413,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <>{groupFailure}<WidgetState kind="empty" message={selectionReason} /></>;
-  if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   // A group with no member found yet asks for nothing, so no reply will come: the moment shown
   // says why. Totals over time can't say so from one moment, and wait for the whole branch.
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
@@ -424,7 +426,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
 
   const caption = measure === 'current' ? moment === requestedHour ? 'Per day' : `Per day · As of ${dayLabel(moment)}`
     : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
-  const main = scaleFailure ? <WidgetState kind="error" what="the campaign-wide ribbon scale" detail={scaleFailure} onRetry={incoming.retryScale} />
+  const main = scaleFailure ? <WidgetState kind="error" what="the campaign-wide ribbon scale" failure={scaleFailure} onRetry={incoming.retryScale} />
     : incoming.hasExactHour && !incoming.hasExactHour(moment) ? <WidgetState kind="loading" label="Loading trade amounts…" />
     : scale === undefined ? <WidgetState kind="loading" label="Loading the campaign-wide ribbon scale…" /> : <div className="trade-main">
     <p className="trade-caption">{caption}
@@ -453,10 +455,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
         : { type: 'open', breakdown: 'contributions', hour: moment, playing: true, playhead: Math.floor(runtime.clock.getHour()) + track.axisOffset })}
       onPin={chosenSelection && drillAt != null ? () => runtime.addWidgetBelow(widget.id,
         pinContributions(widget, track, chosenSelection, drillAt, effectiveDrill.follow, extent, countryFact?.tag ?? null)) : undefined} main={main}>
-      {countryHolder ? countryReply.error && countryKey ? <WidgetState kind="error" detail={countryReply.error} onRetry={countryReply.retry} />
+      {countryHolder ? countryReply.error && countryKey ? <WidgetState kind="error" failure={countryReply.error} onRetry={countryReply.retry} />
         : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
         // A failed read of one hovered hour says so and can be retried; the country's history stays.
-        : <>{countryPoint.error && countryKey && <WidgetState kind="error" what="this hour’s trade" detail={countryPoint.error} onRetry={countryPoint.retry} />}
+        : <>{countryPoint.error && countryKey && <WidgetState kind="error" what="this hour’s trade" failure={countryPoint.error} onRetry={countryPoint.retry} />}
           <TradeCountryView holder={countryHolder} trade={countryData} prepared={countryPrepared} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
           hour={countryShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(playbackHour) + track.axisOffset : null}
           colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}

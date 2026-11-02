@@ -29,7 +29,7 @@ const group: CountryGroupReply = { branchId: '1', humans: [], wars: [], warStart
 
 test('mounted force views keep witnessed actors through pending names and reject changed native contexts', async () => {
   const state = { main: forces as PartsRaceReply | undefined, detail: forces as PartsRaceReply | undefined,
-    groups: group as CountryGroupReply | undefined, error: undefined as string | undefined,
+    groups: group as CountryGroupReply | undefined, error: undefined as Error | undefined,
     charts: [] as TimeChartProps[], views: [] as Pick<CountryRaceViewProps, 'mix' | 'presentation' | 'moment' | 'playhead'>[],
     lists: [] as { virtual?: boolean; active?: boolean }[], pickers: [] as { allowedTags?: readonly string[]; flagAt?: { hour: number } }[],
     effects: [] as (() => unknown)[], memos: new Map<string, { deps: readonly unknown[]; value: unknown }[]>(),
@@ -226,7 +226,7 @@ test('mounted force views keep witnessed actors through pending names and reject
         track.source.id = 'other source'; assert.equal(render().chart, undefined);
         track.source.id = lastSource; assert.equal(render().chart, undefined, 'A → B → A cannot recover a previously retained plot');
         assert.equal(lastCanvas.pick(pending, 25), false);
-        state.error = 'Content failed'; assert.match(render().html, /Content failed/); state.error = undefined;
+        state.error = new Error('Content failed'); assert.match(render().html, /Content failed/); state.error = undefined;
       }
     }
   } finally {

@@ -86,7 +86,7 @@ export default function StockpileDrill({ data, catalogue, holders, included, gro
   // The dashed needed line widens the value axis: a shortage beyond the stock stays in view.
   const neededExtent = useCallback((x: readonly [number, number]) => needed ? extentOfSummary(needed, x[0], x[1]) : null, [needed]);
   return <div className="stockpile-models">
-    {incoming.error && <WidgetState kind="error" what="the stock history" detail={incoming.error} onRetry={incoming.retry} />}
+    {incoming.error && <WidgetState kind="error" what="the stock history" failure={incoming.error} onRetry={incoming.retry} />}
     {logistics && <p className="stockpile-facts">Available <b>{logistics.available == null ? 'not known' : amount(logistics.available)}</b>
       {' − '}needed <b>{logistics.need == null ? 'not known' : amount(logistics.need)}</b>
       {' = '}<b className={logistics.balance < 0n ? 'is-negative' : logistics.balance > 0n ? 'is-positive' : undefined}>{logistics.balance < 0n ? 'shortage ' : 'surplus '}{formatSigned(logistics.balance, data.decimals, 0)}</b>

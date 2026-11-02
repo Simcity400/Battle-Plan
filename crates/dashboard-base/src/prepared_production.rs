@@ -201,7 +201,7 @@ impl Current {
 }
 
 /// Prepared state's layout; another is refused rather than read.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 4;
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct ProductionAccumulator {
@@ -234,6 +234,7 @@ pub struct ProductionAccumulator {
     #[serde(default)]
     class_changed: Vec<u64>,
     pending: Option<Pending>,
+    spending_continuity: Option<(i32, BTreeMap<String, [Option<SpendingContinuity>; 2]>)>,
     /// The latest complete variant read: names it dates take its hour.
     names_hour: Option<i32>,
     segments: BTreeMap<String, u64>,
@@ -461,6 +462,7 @@ struct SourceHead {
     observation: Option<i32>,
     segment: u64,
     read_hour: i32,
+    spending_since: i32,
     units_known: bool,
     spending_known: bool,
     present: Option<bool>,
@@ -475,6 +477,7 @@ impl SourceHead {
             observation: source.observation,
             segment: source.segment,
             read_hour: source.read_hour,
+            spending_since: source.spending_since,
             units_known: source.units_known,
             spending_known: source.spending_known,
             present: source.present,
@@ -489,6 +492,7 @@ impl SourceHead {
             observation: self.observation,
             segment: self.segment,
             read_hour: self.read_hour,
+            spending_since: self.spending_since,
             units_known: self.units_known,
             spending_known: self.spending_known,
             present: self.present,
@@ -500,6 +504,67 @@ impl SourceHead {
     fn set(self, source: &mut SourceEndpoint) {
         let amounts = std::mem::take(&mut source.amounts);
         *source = self.source(amounts);
+    }
+}
+
+type SpendingIdentity = (
+    u32,
+    u32,
+    Option<i32>,
+    u64,
+    bool,
+    Option<bool>,
+    Option<ProductionSpendingUnknown>,
+    Option<i32>,
+);
+
+fn spending_identity(head: SourceHead) -> SpendingIdentity {
+    (
+        head.slot,
+        head.country_id,
+        head.observation,
+        head.segment,
+        head.spending_known,
+        head.present,
+        head.campaign_spending_reason,
+        (head.present == Some(false)).then_some(head.read_hour),
+    )
+}
+
+#[derive(Deserialize, Serialize)]
+struct SpendingContinuity {
+    identity: SpendingIdentity,
+    since: i32,
+    amounts: Vec<(u64, Purpose, i128, Option<ProductionSpendingUnknown>, i128)>,
+}
+
+impl SpendingContinuity {
+    fn of(source: &SourceEndpoint) -> Self {
+        Self {
+            identity: spending_identity(SourceHead::of(source)),
+            since: source.spending_since,
+            amounts: source.amounts.iter().map(Self::amount).collect(),
+        }
+    }
+
+    fn amount(amount: &Amount) -> (u64, Purpose, i128, Option<ProductionSpendingUnknown>, i128) {
+        (
+            amount.variant,
+            amount.purpose,
+            amount.spent,
+            amount.spending_reason,
+            amount.unproven,
+        )
+    }
+
+    fn holds(&self, head: SourceHead, amounts: &[Amount]) -> bool {
+        self.identity == spending_identity(head)
+            && self.amounts.len() == amounts.len()
+            && self
+                .amounts
+                .iter()
+                .copied()
+                .eq(amounts.iter().map(Self::amount))
     }
 }
 
@@ -1143,7 +1208,12 @@ impl ProductionAccumulator {
         let mut emitted = 0usize;
         for (rocket_source, tracks, holders, restart) in [
             (false, tags, first_equipment_holders, *equipment_restart),
-            (true, &mut rocket.tags, first_rocket_holders, *rocket_restart),
+            (
+                true,
+                &mut rocket.tags,
+                first_rocket_holders,
+                *rocket_restart,
+            ),
         ] {
             let projected = &mut spent_holders[usize::from(rocket_source)];
             for tag in countries
@@ -2186,6 +2256,8 @@ pub struct SourceEndpoint {
     /// Continuity across table/read gaps and holder replacements.
     pub segment: u64,
     pub read_hour: i32,
+    /// First hour of this source's unchanged spending, presence and coverage.
+    pub spending_since: i32,
     pub units_known: bool,
     pub spending_known: bool,
     /// Complete source census absence stays distinct from unavailable presence.
@@ -2350,6 +2422,7 @@ fn source_head(
         observation: origin,
         segment: *segment,
         read_hour,
+        spending_since: hour,
         units_known,
         spending_known,
         present: track.presence.last().copied().flatten(),
@@ -2417,6 +2490,7 @@ fn source_edit(
     (units_known, spending_known): (bool, bool),
     (tainted, first, restart, rocket): Scope<'_>,
     held: Option<&SourceEndpoint>,
+    continuity: Option<&SpendingContinuity>,
     entries: &mut Vec<Entry>,
     edits: &mut Vec<(Entry, Option<Amount>)>,
 ) -> io::Result<(Option<SourceHead>, SourceEdit)> {
@@ -2451,10 +2525,25 @@ fn source_edit(
         hour,
     );
     let Some(held) = held else {
-        return Ok((Some(head), SourceEdit::Whole(head.source(amounts_of(track)))));
+        let amounts = amounts_of(track);
+        if let Some(continuity) = continuity.filter(|saved| saved.holds(head, &amounts)) {
+            head.spending_since = continuity.since;
+        }
+        return Ok((Some(head), SourceEdit::Whole(head.source(amounts))));
     };
+    let same_head = spending_identity(head) == spending_identity(SourceHead::of(held));
+    let spending = |amount: &Amount| (amount.spent, amount.spending_reason, amount.unproven);
     if whole {
-        let source = head.source(amounts_of(track));
+        let amounts = amounts_of(track);
+        if same_head
+            && amounts.len() == held.amounts.len()
+            && amounts.iter().zip(&held.amounts).all(|(a, b)| {
+                (a.variant, a.purpose, spending(a)) == (b.variant, b.purpose, spending(b))
+            })
+        {
+            head.spending_since = held.spending_since;
+        }
+        let source = head.source(amounts);
         let edit = if source == *held {
             SourceEdit::Same
         } else {
@@ -2463,14 +2552,19 @@ fn source_edit(
         return Ok((Some(head), edit));
     }
     let first = edits.len();
+    let mut same_spending = same_head;
     for &entry in entries.iter() {
         let now = amount_of(track, entry);
         let before = held_amount(&held.amounts, entry)
             .ok()
             .map(|at| &held.amounts[at]);
+        same_spending &= now.as_ref().map(&spending) == before.map(&spending);
         if now.as_ref() != before {
             edits.push((entry, now));
         }
+    }
+    if same_spending {
+        head.spending_since = held.spending_since;
     }
     let edit = if first == edits.len() && head == SourceHead::of(held) {
         SourceEdit::Same
@@ -2630,6 +2724,7 @@ fn facts_head(source: &SourceEndpoint, read: Option<i32>) -> facts::Head {
         observation: source.observation,
         segment: source.segment,
         read_hour: (Some(source.read_hour) != read).then_some(source.read_hour),
+        spending_since: source.spending_since,
         units_known: source.units_known,
         spending_known: source.spending_known,
         present: source.present,
@@ -3536,6 +3631,7 @@ impl ProductionAccumulator {
             rocket_restart,
             joins,
             pending,
+            spending_continuity,
             scratch,
             ..
         } = self;
@@ -3551,6 +3647,10 @@ impl ProductionAccumulator {
             Some(pending) => &mut pending.page.countries,
             None => &mut [],
         };
+        let continuity = spending_continuity
+            .as_ref()
+            .filter(|(last, _)| last.checked_add(1) == Some(at))
+            .map(|(_, rows)| rows);
         let Current {
             tags,
             rocket,
@@ -3591,8 +3691,16 @@ impl ProductionAccumulator {
                 segments,
                 tag,
                 (units_known, spending_known),
-                (&*spending_tainted, &*first_equipment_holders, *equipment_restart, false),
+                (
+                    &*spending_tainted,
+                    &*first_equipment_holders,
+                    *equipment_restart,
+                    false,
+                ),
                 row.and_then(|row| held[row].equipment.as_ref()),
+                continuity
+                    .and_then(|rows| rows.get(tag))
+                    .and_then(|sources| sources[0].as_ref()),
                 entries,
                 amount_edits,
             )?;
@@ -3603,8 +3711,16 @@ impl ProductionAccumulator {
                 rocket_segments,
                 tag,
                 (true, true),
-                (&*spending_tainted, &*first_rocket_holders, *rocket_restart, true),
+                (
+                    &*spending_tainted,
+                    &*first_rocket_holders,
+                    *rocket_restart,
+                    true,
+                ),
                 row.and_then(|row| held[row].rocket.as_ref()),
+                continuity
+                    .and_then(|rows| rows.get(tag))
+                    .and_then(|sources| sources[1].as_ref()),
                 entries,
                 amount_edits,
             )?;
@@ -3674,6 +3790,7 @@ impl ProductionAccumulator {
         joins
             .bounds
             .retain(|tag, _| present.binary_search(&tag.as_str()).is_ok());
+        *spending_continuity = None;
         Ok(!edits.is_empty())
     }
 
@@ -3870,7 +3987,7 @@ pub(crate) fn spent_section(branch: u64) -> String {
 }
 
 /// The section a test's saved accumulator is kept in, as `{STATE}/{branch}`.
-pub const STATE: &str = "production-state-v2";
+pub const STATE: &str = "production-state-v4";
 
 /// One holder's leaf events in a batch (P3), in groups that each begin with
 /// its whole state.
@@ -4364,6 +4481,23 @@ impl ProductionAccumulator {
         self.seal_holders();
         if let Some(pending) = self.pending.take() {
             self.complete(&pending)?;
+            self.spending_continuity = Some((
+                pending.page.last_hour,
+                pending
+                    .page
+                    .countries
+                    .iter()
+                    .map(|row| {
+                        (
+                            row.tag.clone(),
+                            [
+                                row.equipment.as_ref().map(SpendingContinuity::of),
+                                row.rocket.as_ref().map(SpendingContinuity::of),
+                            ],
+                        )
+                    })
+                    .collect(),
+            ));
             self.classes_moved = false;
         }
         self.spent

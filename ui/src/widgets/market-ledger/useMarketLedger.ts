@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { stableLogPages } from '../../charts/log/logPages.ts';
 import type { LogPage } from '../../charts/log/logPages';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -48,9 +49,11 @@ export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | unde
     const next = extendCursors(first.data, known, index => chunks.data.get(index));
     if (next !== known) setCursors({ identity, next });
   }, [first.data, known, chunks.data, identity]);
-  const pages = useMemo<readonly LogPage<LedgerItem>[]>(() => !first.data || !first.data.rows.length ? []
-    : ledgerPages(first.data, chained.length, index => chunks.data.get(index), chunks.errors, hour, from ?? track?.branch.firstHour ?? 0),
-  [first.data, chunks.data, chunks.errors, chained.length, hour, from, track?.branch.firstHour]);
+  const committed = useRef<{ identity: string | null; pages: ReadonlyArray<LogPage<LedgerItem>> }>({ identity, pages: [] });
+  const pages = useMemo(() => stableLogPages(committed.current.identity === identity ? committed.current.pages : [],
+    !first.data || !first.data.rows.length ? [] : ledgerPages(first.data, chained.length, index => chunks.data.get(index), chunks.errors, hour, from ?? track?.branch.firstHour ?? 0)),
+  [identity, first.data, chunks.data, chunks.errors, chained.length, hour, from, track?.branch.firstHour]);
+  useLayoutEffect(() => { committed.current = { identity, pages }; }, [identity, pages]);
   const onWantedPages = useCallback((keys: readonly string[]) => {
     const next = keys.map(Number).filter(Number.isInteger);
     setWanted(previous => previous.identity === identity && previous.pages.join(',') === next.join(',') ? previous : { identity, pages: next });

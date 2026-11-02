@@ -1,3 +1,4 @@
+import type { Failure } from '../dashboard/queryError';
 import type { PlotFrame } from './frame.ts';
 import type { ChartTokens } from './tokens.ts';
 import type { TooltipRow } from './tooltip.ts';
@@ -18,6 +19,7 @@ export interface EventBadge {
   glyph: string;
   /** What happened, shown in the tooltip. */
   label: string;
+  failure?: Failure;
   /** An event inventory that later preparation can revise at this native date. */
   approximate?: boolean;
   /** Tints the glyph, such as a country's colour; the theme's text colour otherwise. */
@@ -59,6 +61,7 @@ export function badgesAt(point: { x: number; y: number }, frame: PlotFrame, badg
 /** Tooltip rows naming the hovered events. */
 export function badgeRows(badges: readonly EventBadge[]): TooltipRow[] {
   return badges.map((badge, index) => ({ label: `${badge.glyph} ${badge.label}`, swatch: badge.color, divider: index === 0,
+    ...(badge.failure ? { detail: badge.failure.message } : {}),
     ...(badge.approximate ? { value: 'Approximate' } : {}) }));
 }
 

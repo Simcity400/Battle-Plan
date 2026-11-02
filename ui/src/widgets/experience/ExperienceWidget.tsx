@@ -1,3 +1,5 @@
+import { failureDetails } from '../../dashboard/queryError.ts';
+import { ABSENT_NAME, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -18,7 +20,7 @@ import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { lookPlan, useCountryLooks } from '../../dashboard/countryLooks';
-import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { countryLineColours } from '../../dashboard/countryLineColours';
@@ -87,7 +89,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     return reads ? stretchAt(reads, stretchStarts(reads), hour) : null;
   }, [selectedSeries, prepared.states, prepared.enabled]);
   const namePlan = useMemo(() => lookPlan(track?.branch, tags, head, segmentAt), [track?.branch, tags, head, segmentAt]);
-  const names = useCountryNamesRead(runtime.client, track, namePlan.wanted, active, namePlan.maxHours);
+  const names = useCountryNamesAt(runtime.client, track, namePlan.wanted, active, namePlan.maxHours);
   const namePlanKey = JSON.stringify(namePlan.wanted);
   // Stable inside one identity-bounded sample, independent of the playhead.
   const nameHours = useMemo(() => new Map(namePlan.wanted.map(item => [item.tag, item.hour])), [namePlanKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -127,7 +129,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     askedEnds.current = { owner: endOwner, key };
     queueMicrotask(() => { if (currentEndOwner.current === endOwner) setEndAsk({ owner: endOwner, wanted: items }); });
   };
-  const endNames = useCountryNamesRead(runtime.client, track, endWanted, active && options.endLabels === true && !single,
+  const endNames = useCountryNamesAt(runtime.client, track, endWanted, active && options.endLabels === true && !single,
     Math.max(MAX_NAME_HOURS, new Set(endWanted.map(item => item.hour)).size));
   useEffect(() => { if (!active) showTip(null); }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
   const menu = useContextMenu('Experience actions');
@@ -150,7 +152,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
       const inRange = clipToSpans(item.reads, [{ firstHour: extent[0], lastHour: extent[1] }]);
       return { tag: item.tag, reads: membership ? clipToSpans(inRange, membership) : inRange,
         identities: item.identities, readHours: item.reads.map(read => read.firstHour), recorded: prepared.enabled ? prepared.recorded(item.tag) : item.reads.length > 0, membership,
-        name: experienceName(item.tag, nameHours.has(item.tag) ? names.get(nameKey(nameHours.get(item.tag)!, item.tag)) : null),
+        name: experienceName(item.tag, nameHours.has(item.tag) ? names.get(nameKey(nameHours.get(item.tag)!, item.tag)) : ABSENT_NAME),
         color: colours.get(item.tag)!,
         colours: Object.fromEntries(BRANCHES.map(branch => [branch, single ? branchStyles.get(branch)!.color : colours.get(item.tag)!])) as Record<typeof BRANCHES[number], string> };
     });
@@ -213,10 +215,10 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   // All selections read held group history, so every selection must show its refresh failure.
   const groupFailure = groups.error && (widget.countries.kind === 'group' || groups.data)
-    ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+    ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (resolved.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
-  if (error) return <>{groupFailure}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (error) return <>{groupFailure}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!data || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading experience…" /></>;
   // A group's members at hours still being prepared are not known yet: none recorded is not proof of none.
   if (!countries.some(country => country.recorded)) return resolved.known(track.branch.firstHour, track.branch.lastHour)
@@ -225,14 +227,14 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   if (measure === 'gain' && (prepared.enabled ? !prepared.gainKnown : !countries.some(country => country.reads.some(read => read.gain !== null))))
     return <>{groupFailure}<WidgetState kind="unavailable" message="Daily gain needs a full day of data." /></>;
 
-  return <div className="experience" ref={parity}>{groupFailure}
+  return <div className="experience" ref={parity} data-detail={failureDetails([...names.values(), ...endNames.values()].map(nameReadFailure))}>{groupFailure}
     <Legend label={single ? 'Branches' : 'Countries'} items={single ? branches.map(branch => {
       const country = headCountries.find(country => runAt(country.reads, head) !== null);
       const read = country ? runAt(country.reads, head) : null;
       const raw = read ? experienceRaw(read, branch, measure) : null;
       return { id: branch, label: BRANCH_LABELS[branch], color: branchStyles.get(branch)!.color, value: raw == null ? measure === 'gain' ? 'Not recorded' : 'Not known' : formatExperience(raw, data.scale, measure) };
     }) : headCountries.map((country, index) => ({ id: holders[index].id,
-      label: country.identityKnown ? country.name : experienceName(country.tag, null), color: country.color,
+      label: country.identityKnown ? country.name : experienceName(country.tag, ABSENT_NAME), color: country.color,
       value: country.recorded ? undefined : 'Not in this recording' }))} />
     {!single && <p className="chart-line-key">{branches.map(branch => <span key={branch}>
       <LineSwatch dash={branchDash(branch)} />{BRANCH_LABELS[branch]}

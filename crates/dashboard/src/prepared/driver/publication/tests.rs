@@ -317,7 +317,7 @@ fn a_refusal_is_published_with_every_later_hour_unanswered() {
     let gates = fixture.gates();
     let refusal = planned(|| pipeline::refusal_from(&gates, BRANCH, "steady-product")).unwrap();
     // Queries before it answer, those across it refuse (`publication_gates`).
-    assert_eq!(refusal, Some((1015, "Refused for the test".to_owned())));
+    assert_eq!(refusal, Some((1015, "Refused for the test".into())));
     let holes = |through| {
         planned(|| pipeline::published_holes(&gates, BRANCH, "steady-product", Some(through)))
             .unwrap()

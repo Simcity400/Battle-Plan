@@ -1,3 +1,4 @@
+import { type Failure, failureText } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
@@ -31,7 +32,7 @@ import { useCampaignSettings } from '../../dashboard/campaignSettings';
 import { factionNameAt } from '../../dashboard/factionNames';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFocusText } from '../national-focus/useFocusArtwork';
-import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
+import { MAX_NAME_HOURS, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -44,13 +45,13 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { nameReadText } from '../../dashboard/holderLooks';
+import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryGroupReply, CountryStabilityReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { stabilityMarkers } from './markers';
-import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { MarkerKind } from './markers';
 import type { PartyHistoryReply } from '../../generated/dashboard';
@@ -200,7 +201,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
 
   const legendItems = useMemo(() => series.map(item => ({ id: item.tag, label: item.name, color: item.hex,
     flag: <CountryFlagUrl className="country-flag" url={looks.flag(item.tag, styleAt)}
-      pending={looks.flagPending(item.tag, styleAt)} reason={looks.flagReason(item.tag, styleAt)} /> })),
+      pending={looks.flagPending(item.tag, styleAt)} detail={looks.flagDetail?.(item.tag, styleAt)} reason={looks.flagReason(item.tag, styleAt)} /> })),
     [series, looks, styleAt]);
 
   // Event markers for one country: each kind can be switched off.
@@ -241,13 +242,13 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     // Every marker date stays admitted, so a long history never leaves later names unread.
     return { countries, focuses, nameHours: Math.max(MAX_NAME_HOURS, new Set(countries.map(item => item.hour)).size) };
   }, [markerSources, kinds]);
-  const namesAt = useCountryNamesRead(runtime.client, track, markerReads.countries, active, markerReads.nameHours);
+  const namesAt = useCountryNamesAt(runtime.client, track, markerReads.countries, active, markerReads.nameHours);
   const focusText = useFocusText(runtime.client, track, markerTag ?? undefined, markerReads.focuses, active);
   const badges = useMemo(() => !track || !markerSources ? [] : stabilityMarkers({ ...markerSources,
-    countryName: (other, hour) => nameReadText(namesAt.get(nameKey(hour, other))),
+    countryName: (other, hour) => nameReadFailure(namesAt.get(nameKey(hour, other))) ?? nameReadText(namesAt.get(nameKey(hour, other))),
     focusName: (token, hour) => {
       const item = focusText.read.get(nameKey(hour, token));
-      return item === undefined ? undefined : item && item !== FAILED_FACT ? item.artwork.name ?? null : null;
+      return isFailedFact(item) ? item : item === undefined ? undefined : item?.artwork.name ?? null;
     },
   }, kinds), [track, markerSources, namesAt, focusText.read, kinds]);
   // The marker sources shown report their notes and failures, so a missing kind of event is never silent.
@@ -256,7 +257,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     ['ruling party', markerParties, kinds.has('government')], ['focuses', markerFocus, kinds.has('focus')],
   ] as const).flatMap(([what, state, used]) => {
     if (!used) return [];
-    const product = state as { error?: string; data?: { warnings: string[] } };
+    const product = state as { error?: Failure; data?: { warnings: string[] } };
     return product.error ? [`Markers for ${what} could not be loaded: ${product.error}`] : product.data?.warnings ?? [];
   }) : [], [markerTag, kinds, markerGroups.data, markerGroups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error]); // eslint-disable-line react-hooks/exhaustive-deps
   const drillAnchor = useRef<HTMLDivElement>(null);
@@ -388,8 +389,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+  const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (resolved.reason) return <>{groupNotice}<WidgetState kind="empty" message={resolved.reason} /></>;
   // A group's members at hours still being prepared are not known yet: none is not proof of none.
   const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
@@ -399,9 +400,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     const body = !singleTag ? branchKnown ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." /> : preparing
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans))
         ? <WidgetState kind="unavailable" message={actorReason!} />
-        : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
-          : parts.error && !partsData ? <WidgetState kind="error" detail={parts.error} onRetry={parts.retry} />
-            : error && !data ? <WidgetState kind="error" detail={error} onRetry={retry} />
+        : groups.error && !groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+          : parts.error && !partsData ? <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />
+            : error && !data ? <WidgetState kind="error" failure={error} onRetry={retry} />
               : !partsData || !data ? <WidgetState kind="loading" label="Loading what makes up the values…" />
                 : <StabilityDrill preparedBinding={preparedPartsBinding} onPreparedDiagnostics={setPreparedPartsNotes} reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={pinnedMeasure}
                   playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} extent={extent}
@@ -413,13 +414,13 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       {drillAt !== null && <p className="chart-line-key">{formatDateTime(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
         onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
       {body}
-      {parts.error && <WidgetState kind="error" what="the breakdown" detail={parts.error} onRetry={parts.retry} />}
-      {groups.error && groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
-      {error && <WidgetState kind="error" what="values" detail={error} onRetry={retry} />}
+      {parts.error && <WidgetState kind="error" what="the breakdown" failure={parts.error} onRetry={parts.retry} />}
+      {groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
+      {error && <WidgetState kind="error" what="values" failure={error} onRetry={retry} />}
       {menu.menu}
     </div>;
   }
-  if (error && !data) return <>{groupNotice}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (error && !data) return <>{groupNotice}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <>{groupNotice}<WidgetState kind="loading" label="Loading stability and war support…" /></>;
   if (!shown.length) return <>{groupNotice}<WidgetState kind="empty" message="Both lines are switched off in the settings." /></>;
   if (!prepared.enabled && series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <>{groupNotice}{branchKnown
@@ -434,7 +435,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       .map(row => row.value ? `${row.label} ${row.value}` : row.label).join(', ')).join('; ') : '';
   const spokenNote = !focused || headRead == null ? ''
     : spokenBreakdown ? `Breakdown on ${dayLabel(Math.floor(head))}${headRead < Math.floor(head) ? `, as of ${formatDateTime(headRead)}` : ''}: ${spokenBreakdown}.`
-      : spoken.error && spokenAt?.read === headRead ? 'Couldn’t load the breakdown.'
+      : spoken.error && spokenAt?.read === headRead ? failureText(spoken.error, 'Couldn’t load the breakdown.')
         : spokenEmpty && spokenAt?.read === headRead && spokenAt.hour === Math.floor(head) ? `No breakdown was recorded for ${dayLabel(Math.floor(head))}.` : '';
   const main = <div className="stability-main" ref={chartParity}>
     {partyParity && <div ref={partyParity} />}
@@ -453,7 +454,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       return `${item.name}: ${values.join(', ')}${carried ? ` (as of ${formatDateTime(read)})` : ''}`;
     }).join('; ')}</p>
     {/* Announced when it loads for a keyboard user, as focus stays on the chart. */}
-    <p className="sr-only" aria-live="polite">{spokenNote}</p>
+    <p className="sr-only" aria-live="polite" data-detail={spoken.error?.message}>{spokenNote}</p>
     {kinds.has('government') && <PartyEventList prepared={preparedParties} badges={partyPageBadges} />}
     {/* Leaving the chart ends a hover, so coming back to the same hour asks again for a failed breakdown. */}
     <div className="stability-chart" onPointerLeave={() => { tipHour.current = null; }}>
@@ -511,13 +512,13 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
               rows.push(...built.rows.map((row, position) => position === 0 ? { ...row, divider: index > 0 || rows.length > 0 } : row));
             }
             const notes = [
-              ...(breakdown.error && hoverRead === read ? ['Couldn’t load the breakdown.']
+              ...(breakdown.error && hoverRead === read ? [failureText(breakdown.error, 'Couldn’t load the breakdown.')]
                 : current && !breakdownFor ? ['No breakdown was recorded for this hour.']
                   : !ready ? ['Loading the breakdown…'] : []),
               // Values carried from an earlier read say when they were read.
               ...(read < hour ? [`As of ${formatDateTime(read)}.`] : []),
             ];
-            return fitTooltip([{ title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined }], viewport);
+            return fitTooltip([{ title: dayLabel(hour), rows, detail: hoverRead === read ? breakdown.error?.message : undefined, note: notes.length ? notes.join(' ') : undefined }], viewport);
           }
           // All actors remain in the full tooltip; the shared fitter counts rows hidden visually.
           const carried: number[] = [];
@@ -578,7 +579,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
-    {error && <WidgetState kind="error" what="values" detail={error} onRetry={retry} />}
+    {error && <WidgetState kind="error" what="values" failure={error} onRetry={retry} />}
   </div>;
   const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
   return <div className="stability" ref={drillAnchor} onFocus={() => setFocused(true)}
@@ -606,14 +607,14 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       {choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
         : hasSavedCountry && !savedCountry ? <WidgetState kind="unavailable" message={actorReason!} />
         : groupData && (!selectedCountry || !actorSpans) ? <WidgetState kind="unavailable" message={actorReason!} />
-        : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
-        : parts.error && !partsData ? <WidgetState kind="error" detail={parts.error} onRetry={parts.retry} />
+        : groups.error && !groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+        : parts.error && !partsData ? <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />
         : !partsData ? <WidgetState kind="loading" label="Loading what makes up the values…" />
           : <StabilityDrill preparedBinding={preparedPartsBinding} onPreparedDiagnostics={setPreparedPartsNotes} reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
             within={null} readAt={drillReadAt}
             onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
             extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens} />}
-      {parts.error && partsData && <WidgetState kind="error" what="the breakdown" detail={parts.error} onRetry={parts.retry} />}
+      {parts.error && partsData && <WidgetState kind="error" what="the breakdown" failure={parts.error} onRetry={parts.retry} />}
     </DrillHost>
     {menu.menu}
   </div>;

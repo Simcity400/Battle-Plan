@@ -1,3 +1,4 @@
+import { failureText, type Failure } from '../../dashboard/queryError.ts';
 import type { ShipBattleTitle, ShipClassInfo, ShipsSunkBattleTitlesReply, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 import type { LogRow } from '../../charts/log/logData';
 import { logCountryRequests, newestFirst } from '../../charts/log/logData.ts';
@@ -85,8 +86,11 @@ export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey:
 }
 
 /** Immutable event order is built once per reply, not on every playback hour. */
-export function shipLogOrder(reply: ShipsSunkReply): LogRow<ShipsSunkRow>[] {
-  return newestFirst(reply.rows.map((row, index) => ({ key: String(index), hour: row.sinkHour, item: row })));
+const shipOrders = new WeakMap<ShipsSunkReply, ReadonlyArray<LogRow<ShipsSunkRow>>>();
+export function shipLogOrder(reply: ShipsSunkReply): ReadonlyArray<LogRow<ShipsSunkRow>> {
+  let rows = shipOrders.get(reply);
+  if (!rows) { rows = newestFirst(reply.rows.map((row, index) => ({ key: String(index), hour: row.sinkHour, item: row }))); shipOrders.set(reply, rows); }
+  return rows;
 }
 
 /** Event dates stay separate from an explicitly dated supplying-read country. */
@@ -112,7 +116,7 @@ export function shipCountryLabels(row: ShipsSunkRow, labelAt: (hour: number) => 
 /** Visibility starts at the supplying read; event dates still order and filter rows. */
 export function shipLogRows(reply: ShipsSunkReply, hour: number, classes: readonly string[], role: CountryRole,
   country: (tag: string | null, hour: number) => boolean, from: number | null,
-  ordered: readonly LogRow<ShipsSunkRow>[] = shipLogOrder(reply), campaignKey = ''): LogRow<ShipsSunkRow>[] {
+  ordered: readonly LogRow<ShipsSunkRow>[] = shipLogOrder(reply), campaignKey = ''): ReadonlyArray<LogRow<ShipsSunkRow>> {
   const selected = new Set(classes);
   const rows: LogRow<ShipsSunkRow>[] = [];
   let low = 0;
@@ -156,7 +160,7 @@ export function shipDescription(reply: ShipsSunkReply, row: ShipsSunkRow, victim
 }
 
 export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: string, attacker: string,
-  battle?: ShipBattleTitle, titleError?: string): TooltipContent {
+  battle?: ShipBattleTitle, titleError?: Failure): TooltipContent {
   const title = shipBattleLabel(row, battle);
   return { title: shipName(row), icon: reply.classes[row.classIndex].icon ?? undefined, subtitle: formatDateTime(row.sinkHour), rows: [
     { label: 'Class', value: shipClassName(reply, row) },
@@ -166,6 +170,6 @@ export function shipTooltip(reply: ShipsSunkReply, row: ShipsSunkRow, victim: st
     { label: 'Cause', value: row.cause === 'cause' ? row.attributionName ?? 'Not recorded' : shipCauseLabel(row) },
     ...(row.cause === 'cause' && row.assistedKill ? [{ label: 'Assisted kill', value: 'Yes' }] : []),
     { label: 'Sea zone / region', value: shipPlace(reply, row) },
-    ...(title ? [{ label: 'Battle', value: title }] : !battle && row.cause !== 'cause' && titleError ? [{ label: 'Couldn’t load the battle title.' }] : []),
+    ...(title ? [{ label: 'Battle', value: title }] : !battle && row.cause !== 'cause' && titleError ? [{ detail: titleError.message, label: failureText(titleError, 'Couldn’t load the battle title.') }] : []),
   ] };
 }

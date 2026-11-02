@@ -1,3 +1,4 @@
+import { nameReadText } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
@@ -37,7 +38,7 @@ const tieKey = (row: ElectionRow) => row.tag;
 export function electionColumns(sortName: (tag: string) => string, label: CountryLabel, cellBars: boolean): TableColumn<ElectionRow>[] {
   return [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
-      value: row => sortName(row.tag), render: row => <CountryCell {...label(row.tag)} /> },
+      value: row => sortName(row.tag), text: row => label(row.tag).name, render: row => <CountryCell {...label(row.tag)} /> },
     { key: 'term', header: 'Term', label: 'Term', numeric: true, renderMissing: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 1,
       value: ELECTION_VALUES.term, text: row => row.term === null ? null : termText(row.term),
       render: row => <span className="election-term"><span>{row.term === null ? '—' : termText(row.term)}</span>
@@ -84,7 +85,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   // A name sort needs every name; flags still load only for mounted rows.
   const sortingNames = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour, tag: row.tag })) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const columns = useMemo(() => electionColumns(tag => names.get(nameKey(hour, tag)) ?? 'Country name unavailable', labelAt(hour), options.cellBars === true),
+  const columns = useMemo(() => electionColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true),
     [names, labelAt, hour, options.cellBars]);
   const tooltip = useCallback((row: ElectionRow) => fitTooltip([electionTooltip(row, labelAt(hour)(row.tag))], viewport), [labelAt, hour, viewport]);
   const menu = useCallback((row: ElectionRow) => {
@@ -100,8 +101,8 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
 
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see elections." />;
   if (!window || !inside) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading elections…" /></>;

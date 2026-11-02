@@ -167,7 +167,7 @@ export function lengthText(hours: number, atLeast: boolean, long: boolean): stri
 }
 
 /** What a side shows: one country's flag and name, or a coalition's flags. */
-export interface SideLook { countries: { tag: string; hour: number; name: string; flag?: string; flagReason?: string; flagPending?: boolean }[]; name: string | null; unknown: string | null }
+export interface SideLook { countries: { tag: string; hour: number; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean }[]; name: string | null; unknown: string | null }
 export function sideLook(side: BattleSide, country: BattleCountryLabel): SideLook {
   const countries = side.countries.map(part => ({ tag: part.tag, hour: part.hour, ...country(part.tag, part.hour) }));
   return { countries, name: countries.length === 1 && !side.countriesUnknown ? countries[0].name : null, unknown: side.countriesUnknown ?? null };

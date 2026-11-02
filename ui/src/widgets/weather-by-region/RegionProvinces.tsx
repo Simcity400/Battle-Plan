@@ -1,3 +1,4 @@
+import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table from '../../charts/table/Table';
@@ -19,7 +20,7 @@ export default function RegionProvinces({ runtime, track, region, hour, active, 
   runtime: WidgetRuntime; track: BoundTrack; region: string; hour: number; active: boolean; onWarnings: (warnings: readonly string[]) => void;
 }) {
   const content = useContentRevision(runtime.client);
-  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: ProvincesReply; error?: string }>();
+  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: ProvincesReply; error?: Failure }>();
   const request = useMemo(() => ({ sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather',
     params: requests.weatherProvinces(track.branch.id, region, hour) }), [track, region, hour]);
   const key = JSON.stringify([request, content]);
@@ -31,7 +32,7 @@ export default function RegionProvinces({ runtime, track, region, hour, active, 
       const data = validateProvinces(reply);
       setState({ client: runtime.client, key, data });
       onWarnings(data.warnings);
-    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) }); });
+    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: asFailure(error) }); });
     return () => controller.abort();
     // The request's identity is its key, with the content binding it was read under.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -46,7 +47,7 @@ export default function RegionProvinces({ runtime, track, region, hour, active, 
       render: row => row.mud === null ? '—' : row.mud ? 'Mud' : '' },
   ], []);
   const current = state?.client === runtime.client && state.key === key ? state : undefined;
-  if (current?.error) return <WidgetState kind="error" what="the region’s provinces" detail={current.error} />;
+  if (current?.error) return <WidgetState kind="error" what="the region’s provinces" failure={current.error} />;
   if (!current?.data) return <WidgetState kind="loading" label="Loading provinces…" />;
   if (!current.data.provinces.length) return <p className="drill-empty">No provinces are recorded for this region at this date.</p>;
   return <Table label="Provinces of this region" rows={current.data.provinces} columns={columns} rowKey={rowKey}

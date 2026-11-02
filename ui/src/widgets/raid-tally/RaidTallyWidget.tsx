@@ -61,8 +61,8 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   useParityRows(root, () => ({ kind: 'chart', label: 'Raid tally values', complete: !!data,
     total: shownSeries.length, moment, metric, rows: shownSeries }));
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = grouped && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || (grouped && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading the raid tally…" /></>;
   if (pendingAt(preparedPrefix(data), moment)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;

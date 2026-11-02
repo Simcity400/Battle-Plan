@@ -1,3 +1,5 @@
+import { asFailure } from '../../dashboard/queryError.ts';
+import { type Failure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
@@ -30,7 +32,7 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
   const owner = useMemo(() => ({ client,identity }),[client,identity]);
   const alive = useRef(owner); alive.current = owner;
   const pending = useRef(new Set<AbortController>());
-  const [navigationError,setNavigationError] = useState<{owner: typeof owner; error: string}>();
+  const [navigationError,setNavigationError] = useState<{owner: typeof owner; error: Failure}>();
   const [hover,setHover] = useState<{owner: typeof owner; hour: number | null}>();
   const [viewport,setViewport] = useState<{owner: typeof owner; from: number; to: number; width: number; series: PreparedBinding[]}>();
   useEffect(() => () => { for (const controller of pending.current) controller.abort(); pending.current.clear(); },[owner,active]);
@@ -81,7 +83,7 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
       if (controller.signal.aborted || alive.current !== owner) return null;
       onReachHour(hour);
       return navalModel(reply).tags.filter(tag => reply.series.find(series=>series.tag===tag)?.runs.some(run=>navalValue(run,params.kind)!==null));
-    } catch (error) { if (!controller.signal.aborted && alive.current === owner) setNavigationError({owner,error:String(error)}); return null; }
+    } catch (error) { if (!controller.signal.aborted && alive.current === owner) setNavigationError({owner,error: asFailure(error)}); return null; }
     finally { pending.current.delete(controller); }
   },[owner,active,params,track]);
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action,from,x,until) => {
@@ -96,7 +98,7 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
       const hour = (value as {hour:number|null})?.hour;
       if (!(hour===null || Number.isSafeInteger(hour))) throw Error('The naval loss change reply is malformed.');
       if (!controller.signal.aborted && pickAlive.current === pickOwner && sequence.current === request) setKeyboard(previous=>({owner:pickOwner,hour,revision:(previous?.revision??0)+1}));
-    }).catch(error=> {if(!controller.signal.aborted && pickAlive.current===pickOwner && sequence.current===request)setNavigationError({owner,error:String(error)});}).finally(()=>pending.current.delete(controller));
+    }).catch(error=> {if(!controller.signal.aborted && pickAlive.current===pickOwner && sequence.current===request)setNavigationError({owner,error: asFailure(error)});}).finally(()=>pending.current.delete(controller));
   },[pickOwner,active,params,track,geometry]);
   return { data:display?.data,hour:display?.hour??moment,manifest:manifest.data,dense,summaries,sampled:incoming?.data?.sampled,
     onSummaryView,onReachHour,exactLineTags,onNavigateHour,keyboardHour:keyboard?.owner===pickOwner?keyboard.hour:undefined,

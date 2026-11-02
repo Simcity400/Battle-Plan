@@ -513,7 +513,7 @@ impl Captured {
                     cursor: pass.cursor,
                     anchor_seed: pass.anchor_seed,
                     hours,
-                    checksum: pass.checksum,
+                    witness: pass.witness,
                 });
             }
             None => self.temperature_pass = None,

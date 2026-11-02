@@ -1,3 +1,4 @@
+import { RefusedError } from '../../dashboard/queryError.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, validatePreparedOrder, validatePreparedArt, waitForFocusPreparation, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus, loadPreparedFocusHour, focusTokenOrder, loadFocusArt } from './preparedFocusData.ts';
@@ -126,11 +127,12 @@ test('a refused or failed dated art request retains independent recorded order a
       warnings: ['Static text content notice'] };
     throw new Error(product);
   } };
-  const refused = { ...query, product: async () => { throw new Error('named content refusal'); } } as unknown as FocusPreparedClient;
+  const refused = { ...query, product: async () => { throw new RefusedError('named content refusal'); } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(refused, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
   assert.equal(result.order[0].token, 'mod');
   assert.equal(result.art.get(preparedArtKey('national', 100, 'mod'))?.artwork.name, null);
   assert.equal(result.art.get(preparedArtKey('national', 100, 'mod'))?.reason, 'named content refusal');
+  assert.ok(result.art.get(preparedArtKey('national', 100, 'mod'))?.titleFailure instanceof RefusedError);
   // With every art request refused, the static description still names its content's warnings.
   assert.equal(result.art.get(preparedArtKey('national', 100, 'mod'))?.artwork.description, 'Static mod');
   assert.deepEqual(result.warnings, ['Static text content notice']);

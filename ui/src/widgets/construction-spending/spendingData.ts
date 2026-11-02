@@ -112,7 +112,7 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
       present: started > 0 || (exact != null && exact !== 0n) || Object.keys(unknown).length > 0,
       unknown,
       counted: projects,
-      note: place.missing ? 'State name unavailable.' : undefined,
+      note: place.missing,
     });
   }
   const applies = (gap: ConstructionSpendingReply['unattributed'][number], hour: number) =>

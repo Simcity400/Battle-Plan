@@ -55,9 +55,9 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   if (!track || !tag) return <WidgetState kind="empty" icon="layers" message="Load a campaign and choose a country to see its idea history." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading ideas…" />;
-  if (!category) return <>{error && <WidgetState kind="error" detail={error} onRetry={retry} />}<WidgetState kind="unavailable" message={options.category
+  if (!category) return <>{error && <WidgetState kind="error" failure={error} onRetry={retry} />}<WidgetState kind="unavailable" message={options.category
     ? 'Choose another idea category in settings.'
     : 'No idea categories available.'} /></>;
 
@@ -73,7 +73,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
       tooltips.art.get(token)?.description, [], undefined, span.firstHour, Infinity)) : `${lane.label}: ${span.label}`;
   }).join('. ')}.`;
   return <div className="idea-timeline">
-    {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
+    {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
       showIcons showNames unobserved={gaps} pending={prefix?.pending} approximate={data.approximate} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={data}
       tooltip={(lane, span, hour, full) => {

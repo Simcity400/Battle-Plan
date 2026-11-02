@@ -1,3 +1,4 @@
+import { type Failure, asFailure, failureText } from './queryError.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { loadCountryGroups } from './products';
 import { useContentRevision } from './contentRevision';
@@ -24,7 +25,7 @@ interface CampaignFactions {
   key: string; factions?: FactionGroup[]; leaderColours?: ReadonlyMap<string, Rgb | null>;
   /** Each faction's first recorded leader's tag, for its identity across campaigns. */
   founders?: ReadonlyMap<string, string>;
-  warnings: string[]; error?: string;
+  warnings: string[]; error?: Failure;
 }
 
 /** Every faction recorded on any branch of the campaign (colours are campaign-wide),
@@ -76,7 +77,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
         const missing = [...leaderColoursRead.values()].filter(colour => !colour).length;
         if (missing) warnings.push(`The leader's map colour of ${missing} ${missing === 1 ? 'faction' : 'factions'} was not recorded or could not be read in time; ${missing === 1 ? 'it takes' : 'they take'} a palette colour until the campaign is opened again.`);
         setState({ key, factions, leaderColours: leaderColoursRead, founders: new Map([...founders].map(([id, founder]) => [id, founder.tag])), warnings });
-      }).catch(error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: error instanceof Error ? error.message : String(error) }); });
+      }).catch(error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: asFailure(error) }); });
     return () => controller.abort();
   }, [client, source, key, content]);
   return state.key === key ? state : { key, warnings: [] };
@@ -134,7 +135,7 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
     setMessage(failure);
     return failure == null;
   };
-  if (error) return <p className="field-hint" role="alert">Couldn’t load factions.</p>;
+  if (error) return <p className="field-hint" role="alert" data-detail={error.message}>{failureText(error, 'Couldn’t load factions.')}</p>;
   if (loading) return <p className="field-hint" role="status"><span className="spinner" /> Loading factions…</p>;
   // With warnings, an empty list may be history the recording could not read, not no factions.
   if (!factions.length) return <p className="field-hint">{warnings.length ? 'Factions unavailable.' : 'No factions were recorded in this campaign.'}</p>;

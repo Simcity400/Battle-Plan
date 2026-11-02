@@ -5,9 +5,9 @@ import type { TooltipContent, TooltipRow } from './tooltip';
 import { tooltipRowOffsets, tooltipRowWindow, tooltipScrollTop } from './tooltipScroll';
 
 export function TooltipRowView({ row, element }: { row: TooltipRow; element?: (node: HTMLDivElement | null) => void }) {
-  return <div ref={element} title={row.lookupKey ? `Key: ${row.lookupKey}` : undefined} className={`chart-tooltip-row${row.divider ? ' has-divider' : ''}${row.strong ? ' is-strong' : ''}${row.short ? ' is-short' : ''}${row.indent ? ' is-indented' : ''}`}>
+  return <div ref={element} data-detail={row.detail ?? row.countryFlag?.nameFailure?.message} title={row.lookupKey ? `Key: ${row.lookupKey}` : undefined} className={`chart-tooltip-row${row.divider ? ' has-divider' : ''}${row.strong ? ' is-strong' : ''}${row.short ? ' is-short' : ''}${row.indent ? ' is-indented' : ''}`}>
     <span>{row.swatch && <i style={{ background: row.swatch }} aria-hidden="true" />}{row.countryFlag
-      ? <CountryFlagUrl className="chart-tooltip-flag" url={row.countryFlag.flag} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
+      ? <CountryFlagUrl className="chart-tooltip-flag" url={row.countryFlag.flag} detail={row.countryFlag.flagDetail} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
       : row.icon && <img src={row.icon} alt="" />}{row.label}</span>
     {row.value != null && <b className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</b>}
   </div>;

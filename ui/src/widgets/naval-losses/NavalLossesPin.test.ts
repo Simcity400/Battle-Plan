@@ -207,8 +207,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
         assert.equal(statuses,2,'unchanged progress stops instant-wait polling');
         assert.equal(state.windowRequests,windows,'repeated geometry does not reload reached windows');
         const failure=state.main!.state;
-        assert.ok(isValidElement<{detail?:string}>(failure));
-        assert.match(failure.props.detail??'',/Campaign preparation made no progress\./);
+        assert.ok(isValidElement<{failure?:Error}>(failure));
+        assert.match(failure.props.failure?.message??'',/Campaign preparation made no progress\./);
         unmount();
         queries=0; statuses=0;
         client.preparedQuery=async<T>()=>{

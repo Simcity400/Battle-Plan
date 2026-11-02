@@ -13,7 +13,7 @@ export default class WidgetBoundary extends Component<Props, { error: Error | nu
   componentDidUpdate(previous: Props) { if (this.state.error && previous.reset !== this.props.reset) this.setState({ error: null }); }
   render() {
     return this.state.error
-      ? <WidgetState kind="error" what="this widget" detail={this.state.error.message} onRetry={() => this.setState({ error: null })} />
+      ? <WidgetState kind="error" what="this widget" failure={this.state.error} onRetry={() => this.setState({ error: null })} />
       : this.props.children;
   }
 }

@@ -324,7 +324,7 @@ pub(crate) fn supplied_with(
 ) -> io::Result<Supplied> {
     let frame = || {
         progressive::frame_at(source, branch, hour, TABLES, cancelled)?
-            .ok_or_else(|| io::Error::other("This hour is not recorded"))
+            .ok_or_else(|| dashboard_core::refused("This hour is not recorded"))
     };
     let latest = |hour: i32, table: TableId, tables: &[TableId]| {
         progressive::latest_read(

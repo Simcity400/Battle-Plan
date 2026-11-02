@@ -1,8 +1,8 @@
 /** Directed weighted chords. Values here are geometry only; widgets format exact data. */
 import type { CountryFlagLook } from '../../components/CountryFlag';
-export interface ChordNode { id: string; label: string; color: string; flag?: string | null; countryFlag?: CountryFlagLook }
-export interface ChordFlow { id: string; source: string; target: string; value: number }
-export interface ChordData { nodes: readonly ChordNode[]; flows: readonly ChordFlow[] }
+export interface ChordNode { readonly id: string; readonly label: string; readonly color: string; readonly flag?: string | null; readonly countryFlag?: Readonly<CountryFlagLook> }
+export interface ChordFlow { readonly id: string; readonly source: string; readonly target: string; readonly value: number }
+export interface ChordData { readonly nodes: ReadonlyArray<ChordNode>; readonly flows: ReadonlyArray<ChordFlow> }
 export interface ChordArc { node: ChordNode; start: number; end: number; incoming: number; outgoing: number; presence: number }
 export interface ChordRibbon { flow: ChordFlow; sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number }
 export interface ChordLayout { arcs: ChordArc[]; ribbons: ChordRibbon[] }

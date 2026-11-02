@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -124,7 +125,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
       const found = partAt(side, part.index);
       if (found) {
         const value = found.unknown ? found.member.unknown ?? 0n : found.member.value;
-        return { title: looks.name(found.member.tag), subtitle: `${item.label} · ${dayLabel(shownHour)}`, rows: [
+        return { ...countryNameDetails({ nameFailure: looks.nameFailure?.(found.member.tag) }), title: looks.name(found.member.tag), subtitle: `${item.label} · ${dayLabel(shownHour)}`, rows: [
             { label: found.unknown ? 'Unknown casualties contribution' : item.label, value: format(value) },
             { label: 'Share of side', value: shareText(value, sideAmount(side)) },
           ] };
@@ -146,8 +147,8 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   const header = headerSlot && shownWar && createPortal(<span className="pill" title={warName(observation)}>{warName(observation ?? (readHour == null ? null : shownWar.observations.at(-1) ?? null))}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="swords" message="Load a campaign to see war contributions." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (structural.error) return <WidgetState kind="error" detail={structural.error} onRetry={structural.retry} />;
-  if (exact.error) return <WidgetState kind="error" detail={exact.error} onRetry={exact.retry} />;
+  if (structural.error) return <WidgetState kind="error" failure={structural.error} onRetry={structural.retry} />;
+  if (exact.error) return <WidgetState kind="error" failure={exact.error} onRetry={exact.retry} />;
   if (!structural.data) return <WidgetState kind="loading" label="Loading war contributions…" />;
   if (!structural.data.available) return <WidgetState kind="unavailable" message="Wars are not in this recording." />;
   if (!war) return <WidgetState kind="empty" icon="swords" message={widget.time.mode === 'follow' ? 'This country has fought no war yet.' : 'This country has fought no war in this campaign.'} />;

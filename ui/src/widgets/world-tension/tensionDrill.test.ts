@@ -29,12 +29,12 @@ const reply = (): TensionReply => ({ branchId: 'branch', tensionScale: 1000, con
 
 test('tension drill uses plain cause controls while retaining signed contributions and totals', async () => {
   const state = { parts: undefined as ComponentProps<typeof DrillParts> | undefined, select: undefined as ComponentProps<typeof Select> | undefined,
-    requests: [] as unknown[] };
+    requests: [] as unknown[], style: undefined as unknown };
   const host = globalThis as typeof globalThis & { __tensionPresentation?: typeof state }; host.__tensionPresentation = state;
   const replacements: Record<string, string> = {
     '/dashboard/preparedSeries.ts': `export const usePreparedWindow = (_client,_source,product,params) => {
       globalThis.__tensionPresentation.requests.push({product,params}); return { geometryReady: false,owner: {},pickOwner: {},onSummaryView() {},onNavigateHour() {} }; };`,
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),globalThis.__tensionPresentation.style]));',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryFlagsAt = () => new Map(); export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = {};',
     '/dashboard/countryLooks.ts': 'export const lookHour = (_branch, hour) => ({ hour });',
@@ -65,6 +65,23 @@ test('tension drill uses plain cause controls while retaining signed contributio
     state.select!.onChange(key); state.select!.onChange(''); assert.deepEqual(picks, [key, null]);
     assert.equal(state.parts!.unattributed?.label, 'Other');
     assert.deepEqual(state.parts!.parts.map(part => part.raw), [13500000n, -200000n]);
+    assert.ok(state.parts!.parts.every(part => part.label === 'Loading name…'));
+    state.style = null; render();
+    assert.ok(state.parts!.parts.every(part => part.label === 'Country name unavailable'));
+    state.style = { name: null }; render();
+    assert.ok(state.parts!.parts.every(part => part.label === 'Country name unavailable'));
+    state.style = { name: '' }; render();
+    assert.ok(state.parts!.parts.every(part => part.label === ''));
+    state.style = undefined; props.active = false; render();
+    assert.ok(state.parts!.parts.every(part => part.label === 'Country name unavailable'));
+    props.active = true;
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
+    for (const error of [new Error('Synthetic tension style decoder failure'), new RefusedError('Synthetic tension names were not recorded')]) {
+      state.style = error;
+      assert.match(render(), new RegExp('data-detail="' + error.message + '"'));
+      assert.ok(state.parts!.parts.every(part => part.label === (error instanceof RefusedError ? error.message : 'Couldn’t load country name.')));
+      assert.ok(state.parts!.parts.every(part => part.detail === error.message));
+    }
     props.selectedCause = key;
     const selected = render();
     assert.match(selected, /Final contribution/);

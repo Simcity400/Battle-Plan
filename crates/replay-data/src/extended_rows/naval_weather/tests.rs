@@ -455,13 +455,13 @@ fn temperature_words_store_staged_offsets_and_refuse_partial_records() {
 }
 
 #[test]
-fn the_temperature_pass_rides_slot_zero_with_its_checksum_last_before_the_modifiers() {
+fn the_temperature_pass_rides_slot_zero_with_its_witness_last_before_the_modifiers() {
     let pass = TemperaturePass {
         anchor: 43_808_760,
         cursor: 583,
         anchor_seed: Some(9),
         hours: vec![Some(u32::MAX), None],
-        checksum: 0x0123_4567_89ab_cdef,
+        witness: TemperatureWitness::new(0x0123_4567_89ab_cdef),
     };
     let row = WeatherProvinceRow {
         temperature_pass: Recorded::Value(Some(pass.clone())),
@@ -469,7 +469,7 @@ fn the_temperature_pass_rides_slot_zero_with_its_checksum_last_before_the_modifi
     };
     let mut fields = Vec::new();
     row.encode_fields(&mut fields).unwrap();
-    // The pass ends with its checksum; the province's modifier entries follow it.
+    // The pass ends with its witness; the province's modifier entries follow it.
     let mut tail = Vec::new();
     crate::rows::NativeValue::field(&row.modifiers)
         .encode(&mut tail)
@@ -481,7 +481,62 @@ fn the_temperature_pass_rides_slot_zero_with_its_checksum_last_before_the_modifi
     assert!(fields[..pass_end].ends_with(&0x0123_4567_89ab_cdef_u64.to_le_bytes()));
     assert_eq!(&fields[pass_end..], tail.as_slice());
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap();
-    assert_eq!(decoded.temperature_pass, Recorded::Value(Some(pass)));
+    assert_eq!(
+        decoded.temperature_pass,
+        Recorded::Value(Some(pass.clone()))
+    );
+    // Older formats hold a checksum in the same bytes: the pass decodes whole, with no witness.
+    let mut older = Decoder::new(&fields);
+    older.format = crate::rows::compatibility::PROVINCE_WITNESS_FORMAT - 1;
+    let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut older).unwrap();
+    assert_eq!(
+        decoded.temperature_pass,
+        Recorded::Value(Some(TemperaturePass {
+            witness: TemperatureWitness::default(),
+            ..pass
+        }))
+    );
+    assert_eq!(decoded.modifiers, row.modifiers);
+    // No writer stores a pass without its witness.
+    let unwitnessed = WeatherProvinceRow {
+        temperature_pass: Recorded::Value(Some(TemperaturePass::default())),
+        ..Default::default()
+    };
+    assert!(unwitnessed.encode_fields(&mut Vec::new()).is_err());
+}
+
+/// A checkpoint keeps an older pass's absent witness, so its temperatures still refuse by name.
+#[test]
+fn checkpoints_keep_an_older_pass_without_its_witness() {
+    use crate::checkpoint::values::CheckpointValue;
+    let witnessed = TemperaturePass {
+        anchor: 7,
+        cursor: 2,
+        anchor_seed: Some(3),
+        hours: vec![],
+        witness: TemperatureWitness::new(u64::MAX),
+    };
+    let older = TemperaturePass {
+        witness: TemperatureWitness::default(),
+        ..witnessed.clone()
+    };
+    for pass in [witnessed, older.clone()] {
+        let mut bytes = Vec::new();
+        CheckpointValue::encode(&Some(pass.clone()), &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        let restored = <Option<TemperaturePass> as CheckpointValue>::decode(&mut input).unwrap();
+        input.finish().unwrap();
+        assert_eq!(restored, Some(pass));
+    }
+    let rows = [WeatherProvinceRow {
+        temperature: ProvinceTemperature::anchored(crate::temperature::State::default()),
+        temperature_pass: Recorded::Value(Some(older)),
+        ..Default::default()
+    }];
+    let reason = crate::temperature::Memo::default()
+        .states(1, 7, &rows, Err("no content"))
+        .unwrap_err();
+    assert!(reason.contains("predates the province temperature witness"), "{reason}");
 }
 
 /// A province's accumulator round-trips every entry and answers a key by search.

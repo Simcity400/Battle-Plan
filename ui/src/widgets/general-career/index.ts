@@ -1,3 +1,4 @@
+import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useLeaderCountries, useLeaders } from '../generals/useLeaders';
@@ -15,6 +16,6 @@ function useLeaderChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionCho
     return tag && run ? [{ hour: run.lastHour, tag }] : [];
   }) ?? [], [data]);
   const names = useCountryNamesAt(runtime.client, track, wanted, true);
-  return { leader: data && countries !== undefined && !selectionReason ? leaderChoices(data, track!.source.metadata.campaignKey, (hour, tag) => names.get(nameKey(hour, tag)) ?? 'Country name unavailable') : [] };
+  return { leader: data && countries !== undefined && !selectionReason ? leaderChoices(data, track!.source.metadata.campaignKey, (hour, tag) => nameReadMetadata(names.get(nameKey(hour, tag)))) : [] };
 }
 export default { render: GeneralCareerWidget, useOptionChoices: useLeaderChoices } satisfies WidgetRenderer;

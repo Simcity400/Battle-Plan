@@ -1,3 +1,5 @@
+import { nameReadText } from '../../dashboard/nameReads.ts';
+import { asFailure } from '../../dashboard/queryError.ts';
 import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -7,7 +9,7 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
 import { runAt } from '../../charts/series';
-import { fitTooltip } from '../../charts/tooltip';
+import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -71,7 +73,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
   const columns = useMemo<readonly TableColumn<AgencyRow>[]>(() => [
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
-      value: row => names.get(nameKey(row.hour, row.tag)) ?? 'Country name unavailable',
+      value: row => nameReadText(names.get(nameKey(row.hour, row.tag))), text: row => labelAt(row.hour)(row.tag).name,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
     { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)', priority: 3, text: row => row.value.name ?? 'Unknown',
       value: row => row.value.name, render: row => <span title={row.value.name ?? 'Unknown'}>{row.value.name ?? 'Unknown'}</span> },
@@ -84,7 +86,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
       value: row => row.value.activeCount,
       render: row => <CellBar value={options.cellBars === true && row.value.maximum > 0 ? row.value.activeCount : null} maximum={row.value.maximum}>{operativesCell(row.value)}</CellBar> },
   ], [names, labelAt, options.cellBars, data?.defenseLabel]);
-  const tooltip = useCallback((row: AgencyRow) => fitTooltip([agencyTooltip(row, labelAt(row.hour)(row.tag).name)], viewport), [labelAt, viewport]);
+  const tooltip = useCallback((row: AgencyRow) => fitTooltip([{ ...agencyTooltip(row, labelAt(row.hour)(row.tag).name), ...countryNameDetails(labelAt(row.hour)(row.tag)) }], viewport), [labelAt, viewport]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
@@ -92,8 +94,8 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={asFailure(error)} onRetry={retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
   if (!data || (needsGroups && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading intelligence agencies…" /></>;

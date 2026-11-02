@@ -64,9 +64,10 @@ test('technology artwork reports failed batches without losing successful text a
   try {
     const { useTechnologyArtwork } = await vite.ssrLoadModule('/ui/src/widgets/research/useTechnologyArtwork.ts') as typeof import('./useTechnologyArtwork');
     const { contentRevision } = await vite.ssrLoadModule('/ui/src/dashboard/contentRevision.ts') as typeof import('../../dashboard/contentRevision');
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('../../dashboard/queryError');
     const calls: { input: ProductRequest; signal: AbortSignal; answer: (data: unknown) => void; fail: () => void }[] = [];
     const client = { product: (input: ProductRequest, signal: AbortSignal) => new Promise<ProductReply<unknown>>((resolve, reject) => {
-      calls.push({ input, signal, answer: data => resolve({ ...input, data }), fail: () => reject(new Error('Synthetic image preparation refusal')) });
+      calls.push({ input, signal, answer: data => resolve({ ...input, data }), fail: () => reject(new RefusedError('Synthetic image preparation refusal')) });
     }) } as unknown as DashboardClient;
     const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
     const entries: ResearchEntry[] = Array.from({ length: 9 }, (_, i) => ({
@@ -97,9 +98,11 @@ test('technology artwork reports failed batches without losing successful text a
     await settle();
     let result = render();
     assert.equal(result.artwork.size, 2);
+    assert.deepEqual([...result.failures.keys()], tokens.slice(0, 8));
+    for (const token of tokens.slice(0, 8)) assert.equal(result.failures.get(token)?.message, 'Synthetic image preparation refusal');
     assert.equal(result.artwork.get('tech07')?.name, '', 'successful authored empty text remains known');
     assert.equal(result.artwork.get('tech08')?.name, 'Stored literal title');
-    assert.deepEqual(result.warnings, ['Synthetic named image warning', 'Technology artwork request failed for 8 technologies.']);
+    assert.deepEqual(result.warnings, ['Synthetic image preparation refusal', 'Synthetic named image warning']);
     fixture.commit(); await settle();
     assert.equal(calls.length, 2, 'permanent preparation refusals do not start a retry loop');
 
@@ -114,7 +117,7 @@ test('technology artwork reports failed batches without losing successful text a
     await settle();
     result = render();
     assert.equal(result.artwork.size, 2);
-    assert.deepEqual(result.warnings, ['Technology artwork request failed for 8 technologies.'], 'a malformed image batch is a visible failure');
+    assert.deepEqual(result.warnings, ['Technology artwork does not match this request.'], 'a malformed image batch is a visible failure');
   } finally {
     fixture.unmount(); await vite.close(); delete host.__technologyArtworkHooks;
   }

@@ -1,5 +1,9 @@
+import { type Failure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { LogPage } from '../../charts/log/logPages';
+import { LogPlayback } from '../../charts/log/logPlayback.ts';
+import { retainPlaybackMap } from '../../charts/playbackIntervals.ts';
+import type { LogRow } from '../../charts/log/logData';
 import { stableLogPages } from '../../charts/log/logPages';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -35,7 +39,7 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   const boundsKey = JSON.stringify([identity, filterKey, read, live]);
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, filter }), [runtime.client, boundsKey, filter]);
   const current = useRef(owner); current.current = owner;
-  const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string }>({ owner, pages: [] });
+  const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: Failure }>({ owner, pages: [] });
   const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0, count: FIRST_PAGE_SIZE };
   const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });
@@ -47,23 +51,26 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   const chunks = useProductWindows<PreparedFeedPage>(runtime.client, boundsKey,
     index => request(descriptors[index].cursor, read), indices, active && !!first.data, validateEventFeedPage, track?.source);
   const loaded = useMemo(() => new Map<number, PreparedFeedPage>([...chunks.data, ...(first.data ? [[0, first.data] as const] : [])]), [chunks.data, first.data]);
-  const rendered = useMemo(() => new Map([...loaded].map(([index, page]) => [index, filteredEventRows(page.reply, filter).filter(row => hour !== null && row.revealedHour! <= hour)
+  const playbacks = useMemo(() => new Map([...loaded].map(([index, page]) => [index, new LogPlayback(filteredEventRows(page.reply, filter)
     // Native ledgers can repeat an occurrence in different supplying rows/pages.
     // The log's owner is internal; the event's native ID remains unchanged.
-    .map(row => ({ ...row, key: JSON.stringify([index, row.key]), id: JSON.stringify([index, row.id]) }))])), [loaded, filter, hour]);
+    .map(row => ({ ...row, key: JSON.stringify([index, row.key]), id: JSON.stringify([index, row.id]) })), row => row.revealedHour!)])), [loaded, filter]);
+  const renderedBefore = useRef<ReadonlyMap<number, ReadonlyArray<LogRow<FeedEvent>>>>(new Map());
+  const rendered = useMemo(() => renderedBefore.current = retainPlaybackMap(renderedBefore.current,
+    new Map([...playbacks].map(([index, playback]) => [index, playback.at(hour)]))), [playbacks, hour]);
   useEffect(() => {
     if (!active || !first.data) return;
     setChain(previous => {
       if (current.current !== owner) return previous;
       const pages = previous.owner === owner && previous.pages.length ? [...previous.pages] : [initial];
       let changed = previous.owner !== owner || !previous.pages.length;
-      let error: string | undefined;
+      let error: Failure | undefined;
       for (const [index, page] of loaded) {
         const rows = rendered.get(index)!;
         const info = pages[index];
         if (!info) continue;
         if (page.nextCursor !== null && pages.slice(0, index + 1).some(info => info.cursor === page.nextCursor)) {
-          error = 'The event feed continuation made no progress.';
+          error = new Error('The event feed continuation made no progress.');
           break;
         }
         const start = Math.min(...page.reply.rows.map(row => row.hour), info.end);

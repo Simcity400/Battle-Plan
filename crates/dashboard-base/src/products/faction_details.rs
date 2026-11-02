@@ -239,7 +239,7 @@ impl Product for FactionDetails {
             &selected,
             cancelled,
         )?
-        .ok_or_else(|| invalid("Faction details unavailable at this hour"))?;
+        .ok_or_else(|| dashboard_core::refused("Faction details unavailable at this hour"))?;
         validate_campaign(&frame, &source.replay())?;
         let mut extra = companions::extra_tables(&frame, faction);
         if frame
@@ -259,7 +259,7 @@ impl Product for FactionDetails {
                 &selected,
                 cancelled,
             )?
-            .ok_or_else(|| invalid("Faction details are unavailable at this hour"))?;
+            .ok_or_else(|| dashboard_core::refused("Faction details are unavailable at this hour"))?;
         }
         if let Ok(rows) = frame.complete::<tables::Factions>()
             && !rows.iter().any(|row| row.id == faction)
@@ -332,7 +332,7 @@ impl Product for FactionDetails {
                 &selected,
                 cancelled,
             )?
-            .ok_or_else(|| invalid("Faction text unavailable at this hour"))?;
+            .ok_or_else(|| dashboard_core::refused("Faction text unavailable at this hour"))?;
         }
         if let (Some(cat), Some(details)) = (cat.as_deref(), programme_frame.as_deref())
             && companions::programmes_need_environment(&frame, details, faction, cat)

@@ -1,3 +1,4 @@
+import { countryNameDetails } from '../../charts/tooltip.ts';
 import CombatLogDetails from '../land-battles/CombatLogDetails';
 import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -66,7 +67,7 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
     return selected.map(row => {
       const at = row.readHour ?? row.hour;
       return { id: row.id, label: looks.name(row.tag, at), flag: looks.flag(row.tag, at),
-        countryFlag: { flag: looks.flag(row.tag, at), flagReason: looks.flagReason?.(row.tag, at), flagPending: looks.flagPending?.(row.tag, at) },
+        countryFlag: { nameFailure: looks.nameFailure?.(row.tag, at), flagDetail: looks.flagDetail?.(row.tag, at), flag: looks.flag(row.tag, at), flagReason: looks.flagReason?.(row.tag, at), flagPending: looks.flagPending?.(row.tag, at) },
         color: country(row.tag, at), left: casualtyBarValue(row.taken), right: casualtyBarValue(row.dealt),
         leftText: formatCasualties(row.taken, row.atLeast), rightText: formatCasualties(row.dealt, row.atLeast), ratioText: casualtyRatio(row), segment: casualtyBarStretch(row), data: row };
     });
@@ -78,8 +79,8 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
   }, [data, groups.data, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see casualties." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (chosen?.resolved?.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={chosen.resolved.reason} /></>;
   // A group with no member found yet asks for nothing, so no reply will come.
@@ -128,7 +129,7 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
       leftLabel="◀ Taken" rightLabel="Dealt ▶" ratioLabel="Ratio" active={active} hoursPerSecond={hoursPerSecond}
       showValues={options.values !== false} showRatio={options.ratio !== false}
       labelCandidates={campaignLabels}
-      tooltip={item => casualtyTooltip(item.data, item.label, data.unknownLabel, data.hasGap)}
+      tooltip={item => ({ ...casualtyTooltip(item.data, item.label, data.unknownLabel, data.hasGap), ...countryNameDetails(item.countryFlag) })}
       contextItems={item => item.data.readHour == null ? [] : [jumpItem(runtime, track.id, item.data.readHour)]} />
     {notes}
   </div>;

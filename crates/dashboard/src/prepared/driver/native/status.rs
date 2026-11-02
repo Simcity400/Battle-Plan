@@ -48,20 +48,20 @@ pub(crate) fn label(status: &[&str], name: &'static str) -> &'static str {
 }
 
 /// Every family and recording-wide job `plan` refuses, by name, with why.
-pub(crate) fn refused(plan: &Plan) -> Vec<(&'static str, String)> {
+pub(crate) fn refused(plan: &Plan) -> Vec<(&'static str, crate::QueryError)> {
     let unavailable = dashboard_base::prepared::query::native::unprepared;
     plan.families()
         .iter()
         .filter(|family| plan.backend(family.id.name()) == Some(Backend::Unavailable))
         .map(|family| {
             let name = family.id.name();
-            (name, unavailable(label(family.status, name)))
+            (name, unavailable(label(family.status, name)).into())
         })
         .chain(
             registry::JOBS
                 .iter()
                 .filter(|job| !runs(plan, job.name))
-                .map(|job| (job.name, unavailable(label(&[job.name], job.name)))),
+                .map(|job| (job.name, unavailable(label(&[job.name], job.name)).into())),
         )
         .collect()
 }
@@ -74,7 +74,7 @@ pub(crate) fn mark(plan: &Plan, shape: &Shape) -> [u8; 32] {
     for (name, reason) in refused(plan) {
         hash.update(name.as_bytes());
         hash.update(&[0]);
-        hash.update(reason.as_bytes());
+        hash.update(reason.to_string().as_bytes());
         hash.update(&[0]);
     }
     for (branch, extent) in shape.branches() {
@@ -185,11 +185,11 @@ pub(crate) fn accepted(
     shape: &Shape,
     prepared: &[FamilyId],
     frontier: &dyn Fn(FamilyId, u64) -> Option<Frontier>,
-    failed: &BTreeMap<FamilyId, String>,
+    failed: &BTreeMap<FamilyId, crate::QueryError>,
     bytes: u64,
 ) -> Accepted {
     let total = shape.len().to_string();
-    let refused: BTreeMap<&str, String> = refused(plan).into_iter().collect();
+    let refused: BTreeMap<&str, crate::QueryError> = refused(plan).into_iter().collect();
     let mut families = BTreeMap::new();
     let mut sections = Vec::with_capacity(registry::STATUS.len());
     for &(id, label) in registry::STATUS {
@@ -207,7 +207,7 @@ pub(crate) fn accepted(
             .find(|family| family.status.contains(&id));
         let name = family.map_or(id, |family| family.id.name());
         if let Some(reason) = refused.get(name) {
-            sections.push(section(State::Failed, 0, Some(reason.clone())));
+            sections.push(section(State::Failed, 0, Some(reason.to_string())));
             continue;
         }
         let Some(family) = family.filter(|family| prepared.contains(&family.id)) else {
@@ -227,7 +227,10 @@ pub(crate) fn accepted(
         families.insert(family.id.name().to_owned(), coverage);
     }
     // A job has no status row; its coverage is listed beside the families'.
-    for &job in prepared.iter().filter(|id| plan.jobs().contains(&id.name())) {
+    for &job in prepared
+        .iter()
+        .filter(|id| plan.jobs().contains(&id.name()))
+    {
         let (_, _, _, coverage) = progress(shape, job, frontier, failed);
         families.insert(job.name().to_owned(), coverage);
     }
@@ -252,10 +255,14 @@ fn progress(
     shape: &Shape,
     id: FamilyId,
     frontier: &dyn Fn(FamilyId, u64) -> Option<Frontier>,
-    failed: &BTreeMap<FamilyId, String>,
+    failed: &BTreeMap<FamilyId, crate::QueryError>,
 ) -> (State, u64, Vec<String>, BTreeMap<String, Coverage>) {
     let (mut done, mut terminal) = (0, true);
-    let mut errors: Vec<String> = failed.get(&id).cloned().into_iter().collect();
+    let mut errors: Vec<String> = failed
+        .get(&id)
+        .map(ToString::to_string)
+        .into_iter()
+        .collect();
     let mut coverage = BTreeMap::new();
     for &branch in shape.branches().keys() {
         let Some(frontier) = frontier(id, branch) else {
