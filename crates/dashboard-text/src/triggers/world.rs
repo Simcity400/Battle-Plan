@@ -415,7 +415,9 @@ pub fn core_gap(frame: &dyn replay_frame::frame::RecordedSource) -> Option<Strin
 
 /// The localisation, content stack and language division template names are read with.
 type TemplateNames<'a> = (
-    &'a OnceLock<Result<installed_content_localisation::localisation::Localisation, String>>,
+    &'a installed_content_core::content::diagnostics::Once<
+        Result<installed_content_localisation::localisation::Localisation, String>,
+    >,
     &'a installed_content_core::ResolvedLayers,
     &'a str,
 );
@@ -423,8 +425,11 @@ type TemplateNames<'a> = (
 /// Borrowed preparation inputs keep geography lazy without owning scope lifetimes.
 #[derive(Clone, Copy)]
 pub struct GeographyInputs<'a> {
-    pub neighbors: &'a OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    pub terrain: &'a OnceLock<Option<installed_content_core::movement::MovementMap>>,
+    pub neighbors:
+        &'a installed_content_core::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    pub terrain: &'a installed_content_core::content::diagnostics::Once<
+        Option<installed_content_core::movement::MovementMap>,
+    >,
     pub layers: &'a installed_content_core::ResolvedLayers,
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
     pub state_error: Option<&'a str>,
@@ -4201,7 +4206,9 @@ impl<'a> World<'a> {
 
     pub(crate) fn with_template_names(
         mut self,
-        names: &'a OnceLock<Result<installed_content_localisation::localisation::Localisation, String>>,
+        names: &'a installed_content_core::content::diagnostics::Once<
+            Result<installed_content_localisation::localisation::Localisation, String>,
+        >,
         layers: &'a installed_content_core::ResolvedLayers,
         language: &'a str,
     ) -> Self {

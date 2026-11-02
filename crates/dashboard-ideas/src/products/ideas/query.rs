@@ -374,7 +374,8 @@ pub fn reply(
     }
     let mut reply =
         idea_history::present(content, &country, &scanned, recorded.as_ref(), cancelled)?;
-    source.append_reply_warnings(&mut reply.warnings, Some(options));
+    installed_content_core::content::diagnostics::current().append_to(&mut reply.warnings);
+    source.append_changed_warnings(&mut reply.warnings, Some(options));
     let mut data = serde_json::to_value(reply)?;
     prefix.mark(&mut data)?;
     Ok(data)

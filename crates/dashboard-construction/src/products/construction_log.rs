@@ -2067,7 +2067,7 @@ struct NamedType {
     name: Option<String>,
     icon: Option<String>,
     listed: Vec<(Listing, String)>,
-    fallbacks: BTreeSet<String>,
+    fallbacks: installed_content_core::content::diagnostics::Diagnostics,
 }
 
 /// What naming reads of the content, read once, and every building type it has
@@ -2084,14 +2084,14 @@ struct Naming {
     /// The repair marker, or why it is unavailable.
     repair_icon: Result<String, String>,
     /// What these reads fell back on.
-    fallbacks: BTreeSet<String>,
+    fallbacks: installed_content_core::content::diagnostics::Diagnostics,
     types: BTreeMap<(u32, Option<String>), NamedType>,
 }
 
 impl Naming {
     fn read(content: &ContentView<'_>) -> Self {
         let layers = content.layers;
-        let (read, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        let (read, fallbacks) = installed_content_core::content::diagnostics::observe(|| {
             let buildings = installed_content_core::buildings::read(layers).map_err(|error| {
                 format!("Building types are unavailable in the recorded content: {error}")
             });
@@ -2164,7 +2164,7 @@ impl Naming {
     ) -> io::Result<Named> {
         use installed_content_core::{DiagnosticKind::Fallback, DiagnosticKind::Refused};
         // Kept reads replay what they fell back on, as `catalogue::Drawn` does.
-        installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
+        self.fallbacks.credit();
         let mut warnings = Vec::new();
         warnings.extend(
             self.buildings
@@ -2188,7 +2188,7 @@ impl Naming {
                 self.types.insert(key.clone(), named);
             }
             let named = &self.types[&key];
-            installed_content_core::content::credit_overlay_refusals(&named.fallbacks);
+            named.fallbacks.credit();
             for (listing, entry) in &named.listed {
                 listed[*listing as usize].push(entry.clone());
             }
@@ -2238,7 +2238,7 @@ impl Naming {
 
     fn name_type(&self, content: &ContentView<'_>, id: u32, token: Option<&str>) -> NamedType {
         let mut listed = Vec::new();
-        let ((name, icon), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        let ((name, icon), fallbacks) = installed_content_core::content::diagnostics::observe(|| {
             let Some(token) = token else {
                 listed.push((Listing::Undictionaried, id.to_string()));
                 return (None, None);

@@ -53,23 +53,32 @@ pub(crate) fn localisation_in(
     key: LocalisationKey,
     resolved: impl FnOnce() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
 ) -> io::Result<Arc<Localisation>> {
-    type Cached = Option<(LocalisationKey, Arc<Localisation>)>;
+    type Cached = Option<(
+        LocalisationKey,
+        Arc<Localisation>,
+        installed_content_core::content::diagnostics::Diagnostics,
+    )>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((cached, localisation)) = state.as_ref()
+    if let Some((cached, localisation, diagnostics)) = state.as_ref()
         && *cached == key
     {
+        diagnostics.credit();
         return Ok(Arc::clone(localisation));
     }
-    let mut warnings = Vec::new();
-    check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
-    let layers = resolved()?;
-    let localisation = Arc::new(installed_content_localisation::localisation::read_cached(
-        &layers.layers,
-        &key.2,
-        &content.options.cache_dir,
-    )?);
-    *state = Some((key, Arc::clone(&localisation)));
+    let (localisation, diagnostics) = installed_content_core::content::diagnostics::capture(|| {
+        let mut warnings = Vec::new();
+        check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
+        let layers = resolved()?;
+        installed_content_localisation::localisation::read_cached(
+            &layers.layers,
+            &key.2,
+            &content.options.cache_dir,
+        )
+    });
+    diagnostics.credit();
+    let localisation = Arc::new(localisation?);
+    *state = Some((key, Arc::clone(&localisation), diagnostics));
     Ok(localisation)
 }
 

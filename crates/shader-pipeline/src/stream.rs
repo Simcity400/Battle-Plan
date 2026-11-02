@@ -11,6 +11,7 @@ use super::{
     library::Selection,
     vertices::{Declaration, Vertices},
 };
+use installed_content_core::content::diagnostics::{self, Diagnostics};
 use installed_content_core::pdxshader::{
     Address, DepthStencilState, RasterizerState,
     program::{Filter, Sampler, Stage},
@@ -133,6 +134,7 @@ struct ResolvedPass {
     selection: Selection,
     stencil_reference: Option<u32>,
     scissor_enabled: Option<bool>,
+    diagnostics: Diagnostics,
 }
 
 impl Default for Stream {
@@ -842,6 +844,7 @@ impl Stream {
         let resolved = if let Some(cached) = &cache.resolved
             && cached.inputs.matches(self, template, vertices)
         {
+            cached.diagnostics.credit();
             (
                 cached.pipeline.clone(),
                 cached.selection.clone(),
@@ -851,7 +854,10 @@ impl Stream {
         } else {
             cache.resolved = None;
             cache.bindings.clear();
-            let resolved = self.resolve_pass(arena, template, vertices)?;
+            let (resolved, diagnostics) =
+                diagnostics::capture(|| self.resolve_pass(arena, template, vertices));
+            diagnostics.credit();
+            let resolved = resolved?;
             let (pipeline, selection, stencil_reference, scissor_enabled) = &resolved;
             // Keep a failed replacement's ordinary refusal/fallback on EVERY draw.
             if self.program.as_ref().is_some_and(|(requested, _)| {
@@ -863,6 +869,7 @@ impl Stream {
                     selection: selection.clone(),
                     stencil_reference: *stencil_reference,
                     scissor_enabled: *scissor_enabled,
+                    diagnostics,
                 });
             }
             resolved
@@ -964,9 +971,29 @@ impl Stream {
         template: &gpu::Pass,
         vertices: Option<&[gpu::VertexLayout]>,
     ) -> Result<PipelineResolution, String> {
+        let (result, diagnostics) =
+            diagnostics::capture(|| self.resolve_pass_uncached(arena, template, vertices));
+        diagnostics.credit();
+        let same = self
+            .last_pass
+            .as_ref()
+            .is_some_and(|cached| cached.inputs.matches(self, template, vertices));
+        if same {
+            self.last_pass.as_mut().expect("matched above").diagnostics = diagnostics;
+        }
+        result
+    }
+
+    fn resolve_pass_uncached(
+        &mut self,
+        arena: &gpu::Arena,
+        template: &gpu::Pass,
+        vertices: Option<&[gpu::VertexLayout]>,
+    ) -> Result<PipelineResolution, String> {
         if let Some(cached) = &self.last_pass
             && cached.inputs.matches(self, template, vertices)
         {
+            cached.diagnostics.credit();
             return Ok((
                 cached.pipeline.clone(),
                 cached.selection.clone(),
@@ -1026,6 +1053,7 @@ impl Stream {
                 selection: selection.clone(),
                 stencil_reference,
                 scissor_enabled,
+                diagnostics: Diagnostics::default(),
             });
         }
         Ok((pipeline, selection, stencil_reference, scissor_enabled))

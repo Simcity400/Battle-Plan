@@ -1,5 +1,160 @@
 use super::*;
 
+fn diagnostic_queries(ask: &mut dyn Ask, product: &str) -> io::Result<()> {
+    for branch in ask.branches().to_vec() {
+        for selection in 0..3 {
+            ask.ask(
+                product,
+                json!({"branchId": branch.name(), "selection": selection}),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+static DIAGNOSTIC_A: Plan = Plan {
+    queries: |ask| diagnostic_queries(ask, "diagnostic-a"),
+    unordered: &[],
+};
+static DIAGNOSTIC_B: Plan = Plan {
+    queries: |ask| diagnostic_queries(ask, "diagnostic-b"),
+    unordered: &[],
+};
+
+#[test]
+fn parallel_family_transcripts_with_diagnostics_match_standalone_cold_and_warm() {
+    use crate::products::source_warning_tests::{
+        DiagnosticFixture, diagnostic_reply, diagnostic_serve,
+    };
+    use std::io::BufWriter;
+    let fixture = DiagnosticFixture::new();
+    let families = [
+        ("diagnostic-a", Owner::Plan("diagnostic-a", &DIAGNOSTIC_A)),
+        ("diagnostic-b", Owner::Plan("diagnostic-b", &DIAGNOSTIC_B)),
+    ];
+    let compressed = |source: &crate::Source, &(family, owner): &(&str, Owner)| {
+        let mut writer = BufWriter::new(zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap());
+        let owners = record(
+            family,
+            source.key().revision.as_str(),
+            &[owner],
+            &[branch()],
+            &mut |product, params| diagnostic_serve(source, &fixture.context, product, params),
+            &mut writer,
+        )
+        .unwrap();
+        assert!(owners.iter().all(|owner| !owner.unchecked()));
+        writer
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)
+            .unwrap()
+            .finish()
+            .unwrap()
+    };
+    let alone: Vec<_> = families
+        .iter()
+        .map(|family| compressed(&fixture.source(), family))
+        .collect();
+    for threads in [1, 2] {
+        for reversed in [false, true] {
+            for warm in [false, true] {
+                let source = fixture.source();
+                if warm {
+                    for index in 0..2 {
+                        diagnostic_reply(&source, &fixture.context, index, json!({"branchId":"1"}));
+                    }
+                }
+                let mut jobs = families;
+                if reversed {
+                    jobs.reverse();
+                }
+                let transcripts = parallel(&jobs, NonZeroUsize::new(threads).unwrap(), |family| {
+                    compressed(&source, family)
+                })
+                .unwrap();
+                for ((family, _), transcript) in jobs.iter().zip(transcripts) {
+                    let index = families
+                        .iter()
+                        .position(|(name, _)| name == family)
+                        .unwrap();
+                    assert_eq!(
+                        transcript, alone[index],
+                        "{family}, {threads} workers, warm={warm}, reversed={reversed}"
+                    );
+                    let decoded = zstd::stream::decode_all(transcript.as_slice()).unwrap();
+                    let text = std::str::from_utf8(&decoded).unwrap();
+                    assert!(text.contains(&format!("synthetic shader {index}")));
+                    assert!(!text.contains(&format!("synthetic shader {}", 1 - index)));
+                    let mut lines = decoded.as_slice();
+                    assert_eq!(read_header(&mut lines).unwrap().family, *family);
+                    let report = check(&mut lines, &mut |product, params| {
+                        diagnostic_serve(&source, &fixture.context, product, params)
+                    })
+                    .unwrap();
+                    assert_eq!(report.differing, 0);
+                    assert!(report.products.values().all(|product| product.answered > 0));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn parallel_families_match_their_standalone_transcripts_byte_for_byte() {
+    use std::io::BufWriter;
+
+    let families = [
+        ("toy", Owner::Plan("toy-series", &TOY)),
+        ("identities", Owner::Plan("country-identities", &IDENTITIES)),
+    ];
+    let compressed = |store: &Tiny, &(family, owner): &(&str, Owner)| {
+        let mut writer = BufWriter::new(zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap());
+        let recorded = record(
+            family,
+            "synthetic",
+            &[owner],
+            &[branch()],
+            &mut |product, params| store.serve(product, params),
+            &mut writer,
+        )
+        .unwrap();
+        assert!(
+            recorded.iter().all(|owner| !owner.unchecked()),
+            "{recorded:?}"
+        );
+        writer
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)
+            .unwrap()
+            .finish()
+            .unwrap()
+    };
+    let store = Tiny(facts());
+    let alone: Vec<_> = families
+        .iter()
+        .map(|family| compressed(&store, family))
+        .collect();
+    for threads in [1, 2] {
+        let transcripts = parallel(&families, NonZeroUsize::new(threads).unwrap(), |family| {
+            compressed(&store, family)
+        })
+        .unwrap();
+        for (((family, _), transcript), alone) in families.iter().zip(transcripts).zip(&alone) {
+            assert_eq!(&transcript, alone, "{family}, {threads} workers");
+            let decoded = zstd::stream::decode_all(transcript.as_slice()).unwrap();
+            let mut lines = decoded.as_slice();
+            assert_eq!(read_header(&mut lines).unwrap().family, *family);
+            assert_eq!(
+                check(&mut lines, &mut |product, params| store
+                    .serve(product, params))
+                .unwrap()
+                .differing,
+                0
+            );
+        }
+    }
+}
+
 /// A tiny prepared store: each country's value at each hour it holds, null
 /// where the hour was read without one, in the order the store wrote them.
 struct Tiny(Vec<(&'static str, i32, Option<f64>)>);

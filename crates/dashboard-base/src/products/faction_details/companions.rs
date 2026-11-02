@@ -1,7 +1,8 @@
 //! Independent faction rule, shared-programme and manpower presentation.
 use super::*;
+use installed_content_core::content::diagnostics::Once as OnceLock;
 use replay_data::rows::{FactionDoctrineRow, FactionRuleRow, ProjectProgramRow};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRuleDetail {

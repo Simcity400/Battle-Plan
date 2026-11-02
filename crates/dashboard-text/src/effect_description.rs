@@ -282,7 +282,8 @@ pub struct CachedContent {
     resources: Option<Vec<installed_content_core::resources::Resource>>,
     max_railway_level: Option<i32>,
     /// Only a raid name needs the raid database; keep it lazy per content stack.
-    raids: std::sync::OnceLock<Result<installed_content_raids::raids::Catalog, String>>,
+    raids:
+        installed_content_core::content::diagnostics::Once<Result<installed_content_raids::raids::Catalog, String>>,
     equipment: Option<installed_content_core::equipment::Database>,
     autonomy_states: Option<installed_content_core::autonomy::AutonomyStates>,
     state_categories: Option<installed_content_state_categories::state_categories::Database>,
@@ -523,7 +524,7 @@ impl CachedContent {
             buildings,
             resources,
             max_railway_level,
-            raids: std::sync::OnceLock::new(),
+            raids: installed_content_core::content::diagnostics::Once::new(),
             equipment,
             autonomy_states,
             state_categories,

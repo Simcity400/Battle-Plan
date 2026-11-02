@@ -306,6 +306,7 @@ impl Preparation {
 type IconKey = (bool, installed_content_core::content::ArtworkMode, String);
 
 pub struct Context {
+    diagnostics: catalogue::OwnRefusals,
     kind: Kind,
     technology_names: Arc<TechnologyNames>,
     /// The source's shared localisation and sprites for these folders.
@@ -350,7 +351,9 @@ pub fn ensure_in(
     {
         *slot = Some(Context::load(catalogue, kind)?);
     }
-    Ok(slot.as_mut().expect("artwork context loaded"))
+    let context = slot.as_mut().expect("artwork context loaded");
+    catalogue::credit(&context.diagnostics);
+    Ok(context)
 }
 
 /// A focus country's canonical slot at `frame`'s hour, None when absent.
@@ -492,6 +495,13 @@ fn focus_needs_frame(
 
 impl Context {
     pub fn load(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
+        let (loaded, diagnostics) = catalogue::capture(|| Self::load_inner(catalogue, kind));
+        let mut loaded = loaded?;
+        loaded.diagnostics = diagnostics;
+        Ok(loaded)
+    }
+
+    fn load_inner(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
         let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
         warnings.extend(catalogue.verification.iter().cloned());
         let layers = &catalogue.content.layers;
@@ -525,6 +535,7 @@ impl Context {
         warnings.extend(prepared.warnings.iter().cloned());
         warnings.extend(catalogue.warnings.iter().cloned());
         Ok(Self {
+            diagnostics: Default::default(),
             kind,
             technology_names,
             catalogue,

@@ -211,6 +211,8 @@ pub enum LayerSource {
 /// index, `replace_path` and lookup keeps these bytes; text is only a view of them.
 pub type LayerPath = Vec<u8>;
 
+pub mod diagnostics;
+
 /// Shared uncovered dependencies, queried when a consumer reports diagnostics.
 /// Without an explicit reporting opt-in, ordinary reads remain strict.
 #[derive(Clone, Debug)]
@@ -396,6 +398,10 @@ pub fn credit_overlay_refusals(refusals: &BTreeSet<String>) {
     if refusals.is_empty() {
         return;
     }
+    diagnostics::Diagnostics::credit_fallbacks(refusals);
+}
+
+fn credit_overlay_observers(refusals: &BTreeSet<String>) {
     let from = OVERLAY_ISOLATED.with(std::cell::Cell::get);
     OVERLAY_OBSERVERS.with(|observers| {
         for seen in observers.borrow_mut().iter_mut().skip(from) {
@@ -752,7 +758,6 @@ pub struct ResolvedLayers {
     /// Ordinary successful uncovered reads and explicit uncovered attempts.
     /// `None` keeps readers strict until their reporting boundary opts in.
     uncovered_reads: std::sync::Arc<std::sync::Mutex<Option<BTreeSet<LayerPath>>>>,
-    shader_warnings: std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// The `gfx/models` texture index and the `gfx` descriptor roster, each
     /// built once per layer roster and shared by every model library.
     texture_index: Memo<crate::mesh::TextureIndex>,
@@ -791,7 +796,9 @@ impl std::fmt::Debug for Derived {
     }
 }
 
-type Memo<T> = std::sync::Arc<std::sync::Mutex<Option<(Vec<String>, std::sync::Arc<T>)>>>;
+type Memo<T> = std::sync::Arc<
+    std::sync::Mutex<Option<(Vec<String>, std::sync::Arc<T>, diagnostics::Diagnostics)>>,
+>;
 
 /// Content names read under a read trace, for a layer roster, with every read that traced.
 #[derive(Debug)]
@@ -799,6 +806,7 @@ struct TracedKeyNames {
     roster: Vec<String>,
     names: std::sync::Arc<crate::key_names::KeyNames>,
     reads: Vec<(LayerPath, Option<usize>, ReadOutcome)>,
+    diagnostics: diagnostics::Diagnostics,
 }
 
 /// Memoized uncovered resolutions with the roster they were resolved against.
@@ -2473,9 +2481,10 @@ impl ResolvedLayers {
             .key_names
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached, names)) = own.as_ref()
+        if let Some((cached, names, diagnostics)) = own.as_ref()
             && *cached == roster
         {
+            diagnostics.credit();
             return Ok(std::sync::Arc::clone(names));
         }
         // Every traced reader of the stack shares one read of the names; each traces its reads
@@ -2484,12 +2493,13 @@ impl ResolvedLayers {
             .traced_key_names
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let names = match shared.as_ref().filter(|held| held.roster == roster) {
+        let (names, diagnostics) = match shared.as_ref().filter(|held| held.roster == roster) {
             Some(held) => {
                 for (path, layer, outcome) in &held.reads {
                     self.trace_read(path, *layer, outcome.clone());
                 }
-                std::sync::Arc::clone(&held.names)
+                held.diagnostics.credit();
+                (std::sync::Arc::clone(&held.names), held.diagnostics.clone())
             }
             None => {
                 let reads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2503,7 +2513,10 @@ impl ResolvedLayers {
                         callback(read);
                     }));
                 reader.read_trace.as_mut().expect("traced clone").purpose = trace.purpose.clone();
-                let names = std::sync::Arc::new(crate::key_names::KeyNames::read(&reader)?);
+                let (names, diagnostics) =
+                    diagnostics::capture(|| crate::key_names::KeyNames::read(&reader));
+                diagnostics.credit();
+                let names = std::sync::Arc::new(names?);
                 drop(reader);
                 let reads = std::mem::take(
                     &mut *reads
@@ -2520,12 +2533,13 @@ impl ResolvedLayers {
                         roster: roster.clone(),
                         names: std::sync::Arc::clone(&names),
                         reads,
+                        diagnostics: diagnostics.clone(),
                     });
                 }
-                names
+                (names, diagnostics)
             }
         };
-        *own = Some((roster, std::sync::Arc::clone(&names)));
+        *own = Some((roster, std::sync::Arc::clone(&names), diagnostics));
         Ok(names)
     }
 
@@ -2551,7 +2565,7 @@ impl ResolvedLayers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
-            .is_some_and(|(cached, _)| *cached == roster)
+            .is_some_and(|(cached, _, _)| *cached == roster)
     }
 
     /// Diagnostics from an already-used template reader; this never loads content.
@@ -2562,7 +2576,7 @@ impl ResolvedLayers {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match memo.as_ref() {
-            Some((cached, result)) if *cached == roster => result
+            Some((cached, result, _)) if *cached == roster => result
                 .as_ref()
                 .as_ref()
                 .map(|templates| templates.warnings.clone())
@@ -2578,13 +2592,16 @@ impl ResolvedLayers {
     ) -> io::Result<std::sync::Arc<T>> {
         let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
         let mut memo = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached, value)) = memo.as_ref()
+        if let Some((cached, value, diagnostics)) = memo.as_ref()
             && *cached == roster
         {
+            diagnostics.credit();
             return Ok(std::sync::Arc::clone(value));
         }
-        let value = std::sync::Arc::new(build(self)?);
-        *memo = Some((roster, std::sync::Arc::clone(&value)));
+        let (value, diagnostics) = diagnostics::capture(|| build(self));
+        diagnostics.credit();
+        let value = std::sync::Arc::new(value?);
+        *memo = Some((roster, std::sync::Arc::clone(&value), diagnostics));
         Ok(value)
     }
 
@@ -2818,6 +2835,7 @@ impl ResolvedLayers {
                         .as_mut()
                 {
                     paths.insert(path.to_vec());
+                    diagnostics::Diagnostics::uncovered(self.coverage.0, path);
                 }
                 return Ok(bytes);
             }
@@ -2861,6 +2879,7 @@ impl ResolvedLayers {
     /// Counts a file a visual mod supplied, by the mod's name.
     fn note_overlay(&self, layer: usize, path: &[u8]) {
         if let Some(overlay) = &self.layers[layer].overlay {
+            diagnostics::Diagnostics::overlay(&overlay.name, path);
             self.overlay_reads
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -2875,6 +2894,7 @@ impl ResolvedLayers {
     /// city building), whichever stack it read: a map compares what it refuses with and without
     /// visual mods by these names.
     pub fn note_refused(&self, key: String) {
+        diagnostics::Diagnostics::refused(key.clone());
         self.overlay_reads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -3074,7 +3094,6 @@ impl ResolvedLayers {
             above_mods: self.above_mods,
             overlay_reads: self.overlay_reads.clone(),
             uncovered_reads: self.uncovered_reads.clone(),
-            shader_warnings: self.shader_warnings.clone(),
             ..ResolvedLayers::default()
         };
         recorded.finish().ok()?;
@@ -3135,7 +3154,6 @@ impl ResolvedLayers {
             defines_visible: true,
             overlay_reads: self.overlay_reads.clone(),
             uncovered_reads: self.uncovered_reads.clone(),
-            shader_warnings: self.shader_warnings.clone(),
             ..ResolvedLayers::default()
         };
         stack.finish()?;
@@ -3155,28 +3173,14 @@ impl ResolvedLayers {
             defines_visible: false,
             overlay_reads: self.overlay_reads.clone(),
             uncovered_reads: self.uncovered_reads.clone(),
-            shader_warnings: self.shader_warnings.clone(),
             ..ResolvedLayers::default()
         };
         presentation.finish()?;
         Ok(presentation)
     }
 
-    /// Diagnostics from lazily read artwork effects, shared by this resolved stack.
-    pub fn shader_warning_lines(&self) -> Vec<String> {
-        self.shader_warnings
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .iter()
-            .cloned()
-            .collect()
-    }
-
     pub fn note_shader_warning(&self, warning: String) {
-        self.shader_warnings
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(warning);
+        diagnostics::Diagnostics::shader(warning);
     }
 
     /// The one native lookup, without payload reads.
@@ -3265,6 +3269,7 @@ impl ResolvedLayers {
                 self.note_overlay(*layer, &relative)
             }
             _ => {
+                diagnostics::Diagnostics::uncovered(self.coverage.0, &relative);
                 if let Some(paths) = self
                     .uncovered_reads
                     .lock()
@@ -4364,7 +4369,6 @@ fn gather_selected(
             effective: BTreeMap::new(),
             uncovered_memo: Default::default(),
             uncovered_reads: Default::default(),
-            shader_warnings: Default::default(),
             texture_index: Default::default(),
             descriptor_roster: Default::default(),
             recorded_descriptor_roster: Default::default(),

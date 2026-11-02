@@ -38,6 +38,7 @@
 //! - a requested definition holding text the port cannot keep
 //!   ([`modifiers::Modifiers::unheld`]).
 
+use crate::content::diagnostics::Once as OnceLock;
 use crate::{
     ResolvedLayers,
     key_names::{KeyNames, Point},
@@ -47,11 +48,7 @@ use crate::{
         native::{self, Shape},
     },
 };
-use std::{
-    collections::BTreeMap,
-    io,
-    sync::{Mutex, OnceLock},
-};
+use std::{collections::BTreeMap, io, sync::Mutex};
 
 type DescriptionValue = Result<(Option<String>, modifiers::Modifiers), String>;
 type DescriptionFiles = Result<(KeyNames, Vec<(String, File)>), String>;
@@ -86,6 +83,7 @@ impl Descriptions {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(name)
         {
+            let _ = self.files.get();
             return value.clone();
         }
         let value = (|| {

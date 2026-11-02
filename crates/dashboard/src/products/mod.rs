@@ -230,15 +230,11 @@ fn load_json<P: Product>(
         .map_err(dashboard_core::QueryError::from)?;
     // A content reply holds its folders' content while it runs, so its reads, its diagnostics
     // and whether it is kept all follow one read set, whatever the source binds meanwhile.
-    let held = context
+    let _held = context
         .content
         .as_ref()
         .filter(|_| P::CONTENT_DEPENDENT)
         .and_then(|content| source.content(&content.options).ok());
-    let reads_uncovered = || match &held {
-        Some(_) => source.reply_reads_uncovered(context.content.as_ref()),
-        None => source.reads_uncovered(),
-    };
     // Replies persist between sessions, interactive ones once slow to compute.
     let entry = (!P::MACHINE_DEPENDENT
         && !P::PUBLISHED
@@ -256,12 +252,7 @@ fn load_json<P: Product>(
     )?;
     // The data serializes last.
     reply.truncate(reply.len() - "null}".len());
-    // Content read outside the recorded coverage is reported on every reply, so
-    // no reply is served from or kept on disk while its read set holds any.
-    let stored = entry
-        .as_ref()
-        .filter(|_| !reads_uncovered())
-        .and_then(reply_cache::Entry::get);
+    let stored = entry.as_ref().and_then(reply_cache::Entry::get);
     let data = match stored {
         Some(data) => data,
         None => {
@@ -275,10 +266,9 @@ fn load_json<P: Product>(
             });
             let computing = started.elapsed();
             let mut data = data.map_err(dashboard_core::QueryError::from)?;
+            own.diagnostics().append_to(data.warnings_mut());
             if P::CONTENT_DEPENDENT {
-                source.append_reply_warnings(data.warnings_mut(), context.content.as_ref());
-            } else {
-                source.append_read_warnings(data.warnings_mut());
+                source.append_changed_warnings(data.warnings_mut(), context.content.as_ref());
             }
             // What the presentation the request was admitted under shows, never the source's now.
             source.append_presentation_warnings(data.warnings_mut(), context.content.as_ref());
@@ -288,11 +278,9 @@ fn load_json<P: Product>(
             // work, whatever is selected), and only while its admission still holds the source's
             // current binding: a reply of a binding the source has left is not kept.
             if let Some(entry) = entry
-                && !reads_uncovered()
-                // A fallback or drawing diagnostic joins every reply's warnings when first noted,
-                // which a reply served from disk would leave out.
+                && !own.diagnostics().has_uncovered()
                 && own.fallbacks().is_empty()
-                && !crate::prepared::query::drawn(source, context.content.as_ref())
+                && !own.diagnostics().has_shader_warnings()
                 && context
                     .content
                     .as_ref()
@@ -502,7 +490,7 @@ mod own_refusal_tests;
 #[cfg(test)]
 mod presentation_tests;
 #[cfg(test)]
-mod source_warning_tests;
+pub(crate) mod source_warning_tests;
 
 #[cfg(test)]
 mod supply_health_registry_tests;

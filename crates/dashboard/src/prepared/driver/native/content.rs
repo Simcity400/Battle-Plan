@@ -17,24 +17,25 @@ use dashboard_politics_ledger::products::politics_ledger;
 use dashboard_special_projects::products::special_projects;
 use dashboard_text::{catalogue::Catalogue, metadata::Extents};
 use dashboard_unit_leaders::products::unit_leaders;
+use installed_content_core::content::diagnostics;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Mutex, OnceLock, PoisonError, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 
 /// A piece of content: loaded by the first reader to ask; every reader asking meanwhile waits
 /// for that load, and every reader shares its value or its error.
 pub(crate) struct Once<T> {
-    cell: OnceLock<Result<T, Arc<io::Error>>>,
+    cell: diagnostics::Once<Result<T, Arc<io::Error>>>,
 }
 
 impl<T> Once<T> {
     pub(crate) const fn new() -> Self {
         Self {
-            cell: OnceLock::new(),
+            cell: diagnostics::Once::new(),
         }
     }
 

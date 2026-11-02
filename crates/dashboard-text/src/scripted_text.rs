@@ -450,13 +450,17 @@ pub struct ScriptedContent {
     /// The content stack the triggers of scripted localisation entries and
     /// state names read ([`entries`]).
     pub layers: std::sync::Arc<installed_content_core::content::ResolvedContent>,
-    pub(crate) environment: std::sync::OnceLock<Result<entries::Environment, String>>,
-    pub(crate) state_content:
-        std::sync::Arc<std::sync::OnceLock<Result<entries::StateContent, String>>>,
-    pub(crate) template_names: std::sync::OnceLock<Result<Localisation, String>>,
-    event_index: std::sync::OnceLock<installed_content_events::events::LazyEvents>,
-    pub(crate) effects:
-        std::sync::OnceLock<Result<crate::effect_description::CachedContent, String>>,
+    pub(crate) environment:
+        installed_content_core::content::diagnostics::Once<Result<entries::Environment, String>>,
+    pub(crate) state_content: std::sync::Arc<
+        installed_content_core::content::diagnostics::Once<Result<entries::StateContent, String>>,
+    >,
+    pub(crate) template_names:
+        installed_content_core::content::diagnostics::Once<Result<Localisation, String>>,
+    event_index: installed_content_core::content::diagnostics::Once<installed_content_events::events::LazyEvents>,
+    pub(crate) effects: installed_content_core::content::diagnostics::Once<
+        Result<crate::effect_description::CachedContent, String>,
+    >,
 }
 
 impl ScriptedContent {
@@ -471,9 +475,15 @@ impl ScriptedContent {
         let layers = &content.layers;
         let names = installed_content_scripted_localisation::scripted_localisation::names(layers)
             .map_err(|error| format!("common/scripted_localisation is unreadable: {error}"))?;
-        let environment = Environment::read(layers)
-            .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
+        let environment = installed_content_core::content::diagnostics::Once::new();
         let recursion = environment
+            .get_or_init(|| {
+                Environment::read(layers).map_err(|error| {
+                    format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}")
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)?
             .defines()
             .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
@@ -485,11 +495,11 @@ impl ScriptedContent {
             tag_aliases: std::sync::Arc::new(tag_aliases),
             recorded_language,
             layers: content,
-            environment: std::sync::OnceLock::from(Ok(environment)),
-            state_content: std::sync::Arc::new(std::sync::OnceLock::new()),
-            template_names: std::sync::OnceLock::new(),
-            event_index: std::sync::OnceLock::new(),
-            effects: std::sync::OnceLock::new(),
+            environment,
+            state_content: std::sync::Arc::new(installed_content_core::content::diagnostics::Once::new()),
+            template_names: installed_content_core::content::diagnostics::Once::new(),
+            event_index: installed_content_core::content::diagnostics::Once::new(),
+            effects: installed_content_core::content::diagnostics::Once::new(),
         })
     }
 

@@ -8,6 +8,7 @@ use crate::{
         native::{self, Shape},
     },
 };
+use installed_content_core::content::diagnostics::Observed;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,
@@ -523,11 +524,11 @@ impl Deref for EventLayers {
 
 #[derive(Default)]
 struct Cache {
-    index: Option<Result<Index, String>>,
-    events: BTreeMap<Vec<u8>, Result<Arc<Event>, String>>,
+    index: Option<Observed<Result<Index, String>>>,
+    events: BTreeMap<Vec<u8>, Observed<Result<Arc<Event>, String>>>,
     // Retain full reads only for nested-variable files, to settle later headers.
-    files: BTreeMap<ScriptPath, EventRead>,
-    trees: BTreeMap<EventRef, Result<Arc<Event>, String>>,
+    files: BTreeMap<ScriptPath, Observed<EventRead>>,
+    trees: BTreeMap<EventRef, Observed<Result<Arc<Event>, String>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -689,7 +690,7 @@ impl LazyEvents {
     fn index_unless(&self, cache: &mut Cache, cancelled: &AtomicBool) -> Result<(), String> {
         if cache.index.is_none() {
             let mut files = BTreeMap::new();
-            let built = (|| {
+            let built = Observed::new(|| {
                 let mut index = Index::default();
                 // Prefetched files join before registration; duplicate event IDs
                 // retain separate references in registration order.
@@ -701,25 +702,43 @@ impl LazyEvents {
                     if cancelled.load(Ordering::Acquire) {
                         return Ok(None);
                     }
-                    let bytes = path
-                        .read(&self.layers)
-                        .map_err(|error| format!("{path}: {error}"))?;
-                    if dynamic_headers(&bytes) {
-                        let names = self.layers.key_names().map_err(|error| error.to_string())?;
-                        let file = read_events(&bytes, &names, None);
-                        index.add(&file.read, &path, true);
-                        files.insert(path, file);
-                    } else {
-                        index.add(&read_headers(&bytes), &path, false);
+                    let file = Observed::new(|| {
+                        let bytes = path
+                            .read(&self.layers)
+                            .map_err(|error| format!("{path}: {error}"))?;
+                        if dynamic_headers(&bytes) {
+                            let names =
+                                self.layers.key_names().map_err(|error| error.to_string())?;
+                            Ok::<_, String>((read_events(&bytes, &names, None), true))
+                        } else {
+                            Ok((
+                                EventRead {
+                                    read: read_headers(&bytes),
+                                    lines: Vec::new(),
+                                    event_items: Vec::new(),
+                                },
+                                false,
+                            ))
+                        }
+                    });
+                    file.get().as_ref().map_err(Clone::clone)?;
+                    let file = file.map(Result::unwrap);
+                    let (read, full) = file.get();
+                    index.add(&read.read, &path, *full);
+                    if *full {
+                        files.insert(path, file.map(|(read, _)| read));
                     }
                 }
                 Ok(Some(index))
-            })();
-            let index = match built {
+            });
+            if matches!(built.get(), Ok(None)) {
+                return Err("event index read cancelled".into());
+            }
+            let index = built.map(|built| match built {
                 Ok(Some(index)) => Ok(index),
-                Ok(None) => return Err("event index read cancelled".into()),
+                Ok(None) => unreachable!("cancelled index returned above"),
                 Err(error) => Err(error),
-            };
+            });
             cache.files.extend(files);
             cache.index = Some(index);
         }
@@ -727,6 +746,7 @@ impl LazyEvents {
             .index
             .as_ref()
             .unwrap()
+            .get()
             .as_ref()
             .map_err(Clone::clone)?;
         if index.refused.is_empty() {
@@ -760,7 +780,8 @@ impl LazyEvents {
         for (path, ordinals) in wanted {
             if let Some(file) = cache.files.get_mut(path) {
                 for ordinal in ordinals {
-                    let event = file.event(&path.text(), ordinal).map(Arc::new);
+                    let event =
+                        Observed::new(|| file.get_mut().event(&path.text(), ordinal).map(Arc::new));
                     cache.trees.insert(
                         EventRef {
                             path: path.clone(),
@@ -774,13 +795,13 @@ impl LazyEvents {
             // Static files are reader-walked only for the requested ordinals.
             // Unrelated bodies are neither interpreted nor retained; a later
             // novel request may walk that file again through the same reader.
-            let read = (|| {
+            let read = Observed::new(|| {
                 let bytes = path
                     .read(&self.layers)
                     .map_err(|error| format!("{path}: {error}"))?;
                 let names = self.layers.key_names().map_err(|error| error.to_string())?;
                 Ok::<_, String>((bytes, names))
-            })();
+            });
             let walks = if apart {
                 ordinals
                     .iter()
@@ -791,13 +812,17 @@ impl LazyEvents {
             };
             for wanted in walks {
                 let mut file = read
+                    .get()
                     .as_ref()
                     .map(|(bytes, names)| read_events(bytes, names, Some(&wanted)));
                 for ordinal in wanted {
-                    let event = match &mut file {
-                        Ok(file) => file.event(&path.text(), ordinal).map(Arc::new),
-                        Err(error) => Err(error.to_string()),
-                    };
+                    let event = Observed::new(|| {
+                        let _ = read.get();
+                        match &mut file {
+                            Ok(file) => file.event(&path.text(), ordinal).map(Arc::new),
+                            Err(error) => Err(error.to_string()),
+                        }
+                    });
                     cache.trees.insert(
                         EventRef {
                             path: path.clone(),
@@ -816,6 +841,7 @@ impl LazyEvents {
             .trees
             .get(reference)
             .expect("requested event cached")
+            .get()
             .clone()
     }
 
@@ -823,11 +849,11 @@ impl LazyEvents {
         let key = identifier_key(id)?;
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(event) = cache.events.get(&key) {
-            return event.clone();
+            return event.get().clone();
         }
-        let result = (|| {
+        let result = Observed::new(|| {
             self.index(&mut cache)?;
-            let index = cache.index.as_ref().unwrap().as_ref().unwrap();
+            let index = cache.index.as_ref().unwrap().get().as_ref().unwrap();
             let dot = key.iter().rposition(|byte| *byte == b'.').unwrap();
             if !index.namespaces.contains(&key[..dot]) {
                 return Err(format!(
@@ -861,9 +887,10 @@ impl LazyEvents {
                 String::from_utf8_lossy(id)
             ));
             Ok(Arc::new(event))
-        })();
-        cache.events.insert(key, result.clone());
-        result
+        });
+        let value = result.get().clone();
+        cache.events.insert(key, result);
+        value
     }
 
     /// Reads the events `ids` name, each file they lie in once and each event as its own lookup
@@ -884,7 +911,7 @@ impl LazyEvents {
         }
         let mut files: BTreeMap<ScriptPath, Vec<EventRef>> = BTreeMap::new();
         {
-            let index = cache.index.as_ref().unwrap().as_ref().unwrap();
+            let index = cache.index.as_ref().unwrap().get().as_ref().unwrap();
             for key in keys {
                 // A lookup refuses an unregistered namespace before reading any tree.
                 let registered = key
@@ -921,6 +948,7 @@ impl LazyEvents {
             .index
             .as_ref()
             .unwrap()
+            .get()
             .as_ref()
             .unwrap()
             .options

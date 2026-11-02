@@ -1,4 +1,5 @@
 //! Native member-upgrade fields and their owning groups, resolved in stack order.
+use crate::content::diagnostics::Once as OnceLock;
 use crate::{
     ResolvedLayers,
     coverage::Coverage,
@@ -12,7 +13,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 #[derive(Default, Debug, Clone)]
 pub struct Upgrade {

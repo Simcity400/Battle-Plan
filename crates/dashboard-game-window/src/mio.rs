@@ -250,7 +250,7 @@ fn lossy(bytes: &[u8]) -> String {
 /// the stack's shared content names ([`ResolvedLayers::key_names`]).
 #[derive(Default)]
 #[allow(clippy::type_complexity)]
-struct PolicyDefinitions(std::sync::OnceLock<Result<Arc<(Policies, Vec<String>)>, String>>);
+struct PolicyDefinitions(installed_content_core::content::diagnostics::Once<Result<Arc<(Policies, Vec<String>)>, String>>);
 
 /// The organisations' trait trees, read once per stack and shared with the trigger interpreter.
 fn trees(layers: &ResolvedLayers) -> Result<Arc<installed_content_core::mio_traits::Catalog>, String> {

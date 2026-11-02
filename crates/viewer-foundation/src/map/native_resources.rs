@@ -29,6 +29,7 @@ use std::{
     io,
 };
 
+use installed_content_core::content::diagnostics::{self, Diagnostics};
 use installed_content_core::{
     ResolvedLayers, gui::native::fonts, gui::native::fonts::TextColors, gui::native::resources,
     gui::native::resources::Lookup, gui::native::resources::NoTexture,
@@ -155,21 +156,24 @@ pub struct GuiResources {
     language: Vec<u8>,
     /// Each texture by the stack it was read from and its path.
     textures: BTreeMap<(Stack, Vec<u8>), Loaded>,
+    texture_diagnostics: BTreeMap<(Stack, Vec<u8>), Diagnostics>,
     /// Every texture [`GuiResources::texture`] returned since the sprite or font being prepared
     /// began, loaded then or before, whose refusals that sprite or font takes.
     touched: Vec<(Stack, Vec<u8>)>,
     /// The client state every texture decodes under ([`Decode`]).
     decode: Decode,
     sprites: HashMap<Vec<u8>, Prepared>,
+    sprite_diagnostics: HashMap<Vec<u8>, Diagnostics>,
     /// Shared CPU masks, built only for textures used by transparency-checked sprites.
     alpha: BTreeMap<usize, AlphaMask>,
     /// Each loaded font, by what chose it ([`FontKey`]).
     fonts: BTreeMap<FontKey, native_text::Font>,
+    font_diagnostics: BTreeMap<FontKey, Diagnostics>,
     /// The loaded font each asked name resolves to.
     font_names: BTreeMap<Vec<u8>, FontKey>,
     /// Each effect as loaded, with what its load drew from the recording instead of the visual
     /// mods, credited again on every use ([`GuiResources::effect_result`]).
-    effects: [BTreeMap<Vec<u8>, (Result<Effect, String>, BTreeSet<String>)>; 2],
+    effects: [BTreeMap<Vec<u8>, (Result<Effect, String>, Diagnostics)>; 2],
     compiler: Option<super::native_shader::library::Library>,
     /// The renderer's global defines every effect compiles with (`library::globals`).
     globals: Vec<String>,
@@ -203,11 +207,14 @@ impl GuiResources {
             registry,
             language: language.to_vec(),
             textures: BTreeMap::new(),
+            texture_diagnostics: BTreeMap::new(),
             touched: Vec::new(),
             decode,
             sprites: HashMap::new(),
+            sprite_diagnostics: HashMap::new(),
             alpha: BTreeMap::new(),
             fonts: BTreeMap::new(),
+            font_diagnostics: BTreeMap::new(),
             font_names: BTreeMap::new(),
             effects: std::array::from_fn(|_| BTreeMap::new()),
             compiler: None,
@@ -237,6 +244,20 @@ impl GuiResources {
 
     /// Deferred plain textures keep the eager sprite's metadata and effect.
     pub fn load_lazy_plain(&mut self, layers: &ResolvedLayers, name: &[u8]) -> Result<(), String> {
+        let (result, diagnostics) =
+            diagnostics::capture(|| self.load_lazy_plain_inner(layers, name));
+        diagnostics.credit();
+        if result.is_ok() {
+            self.sprite_diagnostics.insert(name.to_vec(), diagnostics);
+        }
+        result
+    }
+
+    fn load_lazy_plain_inner(
+        &mut self,
+        layers: &ResolvedLayers,
+        name: &[u8],
+    ) -> Result<(), String> {
         let Some(facts) = self.registry.sprite(name).cloned() else {
             return Err(format!("undeclared lazy sprite {}", lossy(name)));
         };
@@ -308,6 +329,9 @@ impl GuiResources {
             if !self.sprites.contains_key(name) {
                 self.prepare(layers, name, images)?;
             }
+            if let Some(diagnostics) = self.sprite_diagnostics.get(name) {
+                diagnostics.credit();
+            }
         }
         for name in &assets.fonts {
             self.load_font(layers, name, images)?;
@@ -337,7 +361,7 @@ impl GuiResources {
             .or_insert_with(|| {
                 // The name to its C string's end, opened by its bytes.
                 let file = installed_content_core::parser::c_string(file);
-                installed_content_core::content::observe_overlay_refusals(|| {
+                diagnostics::observe(|| {
                     Effect::load(
                         library,
                         file,
@@ -349,7 +373,7 @@ impl GuiResources {
                     )
                 })
             });
-        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        fallbacks.credit();
         effect.clone()
     }
 
@@ -365,6 +389,9 @@ impl GuiResources {
         let key = (stack, name.to_vec());
         self.touched.push(key.clone());
         if let Some(loaded) = self.textures.get(&key) {
+            if let Some(diagnostics) = self.texture_diagnostics.get(&key) {
+                diagnostics.credit();
+            }
             return Ok(loaded.clone());
         }
         // A texture the visual mods break (or hide) is the recording's own, named, when it is
@@ -374,33 +401,37 @@ impl GuiResources {
             Stack::Retried => self.recorded_layers(layers),
             Stack::Shown | Stack::Recorded => None,
         };
-        let loaded =
-            match resources::stack_texture_or_recorded(layers, recorded.as_ref(), name, self.decode)? {
-                Ok(texture) => {
-                    if !layers.covered_path(name) {
-                        self.uncovered.insert(name.to_vec());
-                    }
-                    images.push(texture.image);
-                    Loaded {
-                        texture: images.len() - 1,
-                        size: [texture.width, texture.height],
-                        missing: None,
-                        refused: None,
-                    }
+        let (loaded, diagnostics) = diagnostics::capture(|| {
+            resources::stack_texture_or_recorded(layers, recorded.as_ref(), name, self.decode)
+        });
+        diagnostics.credit();
+        let loaded = match loaded? {
+            Ok(texture) => {
+                if !layers.covered_path(name) {
+                    self.uncovered.insert(name.to_vec());
                 }
-                Err(why) => Loaded {
-                    texture: NO_TEXTURE,
-                    size: [0; 2],
-                    missing: Some(why.to_string()),
-                    refused: match &why {
-                        _ if why.native_failure() => None,
-                        NoTexture::Device { .. } | NoTexture::OverBudget { .. } => {
-                            Some((RefusalKind::MissingInput, why.to_string()))
-                        }
-                        _ => Some((RefusalKind::UndefinedRead, why.to_string())),
-                    },
+                images.push(texture.image);
+                Loaded {
+                    texture: images.len() - 1,
+                    size: [texture.width, texture.height],
+                    missing: None,
+                    refused: None,
+                }
+            }
+            Err(why) => Loaded {
+                texture: NO_TEXTURE,
+                size: [0; 2],
+                missing: Some(why.to_string()),
+                refused: match &why {
+                    _ if why.native_failure() => None,
+                    NoTexture::Device { .. } | NoTexture::OverBudget { .. } => {
+                        Some((RefusalKind::MissingInput, why.to_string()))
+                    }
+                    _ => Some((RefusalKind::UndefinedRead, why.to_string())),
                 },
-            };
+            },
+        };
+        self.texture_diagnostics.insert(key.clone(), diagnostics);
         self.textures.insert(key, loaded.clone());
         Ok(loaded)
     }
@@ -429,12 +460,19 @@ impl GuiResources {
     /// One note naming every font or texture read outside the content coverage policy, whose
     /// bytes are not hash-verified; `None` when every read was covered.
     pub fn uncovered_note(&self, owner: &str) -> Option<String> {
-        (!self.uncovered.is_empty()).then(|| {
-            let paths: Vec<_> = self
-                .uncovered
-                .iter()
-                .map(|path| String::from_utf8_lossy(path))
-                .collect();
+        let diagnostics = diagnostics::current();
+        let paths: Vec<_> = if diagnostics::is_active() {
+            diagnostics
+                .uncovered_paths()
+                .filter(|path| self.uncovered.contains(*path))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        } else {
+            self.uncovered.iter().collect()
+        };
+        (!paths.is_empty()).then(|| {
+            let paths: Vec<_> = paths.into_iter().map(|path| String::from_utf8_lossy(path)).collect();
             format!(
                 "{owner}: {} font/texture file(s) are outside the content coverage policy and are not hash-verified: {}.",
                 paths.len(),
@@ -466,6 +504,21 @@ impl GuiResources {
         name: &[u8],
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<()> {
+        let (result, diagnostics) =
+            diagnostics::capture(|| self.prepare_inner(layers, name, images));
+        diagnostics.credit();
+        if result.is_ok() {
+            self.sprite_diagnostics.insert(name.to_vec(), diagnostics);
+        }
+        result
+    }
+
+    fn prepare_inner(
+        &mut self,
+        layers: &ResolvedLayers,
+        name: &[u8],
+        images: &mut Vec<dds::Texture>,
+    ) -> io::Result<()> {
         if self.recorded_registry.is_none() {
             if let Some((prepared, _)) = self.prepare_from(Stack::Retried, layers, name, images)? {
                 self.sprites.insert(name.to_vec(), prepared);
@@ -474,9 +527,8 @@ impl GuiResources {
         }
         // Each attempt keeps what it notes to itself; only the kept one's is published. A read
         // that fails is the attempt's failure too, which the recording's declaration may draw.
-        let (shown, noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
-            self.prepare_from(Stack::Shown, layers, name, images)
-        });
+        let (shown, noted) =
+            diagnostics::capture(|| self.prepare_from(Stack::Shown, layers, name, images));
         let why = match &shown {
             Ok(Some((_, broken))) => broken.clone(),
             Ok(None) => None,
@@ -485,18 +537,18 @@ impl GuiResources {
         if let Some(why) = why
             && let Some(recorded) = self.recorded_layers(layers)
         {
-            let (own, own_noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+            let (own, own_noted) = diagnostics::capture(|| {
                 self.prepare_from(Stack::Recorded, &recorded, name, images)
             });
             // A recording that cannot draw it either leaves the selection's outcome as it is.
             if let Ok(Some((own, None))) = own {
-                installed_content_core::content::credit_overlay_refusals(&own_noted);
+                own_noted.credit();
                 layers.note_overlay_refusal(format!("sprite {} ({why})", lossy(name)));
                 self.sprites.insert(name.to_vec(), own);
                 return Ok(());
             }
         }
-        installed_content_core::content::credit_overlay_refusals(&noted);
+        noted.credit();
         if let Some((prepared, _)) = shown? {
             self.sprites.insert(name.to_vec(), prepared);
         }
@@ -850,6 +902,23 @@ impl GuiResources {
         name: &[u8],
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<()> {
+        let (result, diagnostics) =
+            diagnostics::capture(|| self.load_font_inner(layers, name, images));
+        diagnostics.credit();
+        if result.is_ok()
+            && let Some(key) = self.font_names.get(name)
+        {
+            self.font_diagnostics.insert(key.clone(), diagnostics);
+        }
+        result
+    }
+
+    fn load_font_inner(
+        &mut self,
+        layers: &ResolvedLayers,
+        name: &[u8],
+        images: &mut Vec<dds::Texture>,
+    ) -> io::Result<()> {
         let Some(found) = self.registry.fonts.get_or_fallback(name) else {
             return Ok(());
         };
@@ -867,6 +936,9 @@ impl GuiResources {
         };
         self.font_names.insert(name.to_vec(), key.clone());
         if self.fonts.contains_key(&key) {
+            if let Some(diagnostics) = self.font_diagnostics.get(&key) {
+                diagnostics.credit();
+            }
             return Ok(());
         }
         let declared = (found.family(&self.language).clone(), found.facts.clone());
@@ -877,9 +949,8 @@ impl GuiResources {
         }
         // Each attempt keeps what it notes to itself; only the kept one's is published. A read
         // that fails is the attempt's failure too.
-        let (shown, noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
-            self.font_from(Stack::Shown, layers, declared, images)
-        });
+        let (shown, noted) =
+            diagnostics::capture(|| self.font_from(Stack::Shown, layers, declared, images));
         let why = match &shown {
             Ok((_, _, broken)) => broken.clone(),
             Err(error) => Some(error.to_string()),
@@ -894,18 +965,17 @@ impl GuiResources {
                 .map(|own| (own.family(&self.language).clone(), own.facts.clone()))
             && let Some(recorded) = self.recorded_layers(layers)
         {
-            let (own, own_noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
-                self.font_from(Stack::Recorded, &recorded, own, images)
-            });
+            let (own, own_noted) =
+                diagnostics::capture(|| self.font_from(Stack::Recorded, &recorded, own, images));
             // A recording that cannot draw it either leaves the selection's outcome as it is.
             if let Ok((own, own_notes, None)) = own {
-                installed_content_core::content::credit_overlay_refusals(&own_noted);
+                own_noted.credit();
                 layers.note_overlay_refusal(format!("font {} ({why})", lossy(name)));
                 self.keep_font(layers, key, own, own_notes);
                 return Ok(());
             }
         }
-        installed_content_core::content::credit_overlay_refusals(&noted);
+        noted.credit();
         let (font, notes, _) = shown?;
         self.keep_font(layers, key, font, notes);
         Ok(())
@@ -1034,16 +1104,25 @@ impl GuiResources {
 
     /// The sprite the content defines under `name`, as loaded.
     pub fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
+        self.credit_sprite(name);
         self.sprites.get(name).map(|prepared| prepared.info.clone())
+    }
+
+    fn credit_sprite(&self, name: &[u8]) {
+        if let Some(diagnostics) = self.sprite_diagnostics.get(name) {
+            diagnostics.credit();
+        }
     }
 
     /// Immutable loaded metadata shared by every drawable of this sprite.
     pub fn sprite_info(&self, name: &[u8]) -> Option<&SpriteInfo> {
+        self.credit_sprite(name);
         self.sprites.get(name).map(|prepared| &prepared.info)
     }
 
     /// The texture's mip-0 CPU mask shared by all drawables using it, if it has one.
     pub fn sprite_alpha(&self, name: &[u8]) -> Option<AlphaMask> {
+        self.credit_sprite(name);
         self.alpha
             .get(&self.sprites.get(name)?.sheet.texture)
             .cloned()
@@ -1051,6 +1130,7 @@ impl GuiResources {
 
     /// The animation records the sprite `name` draws ([`SpriteInfo::animated`]).
     pub fn sprite_animations(&self, name: &[u8]) -> Option<Vec<AnimationRecord>> {
+        self.credit_sprite(name);
         self.sprites
             .get(name)
             .map(|prepared| prepared.animations.clone())
@@ -1061,7 +1141,13 @@ impl GuiResources {
     pub fn texture_file(&self, path: &[u8]) -> Option<TextureFile> {
         let loaded = [Stack::Retried, Stack::Shown]
             .into_iter()
-            .find_map(|stack| self.textures.get(&(stack, path.to_vec())))?;
+            .find_map(|stack| {
+                let key = (stack, path.to_vec());
+                if let Some(diagnostics) = self.texture_diagnostics.get(&key) {
+                    diagnostics.credit();
+                }
+                self.textures.get(&key)
+            })?;
         Some(match (&loaded.refused, &loaded.missing) {
             (Some((kind, why)), _) => TextureFile::Refused(*kind, why.clone()),
             (None, Some(why)) => TextureFile::Failed(why.clone()),
@@ -1075,6 +1161,11 @@ impl GuiResources {
 
     /// The loaded font resolved for `name`, including its fallback.
     pub fn font(&self, name: &[u8]) -> Option<&native_text::Font> {
+        if let Some(key) = self.font_names.get(name)
+            && let Some(diagnostics) = self.font_diagnostics.get(key)
+        {
+            diagnostics.credit();
+        }
         self.fonts.get(self.font_names.get(name)?)
     }
 
@@ -1088,7 +1179,10 @@ impl GuiResources {
     pub fn effect(&self, file: &str) -> Result<Effect, String> {
         self.effects[0]
             .get(file.as_bytes())
-            .map(|(effect, _)| effect.clone())
+            .map(|(effect, diagnostics)| {
+                diagnostics.credit();
+                effect.clone()
+            })
             .unwrap_or_else(|| Err(format!("effect {file} was not loaded")))
     }
 
@@ -1113,19 +1207,23 @@ impl GuiResources {
 
 impl Sheets for GuiResources {
     fn sheet(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
+        self.credit_sprite(sprite);
         self.sprites.get(sprite).map(|prepared| &prepared.sheet)
     }
 
     fn progress(&self, sprite: &[u8]) -> Option<[&SpriteSheet; 2]> {
+        self.credit_sprite(sprite);
         let prepared = self.sprites.get(sprite)?;
         Some([&prepared.sheet, prepared.second.as_ref()?])
     }
 
     fn masking(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
+        self.credit_sprite(sprite);
         self.sprites.get(sprite)?.masking.as_ref()
     }
 
     fn mask(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
+        self.credit_sprite(sprite);
         self.sprites.get(sprite)?.second.as_ref()
     }
 }

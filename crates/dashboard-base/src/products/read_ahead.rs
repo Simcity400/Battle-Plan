@@ -157,17 +157,23 @@ mod tests {
                 "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=music/continent.txt",
             ),
             ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
-            ("map/music/continent.txt", "continents={synthetic_continent}"),
+            (
+                "map/music/continent.txt",
+                "continents={synthetic_continent}",
+            ),
         ]);
         read(&Arc::downgrade(&source), options.clone());
-        assert!(!source.reads_uncovered());
-        drop(production_lines::preparation_icons(
+        assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
+        let (_, diagnostics) = installed_content_core::content::diagnostics::capture(|| {
+            drop(production_lines::preparation_icons(
             &source,
             &LoadContext {
                 content: Some(options),
             },
-        ));
-        assert!(source.reads_uncovered());
+        ))
+        });
+        assert!(diagnostics.has_uncovered());
+        assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
     }
 
     #[test]

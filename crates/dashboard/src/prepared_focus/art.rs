@@ -128,6 +128,7 @@ struct Binding {
     source: crate::SourceKey,
     key: crate::catalogue::Binding,
     result: Result<(), crate::catalogue::ContentError>,
+    diagnostics: crate::catalogue::OwnRefusals,
 }
 
 /// Each focus database's context: a token is looked up in its own alone.
@@ -174,7 +175,7 @@ impl Evaluator {
             self.catalogue = None;
             self.warnings.clear();
             self.kept = Kept::default();
-            let result = (|| {
+            let (result, diagnostics) = crate::catalogue::capture(|| {
                 let catalogue = crate::catalogue::catalogue(source, content)?;
                 self.catalogue = Some(Arc::clone(&catalogue));
                 let load = |database| {
@@ -190,7 +191,7 @@ impl Evaluator {
                 self.warnings.dedup();
                 self.contexts = Some(contexts);
                 Ok(())
-            })();
+            });
             if result
                 .as_ref()
                 .is_err_and(|error: &io::Error| error.kind() == io::ErrorKind::Interrupted)
@@ -201,8 +202,16 @@ impl Evaluator {
                 source: source.key().clone(),
                 key: crate::catalogue::binding(content),
                 result: result.map_err(crate::catalogue::ContentError::from),
+                diagnostics,
             });
         }
+        crate::catalogue::credit(
+            &self
+                .binding
+                .as_ref()
+                .expect("focus content bound")
+                .diagnostics,
+        );
         self.binding
             .as_ref()
             .expect("focus content bound")

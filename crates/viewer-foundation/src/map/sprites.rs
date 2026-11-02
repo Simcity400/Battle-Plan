@@ -672,6 +672,7 @@ pub struct SpritePass {
     uploads: Option<shader_pipeline::gpu::Arena>,
     retained: Option<retained::Upload>,
     retained_valid: bool,
+    retained_diagnostics: installed_content_core::content::diagnostics::Diagnostics,
     camera_moving: bool,
     packets: packets::Cache,
     packet_views: Vec<(u32, View)>,
@@ -880,6 +881,7 @@ impl SpritePass {
             uploads: Some(shader_pipeline::gpu::Arena::new(device)),
             retained: None,
             retained_valid: false,
+            retained_diagnostics: Default::default(),
             camera_moving: false,
             packets: Default::default(),
             packet_views: Vec::new(),
@@ -1043,6 +1045,22 @@ impl SpritePass {
         size: [u32; 2],
         ui_scale: f32,
     ) {
+        let ((), diagnostics) = installed_content_core::content::diagnostics::capture(|| {
+            self.upload_inner(device, queue, arena, batch, size, ui_scale)
+        });
+        diagnostics.credit();
+        self.retained_diagnostics = diagnostics;
+    }
+
+    fn upload_inner(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
+        batch: &Batch,
+        size: [u32; 2],
+        ui_scale: f32,
+    ) {
         // The lazy textures this frame draws stay pinned in their LRU.
         self.lazy.mark_drawn(
             batch
@@ -1092,7 +1110,9 @@ impl SpritePass {
                 .retained
                 .as_ref()
                 .is_some_and(|retained| retained.matches(batch, size, ui_scale, self.synced));
-        if !same {
+        if same {
+            self.retained_diagnostics.credit();
+        } else {
             uploads.reset();
             self.upload_changed(device, queue, &uploads, batch, size, ui_scale);
             uploads.flush(queue);
@@ -1777,6 +1797,29 @@ impl SpritePass {
         arena: &shader_pipeline::gpu::Arena,
         bake: &Arc<super::native_shader::draw::Bake>,
     ) -> Result<wgpu::TextureView, String> {
+        let (result, diagnostics) = installed_content_core::content::diagnostics::capture(|| {
+            self.prepare_bake_inner(device, queue, arena, bake)
+        });
+        diagnostics.credit();
+        let revision = self.lazy.version();
+        if result.is_ok()
+            && let Some(cached) = self
+                .bakes
+                .iter_mut()
+                .find(|cached| cached.revision == revision && cached.source == *bake)
+        {
+            cached.diagnostics = diagnostics;
+        }
+        result
+    }
+
+    fn prepare_bake_inner(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
+        bake: &Arc<super::native_shader::draw::Bake>,
+    ) -> Result<wgpu::TextureView, String> {
         // Changed lazy pages invalidate a bake even if its layout is unchanged. The bake
         // inherits the caller's retained binds, so only a bake that reads nothing it does not
         // bind itself gives the same pixels wherever it is drawn.
@@ -1789,6 +1832,7 @@ impl SpritePass {
                 .find(|c| c.revision == revision && c.source == *bake)
         {
             cached.used = true;
+            cached.diagnostics.credit();
             return Ok(cached.view.clone());
         }
         let [width, height] = bake.size;
@@ -1869,6 +1913,7 @@ impl SpritePass {
             revision,
             view: view.clone(),
             used: true,
+            diagnostics: Default::default(),
         });
         Ok(view)
     }
@@ -1879,6 +1924,7 @@ struct CachedBake {
     revision: u64,
     view: wgpu::TextureView,
     used: bool,
+    diagnostics: installed_content_core::content::diagnostics::Diagnostics,
 }
 
 /// Whether `draw`'s compiled program reads only what the draw binds itself: its technique is

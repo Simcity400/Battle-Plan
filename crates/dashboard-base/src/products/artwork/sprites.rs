@@ -218,7 +218,7 @@ fn images(
     reply.warnings.extend(catalogue.refusal_lines());
     reply
         .warnings
-        .extend(catalogue.content.layers.shader_warning_lines());
+        .extend(installed_content_core::content::diagnostics::current().shader_warnings());
     crate::metadata::check_cancel(cancelled)?;
     check_reply_budget(&reply)?;
     Ok(reply)

@@ -37,7 +37,7 @@ use crate::{
 
 /// The folder's size limit; pruning keeps three quarters of it.
 pub const LIMIT: u64 = 1 << 30;
-const MAGIC: &[u8; 4] = b"HRC3";
+const MAGIC: &[u8; 4] = b"HRC4";
 const ENTRY_BUDGET: usize = crate::transport::MAX_REPLY_BYTES;
 
 /// Bytes stored since the folder was last measured, so pruning walks it rarely.

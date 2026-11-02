@@ -246,6 +246,45 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
     };
     let catalogue = Arc::new(catalogue);
     crate::catalogue::set_test_catalogue(&source, &content, Arc::clone(&catalogue));
+    let diagnostic_source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "diagnostic-art".into(),
+            revision: "1".into(),
+        },
+        "synthetic.battleplan".into(),
+        source.replay(),
+        &cancelled,
+    )
+    .unwrap();
+    crate::catalogue::set_test_catalogue(&diagnostic_source, &content, Arc::clone(&catalogue));
+    let diagnostic_art = || {
+        installed_content_core::content::diagnostics::observe(|| {
+            art_at(
+                &diagnostic_source,
+                &content,
+                1,
+                "GER",
+                100,
+                crate::FocusDatabase::National,
+                &["a_static".into()],
+                Presentation::Full,
+                &cancelled,
+            )
+            .unwrap()
+        })
+    };
+    let (cold_art, cold_notes) = diagnostic_art();
+    assert!(cold_notes.has_uncovered());
+    catalogue
+        .content
+        .layers
+        .note_shader_warning("unrelated prior drawing".into());
+    let (warm_art, warm_notes) = diagnostic_art();
+    assert_eq!(
+        serde_json::to_value(cold_art).unwrap(),
+        serde_json::to_value(warm_art).unwrap()
+    );
+    assert_eq!(cold_notes, warm_notes);
     let reads = || art::FRAME_READS.with(std::cell::Cell::get);
     let national = artwork::Kind::Focus(crate::FocusDatabase::National);
     // Hourly preparation's rows: every token of the country's order

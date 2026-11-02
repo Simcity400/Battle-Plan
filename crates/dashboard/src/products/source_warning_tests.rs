@@ -4,8 +4,279 @@ use crate::test_fixtures::{CAMPAIGN, records, source};
 use replay::container::Replay;
 use std::sync::{Arc, atomic::AtomicBool};
 
+pub(crate) const DIAGNOSTIC_PRODUCTS: [&str; 2] = ["diagnostic-a", "diagnostic-b"];
+
+#[derive(serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticParams {
+    branch_id: String,
+    #[serde(default)]
+    selection: u32,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+struct DiagnosticReply {
+    value: String,
+    warnings: Vec<String>,
+}
+
+impl super::ReplyWarnings for DiagnosticReply {
+    fn warnings_mut(&mut self) -> &mut Vec<String> {
+        &mut self.warnings
+    }
+}
+
+#[derive(Default)]
+struct DiagnosticCache<const INDEX: usize> {
+    value: crate::catalogue::CachedResult<Vec<u8>>,
+    loads: std::sync::atomic::AtomicUsize,
+}
+
+struct DiagnosticProduct<const INDEX: usize>;
+
+impl<const INDEX: usize> super::Product for DiagnosticProduct<INDEX> {
+    const KEY: &'static str = DIAGNOSTIC_PRODUCTS[INDEX];
+    const CONTENT_DEPENDENT: bool = true;
+    const MACHINE_DEPENDENT: bool = true;
+    type Params = DiagnosticParams;
+    type Reply = DiagnosticReply;
+
+    fn load(
+        source: &crate::Source,
+        params: &Self::Params,
+        context: &super::LoadContext,
+        _: &AtomicBool,
+    ) -> std::io::Result<Self::Reply> {
+        let cache = source.state::<DiagnosticCache<INDEX>>();
+        let cache = cache.lock().unwrap();
+        let bytes = cache.value.get_or_init(|| {
+            cache
+                .loads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let content = source.content(&context.content.as_ref().unwrap().options)?;
+            std::thread::scope(|scope| {
+                installed_content_core::parallel::join(installed_content_core::parallel::spawn(scope, || {
+                    content
+                        .layers
+                        .note_shader_warning(format!("synthetic shader {INDEX}"));
+                    content
+                        .layers
+                        .read_uncovered(&format!("outside_policy/{INDEX}.bin"))
+                }))
+            })
+        })?;
+        let gate = source
+            .state::<Option<Arc<std::sync::Barrier>>>()
+            .lock()
+            .unwrap()
+            .clone();
+        if let Some(gate) = gate {
+            gate.wait();
+        }
+        Ok(DiagnosticReply {
+            value: format!(
+                "{}:{}:{}",
+                String::from_utf8_lossy(&bytes),
+                params.branch_id,
+                params.selection
+            ),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+pub(crate) struct DiagnosticFixture {
+    folder: crate::catalogue::tests::Folder,
+    pub context: super::LoadContext,
+}
+
+impl DiagnosticFixture {
+    pub fn new() -> Self {
+        let root =
+            std::env::temp_dir().join(format!("content-diagnostics-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("outside_policy")).unwrap();
+        for index in 0..2 {
+            std::fs::write(
+                root.join(format!("outside_policy/{index}.bin")),
+                format!("value-{index}"),
+            )
+            .unwrap();
+        }
+        let context = super::LoadContext {
+            content: Some(super::ContentOptions {
+                options: installed_content_core::ResolveOptions {
+                    game_dir: root.clone(),
+                    user_dir: root.join("user"),
+                    cache_dir: root.join("cache"),
+                },
+                allow_unverified: true,
+                presentation: Default::default(),
+            }),
+        };
+        Self {
+            folder: crate::catalogue::tests::Folder(root),
+            context,
+        }
+    }
+
+    pub fn source(&self) -> crate::Source {
+        let source = crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: "diagnostic-fixture".into(),
+                revision: "1".into(),
+            },
+            "synthetic.battleplan".into(),
+            Arc::new(crate::test_fixtures::replay(vec![source(1, 0, Some(1))])),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let layers =
+            installed_content_core::ResolvedLayers::from_folders(&[(&self.folder.0, &[])]).unwrap();
+        source.set_test_content(
+            self.context.content.as_ref().unwrap().options.clone(),
+            Arc::new(installed_content_core::content::ResolvedContent {
+                layers,
+                stats: Default::default(),
+                changed: Default::default(),
+            }),
+        );
+        source
+    }
+}
+
+pub(crate) fn diagnostic_reply(
+    source: &crate::Source,
+    context: &super::LoadContext,
+    index: usize,
+    params: serde_json::Value,
+) -> String {
+    match index {
+        0 => super::load_json::<DiagnosticProduct<0>>(
+            source,
+            "diagnostic-fixture",
+            params,
+            context,
+            &AtomicBool::new(false),
+        ),
+        1 => super::load_json::<DiagnosticProduct<1>>(
+            source,
+            "diagnostic-fixture",
+            params,
+            context,
+            &AtomicBool::new(false),
+        ),
+        _ => unreachable!(),
+    }
+    .unwrap()
+}
+
+pub(crate) fn diagnostic_serve(
+    source: &crate::Source,
+    context: &super::LoadContext,
+    product: &str,
+    params: &serde_json::Value,
+) -> crate::prepared::served_check::Reply {
+    let index = DIAGNOSTIC_PRODUCTS
+        .iter()
+        .position(|name| *name == product)
+        .unwrap();
+    let serde_json::Value::Object(mut reply) =
+        serde_json::from_str(&diagnostic_reply(source, context, index, params.clone())).unwrap()
+    else {
+        panic!("object reply")
+    };
+    for key in ["sourceId", "revision", "product"] {
+        reply.remove(key);
+    }
+    crate::prepared::served_check::Reply::Answered(serde_json::Value::Object(reply))
+}
+
 #[test]
-fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products() {
+fn products_report_only_their_content_diagnostics_on_cold_and_warm_shared_sources() {
+    use super::Product;
+    let fixture = DiagnosticFixture::new();
+    let params = || serde_json::json!({"branchId":"1"});
+    let alone: Vec<_> = (0..2)
+        .map(|index| diagnostic_reply(&fixture.source(), &fixture.context, index, params()))
+        .collect();
+    for index in 0..2 {
+        assert!(alone[index].contains(&format!("synthetic shader {index}")));
+        assert!(alone[index].contains(&format!("outside_policy/{index}.bin")));
+        assert!(!alone[index].contains(&format!("outside_policy/{}.bin", 1 - index)));
+    }
+    for warm in [false, true] {
+        for order in [[0, 1], [1, 0]] {
+            let source = fixture.source();
+            if warm {
+                DiagnosticProduct::<0>::load(
+                    &source,
+                    &DiagnosticParams {
+                        branch_id: "1".into(),
+                        selection: 0,
+                    },
+                    &fixture.context,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                DiagnosticProduct::<1>::load(
+                    &source,
+                    &DiagnosticParams {
+                        branch_id: "1".into(),
+                        selection: 0,
+                    },
+                    &fixture.context,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            }
+            for _ in 0..2 {
+                for index in order {
+                    assert_eq!(
+                        diagnostic_reply(&source, &fixture.context, index, params()),
+                        alone[index]
+                    );
+                }
+            }
+            assert_eq!(
+                source
+                    .state::<DiagnosticCache<0>>()
+                    .lock()
+                    .unwrap()
+                    .loads
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            assert_eq!(
+                source
+                    .state::<DiagnosticCache<1>>()
+                    .lock()
+                    .unwrap()
+                    .loads
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            assert!(
+                !source.metadata().unwrap().warnings.iter().any(|line| line
+                    .contains("outside_policy")
+                    || line.contains("synthetic shader"))
+            );
+        }
+    }
+    let source = fixture.source();
+    *source
+        .state::<Option<Arc<std::sync::Barrier>>>()
+        .lock()
+        .unwrap() = Some(Arc::new(std::sync::Barrier::new(2)));
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| diagnostic_reply(&source, &fixture.context, 0, params()));
+        let b = scope.spawn(|| diagnostic_reply(&source, &fixture.context, 1, params()));
+        assert_eq!(a.join().unwrap(), alone[0]);
+        assert_eq!(b.join().unwrap(), alone[1]);
+    });
+}
+
+#[test]
+fn unrelated_lazy_reads_do_not_reach_metadata_catalogue_or_other_products() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext};
@@ -100,8 +371,8 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     assert!(
         expected.contains("coverage policy 2; these bytes are not hash-verified: events/a.txt")
     );
-    assert!(catalogue.refusal_lines().contains(&expected));
-    assert!(source.metadata().unwrap().warnings.contains(&expected));
+    assert!(!catalogue.refusal_lines().contains(&expected));
+    assert!(!source.metadata().unwrap().warnings.contains(&expected));
     let context = LoadContext {
         content: Some(options),
     };
@@ -117,7 +388,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
         serde_json::from_str::<serde_json::Value>(&json).unwrap()
     };
     assert!(
-        reply()["data"]["warnings"]
+        !reply()["data"]["warnings"]
             .as_array()
             .unwrap()
             .contains(&serde_json::json!(expected))
@@ -125,8 +396,8 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     layers.read("gfx/texticons/late.dds").unwrap();
     let updated = layers.read_warnings().warning().unwrap();
     assert!(updated.contains("Content: 2 file(s)"));
-    assert!(catalogue.refusal_lines().contains(&updated));
-    assert!(source.metadata().unwrap().warnings.contains(&updated));
+    assert!(!catalogue.refusal_lines().contains(&updated));
+    assert!(!source.metadata().unwrap().warnings.contains(&updated));
     let cached = reply();
     let notes: Vec<_> = cached["data"]["warnings"]
         .as_array()
@@ -137,8 +408,6 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
                 .is_some_and(|note| note.starts_with("Content: "))
         })
         .collect();
-    assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].as_str(), Some(updated.as_str()));
-    // Replies that report unverified bytes are not kept between sessions.
+    assert!(notes.is_empty());
     assert!(!folder.0.join("cache").join("history").exists());
 }

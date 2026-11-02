@@ -4,6 +4,39 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn cached_event_index_and_trees_replay_their_own_reads_after_prefetch() {
+    let (events, root) = option_index_fixture(&[
+        (
+            "a.txt",
+            b"add_namespace=s country_event={id=s.1 title=FIRST option={name=OPTION}}",
+        ),
+        (
+            "b.txt",
+            b"add_namespace=s country_event={id=s.2 title=SECOND}",
+        ),
+    ]);
+    let layers = ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2).unwrap();
+    let _ = layers.report_uncovered_reads();
+    let read = |events: &LazyEvents| {
+        installed_content_core::content::diagnostics::observe(|| events.get(b"s.1").unwrap())
+    };
+    let alone = LazyEvents::new(Arc::new(layers.clone()));
+    let (expected, notes) = read(&alone);
+    assert!(notes.has_uncovered());
+    assert_eq!(read(&alone).1, notes);
+    let shared = LazyEvents::new(Arc::new(layers));
+    shared.prefetch([b"s.1".as_slice(), b"s.2"], &AtomicBool::new(false));
+    let (actual, warm) = read(&shared);
+    assert_eq!(*actual, *expected);
+    assert_eq!(warm, notes);
+    let (_, option_notes) =
+        installed_content_core::content::diagnostics::observe(|| shared.options(b"OPTION").unwrap());
+    assert_eq!(option_notes, notes);
+    drop(events);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn event_presentation_keeps_description_picture_and_each_option_admission_trigger() {
     engine_executable::executable_tables::initialize_for_tests().expect("supported runtime tables");
     let parsed=parse(b"add_namespace=synthetic country_event={id=synthetic.3 title=TITLE desc=BODY picture=FIRST picture=LAST option={name=CHOICE trigger={always=yes} original_recipient_only=yes custom_effect_tooltip=EFFECT}}", "synthetic.txt", &KeyNames::default());

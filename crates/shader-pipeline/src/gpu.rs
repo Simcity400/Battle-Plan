@@ -2,6 +2,7 @@
 //! semantics, so changing an effect's uniform names never changes what the engine uploads.
 
 use super::{Buffer, Compiled};
+use installed_content_core::content::diagnostics::{self, Diagnostics};
 use installed_content_core::pdxshader::{
     Address, DepthStencilState, RasterizerState,
     program::{Filter, Program, Sampler, Stage, Technique},
@@ -523,8 +524,8 @@ type PackedKey = (
 #[derive(Default)]
 pub struct Cache {
     /// Packed passes derive their complete vertex layout only on a state-cache miss.
-    packed: HashMap<PackedKey, Vec<(State, Cached)>>,
-    entries: HashMap<u64, Vec<(PipelineKey, Cached)>>,
+    packed: HashMap<PackedKey, Vec<(State, Cached, Diagnostics)>>,
+    entries: HashMap<u64, Vec<(PipelineKey, Cached, Diagnostics)>>,
     pub refused: BTreeMap<String, u64>,
     pub created: usize,
 }
@@ -533,7 +534,7 @@ impl Cache {
     /// Release cache-held bindings after encoding; submitted commands keep their
     /// own handles. This lets the owner bound its retained texture uploads.
     pub fn release_bind_groups(&self) {
-        for (_, result) in self.entries.values().flatten() {
+        for (_, result, _) in self.entries.values().flatten() {
             if let Ok(pipeline) = result {
                 pipeline.release_bind_groups();
             }
@@ -545,7 +546,7 @@ impl Cache {
         self.entries
             .values()
             .flatten()
-            .filter_map(|(_, result)| result.as_ref().ok())
+            .filter_map(|(_, result, _)| result.as_ref().ok())
             .map(|pipeline| {
                 pipeline
                     .groups
@@ -578,7 +579,7 @@ impl Cache {
             topology,
         );
         let entries = self.packed.entry(key).or_default();
-        if let Some((_, result)) = entries.iter().find(|(cached, _)| {
+        if let Some((_, result, diagnostics)) = entries.iter().find(|(cached, _, _)| {
             cached.blend == state.blend
                 && cached.write_mask == state.write_mask
                 && cached
@@ -590,19 +591,23 @@ impl Cache {
                         .iter()
                         .map(|(slot, sampler)| (*slot, sampler_key(sampler))))
         }) {
+            diagnostics.credit();
             if let Err(reason) = result {
                 *self.refused.entry(reason.clone()).or_default() += 1;
             }
             return result.clone();
         }
-        let compiled = selection.effect.compiled(selection.index)?;
-        let mut pass = Pass::packed(&compiled, state, format, samples);
-        pass.primitive.topology = topology;
-        let result = self.get_pass(device, selection, state, &pass);
+        let (result, diagnostics) = diagnostics::capture(|| {
+            let compiled = selection.effect.compiled(selection.index)?;
+            let mut pass = Pass::packed(&compiled, state, format, samples);
+            pass.primitive.topology = topology;
+            self.get_pass(device, selection, state, &pass)
+        });
+        diagnostics.credit();
         self.packed
             .entry(key)
             .or_default()
-            .push((state.clone(), result.clone()));
+            .push((state.clone(), result.clone(), diagnostics));
         result
     }
 
@@ -620,11 +625,14 @@ impl Cache {
             .or_default();
         let result = match bucket
             .iter()
-            .find(|(key, _)| key.matches(effect.id, selection.index, state, pass))
+            .find(|(key, _, _)| key.matches(effect.id, selection.index, state, pass))
         {
-            Some((_, result)) => result.clone(),
+            Some((_, result, diagnostics)) => {
+                diagnostics.credit();
+                result.clone()
+            }
             None => {
-                let result = (|| {
+                let (result, diagnostics) = diagnostics::capture(|| {
                     let compiled = effect.compiled(selection.index)?;
                     let pipeline = Pipeline::for_pass(
                         device,
@@ -636,7 +644,8 @@ impl Cache {
                     )?;
                     self.created += 1;
                     Ok(Arc::new(pipeline))
-                })();
+                });
+                diagnostics.credit();
                 let key = PipelineKey {
                     effect: effect.id,
                     technique: selection.index,
@@ -649,7 +658,7 @@ impl Cache {
                     write_mask: state.write_mask,
                     pass: pass.clone(),
                 };
-                bucket.push((key, result.clone()));
+                bucket.push((key, result.clone(), diagnostics));
                 result
             }
         };

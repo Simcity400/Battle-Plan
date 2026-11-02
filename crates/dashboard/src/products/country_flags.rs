@@ -12,6 +12,7 @@
 use super::{LoadContext, Product};
 use crate::{Source, catalogue::Catalogue, content, flag_choices::Chain, invalid};
 use dashboard_base::products::country_styles::CountryFlagChoice;
+use installed_content_core::content::diagnostics::Once as OnceLock;
 use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
 use installed_content_image::Rgba8Image;
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -204,7 +205,7 @@ impl Product for CountryFlags {
                     Some(cells) => cells,
                     None => {
                         let (cells, fallbacks) =
-                            installed_content_core::content::observe_overlay_refusals(|| {
+                            installed_content_core::content::diagnostics::observe(|| {
                                 flag_cells(&resolved.layers)
                             });
                         (cells?, fallbacks, Arc::default())
@@ -228,7 +229,7 @@ impl Product for CountryFlags {
                 state.contexts.truncate(RECENT);
             }
         }
-        installed_content_core::content::credit_overlay_refusals(&state.contexts[0].cell_fallbacks);
+        state.contexts[0].cell_fallbacks.credit();
         let mut load_shield = || -> io::Result<Arc<ShieldStyle>> {
             // The catalogue and the flag context are both of the request's admitted presentation.
             let catalogue = crate::catalogue::catalogue(source, content)?;
@@ -564,7 +565,12 @@ impl FlagCache {
 #[derive(Default)]
 pub(crate) struct FlagFiles {
     /// Each file by the stack it was read from, its set, its path and the cell it is decoded at.
-    files: Mutex<BTreeMap<(Stack, usize, String, [u32; 2]), (FlagFile, BTreeSet<String>)>>,
+    files: Mutex<
+        BTreeMap<
+            (Stack, usize, String, [u32; 2]),
+            (FlagFile, installed_content_core::content::diagnostics::Diagnostics),
+        >,
+    >,
     /// It keeps whether each file decodes, never its pixels: a decoded file's image is empty.
     probing: bool,
     /// The recorded layers below the visual mods, searched when the mods' search fails, and
@@ -574,7 +580,7 @@ pub(crate) struct FlagFiles {
             installed_content_core::ResolvedLayers,
             Result<[[u32; 2]; 3], String>,
         ),
-        BTreeSet<String>,
+        installed_content_core::content::diagnostics::Diagnostics,
     )>,
 }
 
@@ -611,10 +617,10 @@ fn flag_file(
 ) -> io::Result<FlagFile> {
     let key = (stack, set_index, asset.to_owned(), cell);
     if let Some((file, noted)) = lock(&files.files).get(&key) {
-        installed_content_core::content::credit_overlay_refusals(noted);
+        noted.credit();
         return Ok(file.clone());
     }
-    let (file, noted) = installed_content_core::content::observe_overlay_refusals(|| {
+    let (file, noted) = installed_content_core::content::diagnostics::observe(|| {
         io::Result::Ok(match layers.read_uncovered(asset) {
             Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
                 Ok(_) if files.probing => FlagFile::Image(probed()),
@@ -685,13 +691,13 @@ pub(crate) fn find_flag(
         return plain(files, reported);
     }
     let ((recorded, recorded_cells), noted) = files.recorded.get_or_init(|| {
-        installed_content_core::content::observe_overlay_refusals(|| {
+        installed_content_core::content::diagnostics::observe(|| {
             let recorded = layers.recorded_only();
             let cells = flag_cells(&recorded).map_err(|error| error.to_string());
             (recorded, cells)
         })
     });
-    installed_content_core::content::credit_overlay_refusals(noted);
+    noted.credit();
     // Without the recording's own cells nothing can be drawn from the recording: the mods'
     // search stands as it is.
     let Ok(recorded_cells) = recorded_cells.as_ref() else {
@@ -1080,7 +1086,7 @@ pub struct FlagContext {
     cells: [[u32; 2]; 3],
     /// What reading `cells` drew from the recording instead of the visual mods' defines,
     /// credited to every reply.
-    cell_fallbacks: BTreeSet<String>,
+    cell_fallbacks: installed_content_core::content::diagnostics::Diagnostics,
     /// The flag files read from `content`, kept by every context of it.
     files: Arc<FlagFiles>,
     warnings: Vec<String>,
@@ -1112,7 +1118,7 @@ impl FlagContext {
             presentation: Default::default(),
             content,
             cells,
-            cell_fallbacks: BTreeSet::new(),
+            cell_fallbacks: Default::default(),
             files: Arc::default(),
             warnings,
         })
@@ -1295,7 +1301,7 @@ mod tests {
             },
             content: Arc::clone(content),
             cells,
-            cell_fallbacks: BTreeSet::new(),
+            cell_fallbacks: Default::default(),
             files: Arc::default(),
             warnings,
         }

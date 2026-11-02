@@ -11,8 +11,12 @@ use serde_json::{Number, Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{self, BufRead, Write},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 #[cfg(test)]
@@ -111,6 +115,79 @@ fn unnamed_plan(name: &str) -> Option<&'static Plan> {
         }
         _ => None,
     }
+}
+
+pub fn family_name(name: &str) -> io::Result<&'static str> {
+    use super::driver::registry;
+    match registry::job(name) {
+        Some(job) => Ok(job.name),
+        None => Ok(registry::FamilyId::parse(name)?.name()),
+    }
+}
+
+pub fn families(selection: &str) -> io::Result<Vec<String>> {
+    use super::driver::registry;
+    if selection == "all" {
+        return Ok(registry::FAMILIES
+            .iter()
+            .map(|family| family.id.name())
+            .chain(
+                registry::JOBS
+                    .iter()
+                    .filter(|job| !job.gates.is_empty())
+                    .map(|job| job.name),
+            )
+            .map(str::to_owned)
+            .collect());
+    }
+    let mut seen = HashSet::new();
+    let mut families = Vec::new();
+    for name in selection.split(',') {
+        let id = family_name(name)?;
+        if !seen.insert(id) {
+            return Err(invalid(format!(
+                "Prepared family {name:?} was selected twice"
+            )));
+        }
+        families.push(name.to_owned());
+    }
+    Ok(families)
+}
+
+pub fn parallel<T: Sync, R: Send>(
+    jobs: &[T],
+    threads: NonZeroUsize,
+    run: impl Fn(&T) -> R + Sync,
+) -> io::Result<Vec<R>> {
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::with_capacity(jobs.len()));
+    std::thread::scope(|scope| -> io::Result<()> {
+        let mut workers = Vec::new();
+        for worker in 0..threads.get().min(jobs.len()) {
+            let (run, next, results) = (&run, &next, &results);
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("served-check-{worker}"))
+                    .spawn_scoped(scope, move || {
+                        loop {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(job) = jobs.get(index) else { break };
+                            let result = run(job);
+                            results.lock().unwrap().push((index, result));
+                        }
+                    })?,
+            );
+        }
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| io::Error::other("A served-check worker panicked"))?;
+        }
+        Ok(())
+    })?;
+    let mut results = results.into_inner().unwrap();
+    results.sort_unstable_by_key(|(index, _)| *index);
+    Ok(results.into_iter().map(|(_, result)| result).collect())
 }
 
 /// Asks `product`'s branch-wide request on each branch: all a product
@@ -893,6 +970,7 @@ pub fn segments(path: &Path) -> io::Result<BTreeMap<u64, Vec<i32>>> {
 pub struct Served {
     source: Source,
     content: Option<ContentOptions>,
+    complete: bool,
 }
 
 impl Served {
@@ -905,6 +983,16 @@ impl Served {
         folder: &Path,
         content: Option<ContentOptions>,
         family: &str,
+    ) -> io::Result<Self> {
+        let served = Self::open_shared(recording, folder, content)?;
+        served.require_family(family)?;
+        Ok(served)
+    }
+
+    pub fn open_shared(
+        recording: &Path,
+        folder: &Path,
+        content: Option<ContentOptions>,
     ) -> io::Result<Self> {
         let expected = store::local_root()?
             .join(dashboard_base::prepared::recording_identity(recording)?.to_string());
@@ -931,15 +1019,47 @@ impl Served {
                 folder.display()
             )));
         }
-        if super::pipeline::restore(&source, content.as_ref(), &cancelled)?.is_none()
-            && !super::driver::native::complete(&source, content.as_ref(), family)?
+        let complete = super::pipeline::restore(&source, content.as_ref(), &cancelled)?.is_some();
+        Ok(Self {
+            source,
+            content,
+            complete,
+        })
+    }
+
+    pub fn require_family(&self, family: &str) -> io::Result<()> {
+        if !self.complete
+            && !super::driver::native::complete(&self.source, self.content.as_ref(), family)?
         {
             return Err(invalid(format!(
-                "{} holds an unfinished preparation of {family} of this recording",
-                folder.display()
+                "The store holds an unfinished preparation of {family} of this recording"
             )));
         }
-        Ok(Self { source, content })
+        Ok(())
+    }
+
+    pub fn family_bytes(&self) -> io::Result<HashMap<String, u64>> {
+        use super::driver::plan::{self, Owner};
+        let (store, key) = super::files(&self.source, self.content.as_ref())?;
+        let mut sizes = HashMap::<String, u64>::new();
+        if let Some(session) = store.session(&key)? {
+            let snapshot = session.snapshot();
+            let plan = plan::native();
+            for section in snapshot.section_names() {
+                let name = match plan.owner(section) {
+                    Some(Owner::Family(family)) => family.name(),
+                    Some(Owner::Job(name)) => name,
+                    _ => continue,
+                };
+                let bytes = sizes.entry(name.to_owned()).or_default();
+                for range in 0..snapshot.range_count(section).unwrap_or(0) {
+                    if let Some(range) = snapshot.range_id(section, range)? {
+                        *bytes = bytes.saturating_add(range.len());
+                    }
+                }
+            }
+        }
+        Ok(sizes)
     }
 
     /// The recording's revision, which requests name.

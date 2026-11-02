@@ -24,6 +24,7 @@ pub fn map_entering<T: Sync, R: Send>(
         return items.iter().map(work).collect();
     }
     let next = AtomicUsize::new(0);
+    let diagnostics = crate::content::diagnostics::Context::capture();
     let mut results: Vec<Option<R>> = Vec::new();
     results.resize_with(items.len(), || None);
     std::thread::scope(|scope| {
@@ -31,17 +32,20 @@ pub fn map_entering<T: Sync, R: Send>(
         let tasks: Vec<_> = (0..workers)
             .map(|_| {
                 let cpu = job_priority::accounting::Context::capture();
+                let diagnostics = &diagnostics;
                 scope.spawn(move || {
-                    let _cpu = cpu.enter("content parallel");
-                    enter();
-                    let mut done = Vec::new();
-                    loop {
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(item) = items.get(index) else {
-                            return done;
-                        };
-                        done.push((index, work(item)));
-                    }
+                    diagnostics.enter(|| {
+                        let _cpu = cpu.enter("content parallel");
+                        enter();
+                        let mut done = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(item) = items.get(index) else {
+                                return done;
+                            };
+                            done.push((index, work(item)));
+                        }
+                    })
                 })
             })
             .collect();
@@ -66,10 +70,13 @@ pub fn spawn<'scope, T: Send + 'scope>(
 ) -> std::thread::ScopedJoinHandle<'scope, T> {
     let caller = job_priority::Caller::current();
     let cpu = job_priority::accounting::Context::capture();
+    let diagnostics = crate::content::diagnostics::Context::capture();
     scope.spawn(move || {
-        let _cpu = cpu.enter("content helper");
-        caller.enter();
-        work()
+        diagnostics.enter(|| {
+            let _cpu = cpu.enter("content helper");
+            caller.enter();
+            work()
+        })
     })
 }
 

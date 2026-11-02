@@ -154,7 +154,7 @@ fn read_state_templates(
     Ok((states, names, warnings))
 }
 
-type Database<T> = std::sync::OnceLock<(Result<T, String>, Vec<String>)>;
+type Database<T> = installed_content_core::content::diagnostics::Once<(Result<T, String>, Vec<String>)>;
 
 pub struct Environment {
     prepared: prepared::PreparedInputs,
@@ -190,7 +190,6 @@ impl Environment {
             self.ideologies.get().map(|db| &db.1),
             self.terrain_definitions.get().map(|db| &db.1),
             self.leader_traits.get().map(|db| &db.1),
-            self.ideas.get().map(|db| &db.1),
         ]
         .into_iter()
         .flatten()
@@ -290,8 +289,9 @@ pub(super) struct EnvironmentInputs {
     state_error: Option<String>,
     continents: Result<Vec<String>, String>,
     impassable: BTreeSet<u32>,
-    neighbors: std::sync::OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    terrain: std::sync::OnceLock<Option<installed_content_core::movement::MovementMap>>,
+    neighbors: installed_content_core::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    terrain:
+        installed_content_core::content::diagnostics::Once<Option<installed_content_core::movement::MovementMap>>,
     terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
     triggers: Result<installed_content_core::trigger_keys::TriggerNames, String>,
@@ -1011,8 +1011,8 @@ impl EnvironmentInputs {
             state_error: None,
             continents: Err("no synthetic continent content is supplied".into()),
             impassable: BTreeSet::new(),
-            neighbors: std::sync::OnceLock::from(Ok(BTreeMap::new())),
-            terrain: std::sync::OnceLock::from(None),
+            neighbors: installed_content_core::content::diagnostics::Once::from(Ok(BTreeMap::new())),
+            terrain: installed_content_core::content::diagnostics::Once::from(None),
             terrain_names: Ok(Vec::new()),
             dlcs: BTreeSet::new(),
             triggers: Ok(Default::default()),

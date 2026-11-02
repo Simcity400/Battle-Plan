@@ -8,18 +8,23 @@
 //! Both also take `[--game G --user U]` (else BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR)
 //! and `[--allow-unverified]`. A store is its folder,
 //! `…\HOI4Replay\prepared\<store>`; `--work` keeps the content cache.
-//! Exits 1 when a reply differs or a product checks nothing, 2 on an error.
+//! Exits 1 on a difference, failed family or unchecked product, 2 on a setup error.
 
 use dashboard::{config::ContentOptions, prepared::served_check};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{self, BufReader, BufWriter},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     process::ExitCode,
     time::Instant,
 };
+
+#[path = "served-check/process.rs"]
+mod process;
 
 #[path = "support/shader_compiler.rs"]
 mod shader_compiler;
@@ -28,7 +33,8 @@ mod shader_compiler;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const USAGE: &str =
-    "served-check record --family F --recording R --store S --work W --out T [--columnar C]
+    "served-check record --families all|F1,F2,... --recording R --store S --work W --out-dir D [--columnar C] [--threads N]
+served-check record --family F --recording R --store S --work W --out T [--columnar C] [--threads N]
 served-check check --recording R --store S --work W --reference T --report P [--ignore PATH]...
 each also [--game G --user U] [--allow-unverified]";
 
@@ -39,10 +45,13 @@ fn invalid(what: impl Into<String>) -> io::Error {
 #[derive(Default)]
 struct Options {
     family: Option<String>,
+    families: Option<String>,
     recording: Option<PathBuf>,
     store: Option<PathBuf>,
     work: Option<PathBuf>,
     out: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+    threads: Option<NonZeroUsize>,
     columnar: Option<PathBuf>,
     reference: Option<PathBuf>,
     report: Option<PathBuf>,
@@ -65,10 +74,20 @@ impl Options {
             let path = Some(PathBuf::from(&value));
             match flag.to_str() {
                 Some("--family") => options.family = Some(value.to_string_lossy().into_owned()),
+                Some("--families") => options.families = Some(value.to_string_lossy().into_owned()),
                 Some("--recording") => options.recording = path,
                 Some("--store") => options.store = path,
                 Some("--work") => options.work = path,
                 Some("--out") => options.out = path,
+                Some("--out-dir") => options.out_dir = path,
+                Some("--threads") => {
+                    options.threads = Some(
+                        value
+                            .to_str()
+                            .and_then(|value| value.parse().ok())
+                            .ok_or_else(|| invalid("--threads must be a positive integer"))?,
+                    );
+                }
                 Some("--columnar") => options.columnar = path,
                 Some("--reference") => options.reference = path,
                 Some("--report") => options.report = path,
@@ -121,61 +140,255 @@ fn required<'a, T: ?Sized>(value: Option<&'a T>) -> io::Result<&'a T> {
     value.ok_or_else(|| invalid(USAGE))
 }
 
+struct Job {
+    family: String,
+    owners: Vec<served_check::Owner>,
+    transcript: PathBuf,
+    report: Option<PathBuf>,
+    bytes: u64,
+}
+
+#[derive(Serialize)]
+struct Recorded {
+    #[serde(rename = "shaderCompiler")]
+    shader_compiler: &'static str,
+    family: String,
+    seconds: f64,
+    branches: usize,
+    owners: Vec<served_check::Recorded>,
+    unchecked: Vec<String>,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl Recorded {
+    fn success(&self) -> bool {
+        self.error.is_none() && self.unchecked.is_empty()
+    }
+}
+
+struct Temporary(PathBuf);
+
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn temporary(path: &Path) -> io::Result<(Temporary, File)> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| invalid("Output must name a file"))?;
+    let mut name = name.to_os_string();
+    name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let path = path.with_file_name(name);
+    let file = File::create_new(&path)?;
+    Ok((Temporary(path), file))
+}
+
+fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
+    let (temporary, file) = temporary(path)?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    drop(
+        writer
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?,
+    );
+    std::fs::rename(&temporary.0, path)
+}
+
+fn absent(path: &Path) -> io::Result<()> {
+    if path.try_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("Output already exists: {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn jobs(options: &Options) -> io::Result<Vec<Job>> {
+    let (families, directory) = match (
+        &options.family,
+        &options.families,
+        &options.out,
+        &options.out_dir,
+    ) {
+        (Some(family), None, Some(_), None) => (served_check::families(family)?, None),
+        (None, Some(families), None, Some(directory)) => {
+            (served_check::families(families)?, Some(directory))
+        }
+        _ => return Err(invalid(USAGE)),
+    };
+    if directory.is_none() && families.len() != 1 {
+        return Err(invalid("--family selects exactly one family"));
+    }
+    if let Some(directory) = directory {
+        std::fs::create_dir_all(directory)?;
+        absent(&directory.join("summary.json"))?;
+    }
+    let mut jobs = Vec::with_capacity(families.len());
+    for family in families {
+        let transcript = directory.map_or_else(
+            || options.out.clone().unwrap(),
+            |directory| directory.join(format!("{family}.zst")),
+        );
+        let report = directory.map(|directory| directory.join(format!("{family}.json")));
+        absent(&transcript)?;
+        if let Some(report) = &report {
+            absent(report)?;
+        }
+        jobs.push(Job {
+            owners: served_check::owners(&family)?,
+            family,
+            transcript,
+            report,
+            bytes: 0,
+        });
+    }
+    Ok(jobs)
+}
+
+fn record_family(
+    job: &Job,
+    served: &served_check::Served,
+    branches: &[dashboard_base::prepared::served::Branch],
+    shader_compiler: &'static str,
+) -> Recorded {
+    let _returned = dashboard::allocator::ReturnFreed;
+    let started = Instant::now();
+    let mut summary = Recorded {
+        shader_compiler,
+        family: job.family.clone(),
+        seconds: 0.0,
+        branches: branches.len(),
+        owners: Vec::new(),
+        unchecked: Vec::new(),
+        status: "failed",
+        error: None,
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+        if job.owners.is_empty() {
+            return Err(invalid(format!("{} serves no prepared query", job.family)));
+        }
+        served.require_family(&job.family)?;
+        let (temporary, file) = temporary(&job.transcript)?;
+        let mut transcript = BufWriter::new(zstd::stream::write::Encoder::new(file, 3)?);
+        summary.owners = served_check::record(
+            &job.family,
+            served.revision(),
+            &job.owners,
+            branches,
+            &mut |product, params| served.serve(product, params),
+            &mut transcript,
+        )?;
+        drop(
+            transcript
+                .into_inner()
+                .map_err(io::IntoInnerError::into_error)?
+                .finish()?,
+        );
+        std::fs::rename(&temporary.0, &job.transcript)?;
+        Ok(())
+    }));
+    summary.error = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error.to_string()),
+        Err(panic) => Some(format!(
+            "The family panicked: {}",
+            panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic")
+        )),
+    };
+    summary.unchecked = summary
+        .owners
+        .iter()
+        .filter(|owner| owner.unchecked())
+        .map(|owner| owner.owner.clone())
+        .collect();
+    if summary.error.is_none() {
+        summary.status = if summary.owners.iter().any(|owner| owner.refused > 0) {
+            "refused"
+        } else if !summary.unchecked.is_empty() {
+            "unchecked"
+        } else {
+            "recorded"
+        };
+    }
+    summary.seconds = started.elapsed().as_secs_f64();
+    if let Some(path) = &job.report
+        && let Err(error) = write_json(path, &summary)
+    {
+        summary.status = "failed";
+        let previous = summary
+            .error
+            .take()
+            .map(|error| format!("{error}; "))
+            .unwrap_or_default();
+        summary.error = Some(format!(
+            "{previous}Could not write {}: {error}",
+            path.display()
+        ));
+    }
+    summary
+}
+
 fn record(
     options: &Options,
     recording: &Path,
     folder: &Path,
     content: Option<ContentOptions>,
-    shader_compiler: &str,
+    started: Instant,
+    shader_compiler: &'static str,
 ) -> io::Result<bool> {
-    let family = required(options.family.as_deref())?;
-    let out = required(options.out.as_deref())?;
-    let owners = served_check::owners(family)?;
-    if owners.is_empty() {
-        return Err(invalid(format!("{family} serves no prepared query")));
-    }
+    let mut jobs = jobs(options)?;
     let segments = options
         .columnar
         .as_deref()
         .map(served_check::segments)
         .transpose()?
         .unwrap_or_default();
-    let served = served_check::Served::open(recording, folder, content, family)?;
+    let served = served_check::Served::open_shared(recording, folder, content)?;
     let branches = served.branches(&segments);
-    let started = Instant::now();
-    let mut transcript = BufWriter::new(zstd::stream::write::Encoder::new(
-        File::create_new(out)?,
-        3,
-    )?);
-    let recorded = served_check::record(
-        family,
-        served.revision(),
-        &owners,
-        &branches,
-        &mut |product: &str, params: &Value| served.serve(product, params),
-        &mut transcript,
-    )?;
-    transcript
-        .into_inner()
-        .map_err(io::IntoInnerError::into_error)?
-        .finish()?;
-    let unchecked: Vec<&str> = recorded
-        .iter()
-        .filter(|owner| owner.unchecked())
-        .map(|owner| owner.owner.as_str())
-        .collect();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "shaderCompiler": shader_compiler,
-            "family": family,
-            "seconds": started.elapsed().as_secs_f64(),
-            "branches": branches.len(),
-            "owners": &recorded,
-            "unchecked": &unchecked,
-        }))?
+    let bytes = served.family_bytes()?;
+    for job in &mut jobs {
+        let name = served_check::family_name(&job.family)?;
+        job.bytes = bytes.get(name).copied().unwrap_or(0);
+    }
+    jobs.sort_by_key(|job| std::cmp::Reverse(job.bytes));
+    let threads = options
+        .threads
+        .map(Ok)
+        .unwrap_or_else(std::thread::available_parallelism)?;
+    let recorded = served_check::parallel(&jobs, threads, |job| {
+        record_family(job, &served, &branches, shader_compiler)
+    })?;
+    for family in &recorded {
+        println!("{}", serde_json::to_string_pretty(family)?);
+    }
+    let metrics = process::metrics();
+    let summary = json!({
+        "shaderCompiler": shader_compiler,
+        "families": recorded, "wall_seconds": started.elapsed().as_secs_f64(),
+        "cpu_seconds": metrics.cpu_seconds, "peak_commit_bytes": metrics.peak_commit_bytes,
+        "threads": threads.get().min(jobs.len()),
+    });
+    if let Some(directory) = &options.out_dir {
+        write_json(&directory.join("summary.json"), &summary)?;
+    }
+    eprintln!(
+        "served-check process: {}",
+        json!({
+            "wall_seconds": summary["wall_seconds"], "cpu_seconds": metrics.cpu_seconds,
+            "peak_commit_bytes": metrics.peak_commit_bytes,
+        })
     );
-    Ok(unchecked.is_empty())
+    Ok(recorded.iter().all(Recorded::success))
 }
 
 fn check(
@@ -251,6 +464,7 @@ fn check(
 }
 
 fn run() -> io::Result<bool> {
+    let started = Instant::now();
     let mut args = std::env::args_os().skip(1);
     let mode = args.next().ok_or_else(|| invalid(USAGE))?;
     let options = Options::parse(args)?;
@@ -263,13 +477,14 @@ fn run() -> io::Result<bool> {
     std::fs::create_dir_all(work)?;
     let content = options.content(work)?;
     match mode.to_str() {
-        Some("record") => record(&options, recording, folder, content, shader_compiler),
+        Some("record") => record(&options, recording, folder, content, started, shader_compiler),
         Some("check") => check(&options, recording, folder, content, shader_compiler),
         _ => Err(invalid(USAGE)),
     }
 }
 
 fn main() -> ExitCode {
+    dashboard::allocator::return_freed_memory_promptly();
     match run() {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),

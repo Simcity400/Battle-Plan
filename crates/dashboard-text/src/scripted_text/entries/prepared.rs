@@ -1,7 +1,7 @@
 //! Content databases prepared only for reached world operands.
 use super::*;
 use crate::triggers::{AuthoredStates, PreparedContent};
-use std::sync::OnceLock;
+use installed_content_core::content::diagnostics::Once as OnceLock;
 
 #[derive(Default)]
 pub(super) struct PreparedInputs {

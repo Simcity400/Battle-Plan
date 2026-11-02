@@ -3,8 +3,9 @@
 use crate::{catalogue::Catalogue, products};
 pub use dashboard_core::findings::{Finding, Kind};
 use installed_content_core::content::ResolvedContent;
+use installed_content_core::content::diagnostics::Once as OnceLock;
 use std::{
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::{Duration, Instant},
 };
 

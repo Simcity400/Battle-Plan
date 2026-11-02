@@ -1,11 +1,12 @@
 //! Persistent CPU program cache. GPU objects remain device-local in `gpu::Cache`.
 use super::{Compiled, Compiler};
+use installed_content_core::content::diagnostics::{Diagnostics as ContentDiagnostics, Once};
 use installed_content_core::pdxshader::program::{Program, Technique};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 // Bump whenever source assembly, DXC flags, naga or reflection changes. This is part of
@@ -85,22 +86,25 @@ struct Entry {
     program: Compiled,
 }
 
-type Cached = Arc<OnceLock<Result<Arc<Compiled>, String>>>;
+type Cached = Arc<Once<Result<Arc<Compiled>, String>>>;
 
 pub struct Cache {
     root: Option<PathBuf>,
     compiler: Arc<dyn Compile>,
     diagnostics: Mutex<Diagnostics>,
     entries: Mutex<BTreeMap<String, Cached>>,
+    warning: Option<String>,
 }
 
 impl Default for Cache {
     fn default() -> Self {
         let root = std::env::var_os("LOCALAPPDATA")
             .map(|root| PathBuf::from(root).join("HOI4Replay/shader-cache/v2"));
-        let cache = Self::new(root, Arc::new(Runtime::default()));
+        let mut cache = Self::new(root, Arc::new(Runtime::default()));
         if cache.root.is_none() {
-            cache.warn("LOCALAPPDATA is unset: compiled shaders are not persisted".into());
+            let warning = "LOCALAPPDATA is unset: compiled shaders are not persisted".to_owned();
+            cache.warn(warning.clone());
+            cache.warning = Some(warning);
         }
         cache
     }
@@ -114,6 +118,7 @@ impl Cache {
             compiler,
             diagnostics: Mutex::new(Diagnostics::default()),
             entries: Mutex::new(BTreeMap::new()),
+            warning: None,
         }
     }
     pub fn diagnostics(&self) -> Diagnostics {
@@ -126,9 +131,10 @@ impl Cache {
         self.entries
             .lock()
             .unwrap()
-            .retain(|_, entry| !matches!(entry.get(), Some(Err(_))));
+            .retain(|_, entry| !matches!(entry.peek(), Some(Err(_))));
     }
     fn warn(&self, warning: String) {
+        ContentDiagnostics::shader(warning.clone());
         *self
             .diagnostics
             .lock()
@@ -171,6 +177,9 @@ impl Cache {
         technique: &Technique,
         defines: &[String],
     ) -> Result<Arc<Compiled>, String> {
+        if let Some(warning) = &self.warning {
+            ContentDiagnostics::shader(warning.clone());
+        }
         let key = Self::key(source, technique, defines)?;
         let entry = self
             .entries
@@ -284,6 +293,43 @@ pub(crate) mod tests {
             b"gfx/FX/common.fxh" => format!("Code [[ {include} ]]\n").into_bytes(),
             _ => Vec::new(),
         })).unwrap()
+    }
+
+    #[test]
+    fn cache_warning_entries_replay_only_their_own_key_in_either_order() {
+        let scratch = super::super::Scratch::new().unwrap();
+        let blocked = scratch.0.join("blocked");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let sources = [
+            source("static const float4 C = 1;"),
+            source("static const float4 C = 0;"),
+        ];
+        let read = |cache: &Cache, index: usize| {
+            installed_content_core::content::diagnostics::observe(|| {
+                cache
+                    .get(&sources[index], &sources[index].techniques[0], &[])
+                    .unwrap();
+            })
+            .1
+        };
+        let alone: Vec<_> = (0..2)
+            .map(|index| {
+                read(
+                    &Cache::new(Some(blocked.clone()), Arc::new(Count::default())),
+                    index,
+                )
+            })
+            .collect();
+        assert!(alone.iter().all(ContentDiagnostics::has_shader_warnings));
+        assert_ne!(alone[0], alone[1]);
+        for order in [[0, 1], [1, 0]] {
+            let cache = Cache::new(Some(blocked.clone()), Arc::new(Count::default()));
+            for _ in 0..2 {
+                for index in order {
+                    assert_eq!(read(&cache, index), alone[index]);
+                }
+            }
+        }
     }
     #[test]
     fn vanilla_compiles_once_then_disk_cache_survives_two_runs_and_invalidates() {

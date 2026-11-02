@@ -156,6 +156,70 @@ fn requested_sprite_batches_match_single_images_and_share_the_session() {
     }
 }
 
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn batched_icons_replay_only_their_own_reads_and_shader_notes_in_either_order() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let first = format!("Includes = {{ absent_first.fxh }}\n{ARTWORK_SHADER}");
+    let second = format!("Includes = {{ absent_second.fxh }}\n{ARTWORK_SHADER}");
+    let (catalogue, folders) = texture_catalogue(
+        &[
+            (
+                "interface/art.gfx",
+                "spriteTypes = {
+                    spriteType = { name = GFX_first textureFile = outside/first.png effectFile = outside/first.lua }
+                    spriteType = { name = GFX_second textureFile = outside/second.png effectFile = outside/second.lua }
+                }",
+            ),
+            ("outside/first.shader", &first),
+            ("outside/second.shader", &second),
+        ],
+        &[
+            ("outside/first.png", png_bytes(&strip())),
+            ("outside/second.png", png_bytes(&strip())),
+        ],
+    );
+    let fresh = || {
+        let layers =
+            ResolvedLayers::from_folders(&[(&folders[0].0, &[][..]), (&folders[1].0, &[][..])])
+                .unwrap();
+        layers.report_uncovered_reads();
+        layers
+    };
+    let sprites = [
+        catalogue.sprites.lookup("GFX_first").unwrap(),
+        catalogue.sprites.lookup("GFX_second").unwrap(),
+    ];
+    let draw = |layers: &ResolvedLayers, index: usize| {
+        diagnostics::observe(|| {
+            sprite_frame_png(layers, sprites[index], Decode::default(), 0, 96).unwrap()
+        })
+    };
+    let expected = [draw(&fresh(), 0), draw(&fresh(), 1)];
+    for (index, name) in ["first", "second"].into_iter().enumerate() {
+        assert!(expected[index].1.has_uncovered());
+        assert!(
+            expected[index]
+                .1
+                .shader_warnings()
+                .iter()
+                .any(|warning| warning.contains(&format!("absent_{name}.fxh")))
+        );
+        assert_ne!(expected[index].1, expected[1 - index].1);
+    }
+    for order in [[0, 1], [1, 0]] {
+        let layers = fresh();
+        let requests = order.map(|index| (sprites[index], 0));
+        diagnostics::observe(|| {
+            sprite_frames_png(&layers, &requests, Decode::default(), 96).unwrap();
+        });
+        for index in order.into_iter().chain(order.into_iter().rev()) {
+            assert_eq!(draw(&layers, index), expected[index]);
+        }
+    }
+}
+
 /// A batch skips the draws the presentation's images already hold under the current artwork
 /// mode, and repeats: what is left is drawn only when at least two draws are. A cornered tile
 /// cannot be batched, so a batch that tries to draw one is refused.

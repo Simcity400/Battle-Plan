@@ -2,6 +2,7 @@
 //! Native goal consumption is shared with the template reader; identities and
 //! fields merge in the recorded stack's file order. Inline declarations are
 //! independent objects; ambiguous token-only identities are refused by name.
+use crate::content::diagnostics::Once as OnceLock;
 use crate::{
     ResolvedLayers, coverage::Coverage, faction_templates, gui::native::BoundLocalization,
     parser::Item, script_files, tokens::Token,
@@ -9,7 +10,7 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 #[derive(Debug, Default)]

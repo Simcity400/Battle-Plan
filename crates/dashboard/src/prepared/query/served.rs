@@ -296,10 +296,11 @@ impl<'a> Served<'a> {
         answer: &'a Answer,
         content: Option<&ContentOptions>,
         fallbacks: &std::collections::BTreeSet<String>,
+        diagnostics: &installed_content_core::content::diagnostics::Diagnostics,
     ) -> Self {
         let lines = served_lines(source, content, fallbacks);
         let mut reply = Self::decorate(answer, lines, |warnings| {
-            source.append_stack_warnings(warnings);
+            diagnostics.append_to(warnings);
             source.append_changed_warnings(warnings, content);
         });
         if answer.marks.served.is_some() {

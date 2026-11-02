@@ -101,6 +101,81 @@ fn query_with(
 }
 
 #[test]
+fn prepared_answers_replay_only_their_own_diagnostics_in_either_order() {
+    use installed_content_core::content::diagnostics::Once;
+    thread_local! {
+        static SELECTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            COMPUTING.with(|hook| hook.set(None));
+        }
+    }
+    fn note(source: &Source, content: &ContentOptions) {
+        let index = SELECTED.with(std::cell::Cell::get);
+        let entries = source.state::<[Once<()>; 2]>();
+        let entries = entries.lock().unwrap();
+        entries[index].get_or_init(|| {
+            let content = source.content(&content.options).unwrap();
+            let _ = content
+                .layers
+                .read_uncovered(&format!("gfx/prepared-diagnostic-{index}.dds"));
+            content
+                .layers
+                .note_shader_warning(format!("prepared shader {index}"));
+            content
+                .layers
+                .note_overlay_refusal(format!("prepared fallback {index}"));
+        });
+    }
+    engine_executable::executable_tables::initialize_for_tests().expect("supported runtime tables");
+    let (recorded, content) = recorded();
+    let flag = AtomicBool::new(false);
+    crate::prepared::pipeline::run(
+        &recorded.source("prepare-diagnostic"),
+        Some(&content),
+        &flag,
+        |_| {},
+    )
+    .unwrap();
+    let _reset = Reset;
+    COMPUTING.with(|hook| hook.set(Some(note)));
+    let read = |source: &Source, index: usize| {
+        SELECTED.with(|selected| selected.set(index));
+        let mut params = request(4 + index as u32);
+        let selection = params["selection"].take();
+        params["family"] = serde_json::json!({"kind":"equipment-losses", "selection":selection});
+        params["branchId"] = serde_json::json!("1");
+        query_with(source, &content, "series-summary", params)
+    };
+    let alone: Vec<_> = (0..2)
+        .map(|index| read(&recorded.source(&format!("alone-{index}")), index))
+        .collect();
+    for index in 0..2 {
+        let json = alone[index].to_string();
+        assert!(json.contains(&format!("prepared shader {index}")));
+        assert!(json.contains(&format!("prepared fallback {index}")));
+        assert!(json.contains(&format!("gfx/prepared-diagnostic-{index}.dds")));
+        assert!(!json.contains(&format!("prepared shader {}", 1 - index)));
+    }
+    for order in [[0, 1], [1, 0]] {
+        let source = recorded.source(&format!("order-{}", order[0]));
+        let before = COMPUTED.with(std::cell::Cell::get);
+        for _ in 0..3 {
+            for index in order {
+                assert_eq!(read(&source, index), alone[index]);
+            }
+        }
+        assert_eq!(
+            COMPUTED.with(std::cell::Cell::get) - before,
+            2,
+            "later replies use CachedQuery"
+        );
+    }
+}
+
+#[test]
 fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for content tests");
@@ -169,9 +244,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         prepared
     );
     assert_eq!(computed() - before, 2, "answered from disk");
-    // A kept answer is served whatever the session holds: a diagnostic drawn earlier there joins
-    // the reply as it is served, as it would a fresh one. An answer computed while the content
-    // holds a drawing diagnostic is not kept, as memoised art it took may have drawn it.
+    // Another request's diagnostics do not change a kept answer or its cache policy.
     let other = request(5);
     let noisy = recorded.source("disk-noisy");
     read_ahead(&noisy);
@@ -182,24 +255,32 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         .note_shader_warning("drawn earlier".into());
     let served = query_with(&noisy, &content, "equipment-losses", params.clone());
     assert_eq!(computed() - before, 2, "served from disk there");
-    assert!(served.to_string().contains("drawn earlier"), "{served}");
+    assert!(!served.to_string().contains("drawn earlier"), "{served}");
+    assert_eq!(served, prepared);
     let size = kept();
     query_with(&noisy, &content, "equipment-losses", other.clone());
     assert_eq!(computed() - before, 3);
-    assert_eq!(kept(), size, "not kept beside a drawing diagnostic");
+    assert!(
+        kept() > size,
+        "kept independently of another request's diagnostic"
+    );
     let quiet = recorded.source("disk-quiet");
     query_with(&quiet, &content, "equipment-losses", other.clone());
-    assert_eq!(computed() - before, 4, "computed where none was kept");
+    assert_eq!(
+        computed() - before,
+        3,
+        "served independently of other diagnostics"
+    );
     assert!(kept() > size, "and kept, as nothing was drawn");
     let disk_other = recorded.source("disk-other");
     read_ahead(&disk_other);
     query_with(&disk_other, &content, "equipment-losses", other);
-    assert_eq!(computed() - before, 4, "answered from disk");
+    assert_eq!(computed() - before, 3, "answered from disk");
     // An answer outside the in-memory cache is kept too, under every page the recording has.
     let identities = serde_json::json!({"branchId":"1"});
     let size = kept();
     let fresh = query_with(&quiet, &content, "country-identities", identities.clone());
-    assert_eq!(computed() - before, 5);
+    assert_eq!(computed() - before, 4);
     assert!(kept() > size, "kept");
     let reopened = recorded.source("disk-identities");
     read_ahead(&reopened);
@@ -207,7 +288,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         query_with(&reopened, &content, "country-identities", identities),
         fresh
     );
-    assert_eq!(computed() - before, 5, "answered from disk");
+    assert_eq!(computed() - before, 4, "answered from disk");
     // An answer whose computing noted a fallback is not kept: served from disk, it would leave
     // the fallback out of the stack's read warnings, which every reply names.
     let third = request(6);
@@ -228,7 +309,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         third.clone(),
     );
     computing(None);
-    assert_eq!(computed() - before, 6);
+    assert_eq!(computed() - before, 5);
     assert_eq!(kept(), size, "not kept beside a fallback");
     // A text refusal noted while computing is the answer's own, named wherever it is served,
     // and every other reply names only its own: the answer is kept.
@@ -244,7 +325,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         third.clone(),
     );
     computing(None);
-    assert_eq!(computed() - before, 7);
+    assert_eq!(computed() - before, 6);
     assert!(kept() > size, "kept beside its own text refusal");
     query_with(
         &recorded.source("disk-plain"),
@@ -252,9 +333,8 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         "equipment-losses",
         third,
     );
-    assert_eq!(computed() - before, 7, "answered from disk");
-    // An answer that reported the state templates' warnings is kept and served only where the
-    // scripted environment is prepared: what it reports of them changes once it is.
+    assert_eq!(computed() - before, 6, "answered from disk");
+    // Cache eligibility no longer waits for unrelated lazy readers.
     let fourth = request(7);
     computing(Some(|_: &Source, _: &ContentOptions| {
         dashboard_text::catalogue::used(dashboard_text::catalogue::Reader::States)
@@ -266,12 +346,12 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         "equipment-losses",
         fourth.clone(),
     );
-    assert_eq!(computed() - before, 8);
-    assert_eq!(kept(), size, "not kept before the environment is prepared");
+    assert_eq!(computed() - before, 7);
+    assert!(kept() > size, "kept with its own stable diagnostics");
     let states_read = recorded.source("disk-states-read");
     read_ahead(&states_read);
     query_with(&states_read, &content, "equipment-losses", fourth.clone());
-    assert_eq!(computed() - before, 9);
+    assert_eq!(computed() - before, 7);
     assert!(kept() > size, "kept once it is");
     query_with(
         &recorded.source("disk-states-fresh"),
@@ -281,30 +361,32 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     );
     assert_eq!(
         computed() - before,
-        10,
-        "computed where it is not prepared yet"
+        7,
+        "served without warming unrelated readers"
     );
     let states_ready = recorded.source("disk-states-ready");
     read_ahead(&states_ready);
     query_with(&states_ready, &content, "equipment-losses", fourth);
     computing(None);
-    assert_eq!(computed() - before, 10, "answered from disk where it is");
-    // A kept answer is served whatever the session read outside the recorded coverage, those
-    // reads joining the reply as they join a fresh one's. An answer computed while the session
-    // holds such a read is not kept, as it may have read those unverified bytes.
+    assert_eq!(computed() - before, 7, "answered from disk where it is");
+    // An unrelated uncovered read neither decorates nor prevents caching another answer.
     let outside = recorded.source("disk-outside");
     read_ahead(&outside);
     let outside_read = "gfx/event_pictures/outside_coverage.dds";
     let layers = &outside.content(&content.options).unwrap().layers;
     assert!(layers.read_uncovered(outside_read).is_err());
     let served = query_with(&outside, &content, "equipment-losses", params.clone());
-    assert_eq!(computed() - before, 10, "served from disk there");
-    assert!(served.to_string().contains(outside_read), "{served}");
+    assert_eq!(computed() - before, 7, "served from disk there");
+    assert!(!served.to_string().contains(outside_read), "{served}");
+    assert_eq!(served, prepared);
     let size = kept();
     let fifth = request(8);
     query_with(&outside, &content, "equipment-losses", fifth);
-    assert_eq!(computed() - before, 11);
-    assert_eq!(kept(), size, "not kept beside a read outside the coverage");
+    assert_eq!(computed() - before, 8);
+    assert!(
+        kept() > size,
+        "kept independently of unrelated uncovered reads"
+    );
     // Preparing again after a Clear publishes new pages: the kept answer is not served.
     crate::prepared::files(&later, Some(&content))
         .unwrap()
@@ -317,5 +399,5 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         query_with(&again, &content, "equipment-losses", params),
         prepared
     );
-    assert_eq!(computed() - before, 12, "computed for the new publication");
+    assert_eq!(computed() - before, 9, "computed for the new publication");
 }

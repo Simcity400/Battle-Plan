@@ -114,19 +114,7 @@ struct CachedQuery {
     /// What computing `data` drew in the recording's style because the source's visual mods
     /// could not supply it, named on every reply served from it.
     fallbacks: std::collections::BTreeSet<String>,
-    /// Whether computing `data` added to state of the whole session, which no key captures:
-    /// the content's fallbacks or drawing diagnostics.
-    session: bool,
-    /// The lazy readers computing `data` used, whose warnings it names.
-    readers: std::collections::BTreeSet<dashboard_text::catalogue::Reader>,
-}
-
-/// Whether the content bound for `content` holds a drawing diagnostic. Memoised artwork replays
-/// none of its own, so only an empty set shows an answer drew none.
-pub(crate) fn drawn(source: &Source, content: Option<&ContentOptions>) -> bool {
-    content
-        .and_then(|content| source.bound_content(&content.options))
-        .is_some_and(|content| !content.layers.shader_warning_lines().is_empty())
+    diagnostics: installed_content_core::content::diagnostics::Diagnostics,
 }
 
 #[cfg(test)]
@@ -145,7 +133,7 @@ thread_local! {
 #[derive(Serialize, Deserialize)]
 struct StoredQuery {
     fallbacks: std::collections::BTreeSet<String>,
-    readers: std::collections::BTreeSet<dashboard_text::catalogue::Reader>,
+    diagnostics: installed_content_core::content::diagnostics::Diagnostics,
 }
 
 /// A digest of `key`, which kept answers are filed under. The key stamps every file of the
@@ -4812,33 +4800,19 @@ fn answer(
             )?,
             short,
             summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
-            // A fallback joins the stack's read warnings, which every reply names, when first
-            // noted: an answer that noted one, served from disk, would leave it out of them.
-            session: !fallbacks.is_empty() || drawn(source, content),
             fallbacks,
-            readers: noted.readers().clone(),
+            diagnostics: noted.diagnostics().clone(),
         })
     };
     // A complete answer kept on disk between sessions, else computed and kept when it can be.
     let answered = |previous: Option<std::sync::Arc<CachedQuery>>,
                     publication: String|
      -> io::Result<CachedQuery> {
-        // What an answer reports of the lazy readers it used, kept and served only once it is
-        // what computing it now would report.
-        let settled = |readers: &std::collections::BTreeSet<dashboard_text::catalogue::Reader>| {
-            readers.is_empty()
-                || content
-                    .and_then(|content| dashboard_base::catalogue::catalogue(source, content).ok())
-                    .is_some_and(|catalogue| catalogue.reports_settled(readers))
-        };
         let stored = stored_answer(source, request, content, &published, &key, &publication)?;
-        // Served whatever the session read outside the recorded coverage: a kept answer read
-        // none, and those reads join its reply as it is served, as they join a fresh one's.
         if let Some((kept, stored)) = stored
             .as_ref()
             .and_then(crate::reply_cache::Entry::get)
             .and_then(served::Answer::kept::<StoredQuery>)
-            && settled(&stored.readers)
         {
             return Ok(CachedQuery {
                 data: kept,
@@ -4848,27 +4822,22 @@ fn answer(
                 holes: Vec::new(),
                 summaries: Default::default(),
                 fallbacks: stored.fallbacks,
-                session: false,
-                readers: stored.readers,
+                diagnostics: stored.diagnostics,
             });
         }
         let answer = read(previous)?;
-        // Only a complete answer under the binding the source still shows, whose computing
-        // neither read nor added to the session's, is kept: any session's computing gives it and
-        // leaves the session as serving it does. While the read set holds content outside the
-        // recorded coverage, computing may have read those unverified bytes, so nothing is kept.
         if let Some(entry) = stored
             && answer.short.is_empty()
             && answer.holes.is_empty()
             && !answer.waits
-            && !answer.session
-            && settled(&answer.readers)
-            && !source.reply_reads_uncovered(content)
+            && answer.fallbacks.is_empty()
+            && !answer.diagnostics.has_uncovered()
+            && !answer.diagnostics.has_shader_warnings()
             && content.is_none_or(|content| source.still_admitted(content))
         {
             let kept = StoredQuery {
                 fallbacks: answer.fallbacks.clone(),
-                readers: answer.readers.clone(),
+                diagnostics: answer.diagnostics.clone(),
             };
             entry.put_later(answer.data.bytes(), answer.data.keep(kept));
         }
@@ -4912,6 +4881,7 @@ fn answer(
                     let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
                     bytes.heap(&reply.short);
                     bytes.heap(&reply.fallbacks);
+                    bytes.add(reply.diagnostics.heap_bytes());
                     std::mem::size_of::<CachedQuery>()
                         + reply.holes.capacity() * std::mem::size_of::<super::coverage::Hole>()
                         + reply.data.bytes()
@@ -4936,7 +4906,14 @@ fn answer(
             answer.short.iter().copied().collect()
         }
     });
-    let data = served::Served::new(source, &answer.data, content, &answer.fallbacks);
+    answer.diagnostics.credit();
+    let data = served::Served::new(
+        source,
+        &answer.data,
+        content,
+        &answer.fallbacks,
+        &answer.diagnostics,
+    );
     let mut reply = bounded_json(
         &Reply {
             source_id: &request.source_id,

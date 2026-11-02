@@ -11,7 +11,8 @@ use std::{
     },
 };
 
-use installed_content_core::{ResolveOptions, content::ResolvedContent, content::UncoveredReads};
+use installed_content_core::content::diagnostics::{self, Diagnostics};
+use installed_content_core::{ResolveOptions, content::ResolvedContent};
 use replay::container::Replay;
 
 use crate::{
@@ -50,7 +51,7 @@ struct RecordedMount(Option<(Weak<ResolvedContent>, Arc<Presented>)>);
 /// one folders reads, and reports, one read set.
 #[derive(Default)]
 struct ContentCache {
-    bound: Option<(ResolveOptions, Arc<ResolvedContent>, UncoveredReads)>,
+    bound: Option<(ResolveOptions, Arc<ResolvedContent>)>,
     held: Vec<(ResolveOptions, Weak<ResolvedContent>)>,
 }
 
@@ -58,7 +59,7 @@ impl ContentCache {
     /// The content of these folders work reads now, bound or held, if any.
     fn find(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
         match &self.bound {
-            Some((old, content, _)) if same_folders(old, options) => Some(Arc::clone(content)),
+            Some((old, content)) if same_folders(old, options) => Some(Arc::clone(content)),
             _ => self
                 .held
                 .iter()
@@ -69,13 +70,11 @@ impl ContentCache {
 
     /// Binds `content`, holding what was bound while work still holds it.
     fn bind(&mut self, options: &ResolveOptions, content: &Arc<ResolvedContent>) {
-        let reads = content.layers.report_uncovered_reads();
+        let _ = content.layers.report_uncovered_reads();
         self.held
             .retain(|(old, held)| held.strong_count() > 0 && !same_folders(old, options));
-        let previous = self
-            .bound
-            .replace((options.clone(), Arc::clone(content), reads));
-        if let Some((old, previous, _)) = previous
+        let previous = self.bound.replace((options.clone(), Arc::clone(content)));
+        if let Some((old, previous)) = previous
             && !Arc::ptr_eq(&previous, content)
         {
             self.held.push((old, Arc::downgrade(&previous)));
@@ -108,7 +107,7 @@ pub struct Source {
     cached_named: Option<metadata_cache::CachedNames>,
     pub(crate) cached_inputs: Option<store::SourceKey>,
     /// The metadata with country names resolved for the last folders it was asked for.
-    named: Mutex<Option<(NamesKey, ResidentMetadata)>>,
+    named: Mutex<Option<(NamesKey, ResidentMetadata, Diagnostics)>>,
     content: Mutex<ContentCache>,
     /// What work on this source is bound to now ([`Self::bind`]), swapped in whole, never
     /// changed in place; `None` until the service binds it.
@@ -212,12 +211,17 @@ impl Source {
     /// The initial observed catalogue, not a census of every campaign hour, with
     /// country names once [`Self::name_countries`] has run and tags before.
     pub fn metadata(&self) -> Result<ReplayMetadata, metadata::MetadataError> {
-        let mut metadata = self
-            .named
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-            .map_or_else(|| self.metadata.wire(), |(_, metadata)| metadata.wire())?;
+        let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
+        let mut metadata = match named.as_ref() {
+            Some((_, metadata, diagnostics)) => {
+                diagnostics.credit();
+                let mut metadata = metadata.wire()?;
+                diagnostics.append_to(&mut metadata.warnings);
+                metadata
+            }
+            None => self.metadata.wire()?,
+        };
+        drop(named);
         self.append_content_warnings(&mut metadata.warnings);
         Ok(metadata)
     }
@@ -228,34 +232,23 @@ impl Source {
         read(
             named
                 .as_ref()
-                .map_or(&self.metadata.value, |(_, metadata)| &metadata.value),
+                .map_or(&self.metadata.value, |(_, metadata, diagnostics)| {
+                    diagnostics.credit();
+                    &metadata.value
+                }),
         )
     }
 
-    /// Report the live read set and the changed content layers even for cached metadata and
-    /// product replies.
+    /// Reports this request's reads and the bound content changes.
     pub fn append_content_warnings(&self, warnings: &mut Vec<String>) {
-        if let Some((_, content, reads)) = &self
+        diagnostics::current().append_to(warnings);
+        if let Some((_, content)) = &self
             .content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .bound
         {
-            reads.append_to(warnings);
             content.append_changed_to(warnings);
-        }
-    }
-
-    /// Report the live read set only: a reply that reads no game content is the same whatever
-    /// layers changed, and is kept on disk without them.
-    pub fn append_read_warnings(&self, warnings: &mut Vec<String>) {
-        if let Some((_, _, reads)) = &self
-            .content
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .bound
-        {
-            reads.append_to(warnings);
         }
     }
 
@@ -290,32 +283,6 @@ impl Source {
         }
     }
 
-    /// A content reply's live diagnostics: the read set and changed layers of its own folders'
-    /// content, whatever the source has bound since; the bound read set without content.
-    pub fn append_reply_warnings(
-        &self,
-        warnings: &mut Vec<String>,
-        content: Option<&ContentOptions>,
-    ) {
-        match content.and_then(|content| self.own_content(&content.options).ok()) {
-            Some(own) => {
-                own.layers.read_warnings().append_to(warnings);
-                own.append_changed_to(warnings);
-            }
-            None => self.append_read_warnings(warnings),
-        }
-    }
-
-    /// Whether a content reply admitted under `content` read outside the recorded coverage: its
-    /// own folders' content did, whatever the source has bound since ([`Self::reads_uncovered`]
-    /// without content).
-    pub fn reply_reads_uncovered(&self, content: Option<&ContentOptions>) -> bool {
-        match content.and_then(|content| self.own_content(&content.options).ok()) {
-            Some(own) => own.layers.read_warnings().warning().is_some(),
-            None => self.reads_uncovered(),
-        }
-    }
-
     /// What the binding a content reply was admitted under cannot show
     /// ([`Presented::append_to`]), from the mount its entry resolved, never the source's binding
     /// now. Work that reads no content or shows no visual mod names nothing, and work cancelled
@@ -333,46 +300,18 @@ impl Source {
         }
     }
 
-    /// The resolved stack's live diagnostics, which every consumer's reads add
-    /// to at its own pace: artwork-effect notes, then the uncovered-read set.
-    /// They belong to the reply being served, never to a prepared family's
-    /// published payloads ([`crate::catalogue::own_refusals`]), so a prepared
-    /// reply reports the current ones, as a product reply reports the read set.
-    pub fn append_stack_warnings(&self, warnings: &mut Vec<String>) {
-        if let Some((_, content, reads)) = &self
-            .content
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .bound
-        {
-            for line in content.layers.shader_warning_lines() {
-                if !warnings.contains(&line) {
-                    warnings.push(line);
-                }
-            }
-            reads.append_to(warnings);
-        }
-    }
-
-    /// Whether content outside the recorded coverage has been read for this source.
-    pub fn reads_uncovered(&self) -> bool {
-        self.content
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .bound
-            .as_ref()
-            .is_some_and(|(_, _, reads)| reads.warning().is_some())
-    }
-
     /// Resolves the catalogue's names in the user's game language at each
     /// country's observed hour; without content they stay tags, with a warning.
     pub fn name_countries(&self, content: Option<&ContentOptions>) -> io::Result<()> {
         let key = names_key(content);
         let mut named = self.named.lock().unwrap_or_else(|error| error.into_inner());
-        if named.as_ref().is_some_and(|(cached, _)| *cached == key) {
+        if let Some((cached, _, diagnostics)) = named.as_ref()
+            && *cached == key
+        {
+            diagnostics.credit();
             return Ok(());
         }
-        if let Some((inputs, saved, metadata)) = &self.cached_named
+        if let Some((inputs, saved, metadata, previous)) = &self.cached_named
             && saved == &key
         {
             // Resolve today's complete stack/file list before accepting cached
@@ -385,18 +324,24 @@ impl Source {
                     .countries
                     .iter()
                     .all(|country| cached.contains(&country_observation(country)));
-                let localisation = if all_cached {
-                    Err(String::new())
-                } else {
-                    name_localisation(self, content)
-                };
-                let metadata = self.named_metadata_from(localisation, Some(metadata))?;
-                *named = Some((key, metadata));
+                let (metadata, mut diagnostics) = diagnostics::capture(|| {
+                    let localisation = if all_cached {
+                        Err(String::new())
+                    } else {
+                        name_localisation(self, content)
+                    };
+                    self.named_metadata_from(localisation, Some(metadata))
+                });
+                diagnostics.merge(previous);
+                diagnostics.credit();
+                *named = Some((key, metadata?, diagnostics));
                 return Ok(());
             }
         }
-        let metadata = self.named_metadata(name_localisation(self, content))?;
-        *named = Some((key, metadata));
+        let (metadata, diagnostics) =
+            diagnostics::capture(|| self.named_metadata(name_localisation(self, content)));
+        diagnostics.credit();
+        *named = Some((key, metadata?, diagnostics));
         Ok(())
     }
 
@@ -533,7 +478,7 @@ impl Source {
         if !cache
             .bound
             .as_ref()
-            .is_some_and(|(_, bound, _)| Arc::ptr_eq(bound, &content))
+            .is_some_and(|(_, bound)| Arc::ptr_eq(bound, &content))
         {
             cache.bind(options, &content);
         }
@@ -543,15 +488,15 @@ impl Source {
     /// The content already resolved for these folders, without resolving it or replacing what
     /// is bound: `None` when the source's content is bound to other folders or to none. Work
     /// done ahead of a request uses it, so it never rebinds the content every reply reports
-    /// ([`Self::append_content_warnings`], [`Self::reads_uncovered`]).
+    /// ([`Self::append_content_warnings`]).
     pub fn bound_content(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
         self.content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .bound
             .as_ref()
-            .filter(|(old, _, _)| same_folders(old, options))
-            .map(|(_, content, _)| Arc::clone(content))
+            .filter(|(old, _)| same_folders(old, options))
+            .map(|(_, content)| Arc::clone(content))
     }
 
     /// What work on this source is bound to now, `None` until the service binds it.

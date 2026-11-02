@@ -45,10 +45,6 @@ fn gpu() -> Result<&'static Gpu, String> {
 pub struct Painter {
     pages: usize,
     pass: SpritePass,
-    /// What preparing the pass's draws drew from the recording instead of the visual mods (a
-    /// replacement whose pipeline cannot be built): a later paint reusing those draws does not
-    /// prepare them again, so every paint names them again.
-    fallbacks: std::collections::BTreeSet<String>,
 }
 
 /// One painted window and what its draw refused, counted.
@@ -74,7 +70,6 @@ impl Painter {
         Ok(Self {
             pages: pages.len(),
             pass,
-            fallbacks: Default::default(),
         })
     }
 }
@@ -112,13 +107,9 @@ pub fn paint<'a>(
     let painter = painter.as_mut().expect("built above");
     let arena = shader_pipeline::gpu::Arena::new(&gpu.device);
     arena.reset();
-    let ((), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
-        painter
-            .pass
-            .upload(&gpu.device, &gpu.queue, &arena, &batch, size, 1.0)
-    });
-    painter.fallbacks.extend(fallbacks);
-    installed_content_core::content::credit_overlay_refusals(&painter.fallbacks);
+    painter
+        .pass
+        .upload(&gpu.device, &gpu.queue, &arena, &batch, size, 1.0);
     let pass = &mut painter.pass;
     for (reason, count) in &pass.native_refusals {
         for _ in 0..*count {

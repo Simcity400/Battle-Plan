@@ -138,7 +138,7 @@ impl Product for Wargoals {
         let held = catalogue.as_ref().ok().map(|cat| {
             cat.content
                 .layers
-                .derived::<std::sync::OnceLock<Result<installed_content_wargoals::wargoals::Database, String>>>()
+                .derived::<installed_content_core::content::diagnostics::Once<Result<installed_content_wargoals::wargoals::Database, String>>>()
         });
         let definitions = match (catalogue.as_ref(), held.as_ref()) {
             (Ok(cat), Some(held)) => held

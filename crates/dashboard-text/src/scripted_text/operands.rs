@@ -835,21 +835,24 @@ impl<'r> Recorded<'r> {
         }
         let caller = job_priority::Caller::current();
         let cpu = replay_frame::cpu::Context::capture();
+        let diagnostics = installed_content_core::content::diagnostics::Context::capture();
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
                 // As the hour's evaluation reserves: 64 KiB per backstop level.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
                 .spawn_scoped(scope, move || {
-                    let _cpu = cpu.enter("scripted localisation");
-                    caller.enter();
-                    read(
-                        cursor,
-                        Nesting {
-                            large: true,
-                            ..deeper
-                        },
-                    )
+                    diagnostics.enter(|| {
+                        let _cpu = cpu.enter("scripted localisation");
+                        caller.enter();
+                        read(
+                            cursor,
+                            Nesting {
+                                large: true,
+                                ..deeper
+                            },
+                        )
+                    })
                 })
                 .map_err(|error| {
                     format!("scripted localisation expansion thread could not start: {error}")

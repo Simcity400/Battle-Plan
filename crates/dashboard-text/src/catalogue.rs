@@ -10,6 +10,7 @@ use dashboard_core::{
     findings::{Finding, Kind},
     presentation::Presentation,
 };
+use installed_content_core::content::diagnostics::{self, Diagnostics, Once};
 use installed_content_core::{
     ResolvedLayers, content::ResolvedContent, gui::native::resources, gui::native::sprites::Plain,
 };
@@ -20,11 +21,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 /// Bytes product content caches retain of drawn artwork: its URLs and refusals.
 pub const MAX_RETAINED_ARTWORK_BYTES: usize = 64 * 1024 * 1024;
+
+pub const CONTENT_DIAGNOSTICS_FORMAT: u32 = 1;
 
 /// A fixed-content error retains its native kind and message on cache hits.
 #[derive(Clone, Debug)]
@@ -537,17 +540,22 @@ pub struct OwnRefusals {
     /// could not supply it, named with why (`ResolvedLayers::note_overlay_refusal`).
     #[serde(default)]
     fallbacks: BTreeSet<String>,
+    diagnostics: Diagnostics,
 }
 
 impl OwnRefusals {
     fn is_empty(&self) -> bool {
-        self.texts.is_empty() && self.readers.is_empty() && self.fallbacks.is_empty()
+        self.texts.is_empty()
+            && self.readers.is_empty()
+            && self.fallbacks.is_empty()
+            && self.diagnostics.is_empty()
     }
 
     pub fn merge(&mut self, other: &Self) {
         self.texts.merge(&other.texts);
         self.readers.extend(other.readers.iter().copied());
         self.fallbacks.extend(other.fallbacks.iter().cloned());
+        self.diagnostics.merge(&other.diagnostics);
     }
 
     /// The consumer's line for what it drew in the recording's style instead of the selected
@@ -560,6 +568,10 @@ impl OwnRefusals {
     /// What the consumer drew in the recording's style, each named with why.
     pub fn fallbacks(&self) -> &BTreeSet<String> {
         &self.fallbacks
+    }
+
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
     }
 
     /// The lazy readers the consumer used, whose warnings its lines carry.
@@ -605,42 +617,44 @@ fn scoped<T>(own: &mut OwnRefusals, reports: bool, run: impl FnOnce() -> T) -> T
     scope(own, reports, false, run)
 }
 
-fn scope<T>(
-    own: &mut OwnRefusals,
-    reports: bool,
-    isolated: bool,
-    run: impl FnOnce() -> T,
-) -> T {
-    // Pops the scope back into `own` on return and when `run` unwinds.
-    struct Exit<'a>(&'a mut OwnRefusals);
-    impl Drop for Exit<'_> {
-        fn drop(&mut self) {
-            if let Some(active) = SCOPES.with(|scopes| scopes.borrow_mut().pop()) {
-                *self.0 = active.own;
+fn scope<T>(own: &mut OwnRefusals, reports: bool, isolated: bool, run: impl FnOnce() -> T) -> T {
+    let mut diagnostics = own.diagnostics.clone();
+    diagnostics::scope(&mut diagnostics, isolated, || {
+        struct Exit<'a>(&'a mut OwnRefusals);
+        impl Drop for Exit<'_> {
+            fn drop(&mut self) {
+                if let Some(mut active) = SCOPES.with(|scopes| scopes.borrow_mut().pop()) {
+                    active.own.diagnostics = diagnostics::current();
+                    active
+                        .own
+                        .fallbacks
+                        .extend(active.own.diagnostics.fallbacks().iter().cloned());
+                    *self.0 = active.own;
+                }
             }
         }
-    }
-    SCOPES.with(|scopes| {
-        scopes.borrow_mut().push(Active {
-            own: std::mem::take(own),
-            reports,
-            isolated,
+        SCOPES.with(|scopes| {
+            scopes.borrow_mut().push(Active {
+                own: std::mem::take(own),
+                reports,
+                isolated,
+            });
         });
-    });
-    let _exit = Exit(own);
-    // What the selected visual mods could not supply joins this scope, as its text refusals
-    // do; enclosing scopes observe it too, unless it is isolated.
-    let (value, fallbacks) = if isolated {
-        installed_content_core::content::observe_overlay_refusals_isolated(run)
-    } else {
-        installed_content_core::content::observe_overlay_refusals(run)
-    };
-    SCOPES.with(|scopes| {
-        if let Some(active) = scopes.borrow_mut().last_mut() {
-            active.own.fallbacks.extend(fallbacks);
-        }
-    });
-    value
+        let _exit = Exit(own);
+        // What the selected visual mods could not supply joins this scope, as its text refusals
+        // do; enclosing scopes observe it too, unless it is isolated.
+        let (value, fallbacks) = if isolated {
+            installed_content_core::content::observe_overlay_refusals_isolated(run)
+        } else {
+            installed_content_core::content::observe_overlay_refusals(run)
+        };
+        SCOPES.with(|scopes| {
+            if let Some(active) = scopes.borrow_mut().last_mut() {
+                active.own.fallbacks.extend(fallbacks);
+            }
+        });
+        value
+    })
 }
 
 /// Runs `run` as one consumer of catalogue text. Every text refusal a
@@ -690,6 +704,7 @@ pub fn credit(noted: &OwnRefusals) {
     if noted.is_empty() {
         return;
     }
+    noted.diagnostics.credit();
     SCOPES.with(|scopes| {
         for active in reached(&mut scopes.borrow_mut()) {
             active.own.merge(noted);
@@ -840,7 +855,7 @@ pub struct Catalogue {
     /// Kept per artwork mode: a strict draw neither reads nor leaves the registry an ordinary
     /// read falls back to build.
     guis: installed_content_core::content::ByMode<
-        OnceLock<(
+        Once<(
             Result<installed_content_core::gui::native::Guis, String>,
             BTreeSet<String>,
         )>,
@@ -848,7 +863,7 @@ pub struct Catalogue {
     /// The presentation's localisation, which native windows show, read on first use, with
     /// what its load drew from the recording instead.
     presentation_localisation:
-        installed_content_core::content::ByMode<OnceLock<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
+        installed_content_core::content::ByMode<Once<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
     /// The current client's texture decode settings, used by native GUI artwork.
     pub gui_decode: Result<installed_content_image::native::Decode, String>,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
@@ -865,14 +880,14 @@ pub struct Catalogue {
     findings: Option<Mutex<BTreeSet<Finding>>>,
     /// Scripted localisation names and the recursion limit, read on first
     /// use ([`Catalogue::scripted_content`]).
-    scripted: OnceLock<Result<crate::scripted_text::ScriptedContent, String>>,
-    war_names: OnceLock<Result<installed_content_wargoals::wargoals::Names, String>>,
+    scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
+    war_names: Once<Result<installed_content_wargoals::wargoals::Names, String>>,
     /// State templates are usable without the scripted-localisation inputs.
-    pub state_content: Arc<OnceLock<Result<crate::scripted_text::StateContent, String>>>,
+    pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
     /// The recording's own catalogue for the same folders, kept by a catalogue that shows visual
     /// mods ([`Self::keep_recorded`]): art the mods cannot draw is drawn from it again, as one
     /// operation, the recording's own choice made again.
-    recorded: OnceLock<Arc<Catalogue>>,
+    recorded: Once<Arc<Catalogue>>,
     #[cfg(any(test, feature = "test-support"))]
     content_loads: std::sync::atomic::AtomicUsize,
 }
@@ -1004,10 +1019,10 @@ impl Catalogue {
             recorded_language,
             refused: Mutex::default(),
             findings: None,
-            scripted: OnceLock::new(),
-            war_names: OnceLock::new(),
-            state_content: Arc::new(OnceLock::new()),
-            recorded: OnceLock::new(),
+            scripted: Once::new(),
+            war_names: Once::new(),
+            state_content: Arc::new(Once::new()),
+            recorded: Once::new(),
             #[cfg(any(test, feature = "test-support"))]
             content_loads: Default::default(),
         })
@@ -1179,30 +1194,14 @@ impl Catalogue {
         })
     }
 
-    /// Whether everything [`Self::reader_warning_lines`] reports once read has been read: the
-    /// scripted content with its environment, the states and the faction templates. No
-    /// consumer's read can add to those warnings any more.
-    /// Whether what a consumer that used `readers` reports of them is settled, the same whenever
-    /// it is asked: a consumer of state templates reports the scripted environment's state
-    /// warnings only once something has prepared that environment ([`Self::read_readers`]);
-    /// scripted localisation and faction templates are read for the consumer that asks.
-    pub fn reports_settled(&self, readers: &BTreeSet<Reader>) -> bool {
-        !readers.contains(&Reader::States)
-            || match self.scripted.get() {
-                None => false,
-                Some(Ok(scripted)) => scripted.environment.get().is_some(),
-                Some(Err(_)) => true,
-            }
-    }
-
     pub fn readers_read(&self) -> bool {
-        let scripted = match self.scripted.get() {
+        let scripted = match self.scripted.peek() {
             None => false,
-            Some(Ok(scripted)) => scripted.environment.get().is_some(),
+            Some(Ok(scripted)) => scripted.environment.peek().is_some(),
             Some(Err(_)) => true,
         };
         scripted
-            && self.state_content.get().is_some()
+            && self.state_content.peek().is_some()
             && self.content.layers.faction_templates_read()
     }
 
@@ -1335,8 +1334,7 @@ impl Catalogue {
             );
         }
         lines.extend(self.content.layers.faction_template_diagnostics());
-        lines.extend(self.content.layers.shader_warning_lines());
-        self.content.layers.read_warnings().append_to(&mut lines);
+        diagnostics::current().append_to(&mut lines);
         lines
     }
 
@@ -1345,7 +1343,7 @@ impl Catalogue {
     /// The stack's artwork-effect and uncovered-read diagnostics are left
     /// out: any consumer's read adds to them at its own pace, so they are
     /// reported where a reply is served
-    /// ([`crate::Source::append_stack_warnings`]), never in a consumer's
+    /// ([`diagnostics::Diagnostics::append_to`]), never in a consumer's
     /// published lines.
     fn used_reader_warning_lines(&self, readers: &BTreeSet<Reader>) -> Vec<String> {
         let mut lines = Vec::new();
@@ -1363,25 +1361,8 @@ impl Catalogue {
         if readers.contains(&Reader::States)
             && let Ok(states) = self.cached_states()
         {
-            // The scripted environment's state warnings, once it has prepared
-            // them, are these same warnings.
-            let environment_warnings: &[String] = match self.scripted.get() {
-                Some(Ok(scripted)) => scripted
-                    .environment
-                    .get()
-                    .and_then(|environment| environment.as_ref().ok())
-                    .map_or(&[][..], |environment| environment.warnings()),
-                _ => &[],
-            };
-            lines.extend(environment_warnings.iter().cloned());
             lines.extend(
-                crate::scripted_text::live_state_warnings(&states.warnings)
-                    .filter(|warning| {
-                        !environment_warnings
-                            .iter()
-                            .any(|line| line.as_str() == *warning)
-                    })
-                    .map(str::to_owned),
+                crate::scripted_text::live_state_warnings(&states.warnings).map(str::to_owned),
             );
         }
         if readers.contains(&Reader::FactionTemplates) {
@@ -1567,7 +1548,7 @@ pub fn sprite_artwork<T>(
 /// visual mods cannot supply is drawn with.
 pub fn recorded_sprites(layers: &ResolvedLayers) -> Arc<Result<SpriteSet, String>> {
     #[derive(Default)]
-    struct Recorded(OnceLock<Arc<Result<SpriteSet, String>>>);
+    struct Recorded(Once<Arc<Result<SpriteSet, String>>>);
     Arc::clone(layers.derived::<Recorded>().0.get_or_init(|| {
         Arc::new(installed_content_gfx::gfx::read(layers).map_err(|error| error.to_string()))
     }))
@@ -1623,6 +1604,7 @@ pub fn sprite_frames_png(
         return Ok(());
     }
     let mut draws = Vec::new();
+    let mut reads = Vec::new();
     let mut transient_bytes = 0_u64;
     for &(sprite, frame, _) in &requests {
         let (plain, animated) = match &sprite.facts.kind {
@@ -1634,7 +1616,10 @@ pub fn sprite_frames_png(
                 ));
             }
         };
-        let draw = sprite::draw(layers, plain, animated, decode, frame, max_edge)?;
+        let (draw, read) = diagnostics::capture(|| {
+            sprite::draw(layers, plain, animated, decode, frame, max_edge)
+        });
+        let draw = draw?;
         transient_bytes += u64::from(draw.size[0]) * u64::from(draw.size[1]) * 4;
         transient_bytes += draw
             .textures
@@ -1648,17 +1633,23 @@ pub fn sprite_frames_png(
             return Err(invalid("sprite batch exceeds its temporary byte budget"));
         }
         draws.push(draw);
+        reads.push(read);
     }
     let images = shader_pipeline::artwork::render_batch(layers, draws, decode)
         .map_err(invalid)?
-        .iter()
-        .map(|image| {
-            native_frame(image, &Plain::default(), 0, max_edge)
+        .into_iter()
+        .map(|(image, rendered)| {
+            native_frame(&image, &Plain::default(), 0, max_edge)
                 .and_then(|image| png_url(&image))
+                .map(|image| (image, rendered))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    for ((_, _, key), image) in requests.into_iter().zip(images) {
-        cache.get(key, || Ok(image))?;
+    for (((_, _, key), (image, rendered)), read) in requests.into_iter().zip(images).zip(reads) {
+        cache.get(key, || {
+            read.credit();
+            rendered.credit();
+            Ok(image)
+        })?;
     }
     Ok(())
 }
@@ -1667,7 +1658,7 @@ pub fn sprite_frames_png(
 struct ImageEntry {
     /// The image, and what its render drew from the recording instead of the visual mods,
     /// credited to every later user.
-    result: OnceLock<(Result<String, String>, BTreeSet<String>)>,
+    result: Once<(Result<String, String>, BTreeSet<String>)>,
     charged: std::sync::atomic::AtomicBool,
 }
 
@@ -1726,7 +1717,7 @@ impl SpriteImages {
         if entries.bytes > MAX_RETAINED_ARTWORK_BYTES {
             entries
                 .entries
-                .retain(|_, entry| entry.result.get().is_none());
+                .retain(|_, entry| entry.result.peek().is_none());
             entries.bytes = 0;
         }
         result.map_err(invalid)
@@ -2374,10 +2365,10 @@ pub mod tests {
             recorded_language: "english".into(),
             refused: Mutex::default(),
             findings: None,
-            scripted: OnceLock::new(),
-            war_names: OnceLock::new(),
-            state_content: Arc::new(OnceLock::new()),
-            recorded: OnceLock::new(),
+            scripted: Once::new(),
+            war_names: Once::new(),
+            state_content: Arc::new(Once::new()),
+            recorded: Once::new(),
             content_loads: Default::default(),
         }
     }
@@ -2901,9 +2892,6 @@ pub mod tests {
         );
     }
 
-    /// Another consumer's render and uncovered read add to the stack's live
-    /// diagnostics; a scope's lines are unchanged by them, and the shared
-    /// lines, as the reply boundary reports them, still carry both.
     #[test]
     fn own_scopes_leave_out_the_stacks_live_artwork_and_uncovered_read_diagnostics() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2930,10 +2918,10 @@ pub mod tests {
         assert_eq!(after, ["1 texts are not shown: own reason; OWN"]);
         let shared = catalogue.refusal_lines();
         assert!(
-            shared.contains(&"synthetic artwork-effect note".to_owned()),
+            !shared.contains(&"synthetic artwork-effect note".to_owned()),
             "{shared:?}"
         );
-        assert!(shared.contains(&reads.warning().unwrap()), "{shared:?}");
+        assert!(!shared.contains(&reads.warning().unwrap()), "{shared:?}");
     }
 
     #[test]

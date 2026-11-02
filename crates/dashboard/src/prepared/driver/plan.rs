@@ -192,6 +192,7 @@ impl Plan {
     pub(crate) fn stamp(&self, name: &str) -> Option<u64> {
         let mut hash = blake3::Hasher::new();
         hash.update(&crate::prepared::coverage::SCHEMA.to_le_bytes());
+        hash.update(&dashboard_text::catalogue::CONTENT_DIAGNOSTICS_FORMAT.to_le_bytes());
         let Some(family) = self.family(name) else {
             let job = registry::job(name)?;
             hash.update(job.name.as_bytes());

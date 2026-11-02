@@ -5,12 +5,13 @@
 //! reads live memory; totals use the recorded controlled-state order.
 #[cfg(any(test, feature = "test-support"))]
 use crate::invalid;
+use installed_content_core::content::diagnostics::Once as OnceLock;
 use replay_data::rows::{Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
-use std::{io, sync::OnceLock};
+use std::io;
 use ts_rs::TS;
 
 #[derive(Clone, Debug, Deserialize, TS)]

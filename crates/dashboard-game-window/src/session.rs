@@ -34,9 +34,7 @@ pub struct Session {
     /// Whether the templates were read from the visual mods; otherwise everything is read
     /// from the recording.
     presented: bool,
-    /// Everything the session drew from the recording because the visual mods could not
-    /// supply it, which every window it draws reports ([`Self::load`]).
-    fallbacks: std::collections::BTreeSet<String>,
+    diagnostics: installed_content_core::content::diagnostics::Diagnostics,
     /// Named diagnostics of the session itself, which every window it draws reports.
     pub notes: Vec<String>,
     /// The session's pages on the device and the sprite pass painting its windows, built on
@@ -61,7 +59,7 @@ impl Session {
                 stack.shows_visual_mods(),
             ))
         };
-        let (opened, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        let (opened, mut diagnostics) = installed_content_core::content::diagnostics::observe(|| {
             let presentation = layers.presentation();
             if !presentation.shows_visual_mods() {
                 return read(layers);
@@ -69,12 +67,12 @@ impl Session {
             // The windows' templates and registry are one choice: the visual mods', read
             // strictly with what it notes kept to itself, or, when any of it cannot be read, the
             // recording's whole, named.
-            let (shown, noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+            let (shown, noted) = installed_content_core::content::diagnostics::capture(|| {
                 installed_content_core::content::strict(|| read(presentation))
             });
             match shown {
                 Ok(opened) => {
-                    installed_content_core::content::credit_overlay_refusals(&noted);
+                    noted.credit();
                     Ok(opened)
                 }
                 Err(error) => {
@@ -97,7 +95,11 @@ impl Session {
         // registry cannot be read, each file is retried by its path, as the map retries it, and
         // every window says so.
         let mut notes = Vec::new();
-        let gui = match presented.then(|| Registry::load(&layers.recorded_only())) {
+        let (recorded, noted) = installed_content_core::content::diagnostics::observe(|| {
+            presented.then(|| Registry::load(&layers.recorded_only()))
+        });
+        diagnostics.merge(&noted);
+        let gui = match recorded {
             Some(Ok(recorded)) => gui.with_recorded_registry(recorded),
             Some(Err(error)) => {
                 notes.push(format!(
@@ -114,28 +116,22 @@ impl Session {
             gui,
             images: Vec::new(),
             presented,
-            fallbacks,
+            diagnostics,
             notes,
             painter: None,
         })
     }
 
     /// Loads every sprite, font and texture `assets` names that is not loaded yet, from the
-    /// presentation of `layers` (the stack the session was opened for) when the templates came
-    /// from it. The window being drawn reports everything the session has drawn from the
-    /// recording instead, its earlier windows' loads included.
+    /// presentation of `layers` when the templates came from it.
     pub fn load(&mut self, layers: &ResolvedLayers, assets: &Assets) -> io::Result<()> {
         let stack = if self.presented {
             layers.presentation()
         } else {
             layers
         };
-        let (loaded, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
-            self.gui.load(stack, assets, &mut self.images)
-        });
-        self.fallbacks.extend(fallbacks);
-        installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
-        loaded
+        self.diagnostics.credit();
+        self.gui.load(stack, assets, &mut self.images)
     }
 }
 

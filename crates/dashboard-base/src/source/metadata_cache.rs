@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod stream;
 
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 const SECTION: &str = "source-metadata-v1";
 const REFUSAL_SCHEMA: &str = "source-metadata-refusals-v1";
 type IndexEntry = (u64, i32, i32, u64, u64, u64);
@@ -117,7 +117,11 @@ struct Cached<M = ReplayMetadata, R = MetadataRefusals> {
     schema: u32,
     inputs: Inputs,
     metadata: M,
-    named: Option<(NamesKey, M)>,
+    named: Option<(
+        NamesKey,
+        M,
+        installed_content_core::content::diagnostics::Diagnostics,
+    )>,
     #[serde(skip_serializing_if = "Option::is_none")]
     refusals: Option<CachedRefusals<R>>,
 }
@@ -131,23 +135,28 @@ pub fn write(writer: &mut store::Writer, source: &Source) -> io::Result<()> {
         schema: SCHEMA,
         inputs: Inputs::read(source.replay_ref())?,
         metadata: &source.metadata.value,
-        named: named
-            .as_ref()
-            .map(|(content, metadata)| (content.clone(), &metadata.value)),
+        named: named.as_ref().map(|(content, metadata, diagnostics)| {
+            (content.clone(), &metadata.value, diagnostics.clone())
+        }),
         refusals: (!source.metadata.refusals.is_empty()
             || named
                 .as_ref()
-                .is_some_and(|(_, metadata)| !metadata.refusals.is_empty()))
+                .is_some_and(|(_, metadata, _)| !metadata.refusals.is_empty()))
         .then(|| CachedRefusals {
             raw: &source.metadata.refusals,
-            named: named.as_ref().map(|(_, metadata)| &metadata.refusals),
+            named: named.as_ref().map(|(_, metadata, _)| &metadata.refusals),
         }),
     };
     stream::write(writer, SECTION, &cache)?;
     writer.write_at(REFUSAL_SCHEMA, 0, &[1u8][..])
 }
 /// Stale/corrupt derived metadata is a miss, never a refusal to open a recording.
-pub(super) type CachedNames = (store::SourceKey, NamesKey, ResidentMetadata);
+pub(super) type CachedNames = (
+    store::SourceKey,
+    NamesKey,
+    ResidentMetadata,
+    installed_content_core::content::diagnostics::Diagnostics,
+);
 pub(super) struct Restored {
     pub metadata: ResidentMetadata,
     pub named: Option<CachedNames>,
@@ -206,7 +215,7 @@ pub(super) fn read(
     Ok(Some(Restored {
         metadata,
         inputs: current.clone(),
-        named: cached.named.map(|(content, metadata)| {
+        named: cached.named.map(|(content, metadata, diagnostics)| {
             (
                 current,
                 content,
@@ -214,6 +223,7 @@ pub(super) fn read(
                     value: metadata,
                     refusals: refusals.named.take().unwrap_or_default(),
                 },
+                diagnostics,
             )
         }),
     }))
@@ -307,7 +317,11 @@ mod tests {
         schema: u32,
         inputs: Inputs,
         metadata: ReplayMetadata,
-        named: Option<(NamesKey, ReplayMetadata)>,
+        named: Option<(
+            NamesKey,
+            ReplayMetadata,
+            installed_content_core::content::diagnostics::Diagnostics,
+        )>,
     }
 
     fn main_serializer(source: &Source) -> Vec<u8> {
@@ -316,9 +330,9 @@ mod tests {
             schema: SCHEMA,
             inputs: Inputs::read(source.replay_ref()).unwrap(),
             metadata: source.metadata.value.clone(),
-            named: named
-                .as_ref()
-                .map(|(key, metadata)| (key.clone(), metadata.value.clone())),
+            named: named.as_ref().map(|(key, metadata, diagnostics)| {
+                (key.clone(), metadata.value.clone(), diagnostics.clone())
+            }),
         };
         serde_json::to_vec(&owned).unwrap()
     }

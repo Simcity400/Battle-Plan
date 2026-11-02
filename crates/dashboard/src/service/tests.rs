@@ -2068,7 +2068,7 @@ fn production_detail_and_breakdown_routes_keep_unprepared_history_pending() {
         let actual = query("completed-detail", "production-line-detail", detail(window));
         let params: ProductionDetailParams = serde_json::from_value(detail(window)).unwrap();
         let mut expected = ProductionLineDetail::load(&source, &params, &context, &flag).unwrap();
-        source.append_stack_warnings(&mut expected.warnings);
+        installed_content_core::content::diagnostics::current().append_to(&mut expected.warnings);
         source.append_presentation_warnings(&mut expected.warnings, None);
         assert_eq!(actual["data"], serde_json::to_value(expected).unwrap());
         assert!(actual.get("gate").is_none());
@@ -2080,7 +2080,7 @@ fn production_detail_and_breakdown_routes_keep_unprepared_history_pending() {
     );
     let params: ProductionBreakdownParams = serde_json::from_value(breakdown).unwrap();
     let mut expected = ProductionLineBreakdown::load(&source, &params, &context, &flag).unwrap();
-    source.append_stack_warnings(&mut expected.warnings);
+    installed_content_core::content::diagnostics::current().append_to(&mut expected.warnings);
     source.append_presentation_warnings(&mut expected.warnings, None);
     assert_eq!(actual["data"], serde_json::to_value(expected).unwrap());
     assert!(actual.get("gate").is_none());

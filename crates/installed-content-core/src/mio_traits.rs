@@ -898,7 +898,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
 /// every consumer of it.
 pub fn cached(layers: &ResolvedLayers) -> Result<std::sync::Arc<Catalog>, String> {
     #[derive(Default)]
-    struct Cached(std::sync::OnceLock<Result<std::sync::Arc<Catalog>, String>>);
+    struct Cached(crate::content::diagnostics::Once<Result<std::sync::Arc<Catalog>, String>>);
     layers
         .derived::<Cached>()
         .0

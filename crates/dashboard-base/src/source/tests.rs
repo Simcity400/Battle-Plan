@@ -63,25 +63,35 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     new.options.cache_dir = root.join("other-cache");
     std::fs::create_dir_all(root.join("gfx/custom")).unwrap();
     std::fs::write(root.join("gfx/custom/icon.dds"), "synthetic").unwrap();
-    let uncovered = |lines: &[String]| lines.iter().any(|line| line.contains("gfx/custom/icon.dds"));
+    let uncovered = |lines: &[String]| {
+        lines
+            .iter()
+            .any(|line| line.contains("gfx/custom/icon.dds"))
+    };
     // Each request holds its folders' content while it runs.
     let held_old = source.content(&old.options).unwrap();
     let held_new = source.content(&new.options).unwrap();
-    let _ = held_new.layers.read_uncovered_path(b"gfx/custom/icon.dds");
+    let (_, mut own) = installed_content_core::content::diagnostics::capture(|| {
+        let _ = held_new.layers.read_uncovered_path(b"gfx/custom/icon.dds");
+    });
     let mut old_lines = Vec::new();
-    source.append_reply_warnings(&mut old_lines, Some(&old));
+    installed_content_core::content::diagnostics::current().append_to(&mut old_lines);
+    source.append_changed_warnings(&mut old_lines, Some(&old));
     assert!(!uncovered(&old_lines));
-    assert!(!source.reply_reads_uncovered(Some(&old)));
+    assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
     assert!(Arc::ptr_eq(&source.bound_content(&new.options).unwrap(), &held_new));
     // A read under the old folders meanwhile reuses their held content, and the new request's
     // reads still share its own.
     assert!(Arc::ptr_eq(&source.content(&old.options).unwrap(), &held_old));
     assert!(Arc::ptr_eq(&source.content(&new.options).unwrap(), &held_new));
     source.content(&old.options).unwrap();
-    let mut new_lines = Vec::new();
-    source.append_reply_warnings(&mut new_lines, Some(&new));
+    installed_content_core::content::diagnostics::scope(&mut own, false, || {
+        let mut new_lines = Vec::new();
+        installed_content_core::content::diagnostics::current().append_to(&mut new_lines);
+        source.append_changed_warnings(&mut new_lines, Some(&new));
     assert!(uncovered(&new_lines));
-    assert!(source.reply_reads_uncovered(Some(&new)));
+    assert!(installed_content_core::content::diagnostics::current().has_uncovered());
+    });
     drop((held_old, held_new));
     let _ = std::fs::remove_dir_all(&root);
 }

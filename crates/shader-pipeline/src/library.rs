@@ -1,5 +1,8 @@
 //! Content-scoped lazy effect assets. Parsing happens on load; only selected techniques compile.
 use super::{Compiled, cache};
+use installed_content_core::content::diagnostics::{
+    Diagnostics as ContentDiagnostics, Observed, Once as OnceLock,
+};
 use installed_content_core::{
     ResolvedLayers,
     image::native::Decode,
@@ -7,7 +10,7 @@ use installed_content_core::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,7 +48,7 @@ pub struct Effect {
     globals: usize,
     compiled: Vec<OnceLock<Result<Arc<Compiled>, String>>>,
     cache: Arc<cache::Cache>,
-    variants: Mutex<BTreeMap<Vec<String>, Arc<Effect>>>,
+    variants: Mutex<BTreeMap<Vec<String>, Observed<Arc<Effect>>>>,
     /// The recorded effect a visual mod's replacement stands in for, with the same defines.
     recorded: Option<Recorded>,
 }
@@ -196,39 +199,42 @@ impl Effect {
             .unwrap_or_else(|e| e.into_inner())
             .entry(caller.clone())
             .or_insert_with(|| {
-                let globals = self.defines[..self.globals].to_vec();
-                let Some(recorded) = &self.recorded else {
-                    return Self::with_globals(
+                Observed::new(|| {
+                    let globals = self.defines[..self.globals].to_vec();
+                    let Some(recorded) = &self.recorded else {
+                        return Self::with_globals(
+                            self.source.clone(),
+                            globals,
+                            caller,
+                            self.cache.clone(),
+                            None,
+                        );
+                    };
+                    let base = recorded.effect.variant(caller.clone());
+                    let shown = Self::with_globals(
                         self.source.clone(),
                         globals,
                         caller,
                         self.cache.clone(),
-                        None,
+                        Some(Recorded {
+                            effect: base.clone(),
+                            note: recorded.note.clone(),
+                        }),
                     );
-                };
-                let base = recorded.effect.variant(caller.clone());
-                let shown = Self::with_globals(
-                    self.source.clone(),
-                    globals,
-                    caller,
-                    self.cache.clone(),
-                    Some(Recorded {
-                        effect: base.clone(),
-                        note: recorded.note.clone(),
-                    }),
-                );
-                match refusal(&shown, &base) {
-                    None => shown,
-                    Some(why) => {
-                        (recorded.note)(format!(
-                            "shader {} with {:?} ({why})",
-                            self.source.effect,
-                            shown.caller()
-                        ));
-                        base
+                    match refusal(&shown, &base) {
+                        None => shown,
+                        Some(why) => {
+                            (recorded.note)(format!(
+                                "shader {} with {:?} ({why})",
+                                self.source.effect,
+                                shown.caller()
+                            ));
+                            base
+                        }
                     }
-                }
+                })
             })
+            .get()
             .clone()
     }
 
@@ -252,7 +258,7 @@ impl Effect {
     pub(crate) fn failed(&self) -> bool {
         self.compiled
             .iter()
-            .any(|slot| matches!(slot.get(), Some(Err(_))))
+            .any(|slot| matches!(slot.peek(), Some(Err(_))))
     }
     /// Missing technique retains native state; a declared technique that fails is refused.
     pub fn select(self: &Arc<Self>, name: &str) -> Result<Option<Selection>, String> {
@@ -345,14 +351,14 @@ pub struct Library {
     globals: Vec<String>,
     pub cache: Arc<cache::Cache>,
     /// Each effect's source, by the name's bytes.
-    sources: BTreeMap<Vec<u8>, Result<Arc<Program>, String>>,
-    effects: BTreeMap<Variant, Result<Arc<Effect>, String>>,
+    sources: BTreeMap<Vec<u8>, Observed<Result<Arc<Program>, String>>>,
+    effects: BTreeMap<Variant, Observed<Result<Arc<Effect>, String>>>,
     pub refused: BTreeMap<String, u64>,
     pub warnings: BTreeSet<String>,
     /// The recorded stack below a presentation stack's visual mods, read once when an effect
     /// is first loaded: `None` inside when no visual mod is mounted.
     recorded: Option<Option<Arc<ResolvedLayers>>>,
-    recorded_sources: BTreeMap<Vec<u8>, Result<Arc<Program>, String>>,
+    recorded_sources: BTreeMap<Vec<u8>, Observed<Result<Arc<Program>, String>>>,
 }
 impl Library {
     pub fn new(layers: Arc<ResolvedLayers>) -> Self {
@@ -388,16 +394,24 @@ impl Library {
     pub fn load(&mut self, file: &[u8], defines: &[String]) -> Result<Arc<Effect>, String> {
         let key = (file.to_owned(), defines.to_vec());
         if let Some(effect) = self.effects.get(&key) {
-            let result = effect.clone();
+            let result = effect.get().clone();
             if let Err(reason) = &result {
                 *self.refused.entry(reason.clone()).or_default() += 1;
             }
             return result;
         }
+        let entry = Observed::new(|| self.load_uncached(file, defines));
+        let result = entry.get().clone();
+        self.effects.insert(key, entry);
+        result
+    }
+
+    fn load_uncached(&mut self, file: &[u8], defines: &[String]) -> Result<Arc<Effect>, String> {
         let shown = self
             .sources
             .entry(file.to_owned())
-            .or_insert_with(|| program::read(&self.layers, file).map(Arc::new))
+            .or_insert_with(|| Observed::new(|| program::read(&self.layers, file).map(Arc::new)))
+            .get()
             .clone();
         let recorded = self
             .recorded
@@ -424,7 +438,10 @@ impl Library {
                 let base = self
                     .recorded_sources
                     .entry(file.to_owned())
-                    .or_insert_with(|| program::read(&recorded, file).map(Arc::new))
+                    .or_insert_with(|| {
+                        Observed::new(|| program::read(&recorded, file).map(Arc::new))
+                    })
+                    .get()
                     .clone();
                 match (shown, base) {
                     (Ok(shown), Ok(base)) if shown.identity == base.identity => {
@@ -459,12 +476,12 @@ impl Library {
         };
         if let Ok(effect) = &result {
             for warning in &effect.source.warnings {
+                ContentDiagnostics::shader(warning.clone());
                 if self.warnings.insert(warning.clone()) {
                     eprintln!("{warning}");
                 }
             }
         }
-        self.effects.insert(key, result.clone());
         if let Err(reason) = &result {
             *self.refused.entry(reason.clone()).or_default() += 1;
         }

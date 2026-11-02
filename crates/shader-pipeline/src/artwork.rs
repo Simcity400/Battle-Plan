@@ -8,6 +8,7 @@ use std::{
 
 use installed_content_core::{
     ResolvedLayers,
+    content::diagnostics::{self, Diagnostics},
     image::{Rgba8Image, dds, native::Decode},
     pdxshader::program::{self, Stage},
 };
@@ -72,13 +73,14 @@ fn noted<T>(drawn: Result<T, String>) -> Result<T, String> {
 
 #[derive(Default)]
 struct Inputs {
-    map_size: OnceLock<Result<[u32; 2], String>>,
+    map_size: installed_content_core::content::diagnostics::Once<Result<[u32; 2], String>>,
     programs: Mutex<BTreeMap<Vec<u8>, Arc<ParsedProgram>>>,
     /// Set once the renderer has retried, for this stack, what failed under earlier ones.
     retried: OnceLock<()>,
 }
 
-type ParsedProgram = OnceLock<Result<Arc<program::Program>, String>>;
+type ParsedProgram =
+    installed_content_core::content::diagnostics::Once<Result<Arc<program::Program>, String>>;
 
 /// Parse each resolved artwork program once, retaining reporting reads and refusals.
 pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Program>, String> {
@@ -99,6 +101,10 @@ pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Pr
 pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgba8Image, String> {
     render_batch(layers, vec![draw], decode)?
         .pop()
+        .map(|(image, diagnostics)| {
+            diagnostics.credit();
+            image
+        })
         .ok_or_else(|| "empty artwork submission".to_owned())
 }
 
@@ -115,7 +121,13 @@ pub fn render_layers(
     decode: Decode,
 ) -> Result<Vec<Rgba8Image>, String> {
     let targets = drawables.into_iter().map(|passes| (true, passes)).collect();
-    render_targets(layers, targets, decode)
+    Ok(render_targets(layers, targets, decode)?
+        .into_iter()
+        .map(|(image, diagnostics)| {
+            diagnostics.credit();
+            image
+        })
+        .collect())
 }
 
 /// Refuses, naming the effect, a masked flag program whose Up technique reads its flag's
@@ -223,7 +235,7 @@ pub fn render_batch(
     layers: &ResolvedLayers,
     draws: Vec<Draw>,
     decode: Decode,
-) -> Result<Vec<Rgba8Image>, String> {
+) -> Result<Vec<(Rgba8Image, Diagnostics)>, String> {
     let targets = draws.into_iter().map(|draw| (false, vec![draw])).collect();
     render_targets(layers, targets, decode)
 }
@@ -233,7 +245,7 @@ fn render_targets(
     layers: &ResolvedLayers,
     targets: Vec<(bool, Vec<Draw>)>,
     decode: Decode,
-) -> Result<Vec<Rgba8Image>, String> {
+) -> Result<Vec<(Rgba8Image, Diagnostics)>, String> {
     noted(draw_targets(layers, targets, decode))
 }
 
@@ -241,7 +253,7 @@ fn draw_targets(
     layers: &ResolvedLayers,
     targets: Vec<(bool, Vec<Draw>)>,
     decode: Decode,
-) -> Result<Vec<Rgba8Image>, String> {
+) -> Result<Vec<(Rgba8Image, Diagnostics)>, String> {
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -251,10 +263,13 @@ fn draw_targets(
     let variants = targets
         .iter()
         .map(|(_, draws)| {
-            draws
-                .iter()
-                .map(|draw| variant(layers, &draw.effect, &draw.defines, decode))
-                .collect::<Result<Vec<_>, _>>()
+            let (variants, diagnostics) = diagnostics::capture(|| {
+                draws
+                    .iter()
+                    .map(|draw| variant(layers, &draw.effect, &draw.defines, decode))
+                    .collect::<Result<Vec<_>, _>>()
+            });
+            variants.map(|variants| (variants, diagnostics))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let job = {
@@ -262,18 +277,15 @@ fn draw_targets(
         let targets = targets
             .into_iter()
             .zip(variants)
-            .map(|((layered, draws), variants)| {
+            .map(|((layered, draws), (variants, diagnostics))| {
                 let effects = variants
                     .into_iter()
                     .map(|variant| renderer.effect(variant))
                     .collect::<Vec<_>>();
-                (layered, draws.into_iter().zip(effects).collect())
+                (layered, draws.into_iter().zip(effects).collect(), diagnostics)
             })
             .collect();
         let result = renderer.submit(targets);
-        for warning in renderer.cache.diagnostics().warnings.into_keys() {
-            layers.note_shader_warning(warning);
-        }
         result?
     };
     job.finish()
@@ -579,26 +591,25 @@ impl Renderer {
 
     fn submit_inner(&mut self, targets: Vec<Target>) -> Result<Readback, String> {
         let mut prepared = Vec::new();
-        for (layered, draws) in targets {
-            let mut size = None;
-            let mut submissions = Vec::new();
-            for (draw, effect) in draws {
-                let (extent, submission) = self.prepare(draw, effect, layered)?;
-                if size.is_some_and(|size| size != extent) {
-                    return Err("a layer's passes draw into different extents".into());
+        for (layered, draws, mut diagnostics) in targets {
+            let (size, submissions) = diagnostics::scope(&mut diagnostics, false, || {
+                let mut size = None;
+                let mut submissions = Vec::new();
+                for (draw, effect) in draws {
+                    let (extent, submission) = self.prepare(draw, effect, layered)?;
+                    if size.is_some_and(|size| size != extent) {
+                        return Err("a layer's passes draw into different extents".to_owned());
+                    }
+                    size = Some(extent);
+                    submissions.push(submission);
                 }
-                size = Some(extent);
-                submissions.push(submission);
-            }
-            prepared.push((
-                size.ok_or("empty artwork submission")?,
-                layered,
-                submissions,
-            ));
+                Ok((size.ok_or("empty artwork submission")?, submissions))
+            })?;
+            prepared.push((size, layered, submissions, diagnostics));
         }
         let mut offset = 0_u64;
         let mut regions = Vec::new();
-        for ([width, height], layered, _) in &prepared {
+        for ([width, height], layered, _, diagnostics) in &prepared {
             let texel = if *layered { 8 } else { 4 };
             let pitch = width
                 .checked_mul(texel)
@@ -612,6 +623,7 @@ impl Renderer {
                 pitch,
                 offset,
                 layered: *layered,
+                diagnostics: diagnostics.clone(),
             });
             offset = offset.checked_add(length).ok_or("artwork batch overflow")?;
         }
@@ -622,7 +634,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (([width, height], layered, submissions), region) in prepared.into_iter().zip(&regions)
+        for (([width, height], layered, submissions, _), region) in prepared.into_iter().zip(&regions)
         {
             let size = wgpu::Extent3d {
                 width,
@@ -690,7 +702,7 @@ impl Renderer {
 }
 
 /// One target's draws, and whether they compose into a layer.
-type Target = (bool, Vec<(Draw, Arc<library::Effect>)>);
+type Target = (bool, Vec<(Draw, Arc<library::Effect>)>, Diagnostics);
 
 /// Where one target's rows sit in the readback.
 struct Region {
@@ -698,6 +710,7 @@ struct Region {
     pitch: u32,
     offset: u64,
     layered: bool,
+    diagnostics: Diagnostics,
 }
 
 struct Readback {
@@ -706,7 +719,7 @@ struct Readback {
     regions: Vec<Region>,
 }
 impl Readback {
-    fn finish(self) -> Result<Vec<Rgba8Image>, String> {
+    fn finish(self) -> Result<Vec<(Rgba8Image, Diagnostics)>, String> {
         let slice = self.buffer.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -735,11 +748,14 @@ impl Readback {
                 } else {
                     rows.flatten().copied().collect()
                 };
-                Rgba8Image {
-                    width,
-                    height,
-                    pixels,
-                }
+                (
+                    Rgba8Image {
+                        width,
+                        height,
+                        pixels,
+                    },
+                    region.diagnostics,
+                )
             })
             .collect())
     }
@@ -866,7 +882,10 @@ Effect Up { VertexShader=V PixelShader=P }
         let second = render(&layers, draw([5, 2]), Decode::default()).unwrap();
         let batch =
             render_batch(&layers, vec![draw([2, 3]), draw([5, 2])], Decode::default()).unwrap();
-        assert_eq!(batch, [first.clone(), second]);
+        assert_eq!(
+            batch.into_iter().map(|(image, _)| image).collect::<Vec<_>>(),
+            [first.clone(), second]
+        );
         assert_eq!(
             renderer()
                 .unwrap()
