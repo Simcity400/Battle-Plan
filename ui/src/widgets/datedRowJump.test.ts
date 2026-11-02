@@ -23,7 +23,7 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     current: 'unfinished', continuous: null, paused: false,
   } }], progress: [] }, artwork: [], continuousStaticText: [], warnings: [] };
   const research: ResearchReply = { history: { coverage: [{ firstHour: first, lastHour: last }], slots: [{ index: 0,
-    availability: [{ firstHour: first, lastHour: last }], states: [], progress: [], entries: [{ token: 'technology', technologyHandle: 7,
+    availability: [{ firstHour: first, lastHour: last }], states: [], progress: [], entries: [{ token: 'technology', technologyHandle: 7, databaseIndex: 7,
       continuityStartHour: first, level: 0, firstObservedHour: first + 10, startedAfterHour: first + 9,
       lastObservedHour: ended - 1, endedByHour: ended, outcomeObservedHour: confirmed, outcome: 'completed' }],
   }] }, artwork: [], folders: [], technologyFolders: [], warnings: [] };
