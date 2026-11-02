@@ -2,10 +2,15 @@ mod cpu;
 mod detail;
 mod encoding;
 mod gate;
+mod gated;
 mod grouping;
+mod history;
+mod keyset;
 mod manifest;
 mod memory;
+mod proof;
 mod reads;
+mod readset;
 mod report;
 mod reverse;
 #[cfg(test)]
@@ -34,6 +39,7 @@ struct Args {
     manifest: PathBuf,
     out: PathBuf,
     threads: usize,
+    projects_scoped: Option<bool>,
 }
 
 impl Args {
@@ -43,7 +49,7 @@ impl Args {
         while let Some(name) = args.next() {
             if name == "--help" {
                 println!(
-                    "core-gate-memory --recording <.battleplan> --columnar <.h4col> --manifest <toml> --out <new empty folder> --threads N"
+                    "core-gate-memory --recording <.battleplan> --columnar <.h4col> --manifest <toml> --out <new empty folder> --threads N [--projects-scoped true|false]"
                 );
                 std::process::exit(0);
             }
@@ -52,7 +58,12 @@ impl Args {
                 .map_err(|_| invalid("Non-UTF-8 option"))?;
             if !matches!(
                 name.as_str(),
-                "--recording" | "--columnar" | "--manifest" | "--out" | "--threads"
+                "--recording"
+                    | "--columnar"
+                    | "--manifest"
+                    | "--out"
+                    | "--threads"
+                    | "--projects-scoped"
             ) {
                 return Err(invalid(format!("Unknown option {name}")));
             }
@@ -63,6 +74,16 @@ impl Args {
                 return Err(invalid(format!("Repeated option {name}")));
             }
         }
+        let projects_scoped = values
+            .remove("--projects-scoped")
+            .map(|value| match value.to_str() {
+                Some("true") => Ok(true),
+                Some("false") => Ok(false),
+                _ => Err(invalid(
+                    "--projects-scoped requires the content-derived true or false value",
+                )),
+            })
+            .transpose()?;
         let mut take = |name: &str| {
             values
                 .remove(name)
@@ -83,6 +104,7 @@ impl Args {
             manifest,
             out,
             threads,
+            projects_scoped,
         })
     }
 }
@@ -105,12 +127,16 @@ struct Tool {
 #[derive(Serialize)]
 struct Lane {
     family: String,
+    spool: String,
     records: u64,
+    records_per_hour: f64,
     bytes: u64,
-    replay_cycles: u64,
-    replay_us_per_hour: f64,
-    fifty_year_seconds: f64,
-    within_allowance: bool,
+    zstd3_bytes: u64,
+    read_path_cycles: u64,
+    read_path_us_per_hour: f64,
+    projected_read_path_seconds: f64,
+    measurement_scope: String,
+    active_hours: BTreeMap<String, u64>,
     segments: Detail<SegmentDelivery>,
 }
 
@@ -119,7 +145,7 @@ struct SegmentDelivery {
     segment: usize,
     hours: u64,
     delivery: encoding::Delivery,
-    replay_us_per_hour: f64,
+    read_path_us_per_hour: f64,
 }
 
 #[derive(Serialize)]
@@ -140,6 +166,7 @@ struct Report {
     groupings: Vec<grouping::Scenario>,
     group_walks: Vec<grouping::Walk>,
     shared_walk: Option<usize>,
+    union_walk: Option<usize>,
     ordered_lanes: Vec<Lane>,
     verdict: String,
 }
@@ -198,7 +225,7 @@ fn run(args: Args) -> io::Result<()> {
     let expected_shared: std::collections::BTreeSet<_> =
         shipped.shared.iter().map(|o| &o.name).collect();
     if shared_names != expected_shared {
-        return Err(invalid("Gate 1 requires the shared trigger-context owner"));
+        return Err(invalid("Gate 1 requires the shipped shared owners"));
     }
     drop(expected_shared);
     drop(shared_names);
@@ -233,9 +260,19 @@ fn run(args: Args) -> io::Result<()> {
             .ok_or_else(|| invalid("Metadata has no format version"))? as u16,
     )?;
     gate::parallel(recording.segments().len(), args.threads, |index| {
-        let _permit = admission.union()?;
+        let mut permit = admission.union()?;
+        let cache = permit.spool_cache()?;
         eprintln!("union segment {}/{}", index + 1, recording.segments().len());
-        match gate::measure(index, &recording, &resolved, &layout, format, &args.out) {
+        match gate::measure(
+            index,
+            &recording,
+            &resolved,
+            &layout,
+            format,
+            &args.out,
+            args.projects_scoped,
+            &cache,
+        ) {
             Ok(segment) => {
                 segments.write(index, Some(&segment))?;
                 excluded_damage.write(index, None)
@@ -295,15 +332,52 @@ fn run(args: Args) -> io::Result<()> {
     let mut groupings = if hours == 0 {
         Vec::new()
     } else {
-        grouping::plans(&resolved, &layout, &segments, &args.out)?
+        grouping::plans(
+            &resolved,
+            &layout,
+            &segments,
+            &args.out,
+            grouping::Representation::ReaderAllocation,
+        )?
     };
-    grouping::peaks(&mut groupings, &layout, &segments)?;
-    let (group_walks, shared_walk) = if hours == 0 {
-        (Vec::new(), None)
+    if hours != 0 {
+        groupings.extend(grouping::plans(
+            &resolved,
+            &layout,
+            &segments,
+            &args.out,
+            grouping::Representation::Floor,
+        )?);
+    }
+    let shared_relations: Vec<_> = resolved
+        .shared_relations
+        .iter()
+        .map(|at| layout.field_dimensions() + at)
+        .collect();
+    grouping::peaks(
+        &mut groupings,
+        &layout,
+        &segments,
+        &layout
+            .indexes(&resolved.shared_union)
+            .into_iter()
+            .chain(shared_relations.iter().copied())
+            .collect::<Vec<_>>(),
+        &layout
+            .reader_indexes(&resolved.shared_union)
+            .into_iter()
+            .chain(layout.change_indexes(&resolved.shared_union))
+            .chain(shared_relations.iter().copied())
+            .collect::<Vec<_>>(),
+    )?;
+    let (group_walks, shared_walk, union_walk) = if hours == 0 {
+        (Vec::new(), None, None)
     } else {
-        eprintln!("measuring unique family-group and shared-owner table selections");
+        eprintln!(
+            "measuring clean union, family-group and shared-owner table selections at one active reader"
+        );
         let shared_tables: Vec<_> = resolved.shared_union.iter().map(|s| s.table).collect();
-        let (walks, shared) = grouping::walks(
+        let (walks, shared, union) = grouping::walks(
             &mut groupings,
             &segments,
             &args.columnar,
@@ -314,96 +388,155 @@ fn run(args: Args) -> io::Result<()> {
             &shared_tables,
             &args.out,
             hours,
-            &union_timing,
         )?;
-        (walks, Some(shared))
+        (walks, Some(shared), Some(union))
     };
     let mut ordered_lanes = Vec::new();
     if hours != 0 {
         for family in resolved.manifest.families.iter().filter(|f| f.ordered) {
-            let mut lane = Lane {
-                family: family.name.clone(),
-                records: 0,
-                bytes: 0,
-                replay_cycles: 0,
-                replay_us_per_hour: 0.0,
-                fifty_year_seconds: 0.0,
-                within_allowance: false,
-                segments: Detail::new(
-                    &args.out.join(format!("delivery-{}", family.name)),
-                    segments.slots,
-                )?,
-            };
-            for at in 0..segments.slots {
-                if let Some(segment) = segments.read(at)? {
-                    let delivery = encoding::deliver(&segment.spools[&family.name])?;
-                    lane.records += delivery.records;
-                    lane.bytes += delivery.bytes;
-                    lane.replay_cycles += delivery.cycles;
-                    let replay_us_per_hour =
-                        delivery.cycles as f64 / rate * 1e6 / segment.timing.hours as f64;
-                    lane.segments.write(
-                        at,
-                        Some(&SegmentDelivery {
-                            segment: segment.index,
-                            hours: segment.timing.hours,
-                            delivery,
-                            replay_us_per_hour,
-                        }),
-                    )?;
-                } else {
-                    lane.segments.write(at, None)?;
-                }
+            let mut kinds = vec!["full", "filtered"];
+            if family.name == "politics_ledger"
+                || (family.name == "projects" && args.projects_scoped == Some(true))
+            {
+                kinds.push("trigger_context_upper_bound");
             }
-            lane.replay_us_per_hour = lane.replay_cycles as f64 / rate * 1e6 / hours as f64;
-            lane.fifty_year_seconds = lane.replay_us_per_hour * 438_000.0 / 1e6;
-            lane.within_allowance = lane.replay_us_per_hour <= 29.7;
-            ordered_lanes.push(lane);
+            for kind in kinds {
+                let mut lane = Lane {
+                    family: family.name.clone(),
+                    spool: kind.into(),
+                    records: 0,
+                    records_per_hour: 0.0,
+                    bytes: 0,
+                    zstd3_bytes: 0,
+                    read_path_cycles: 0,
+                    read_path_us_per_hour: 0.0,
+                    projected_read_path_seconds: 0.0,
+                    measurement_scope: if kind == "filtered" && family.name == "politics_ledger" {
+                        "own read-set only; trigger-context share separate; own share includes historical over-delivery (already-delivered rows re-sent, and history supplied outside held-frame hours)"
+                    } else if kind == "filtered" && family.name == "projects" {
+                        "own read-set only; trigger-context share separate"
+                    } else if kind == "filtered" {
+                        "own share"
+                    } else {
+                        "not assessed"
+                    }
+                    .into(),
+                    active_hours: BTreeMap::new(),
+                    segments: Detail::new(
+                        &args.out.join(format!("delivery-{}-{kind}", family.name)),
+                        segments.slots,
+                    )?,
+                };
+                for at in 0..segments.slots {
+                    if let Some(segment) = segments.read(at)? {
+                        let pair = &segment.spools[&family.name];
+                        let encoded = if kind == "full" {
+                            &pair.full
+                        } else if kind == "filtered" {
+                            &pair.filtered
+                        } else {
+                            pair.trigger_context_upper_bound
+                                .as_ref()
+                                .ok_or_else(|| invalid("Missing trigger upper bound"))?
+                        };
+                        let delivery = encoding::deliver(encoded)?;
+                        lane.records += delivery.records;
+                        lane.bytes += delivery.bytes;
+                        lane.zstd3_bytes += encoded.zstd3_bytes;
+                        for (rule, count) in &encoded.active_hours {
+                            *lane.active_hours.entry(rule.clone()).or_default() += count;
+                        }
+                        lane.read_path_cycles += delivery.cycles;
+                        let read_path_us_per_hour =
+                            delivery.cycles as f64 / rate * 1e6 / segment.timing.hours as f64;
+                        lane.segments.write(
+                            at,
+                            Some(&SegmentDelivery {
+                                segment: segment.index,
+                                hours: segment.timing.hours,
+                                delivery,
+                                read_path_us_per_hour,
+                            }),
+                        )?;
+                    } else {
+                        lane.segments.write(at, None)?;
+                    }
+                }
+                lane.read_path_us_per_hour =
+                    lane.read_path_cycles as f64 / rate * 1e6 / hours as f64;
+                lane.records_per_hour = lane.records as f64 / hours as f64;
+                lane.projected_read_path_seconds = lane.read_path_us_per_hour * 438_000.0 / 1e6;
+                ordered_lanes.push(lane);
+            }
         }
     }
     let verdict = if hours == 0 {
         "No verdict: no undamaged measured segments.".into()
-    } else if let Some(plan) = groupings
-        .iter()
-        .find(|p| p.readers_fitting_largest_first >= 8)
-    {
+    } else if let Some(plan) = groupings.iter().find(|p| {
+        p.representation == grouping::Representation::ReaderAllocation
+            && p.readers_fitting_largest_first >= 8
+    }) {
         format!(
-            "{} groups admit {} readers within 0.9 GB; duplicated hourly decode-plus-apply {:.3} us/h.",
+            "Current-reader allocation: {} groups admit {} of {} available readers within the 0.9 GB split ({}); duplicated clean hourly decode-plus-apply {:.3} us/h. Shared tables, their retained change lists and reverse indexes are charged once per segment; complete dictionary/view allocations are conservatively charged per reader, including shared dictionary chunk payloads. Includes private retained change lists, reverse and previous allocations; State.scratch buffers, transients and growth reservations remain unmeasured. Rebalance measured owners within 3 GB before considering paging or grouping. Use the 13-year corpus for planning; 1941 is a sanity pass.",
             plan.count,
             plan.readers_fitting_largest_first,
+            plan.available_readers,
+            if plan.segment_limited {
+                "segment-limited; memory headroom unproven"
+            } else {
+                "memory-limited"
+            },
             plan.duplicated_decode_us_per_hour.unwrap()
         )
     } else {
-        "No group count admits eight readers within 0.9 GB.".into()
+        "Current-reader allocation: no group count admits eight readers within the 0.9 GB split. Shared tables, their retained change lists and reverse indexes are charged once per segment; complete dictionary/view allocations are conservatively charged per reader, including shared dictionary chunk payloads. Includes private retained change lists, reverse and previous allocations. Rebalance measured owners within 3 GB before paging or grouping. Use the 13-year corpus for planning; 1941 is a sanity pass. State.scratch buffers, growth reservations and transients remain unmeasured.".into()
     };
     let provenance = report::provenance(&resolved.manifest);
-    let totals = report::totals(&segments, &ordered_lanes, rate)?;
+    let totals = report::totals(&segments, &ordered_lanes, rate, args.projects_scoped)?;
     let mut damage_count = 0;
     excluded_damage.for_each(|_| {
         damage_count += 1;
         Ok(())
     })?;
     let report = Report {
-        version: 1,
+        version: 2,
         recording: args.recording,
         columnar: args.columnar,
         metadata,
         manifest: resolved.manifest,
         manifest_provenance: provenance,
         definitions: serde_json::json!({
-            "cpu":"QueryThreadCycleTime around Walker::begin and between hourly walk callbacks; decode and apply combined; every column of selected tables decoded. The final page checks and dictionary trim are included as tail cycles.",
+            "cpu":"QueryThreadCycleTime around Walker::begin and between hourly walk callbacks; decode and apply combined, all columns of selected tables. Clean union/group/shared walks all use timed_walk with one active reader and the same exclusive 2.2 GB permit; no census, reverse or spool work intervenes. Census-pass timing is retained separately and is not used for duplicated decode. Final page checks and dictionary trim are included as tail cycles.",
             "cycle_calibration":"Invariant x86-64 TSC delta / measured wall seconds, as dashboard measure.rs; all raw cycle counts retained.",
-            "cell_bytes":"Live cells: Kind::slot_bytes plus exact list/opaque payload; one recorded bit per cell, optional presence bit, rounded to 64-bit words per column. Text cells hold 32-bit dictionary IDs. Dictionary allocations reported separately.",
+            "cell_bytes":"Live cells: Kind::slot_bytes plus exact list/opaque payload; one recorded bit per cell, optional presence bit, rounded to 64-bit words per column. Text cells hold 32-bit dictionary IDs. Complete dictionary allocations are reported separately and conservatively charged per admitted reader, including shared chunk payloads, in both representations.",
             "keys":"16-byte key and 4-byte slot per live row, plus 64-bit live words; compact sorted key/slot representation; no dead-slot slack counted in the floor. Actual complete-table allocation peaks also reported.",
+            "reader_representation":"Today's replay-columnar Table: slot-addressed column Vec capacities, dead slots, variable payload, live/recorded/optional bits and key-to-slot hash-index capacity, using Table::held_bytes. The hash index charges element capacity, not allocated buckets; SwissTables allocate about 8/7 as many buckets, so this component is understated. All columns of a selected table are held because today's reader restores them together. Every exposed per-table Changes vector is charged at capacity through columns::changes, including retained fill_slots and fill_masks after FILL; these bytes enter current private group and shared-owner peaks and admission, not previous-table copies or the compact floor. Previous lookups retain the preceding hour's complete Table allocation; reverse vectors use measured capacity. State::held_bytes minus table allocations supplies complete dictionary and union-reader view allocations, conservatively charged per reader; dictionary chunk payloads can be Arc-shared but are not discounted. Shared tables, their change lists and reverse indexes alone are charged once per segment. These are measured retained-state capacities under today's reader accounting, not the future paged reader or a measured transient/growth-reservation peak. No page granularity or invented headroom is applied. Memory admission uses this representation; the compact named-field floor is a separate comparison.",
+            "unmeasured_owners":"Retained State.scratch buffers (u8s, i8s, u16s, i16s, u32s, i32s, u64s, i64s, words, ends, keys, hunks, edits, triples, slots, positions, except and masks), the retained capacity of State.named (the dictionary-trim id list), watch/notification bookkeeping, transient section decode and restore buffers, staging and reserve-before-growth high water are unmeasured, not zero. Retained-state admission is not a complete scheduler memory claim.",
+            "country_scaling":"Only recorded rows and allocations are reported. There is no measured 1500-country projection or inferred bytes-per-country scaling.",
+            "spool_boundaries":"Independent segments retain initial state records; eliding a contiguous segment's repeated initial state is a separate format lever, not a claimed saving here.",
+            "memory_budget":"0.9 GB is the current reader split of the fixed 3 GB total. Report owners for rebalancing before paging or grouping; no whole-design 3 GB verdict is possible without the other owners and transients.",
             "previous":"Declared previous lookups retain the previous hour's named keys/cells. No previous hour is materialized at a segment's restore.",
             "reverse":"Concrete sorted vector of (typed value, u128 row key), allocated vector capacity and owned text payload. Rebuilt only when an input changes; this is measurement upkeep CPU, not a future reader estimate.",
             "checkpoint_encoding":"Version 1: u64 LE record length; i32 LE hour, u8 event, u16 LE table, u128 LE key; status/sample or repeated u16 field, u8 recorded, u8 cell-kind and absolute LE scalar/presence/list. Lengths are u64 LE, strings inline, opaque bytes lossless; unknowns retain their decode bases. Raw and single-thread zstd level 3 streams.",
-            "spool":"The same absolute record framing, restored rows followed by changed keys/cells, deletions, statuses, read evidence and hour/break records; lookups carried as their source changes. Ordered delivery reads zstd-3 segments in recording order to a no-op consumer, with no family handler.",
-            "shared_owner":"The trigger-context owner is a whole-table upper bound, outside family weights, group bytes and ordered spools. Admission charges it once per distinct admitted segment; decode includes its independent walk once per segment.",
+            "spool":"Absolute record framing and zstd-3 no-op delivery; explicit presence transitions, gated snapshot observations with initial state and accumulated row deltas and dated lookup hydration have matching decoder events. Full streams the merged family declarations without read-set filtering; filtered uses each ordered family's source-audited own read set, hydrates declared lookup keys at first reference and delivers changes while referenced. Full-state exceptions and handler-held reference lifetimes are declared with sources. Both include restore records in their per-hour totals. Historical reference closure over-delivers for politics_ledger: it re-sends rows already delivered and supplies history at every new-reference hour, not only held-frame hours, so that family's filtered records, bytes and delivery are inflated, never understated. No other ordered family declares historical referenced tables.",
+            "spool_reference_memory":"All on-disk spool indexes in the exclusive union pass share one fully associative clock page pool. The named spool scratch page-cache owner reserves the remaining 112 MB of that pass's 2.2 GB permit before allocation: 2.2 GB minus the existing 1.8 GB table, 256 MB decode and 32 MB dictionary allowances. This is 112/2200 of the exclusive permit, inside the same exclusive reservation used by all later clean walks. Per-segment and total reports put the measured allocated page/slot-metadata peak beside this allowance. Every index can use the entire pool; spill is lossless. Clearing an index resets its root without truncation or page syscalls. Reference edges follow inserted/deleted source rows, reference-field writes and membership deltas; delivery-hour toggles do not rebuild them. Gated delivery keeps pending keys and offsets of exact last-delivered rows in the raw spool, without a second copy of their values, compares only candidates and sends a full state only on first activation. Previous-hour lookup history appends without idle-hour seeks or flushes.",
+            "spool_lookup_proof":proof::reads().collect::<Vec<_>>(),
+            "spool_source_accesses":proof::source_reads(),
+            "spool_source_policies":proof::source_policies()?,
+            "spool_index_cache_budget_bytes":gate::spool_cache_allowance(),
+            "spool_read_evidence_proof":proof::READ_RULES,
+            "ordered_3_spellings_followup":"Projects reads every LexicalTokens literal today; ordered-3 must move that stream to the shared spellings index (design 2.4).",
+            "spool_full_baseline":"Full uses the merged family declarations without read-set filters. Filtered contains only the family's own reads. The whole trigger kit is a separate trigger_context_upper_bound at ledger dated/held hours and projects' scoped hours only. Its fields are an upper bound, never a proof requirement. Neither row is assessed against the lane allowance.",
+            "spool_proof_derivation":"Source extraction scans the embedded family and cited helper files (excluding test modules) independently of the manifest: table accesses, explicit field calls, TableRead field arrays, and schema-backed members of typed row decodes and parameters. Source-derived row/hour policy witnesses check the handler predicates against the gate, including the named-payment expression, date/hold rules, decision pack/kinds, slice filters and presence witness. Startup refuses missing extracted fields/tables or changed witnesses. Hand-kept: the source-file roster, unrelated helper-path exclusions (reported per access), indirect/generic/closure data-flow READS, replay reachability, reference relations/lifetimes and read-evidence rules. This is a checked source extraction and manual indirect-access audit, not a completeness proof for arbitrary Rust data flow.",
+            "trigger_context_follow_up":"CONTENT_STATIC_READ_UNION: load the recording's content and enumerate all holdable scripted texts, unioning dashboard_text::triggers::inputs::Key::dependence (crates/dashboard-text/src/triggers/inputs.rs:113). No existing exported function enumerates that static text union; Inputs::declared is evaluation-specific and cannot replace it. Resolve project mode with dashboard_special_projects::products::special_projects::facts::Binding::load and Binding::scoped (facts.rs:131-172), whose load calls completions::scripted_names (facts.rs:152). This gate does not load content; --projects-scoped must be supplied from that binding, and omission leaves that upper bound unmeasured, not zero.",
+            "projects_scoped":args.projects_scoped,
+            "shared_owner":"Shared owners retain the exact union of family fields, including separately reported full-row fallback columns. Trigger-context remains an explicit whole-table upper bound. Overlapping owner fields and keys are held once in the shared union, outside family weights and group bytes. Admission charges its measured peak once per distinct admitted segment; decode includes one shared-union walk per segment.",
+            "ordered_timing":"This tool times its own zstd-3/generic-parser/no-op read path and projects only that path to 438000 hours. It does not measure section 2.5.2's lane cost and makes no verdict against 29.7 us/h. core-spool-bench in crate core-spool measures the lane's typed format and keyed replay cost; family handler cost remains separate.",
+            "restore_timing":"Raw restore cycles and microseconds per segment plus amortized microseconds per actual measured segment hour. group_walks.restore_us_per_segment is the mean over all included segments, including empty restores. Segment 0 can have an empty restore; its first full load belongs to hourly decode. No corpus is normalized to another corpus's restart interval.",
             "tool_lifetime":"Counters include aggregation and the flushed JSON/Markdown report bodies. Only appending these fixed-size counter footers follows the final sample.",
-            "grouping":"For each count 1..68, sort families by maximum measured named-cell/key peak descending, ties by name; assign to least sum of family peaks, ties by member count then group index. Union fields and identical reverse relations within each group, share nothing across groups; shared owners are separate. Exact group peaks replay census changes at each hour. Admit the descending prefix of all (segment,group) peaks; charge shared owners once per distinct admitted segment and stop at the first total that does not fit 900000000 bytes.",
+            "grouping":"For each representation and count 1..68, sort families by maximum measured private peak descending, ties by name; assign to least sum of family peaks, ties by member count then group index. Union fields and identical reverse relations within each group, share nothing across groups; shared owners are separate. Exact group peaks replay census changes at each hour, including complete dictionary allocations per reader in both representations, union-reader views per current reader, and private retained Changes capacities in current-reader groups. Admit the descending prefix of all (segment,group) peaks; charge shared tables, their Changes capacities (current-reader only) and reverse indexes once per distinct admitted segment and stop at the first total that does not fit 900000000 bytes.",
             "duplicate_decode":"Measured sum of group-table-set walks plus one shared-owner walk per segment minus measured union walk; shared-table walks decoded independently. Negative differences are retained as timing noise, never clamped.",
-            "tool_admission":"The complete-table union pass takes an exclusive 2.2 GB reader reservation. Later group walks reserve measured complete-table allocation peaks plus 320 MB for buffers/dictionary/transients, within the same 2.2 GB allowance. --threads is the worker maximum; actual active readers reported.",
+            "tool_admission":"The census union pass and every clean union/group/shared walk take the same exclusive 2.2 GB reader reservation. Exactly one reader is active; --threads only caps waiting workers. This is the tool reservation, not a measured per-reader transient peak or future scheduler concurrency.",
             "damage":"Every damaged primary segment is wholly excluded from totals, spools and admission results. No zero or reconstructed substitute is inserted. The verdict describes only included coverage.",
         }),
         recorded_hours: recording.hours(),
@@ -415,6 +548,7 @@ fn run(args: Args) -> io::Result<()> {
         groupings,
         group_walks,
         shared_walk,
+        union_walk,
         ordered_lanes,
         verdict,
     };

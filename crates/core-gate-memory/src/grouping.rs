@@ -20,6 +20,7 @@ pub struct Group {
     pub families: Vec<String>,
     pub tables: Vec<String>,
     pub peak_bytes: u64,
+    pub peak_with_shared_bytes: u64,
     pub timing: usize,
     #[serde(skip)]
     dimensions: Vec<usize>,
@@ -27,8 +28,19 @@ pub struct Group {
     table_ids: Vec<TableId>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Representation {
+    Floor,
+    ReaderAllocation,
+}
+
 #[derive(Serialize)]
 pub struct Scenario {
+    pub representation: Representation,
+    pub available_readers: usize,
+    pub segment_limited: bool,
+    pub admitted_average_bytes_per_reader: Option<f64>,
     pub count: usize,
     pub groups: Vec<Group>,
     pub readers_fitting_largest_first: usize,
@@ -44,6 +56,8 @@ pub struct Scenario {
 pub struct Walk {
     pub tables: Vec<String>,
     pub segments: Detail<(usize, Timing)>,
+    pub restore_us: f64,
+    pub restore_us_per_segment: f64,
     pub restore_us_per_hour: f64,
     pub hourly_decode_apply_us_per_hour: f64,
 }
@@ -53,11 +67,17 @@ pub fn plans(
     layout: &Layout,
     segments: &Detail<SegmentReport>,
     out: &Path,
+    representation: Representation,
 ) -> io::Result<Vec<Scenario>> {
     let mut weights = vec![0; resolved.families.len()];
     segments.for_each(|segment| {
         for (at, family) in resolved.manifest.families.iter().enumerate() {
-            weights[at] = weights[at].max(segment.families[&family.name].peak.bytes);
+            let families = if representation == Representation::Floor {
+                &segment.families_private
+            } else {
+                &segment.families_private_reader
+            };
+            weights[at] = weights[at].max(families[&family.name].peak.bytes);
         }
         Ok(())
     })?;
@@ -83,27 +103,36 @@ pub fn plans(
         let groups = assignments
             .into_iter()
             .map(|families| {
-                let mut dimensions = BTreeSet::new();
+                let mut dimensions = BTreeSet::from([if representation == Representation::Floor {
+                    layout.dictionary
+                } else {
+                    layout.reader_auxiliary
+                }]);
                 let mut tables = BTreeSet::new();
                 for &family in &families {
-                    dimensions.extend(layout.indexes(&resolved.families[family]));
+                    let indexes = |selected: &[_]| {
+                        if representation == Representation::Floor {
+                            layout.indexes(selected)
+                        } else {
+                            layout.reader_indexes(selected)
+                        }
+                    };
+                    dimensions.extend(indexes(&resolved.private[family]));
+                    if representation == Representation::ReaderAllocation {
+                        dimensions.extend(layout.change_indexes(&resolved.private[family]));
+                    }
                     let previous: Vec<_> = resolved.families[family]
                         .iter()
                         .filter(|s| s.previous)
                         .cloned()
                         .collect();
-                    dimensions.extend(
-                        layout
-                            .indexes(&previous)
-                            .iter()
-                            .map(|at| layout.previous[at]),
-                    );
+                    dimensions.extend(indexes(&previous).iter().map(|at| layout.previous[at]));
                     dimensions.extend(
                         resolved.family_relations[family]
                             .iter()
                             .map(|at| layout.field_dimensions() + at),
                     );
-                    tables.extend(resolved.families[family].iter().map(|s| s.table));
+                    tables.extend(resolved.private[family].iter().map(|s| s.table));
                 }
                 let table_ids: Vec<_> = tables.into_iter().collect();
                 Group {
@@ -115,17 +144,29 @@ pub fn plans(
                     table_ids,
                     dimensions: dimensions.into_iter().collect(),
                     peak_bytes: 0,
+                    peak_with_shared_bytes: 0,
                     timing: 0,
                 }
             })
             .collect();
         scenarios.push(Scenario {
+            representation,
+            available_readers: 0,
+            segment_limited: false,
+            admitted_average_bytes_per_reader: None,
             count,
             groups,
             readers_fitting_largest_first: 0,
             readers_bytes: 0,
             admitted_shared_bytes: 0,
-            segment_peaks_file: out.join(format!("grouping-{count:02}-peaks.jsonl")),
+            segment_peaks_file: out.join(format!(
+                "{}-grouping-{count:02}-peaks.jsonl",
+                if representation == Representation::Floor {
+                    "floor"
+                } else {
+                    "reader"
+                }
+            )),
             duplicated_decode_us_per_hour: None,
             duplicated_restore_us_per_hour: None,
         });
@@ -211,6 +252,8 @@ pub fn peaks(
     plans: &mut [Scenario],
     layout: &Layout,
     segments: &Detail<SegmentReport>,
+    shared_floor: &[usize],
+    shared_reader: &[usize],
 ) -> io::Result<()> {
     let mut outputs: Vec<_> = plans
         .iter()
@@ -224,10 +267,14 @@ pub fn peaks(
             }
         }
     }
+    let mut included_segments = 0;
     segments.for_each(|segment| {
+        included_segments += 1;
         let mut current: Vec<Vec<u64>> = plans.iter().map(|p| vec![0; p.count]).collect();
         let mut maxima = current.clone();
+        let mut with_shared = current.clone();
         let mut previous = vec![0; layout.dimensions];
+        let mut shared_peak = [0; 2];
         memory::read_trace(
             BufReader::new(File::open(&segment.trace)?),
             layout.dimensions,
@@ -246,20 +293,46 @@ pub fn peaks(
                         *m = (*m).max(c);
                     }
                 }
+                let shared_bytes = [shared_floor, shared_reader]
+                    .map(|dims| dims.iter().map(|&dim| values[dim]).sum::<u64>());
+                for (peak, &bytes) in shared_peak.iter_mut().zip(&shared_bytes) {
+                    *peak = (*peak).max(bytes);
+                }
+                for ((maximum, current), plan) in
+                    with_shared.iter_mut().zip(&current).zip(plans.iter())
+                {
+                    let shared = shared_bytes
+                        [usize::from(plan.representation == Representation::ReaderAllocation)];
+                    for (m, &c) in maximum.iter_mut().zip(current) {
+                        *m = (*m).max(c + shared);
+                    }
+                }
                 Ok(())
             },
         )?;
-        let shared = segment.shared.values().map(|p| p.peak.bytes).sum();
-        for ((plan, maxima), out) in plans.iter_mut().zip(maxima).zip(&mut outputs) {
-            for (at, (group, bytes)) in plan.groups.iter_mut().zip(maxima).enumerate() {
+        for (((plan, maxima), with_shared), out) in plans
+            .iter_mut()
+            .zip(maxima)
+            .zip(with_shared)
+            .zip(&mut outputs)
+        {
+            for (at, ((group, bytes), combined)) in plan
+                .groups
+                .iter_mut()
+                .zip(maxima)
+                .zip(with_shared)
+                .enumerate()
+            {
                 group.peak_bytes = group.peak_bytes.max(bytes);
+                group.peak_with_shared_bytes = group.peak_with_shared_bytes.max(combined);
                 serde_json::to_writer(
                     &mut *out,
                     &Candidate {
                         bytes,
                         segment: segment.index,
                         group: at,
-                        shared,
+                        shared: shared_peak
+                            [usize::from(plan.representation == Representation::ReaderAllocation)],
                     },
                 )?;
                 writeln!(out)?;
@@ -273,6 +346,9 @@ pub fn peaks(
     drop(outputs);
     for plan in plans {
         let (count, bytes, shared) = fit_file(&plan.segment_peaks_file, segments.slots)?;
+        plan.available_readers = included_segments * plan.count;
+        plan.segment_limited = count == plan.available_readers;
+        plan.admitted_average_bytes_per_reader = (count != 0).then(|| bytes as f64 / count as f64);
         plan.readers_fitting_largest_first = count;
         plan.readers_bytes = bytes;
         plan.admitted_shared_bytes = shared;
@@ -291,8 +367,7 @@ pub fn walks(
     shared_tables: &[TableId],
     out: &Path,
     hours: u64,
-    union_timing: &Timing,
-) -> io::Result<(Vec<Walk>, usize)> {
+) -> io::Result<(Vec<Walk>, usize, usize)> {
     let mut unique = BTreeMap::<Vec<TableId>, usize>::new();
     for plan in plans.iter_mut() {
         for group in &mut plan.groups {
@@ -302,6 +377,8 @@ pub fn walks(
     }
     let next = unique.len();
     let shared_timing = *unique.entry(shared_tables.to_vec()).or_insert(next);
+    let next = unique.len();
+    let union_timing = *unique.entry(union_tables.to_vec()).or_insert(next);
     let mut tables = vec![Vec::new(); unique.len()];
     for (ids, at) in unique {
         tables[at] = ids;
@@ -313,12 +390,14 @@ pub fn walks(
             Ok(Walk {
                 tables: ids.iter().map(|t| format!("{t:?}")).collect(),
                 segments: Detail::new(&out.join(format!("walk-{at:04}")), segments.slots)?,
+                restore_us: 0.0,
+                restore_us_per_segment: 0.0,
                 restore_us_per_hour: 0.0,
                 hourly_decode_apply_us_per_hour: 0.0,
             })
         })
         .collect::<io::Result<_>>()?;
-    let sums = Mutex::new(vec![(0_u64, 0_u64); tables.len()]);
+    let sums = Mutex::new(vec![(0_u64, 0_u64, 0_u64); tables.len()]);
     gate::parallel(tables.len() * segments.slots, threads, |job| {
         let table_set = job / segments.slots;
         let index = job % segments.slots;
@@ -326,31 +405,20 @@ pub fn walks(
             return walks[table_set].segments.write(index, None);
         };
         let ids = &tables[table_set];
-        let mut timing = if ids == union_tables {
-            segment.timing.clone()
-        } else {
-            let storage: u64 = ids
-                .iter()
-                .map(|t| segment.actual_table_storage_peaks[&format!("{t:?}")])
-                .sum();
-            let reservation = storage
-                .checked_add(320_000_000)
-                .ok_or_else(|| io::Error::other("Reader reservation overflow"))?;
-            let _permit = admission.enter(reservation)?;
-            let mut recording = Recording::open_path(columnar, gate::limits())?;
-            recording.select(ids);
-            let selected = recording
-                .segments()
-                .get(segment.index)
-                .ok_or_else(|| io::Error::other("Recording changed during measurement"))?;
-            if selected.run != segment.run
-                || selected.first != segment.first_ordinal
-                || selected.last != segment.last_ordinal
-            {
-                return Err(io::Error::other("Recording changed during measurement"));
-            }
-            gate::timed_walk(&recording, selected)?
-        };
+        let _permit = admission.union()?;
+        let mut recording = Recording::open_path(columnar, gate::limits())?;
+        recording.select(ids);
+        let selected = recording
+            .segments()
+            .get(segment.index)
+            .ok_or_else(|| io::Error::other("Recording changed during measurement"))?;
+        if selected.run != segment.run
+            || selected.first != segment.first_ordinal
+            || selected.last != segment.last_ordinal
+        {
+            return Err(io::Error::other("Recording changed during measurement"));
+        }
+        let mut timing = gate::timed_walk(&recording, selected)?;
         timing.hourly_cycles_file = None;
         timing.calibrate(rate);
         walks[table_set]
@@ -361,14 +429,17 @@ pub fn walks(
             .map_err(|_| io::Error::other("Timing aggregate mutex poisoned"))?;
         sums[table_set].0 += timing.restore_cycles;
         sums[table_set].1 += timing.hourly_decode_apply_cycles;
+        sums[table_set].2 += 1;
         Ok(())
     })?;
     let mut walks = walks;
     let us = |cycles: u64| cycles as f64 / rate * 1e6 / hours as f64;
-    for (walk, (restore, hourly)) in walks.iter_mut().zip(
+    for (walk, (restore, hourly, count)) in walks.iter_mut().zip(
         sums.into_inner()
             .map_err(|_| io::Error::other("Timing aggregate mutex poisoned"))?,
     ) {
+        walk.restore_us = restore as f64 / rate * 1e6;
+        walk.restore_us_per_segment = walk.restore_us / count as f64;
         walk.restore_us_per_hour = us(restore);
         walk.hourly_decode_apply_us_per_hour = us(hourly);
     }
@@ -379,7 +450,7 @@ pub fn walks(
                 .map(|g| walks[g.timing].hourly_decode_apply_us_per_hour)
                 .sum::<f64>()
                 + walks[shared_timing].hourly_decode_apply_us_per_hour
-                - us(union_timing.hourly_decode_apply_cycles),
+                - walks[union_timing].hourly_decode_apply_us_per_hour,
         );
         plan.duplicated_restore_us_per_hour = Some(
             plan.groups
@@ -387,10 +458,10 @@ pub fn walks(
                 .map(|g| walks[g.timing].restore_us_per_hour)
                 .sum::<f64>()
                 + walks[shared_timing].restore_us_per_hour
-                - us(union_timing.restore_cycles),
+                - walks[union_timing].restore_us_per_hour,
         );
     }
-    Ok((walks, shared_timing))
+    Ok((walks, shared_timing, union_timing))
 }
 
 #[cfg(test)]
@@ -445,6 +516,86 @@ mod tests {
             ),
             (2, 700_000_000, 100_000_000)
         );
+    }
+
+    #[test]
+    fn each_group_pays_dictionary_views_and_its_retained_changes() {
+        let manifest: crate::manifest::Manifest = toml::from_str(
+            r#"
+version = 1
+families_source = "synthetic"
+[[families]]
+name = "first"
+origin = "code"
+ordered = false
+tables = [{name="Ships", fields=["strength"], subscription="stream", source="synthetic", previous=true}]
+[[families]]
+name = "second"
+origin = "code"
+ordered = false
+tables = [{name="Ships", fields=["strength"], subscription="stream", source="synthetic"}]
+[[shared]]
+name = "roster"
+origin = "code"
+ordered = false
+tables = [{name="Countries", fields=["tag"], subscription="lookup", source="synthetic"}]
+"#,
+        )
+        .unwrap();
+        let resolved = manifest.resolve().unwrap();
+        let mut layout = Layout::new(&resolved.tables, 0);
+        layout.hold_previous(&resolved.families[0]);
+        let folder = crate::synthetic_tests::folder();
+        let segments = Detail::new(&folder.join("segments"), 0).unwrap();
+        let mut values = vec![0; layout.dimensions];
+        for &id in &resolved.tables {
+            values[layout.reader_tables[&id]] = 200_000_000;
+            values[layout.reader_changes[&id]] = 50_000_000;
+        }
+        values[layout.dictionary] = 100_000_000;
+        values[layout.reader_auxiliary] = 100_000_000;
+        for representation in [Representation::ReaderAllocation, Representation::Floor] {
+            let plans = plans(&resolved, &layout, &segments, &folder, representation).unwrap();
+            let groups = &plans[1].groups;
+            for group in groups {
+                if representation == Representation::ReaderAllocation {
+                    assert!(group.dimensions.contains(&layout.reader_auxiliary));
+                    assert!(
+                        group
+                            .dimensions
+                            .contains(&layout.reader_changes[&TableId::Ships])
+                    );
+                    assert!(
+                        !group
+                            .dimensions
+                            .contains(&layout.reader_changes[&TableId::Countries])
+                    );
+                } else {
+                    assert!(group.dimensions.contains(&layout.dictionary));
+                    assert!(!group.dimensions.contains(&layout.reader_auxiliary));
+                }
+            }
+            if representation == Representation::ReaderAllocation {
+                let shared = layout
+                    .reader_indexes(&resolved.shared_union)
+                    .into_iter()
+                    .chain(layout.change_indexes(&resolved.shared_union))
+                    .map(|dim| values[dim])
+                    .sum();
+                assert_eq!(
+                    fit(
+                        groups.iter().enumerate().map(|(group, held)| Candidate {
+                            bytes: held.dimensions.iter().map(|&dim| values[dim]).sum(),
+                            segment: 0,
+                            group,
+                            shared,
+                        }),
+                        1,
+                    ),
+                    (1, 600_000_000, 250_000_000)
+                );
+            }
+        }
     }
 
     #[test]

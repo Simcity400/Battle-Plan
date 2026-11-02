@@ -21,6 +21,13 @@ use std::{
 
 pub const READER_BUDGET: u64 = 900_000_000;
 const TOOL_READER_BUDGET: u64 = 2_200_000_000;
+const TABLE_ALLOWANCE: u64 = 1_800_000_000;
+const DECODE_ALLOWANCE: u64 = 256_000_000;
+const DICTIONARY_ALLOWANCE: u64 = 32_000_000;
+
+pub fn spool_cache_allowance() -> u64 {
+    TOOL_READER_BUDGET - TABLE_ALLOWANCE - DECODE_ALLOWANCE - DICTIONARY_ALLOWANCE
+}
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Timing {
@@ -29,12 +36,14 @@ pub struct Timing {
     pub hours: u64,
     pub hourly_cycles_file: Option<PathBuf>,
     pub tail_cycles: u64,
+    pub restore_us: Option<f64>,
     pub restore_us_per_hour: Option<f64>,
     pub hourly_decode_apply_us_per_hour: Option<f64>,
 }
 
 impl Timing {
     pub fn calibrate(&mut self, rate: f64) {
+        self.restore_us = Some(self.restore_cycles as f64 / rate * 1e6);
         if self.hours != 0 {
             self.restore_us_per_hour =
                 Some(self.restore_cycles as f64 / rate * 1e6 / self.hours as f64);
@@ -47,6 +56,7 @@ impl Timing {
 #[derive(Deserialize, Serialize)]
 pub struct TableSize {
     pub named: Peak,
+    pub reader_allocation: Peak,
     pub declared_only: Peak,
     pub whole: Peak,
     pub unnamed_cells: Peak,
@@ -79,20 +89,41 @@ pub struct SegmentReport {
     pub timing: Timing,
     pub tables: BTreeMap<String, TableSize>,
     pub families: BTreeMap<String, Peak>,
+    pub families_primary: BTreeMap<String, Peak>,
+    pub families_fallback: BTreeMap<String, Peak>,
+    pub families_private: BTreeMap<String, Peak>,
+    pub families_private_reader: BTreeMap<String, Peak>,
     pub shared: BTreeMap<String, Peak>,
+    pub shared_whole: BTreeMap<String, Peak>,
+    pub shared_reader: BTreeMap<String, Peak>,
+    pub shared_reader_union: Peak,
+    pub shared_union: Peak,
+    pub shared_without_trigger: Peak,
     pub code_families_whole: BTreeMap<String, Peak>,
     pub code_families_union_share: BTreeMap<String, (Option<f64>, Option<f64>)>,
     pub union: Peak,
+    pub union_reader: Peak,
+    pub declared_reader: Peak,
     pub declared_only: Peak,
     pub reverse: Vec<ReverseSize>,
     pub checkpoints: Vec<Encoded>,
     pub restore_checkpoint_verification: Option<Encoded>,
-    pub spools: BTreeMap<String, Encoded>,
+    pub spools: BTreeMap<String, Spools>,
+    pub spool_index_cache: crate::keyset::CacheSize,
     pub dictionary_peak_bytes: u64,
+    pub reader_auxiliary_peak_bytes: u64,
     pub reverse_peak_bytes: u64,
     pub previous_peak_bytes: u64,
+    pub previous_reader_peak_bytes: u64,
     pub actual_table_storage_peaks: BTreeMap<String, u64>,
     pub trace: PathBuf,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct Spools {
+    pub full: Encoded,
+    pub filtered: Encoded,
+    pub trigger_context_upper_bound: Option<Encoded>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -109,15 +140,16 @@ pub struct Lost {
 
 pub fn limits() -> Limits {
     Limits {
-        budget: Arc::new(Budget::new(256_000_000)),
-        dictionary_bytes: 32_000_000,
-        tables: Allowance::new(1_800_000_000),
+        budget: Arc::new(Budget::new(DECODE_ALLOWANCE as usize)),
+        dictionary_bytes: DICTIONARY_ALLOWANCE as usize,
+        tables: Allowance::new(TABLE_ALLOWANCE as usize),
     }
 }
 
 fn full(selected: &Selection) -> Selection {
     Selection {
         fields: (0..selected.table.schema().len()).collect(),
+        recorded_only: Default::default(),
         ..selected.clone()
     }
 }
@@ -133,6 +165,33 @@ fn unnamed(census: &Census, selected: &Selection) -> Footprint {
     }
 }
 
+fn fallback_footprint(census: &Census, selected: &[Selection], primary: &[Selection]) -> Footprint {
+    let cells = census.footprint(selected).cells_bytes - census.footprint(primary).cells_bytes;
+    Footprint {
+        cells_bytes: cells,
+        bytes: cells,
+        ..Footprint::default()
+    }
+}
+
+fn shared_footprint(census: &Census, selected: &[Selection], indexes: &[usize]) -> Footprint {
+    let mut value = census.footprint(selected);
+    value.index_bytes = indexes.iter().map(|&at| census.values[at]).sum();
+    value.bytes += value.index_bytes;
+    value
+}
+
+fn reader_shared_footprint(
+    census: &Census,
+    selected: &[Selection],
+    indexes: &[usize],
+) -> Footprint {
+    let mut value = census.reader_footprint(selected);
+    value.index_bytes = indexes.iter().map(|&at| census.values[at]).sum();
+    value.bytes += value.index_bytes;
+    value
+}
+
 pub fn measure(
     index: usize,
     recording: &Recording,
@@ -140,6 +199,8 @@ pub fn measure(
     layout: &Layout,
     format: replay_data::format::FormatVersion,
     out: &Path,
+    projects_scoped: Option<bool>,
+    cache: &crate::keyset::Cache,
 ) -> io::Result<SegmentReport> {
     let segment = &recording.segments()[index];
     let run = recording.run(segment.run)?;
@@ -160,6 +221,26 @@ pub fn measure(
     };
     let mut census = Census::new(layout.clone(), &columnar_frames::schema()?);
     census.observe(&state, true)?;
+    let shared_dimensions = |selected: &[Selection]| {
+        resolved
+            .shared_relations
+            .iter()
+            .filter(|&&at| {
+                resolved.relations[at]
+                    .steps
+                    .iter()
+                    .any(|(table, _)| selected.iter().any(|s| s.table == *table))
+            })
+            .map(|at| layout.field_dimensions() + at)
+            .collect::<Vec<_>>()
+    };
+    let owner_indexes: Vec<_> = resolved
+        .shared
+        .iter()
+        .map(|s| shared_dimensions(s))
+        .collect();
+    let union_indexes = shared_dimensions(&resolved.shared_union);
+    let without_trigger_indexes = shared_dimensions(&resolved.shared_without_trigger);
     let mut indexes: Vec<_> = resolved.relations.iter().map(Index::new).collect();
     let reverse_at = layout.field_dimensions();
     let mut reverse = Vec::new();
@@ -182,6 +263,7 @@ pub fn measure(
     let mut tables = BTreeMap::new();
     let mut reverse_peak_bytes: u64 = indexes.iter().map(|i| i.size.bytes).sum();
     let mut previous_peak_bytes = 0;
+    let mut previous_reader_peak_bytes = 0;
     for selected in &resolved.union {
         let declared: Vec<_> = resolved
             .declared
@@ -194,6 +276,10 @@ pub fn measure(
             TableSize {
                 named: Peak::new(
                     census.footprint(std::slice::from_ref(selected)),
+                    first_hour - 1,
+                ),
+                reader_allocation: Peak::new(
+                    census.reader_footprint(std::slice::from_ref(selected)),
                     first_hour - 1,
                 ),
                 declared_only: Peak::new(census.footprint(&declared), first_hour - 1),
@@ -222,13 +308,108 @@ pub fn measure(
         .shared
         .iter()
         .zip(&resolved.shared)
-        .map(|(owner, selected)| {
+        .zip(&owner_indexes)
+        .map(|((owner, selected), indexes)| {
             (
                 owner.name.clone(),
-                Peak::new(census.footprint(selected), first_hour - 1),
+                Peak::new(shared_footprint(&census, selected, indexes), first_hour - 1),
             )
         })
         .collect();
+    let family_peaks = |selections: &[Vec<Selection>]| {
+        resolved
+            .manifest
+            .families
+            .iter()
+            .zip(selections)
+            .map(|(family, selected)| {
+                (
+                    family.name.clone(),
+                    Peak::new(census.footprint(selected), first_hour - 1),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let mut families_primary = family_peaks(&resolved.primary);
+    let mut families_private = family_peaks(&resolved.private);
+    let mut families_private_reader: BTreeMap<_, _> = resolved
+        .manifest
+        .families
+        .iter()
+        .zip(&resolved.private)
+        .map(|(family, selected)| {
+            (
+                family.name.clone(),
+                Peak::new(census.reader_footprint(selected), first_hour - 1),
+            )
+        })
+        .collect();
+    let mut shared_reader: BTreeMap<_, _> = resolved
+        .manifest
+        .shared
+        .iter()
+        .zip(&resolved.shared)
+        .zip(&owner_indexes)
+        .map(|((owner, selected), indexes)| {
+            (
+                owner.name.clone(),
+                Peak::new(
+                    reader_shared_footprint(&census, selected, indexes),
+                    first_hour - 1,
+                ),
+            )
+        })
+        .collect();
+    let mut shared_reader_union = Peak::new(
+        reader_shared_footprint(&census, &resolved.shared_union, &union_indexes),
+        first_hour - 1,
+    );
+    let mut reader_auxiliary_peak_bytes = census.values[layout.reader_auxiliary];
+    let mut families_fallback: BTreeMap<_, _> = resolved
+        .manifest
+        .families
+        .iter()
+        .enumerate()
+        .map(|(at, family)| {
+            (
+                family.name.clone(),
+                Peak::new(
+                    fallback_footprint(&census, &resolved.families[at], &resolved.primary[at]),
+                    first_hour - 1,
+                ),
+            )
+        })
+        .collect();
+    let whole_shared: Vec<Vec<_>> = resolved
+        .shared
+        .iter()
+        .map(|s| s.iter().map(full).collect())
+        .collect();
+    let mut shared_whole: BTreeMap<_, _> = resolved
+        .manifest
+        .shared
+        .iter()
+        .zip(&whole_shared)
+        .zip(&owner_indexes)
+        .map(|((owner, s), indexes)| {
+            (
+                owner.name.clone(),
+                Peak::new(shared_footprint(&census, s, indexes), first_hour - 1),
+            )
+        })
+        .collect();
+    let mut shared_union = Peak::new(
+        shared_footprint(&census, &resolved.shared_union, &union_indexes),
+        first_hour - 1,
+    );
+    let mut shared_without_trigger = Peak::new(
+        shared_footprint(
+            &census,
+            &resolved.shared_without_trigger,
+            &without_trigger_indexes,
+        ),
+        first_hour - 1,
+    );
     let whole_families: Vec<_> = resolved
         .manifest
         .families
@@ -252,6 +433,9 @@ pub fn measure(
         })
         .collect();
     let mut union = Peak::new(census.footprint(&resolved.union), first_hour - 1);
+    let mut union_reader = Peak::new(census.reader_footprint(&resolved.union), first_hour - 1);
+    let mut declared_reader =
+        Peak::new(census.reader_footprint(&resolved.declared), first_hour - 1);
     let mut declared_only = Peak::new(census.footprint(&resolved.declared), first_hour - 1);
     let mut checkpoints = vec![encoding::checkpoint(
         &state,
@@ -264,11 +448,45 @@ pub fn measure(
         .families
         .iter()
         .zip(&resolved.families)
-        .filter(|(f, _)| f.ordered)
-        .map(|(f, s)| {
+        .zip(&resolved.readsets)
+        .filter(|((f, _), _)| f.ordered)
+        .map(|((f, s), readset)| {
             let mut spool = Spool::new(&folder.join(format!("{}.spool", f.name)), s)?;
+            let mut filtered = Spool::filtered(
+                &folder.join(format!("{}.filtered.spool", f.name)),
+                readset
+                    .as_ref()
+                    .ok_or_else(|| invalid("Ordered family lacks a read set"))?,
+                format,
+                cache,
+            )?;
             spool.restored(&state, first_hour - 1)?;
-            Ok((f.name.clone(), spool))
+            filtered.restored(&state, first_hour - 1)?;
+            let hours = match f.name.as_str() {
+                "politics_ledger" => Some(crate::readset::Hours::LedgerDated),
+                "projects" if projects_scoped == Some(true) => {
+                    Some(crate::readset::Hours::ScopedProjects)
+                }
+                _ => None,
+            };
+            let upper_bound = hours
+                .map(|hours| {
+                    let trigger = resolved
+                        .manifest
+                        .shared
+                        .iter()
+                        .position(|owner| owner.name == "trigger-context")
+                        .ok_or_else(|| invalid("Missing trigger-context owner"))?;
+                    let whole: Vec<_> = resolved.shared[trigger].iter().map(full).collect();
+                    Spool::filtered(
+                        &folder.join(format!("{}.trigger-context-upper-bound.spool", f.name)),
+                        &crate::readset::ReadSet::upper_bound(&whole, hours),
+                        format,
+                        cache,
+                    )
+                })
+                .transpose()?;
+            Ok((f.name.clone(), spool, filtered, upper_bound))
         })
         .collect::<io::Result<_>>()?;
     let trace = folder.join("census.bin");
@@ -290,6 +508,8 @@ pub fn measure(
             census.values[target] = census.values[source];
         }
         census.observe(state, false)?;
+        reader_auxiliary_peak_bytes =
+            reader_auxiliary_peak_bytes.max(census.values[layout.reader_auxiliary]);
         for (at, (relation, index)) in resolved.relations.iter().zip(&mut indexes).enumerate() {
             let start = cpu::cycles()?;
             index.update(relation, state, false)?;
@@ -302,8 +522,22 @@ pub fn measure(
         }
         trace_writer.snapshot(manifest.hour, &census.values)?;
         reverse_peak_bytes = reverse_peak_bytes.max(indexes.iter().map(|i| i.size.bytes).sum());
-        previous_peak_bytes =
-            previous_peak_bytes.max(layout.previous.values().map(|&at| census.values[at]).sum());
+        previous_peak_bytes = previous_peak_bytes.max(
+            layout
+                .previous
+                .iter()
+                .filter(|(source, _)| **source < layout.field_dimensions())
+                .map(|(_, &at)| census.values[at])
+                .sum(),
+        );
+        previous_reader_peak_bytes = previous_reader_peak_bytes.max(
+            layout
+                .previous
+                .iter()
+                .filter(|(source, _)| **source >= layout.field_dimensions())
+                .map(|(_, &at)| census.values[at])
+                .sum(),
+        );
         for selected in &resolved.union {
             let report = tables.get_mut(&format!("{:?}", selected.table)).unwrap();
             let declared: Vec<_> = resolved
@@ -319,6 +553,10 @@ pub fn measure(
                 report.named_peak_status = status;
             }
             report.named.observe(named, manifest.hour);
+            report.reader_allocation.observe(
+                census.reader_footprint(std::slice::from_ref(selected)),
+                manifest.hour,
+            );
             report
                 .declared_only
                 .observe(census.footprint(&declared), manifest.hour);
@@ -335,12 +573,71 @@ pub fn measure(
                 .unwrap()
                 .observe(census.footprint(selected), manifest.hour);
         }
-        for (owner, selected) in resolved.manifest.shared.iter().zip(&resolved.shared) {
+        for (at, family) in resolved.manifest.families.iter().enumerate() {
+            families_private_reader
+                .get_mut(&family.name)
+                .unwrap()
+                .observe(
+                    census.reader_footprint(&resolved.private[at]),
+                    manifest.hour,
+                );
+            families_primary
+                .get_mut(&family.name)
+                .unwrap()
+                .observe(census.footprint(&resolved.primary[at]), manifest.hour);
+            families_private
+                .get_mut(&family.name)
+                .unwrap()
+                .observe(census.footprint(&resolved.private[at]), manifest.hour);
+            families_fallback.get_mut(&family.name).unwrap().observe(
+                fallback_footprint(&census, &resolved.families[at], &resolved.primary[at]),
+                manifest.hour,
+            );
+        }
+        for ((owner, selected), indexes) in resolved
+            .manifest
+            .shared
+            .iter()
+            .zip(&resolved.shared)
+            .zip(&owner_indexes)
+        {
+            shared_reader.get_mut(&owner.name).unwrap().observe(
+                reader_shared_footprint(&census, selected, indexes),
+                manifest.hour,
+            );
             shared
                 .get_mut(&owner.name)
                 .unwrap()
-                .observe(census.footprint(selected), manifest.hour);
+                .observe(shared_footprint(&census, selected, indexes), manifest.hour);
         }
+        for ((owner, selected), indexes) in resolved
+            .manifest
+            .shared
+            .iter()
+            .zip(&whole_shared)
+            .zip(&owner_indexes)
+        {
+            shared_whole
+                .get_mut(&owner.name)
+                .unwrap()
+                .observe(shared_footprint(&census, selected, indexes), manifest.hour);
+        }
+        shared_reader_union.observe(
+            reader_shared_footprint(&census, &resolved.shared_union, &union_indexes),
+            manifest.hour,
+        );
+        shared_union.observe(
+            shared_footprint(&census, &resolved.shared_union, &union_indexes),
+            manifest.hour,
+        );
+        shared_without_trigger.observe(
+            shared_footprint(
+                &census,
+                &resolved.shared_without_trigger,
+                &without_trigger_indexes,
+            ),
+            manifest.hour,
+        );
         let union_bytes = census.footprint(&whole_union).bytes;
         for (name, selected) in &whole_families {
             let value = census.footprint(selected);
@@ -352,10 +649,16 @@ pub fn measure(
             peak.observe(value, manifest.hour);
         }
         union.observe(census.footprint(&resolved.union), manifest.hour);
+        union_reader.observe(census.reader_footprint(&resolved.union), manifest.hour);
+        declared_reader.observe(census.reader_footprint(&resolved.declared), manifest.hour);
         declared_only.observe(census.footprint(&resolved.declared), manifest.hour);
         let supplied = reads.supplied(manifest);
-        for (_, spool) in &mut spools {
+        for (_, spool, filtered, upper_bound) in &mut spools {
             spool.hour(state, manifest, first, &supplied)?;
+            filtered.hour(state, manifest, first, &supplied)?;
+            if let Some(upper_bound) = upper_bound {
+                upper_bound.hour(state, manifest, first, &supplied)?;
+            }
         }
         before = cpu::cycles()?;
         Ok(true)
@@ -375,7 +678,16 @@ pub fn measure(
     )?);
     let spools = spools
         .into_iter()
-        .map(|(name, spool)| Ok((name, spool.finish()?)))
+        .map(|(name, spool, filtered, upper_bound)| {
+            Ok((
+                name,
+                Spools {
+                    full: spool.finish()?,
+                    filtered: filtered.finish()?,
+                    trigger_context_upper_bound: upper_bound.map(Spool::finish).transpose()?,
+                },
+            ))
+        })
         .collect::<io::Result<_>>()?;
     Ok(SegmentReport {
         index,
@@ -388,18 +700,32 @@ pub fn measure(
         timing,
         tables,
         families,
+        families_primary,
+        families_fallback,
+        families_private,
+        families_private_reader,
         shared,
+        shared_whole,
+        shared_reader,
+        shared_reader_union,
+        shared_union,
+        shared_without_trigger,
         code_families_whole,
         code_families_union_share,
         union,
+        union_reader,
+        declared_reader,
         declared_only,
         reverse,
         checkpoints,
         restore_checkpoint_verification: None,
         spools,
+        spool_index_cache: cache.size(),
         dictionary_peak_bytes: census.dictionary_peak,
+        reader_auxiliary_peak_bytes,
         reverse_peak_bytes,
         previous_peak_bytes,
+        previous_reader_peak_bytes,
         actual_table_storage_peaks: census
             .held_peak
             .into_iter()
@@ -428,6 +754,9 @@ pub fn timed_walk(recording: &Recording, segment: &Segment) -> io::Result<Timing
     })?;
     timing.tail_cycles = cpu::cycles()?.wrapping_sub(before);
     timing.hourly_decode_apply_cycles += timing.tail_cycles;
+    if timing.hours != u64::from(segment.last) - u64::from(segment.first) + 1 {
+        return Err(invalid("Timed walker delivered a short segment"));
+    }
     Ok(timing)
 }
 
@@ -498,6 +827,7 @@ pub struct Admission {
 pub struct Permit<'a> {
     admission: &'a Admission,
     bytes: u64,
+    spool_cache_bytes: u64,
 }
 
 impl Admission {
@@ -534,10 +864,27 @@ impl Admission {
         Ok(Permit {
             admission: self,
             bytes,
+            spool_cache_bytes: 0,
         })
     }
     pub fn union(&self) -> io::Result<Permit<'_>> {
         self.enter(TOOL_READER_BUDGET)
+    }
+}
+
+impl Permit<'_> {
+    pub fn spool_cache(&mut self) -> io::Result<crate::keyset::Cache> {
+        if self.bytes != TOOL_READER_BUDGET || self.spool_cache_bytes != 0 {
+            return Err(invalid(
+                "Spool scratch cache requires an unpartitioned exclusive union permit",
+            ));
+        }
+        self.spool_cache_bytes = spool_cache_allowance();
+        crate::keyset::Cache::reserved(
+            "spool scratch page cache",
+            usize::try_from(self.spool_cache_bytes)
+                .map_err(|_| invalid("Spool cache exceeds address space"))?,
+        )
     }
 }
 
@@ -569,6 +916,28 @@ impl Boundaries {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
+    #[test]
+    fn restore_cost_uses_each_segments_real_length() {
+        let mut short = Timing {
+            restore_cycles: 64_800_000,
+            hours: 720,
+            ..Timing::default()
+        };
+        let mut long = Timing {
+            hours: 2160,
+            ..short.clone()
+        };
+        short.calibrate(1_000_000_000.0);
+        long.calibrate(1_000_000_000.0);
+        assert_eq!(short.restore_us, Some(64_800.0));
+        assert_eq!(long.restore_us, short.restore_us);
+        assert_eq!(short.restore_us_per_hour, Some(90.0));
+        assert_eq!(long.restore_us_per_hour, Some(30.0));
+        let mut empty = Timing::default();
+        empty.calibrate(1_000_000_000.0);
+        assert_eq!(empty.restore_us_per_hour, None);
+    }
+
     #[test]
     fn fifty_three_contiguous_segments_have_fifty_four_boundaries() {
         let mut boundaries = Boundaries::default();
