@@ -157,7 +157,8 @@ pub(super) fn target(permission: u32) -> Target {
         0x019d_3480 => &[R(0x40, Group), A(0x28, Wing)],
         0x019d_36c0 | 0x01c3_7d60 | 0x01f6_b880 | 0x01f6_b990 => &[R(0x28, CountryReference)],
         0x019d_3510 => &[R(0x28, AirGroup)],
-        0x01b1_3e00 | 0x01b1_3ee0 => &[R(0x28, TheatreGroup)],
+        0x01b1_3e00 => &[R(0x28, TheatreGroup), A(0x30, Group)],
+        0x01b1_3ee0 => &[R(0x28, TheatreGroup)],
         0x01b1_3f50 => &[R(0x28, NavalTheatreGroup)],
         0x01b1_3fc0 => &[Country(0x28)],
         0x01bc_5190 => &[R(0x28, Raid)],
@@ -258,4 +259,24 @@ pub(super) fn objects(image: &PeImage) -> io::Result<Vec<(u32, u32)>> {
         return Err(invalid("command operand identities missing"));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theatre_group_assignment_alone_falls_back_to_orders_group_owners() {
+        assert!(matches!(
+            target(0x01b1_3e00),
+            Target::Sources([
+                Source::Reference(0x28, Object::TheatreGroup),
+                Source::References(0x30, Object::Group),
+            ])
+        ));
+        assert!(matches!(
+            target(0x01b1_3ee0),
+            Target::Sources([Source::Reference(0x28, Object::TheatreGroup)])
+        ));
+    }
 }

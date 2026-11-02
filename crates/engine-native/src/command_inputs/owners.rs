@@ -76,12 +76,13 @@ pub enum Resolution {
     Unknown,
 }
 
-struct Reader<'a, M> {
+struct Reader<'a, M, F> {
     memory: &'a M,
     base: usize,
     state: usize,
     inputs: &'a Inputs,
     registry: HeaderResolver,
+    object_identity: F,
 }
 
 fn field<T: crate::memory::Raw>(
@@ -96,30 +97,36 @@ fn field<T: crate::memory::Raw>(
         .ok_or("command owner field unreadable or overflowing")
 }
 
-impl<M: Memory> Reader<'_, M> {
+impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
     fn object(&self, pointer: usize, expected: Object) -> Result<u32, &'static str> {
         let vtable = field::<u64>(self.memory, pointer, 0)?;
         let relative = vtable
             .checked_sub(self.base as u64)
             .and_then(|rva| u32::try_from(rva).ok())
             .ok_or("command owner identity outside module")?;
-        if !engine_executable::executable_tables::get()
-            .commands
-            .object(relative, expected)
-        {
+        if !(self.object_identity)(relative, expected) {
             return Err("command owner object type unsupported");
         }
         Ok(relative)
     }
 
     fn reference(&mut self, handle: u64, expected: Object) -> Result<Option<usize>, &'static str> {
-        if handle == 0 {
-            return Ok(None);
+        let pointer = self.resolve_reference(handle, expected)?;
+        if pointer.is_none() && handle != 0 {
+            Err("command owner reference absent")
+        } else {
+            Ok(pointer)
         }
-        let reference = self
-            .registry
-            .resolve(self.memory, self.base, handle)?
-            .ok_or("command owner reference absent")?;
+    }
+
+    fn resolve_reference(
+        &mut self,
+        handle: u64,
+        expected: Object,
+    ) -> Result<Option<usize>, &'static str> {
+        let Some(reference) = self.registry.resolve(self.memory, self.base, handle)? else {
+            return Ok(None);
+        };
         let pointer = reference
             .checked_sub(expected.secondary())
             .ok_or("command owner base underflow")?;
@@ -165,11 +172,16 @@ impl<M: Memory> Reader<'_, M> {
             NavalTheatreGroup => {
                 self.country_pointer(field::<u64>(self.memory, pointer, 0x18)? as usize)?
             }
-            Raid => self.country_pointer(field::<u64>(
-                self.memory,
-                pointer,
-                crate::craid_instance::OWNER_OBJECT,
-            )? as usize)?,
+            Raid => {
+                use crate::ccountry_raid_status as status;
+                let owner = field::<u64>(self.memory, pointer, crate::craid_instance::OWNER_OBJECT)?
+                    as usize;
+                if field::<u64>(self.memory, owner, 0)? != (self.base + status::VTABLE_RVA) as u64 {
+                    return Err("command raid status identity mismatch");
+                }
+                let country = field::<i32>(self.memory, owner, status::COUNTRY)?;
+                return Ok((country > 0).then_some(country as u32));
+            }
             ProductionLine => {
                 let status = field::<u64>(
                     self.memory,
@@ -270,7 +282,11 @@ impl<M: Memory> Reader<'_, M> {
                     .ok_or("command owner list overflow")?,
             )
             .ok_or("command owner handle unreadable")?;
-            if let Some(country) = self.referenced_owner(handle, object)? {
+            // Execute slots skip list references that vanished after the command was posted.
+            let Some(pointer) = self.resolve_reference(handle, object)? else {
+                continue;
+            };
+            if let Some(country) = self.owner(pointer, object)? {
                 if owner == Some(country) {
                     continue;
                 }
@@ -465,9 +481,7 @@ impl<M: Memory> Reader<'_, M> {
                 } else {
                     let identity = self.object(pointer, object)?;
                     if object == Object::DiplomaticAction
-                        && engine_executable::executable_tables::get()
-                            .commands
-                            .object(identity, Object::MarketAccessRequest)
+                        && (self.object_identity)(identity, Object::MarketAccessRequest)
                         && field::<u8>(self.memory, pointer, 0x78)? == 0
                     {
                         return Ok(Resolution::Automatic);
@@ -515,6 +529,33 @@ impl<M: Memory> Reader<'_, M> {
             .filter(|&country| country != 0)
             .map_or(Resolution::Unknown, Resolution::Country))
     }
+
+    fn target(
+        &mut self,
+        command: usize,
+        target: Target,
+        player: i32,
+        actor_country: u32,
+    ) -> Result<Resolution, &'static str> {
+        let source = match target {
+            Target::Unknown => return Ok(Resolution::Unknown),
+            Target::Country(offset) => Source::Country(offset),
+            Target::Group(offset) => Source::Reference(offset, Object::Group),
+            Target::Unit(offset) => Source::Reference(offset, Object::Unit),
+            Target::Units(offset) => Source::References(offset, Object::Unit),
+            Target::Wings(offset) => Source::References(offset, Object::Wing),
+            Target::Sources(sources) => {
+                for &source in sources {
+                    let result = self.source(command, source, player, actor_country)?;
+                    if result != Resolution::Unknown {
+                        return Ok(result);
+                    }
+                }
+                return Ok(Resolution::Unknown);
+            }
+        };
+        self.source(command, source, player, actor_country)
+    }
 }
 
 pub fn target(
@@ -533,31 +574,25 @@ pub fn target(
         state,
         inputs,
         registry: HeaderResolver::default(),
+        object_identity: |identity, object| {
+            engine_executable::executable_tables::get()
+                .commands
+                .object(identity, object)
+        },
     };
-    let source = match target {
-        Target::Unknown => return Ok(Resolution::Unknown),
-        Target::Country(offset) => Source::Country(offset),
-        Target::Group(offset) => Source::Reference(offset, Object::Group),
-        Target::Unit(offset) => Source::Reference(offset, Object::Unit),
-        Target::Units(offset) => Source::References(offset, Object::Unit),
-        Target::Wings(offset) => Source::References(offset, Object::Wing),
-        Target::Sources(sources) => {
-            for &source in sources {
-                let result = reader.source(command, source, player, actor_country)?;
-                if result != Resolution::Unknown {
-                    return Ok(result);
-                }
-            }
-            return Ok(Resolution::Unknown);
-        }
-    };
-    reader.source(command, source, player, actor_country)
+    reader.target(command, target, player, actor_country)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{corders_group, craid_instance, ctheater_group, ctheatre};
     use std::collections::BTreeMap;
+
+    const BASE: usize = 0x1_0000_0000;
+    const STATE: usize = 0x1000;
+    const COMMAND: usize = 0x2000;
+    const PRODUCTION_LINE_IDENTITY: usize = 0x100;
 
     #[derive(Default)]
     struct Bytes(BTreeMap<usize, u8>);
@@ -571,6 +606,49 @@ mod tests {
                     .map(|(offset, &byte)| (at + offset, byte)),
             );
         }
+
+        fn u32(&mut self, at: usize, value: u32) {
+            self.put(at, &value.to_le_bytes());
+        }
+
+        fn u64(&mut self, at: usize, value: u64) {
+            self.put(at, &value.to_le_bytes());
+        }
+
+        fn array(&mut self, at: usize, data: usize, count: u32) {
+            self.u64(at, data as u64);
+            self.u32(at + 8, count);
+            self.u32(at + 12, count);
+        }
+
+        fn references(&mut self, table: usize, references: &[(u64, usize)]) {
+            use crate::{creference_registry as registry, reference_bucket as bucket};
+            let kind = references[0].0 as u32;
+            assert!(kind < registry::LOW_ROOT_COUNT);
+            let entries = table + 0x100;
+            self.u64(
+                BASE + registry::LOW_ROOTS_RVA + kind as usize * 8,
+                table as u64,
+            );
+            self.u64(table + registry::ENTRIES, entries as u64);
+            self.u32(table + registry::COUNT, references.len() as u32);
+            self.u32(table + registry::MASK, 7);
+            self.put(table + registry::OVERFLOW_DISTANCE, &[5]);
+            self.put(entries, &[0; 14 * bucket::STRIDE]);
+            self.put(entries + 13 * bucket::STRIDE + bucket::DISTANCE, &[255]);
+            for &(handle, pointer) in references {
+                assert_eq!(handle as u32, kind);
+                let hash = handle
+                    .rotate_left(32)
+                    .wrapping_mul(registry::HASH_MULTIPLIER);
+                let index = (((hash >> 32) as u32 ^ hash as u32) & 7) as usize;
+                let at = entries + index * bucket::STRIDE;
+                assert_eq!(self.0[&(at + bucket::DISTANCE)], 0);
+                self.put(at + bucket::DISTANCE, &[1]);
+                self.u64(at + bucket::TYPE, handle);
+                self.u64(at + bucket::OBJECT, pointer as u64);
+            }
+        }
     }
 
     impl Memory for Bytes {
@@ -582,6 +660,175 @@ mod tests {
                 *byte = *value;
             }
             true
+        }
+    }
+
+    fn reader<'a>(
+        memory: &'a Bytes,
+        inputs: &'a Inputs,
+    ) -> Reader<'a, Bytes, impl Fn(u32, Object) -> bool> {
+        Reader {
+            memory,
+            base: BASE,
+            state: STATE,
+            inputs,
+            registry: HeaderResolver::default(),
+            object_identity: |identity, object| {
+                let expected = match object {
+                    Object::Group => corders_group::VTABLE_RVA,
+                    Object::Theatre => ctheatre::VTABLE_RVA,
+                    Object::TheatreGroup => ctheater_group::VTABLE_RVA,
+                    Object::Raid => craid_instance::VTABLE_RVA,
+                    Object::ProductionLine => PRODUCTION_LINE_IDENTITY,
+                    _ => return false,
+                };
+                identity as usize == expected
+            },
+        }
+    }
+
+    #[test]
+    fn null_theatre_groups_fall_back_to_orders_groups_and_present_groups_take_precedence() {
+        let inputs = Inputs::default();
+        let target = Target::Sources(&[
+            Source::Reference(0x28, Object::TheatreGroup),
+            Source::References(0x30, Object::Group),
+        ]);
+        let resolve = |memory: &Bytes| reader(memory, &inputs).target(COMMAND, target, 1, 1);
+        let mut memory = Bytes::default();
+        let groups = [
+            (1u64 << 32) | u64::from(corders_group::REFERENCE_TYPE),
+            (2u64 << 32) | u64::from(corders_group::REFERENCE_TYPE),
+        ];
+        memory.u64(COMMAND + 0x28, 0);
+        memory.array(COMMAND + 0x30, 0x3000, 2);
+        for (index, handle) in groups.into_iter().enumerate() {
+            let pointer = 0x4000 + index * 0x1000;
+            memory.u64(0x3000 + index * 8, handle);
+            memory.u64(pointer, (BASE + corders_group::VTABLE_RVA) as u64);
+            memory.u64(pointer + corders_group::HANDLE, handle);
+            memory.u32(pointer + corders_group::COUNTRY, 1);
+        }
+        memory.references(0x1_0000, &[(groups[0], 0x4000), (groups[1], 0x5000)]);
+        memory.array(STATE + cgame_state::COUNTRIES, 0x8000, 4);
+        memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x9000, 4);
+        memory.u64(0x8000 + 8, 0xa000);
+        memory.u64(0x8000 + 24, 0xb000);
+        for (raw, slot) in [(1, 1), (2, 1), (3, 3)] {
+            memory.u32(0x9000 + raw * 4, slot);
+        }
+        for (pointer, country) in [(0xa000, 1), (0xb000, 3)] {
+            memory.u64(pointer, (BASE + ccountry::VTABLE_RVA) as u64);
+            memory.u32(pointer + ccountry::ID, country);
+        }
+        assert_eq!(resolve(&memory), Ok(Resolution::Country(1)));
+
+        memory.u32(0x5000 + corders_group::COUNTRY, 2);
+        assert_eq!(resolve(&memory), Ok(Resolution::Country(2)));
+        memory.u32(0x5000 + corders_group::COUNTRY, 3);
+        assert_eq!(
+            resolve(&memory),
+            Err("command has different acting countries")
+        );
+
+        let theatre_group = (1u64 << 32) | u64::from(ctheater_group::REFERENCE_TYPE);
+        memory.references(0x1_1000, &[(theatre_group, 0x6000)]);
+        memory.u64(COMMAND + 0x28, theatre_group);
+        memory.u64(0x6000, (BASE + ctheater_group::VTABLE_RVA) as u64);
+        memory.u64(0x6000 + ctheater_group::HANDLE, theatre_group);
+        memory.u64(0x6000 + ctheater_group::THEATRE, 0x7000);
+        memory.u64(0x7000, (BASE + ctheatre::VTABLE_RVA) as u64);
+        memory.u32(0x7000 + ctheatre::OWNER, 3);
+        assert_eq!(resolve(&memory), Ok(Resolution::Country(3)));
+
+        memory.u64(COMMAND + 0x28, 0);
+        memory.array(COMMAND + 0x30, 0, 0);
+        assert_eq!(resolve(&memory), Ok(Resolution::Unknown));
+    }
+
+    #[test]
+    fn production_line_lists_skip_absent_references_and_validate_present_objects() {
+        use crate::{cproduction_line as line, cproduction_status as status};
+        let inputs = Inputs::default();
+        let target = Target::Sources(&[Source::References(0x28, Object::ProductionLine)]);
+        let resolve = |memory: &Bytes| reader(memory, &inputs).target(COMMAND, target, 1, 1);
+        let mut memory = Bytes::default();
+        let handles = [(1u64 << 32) | 1, (2u64 << 32) | 1, (3u64 << 32) | 1];
+        memory.references(0x1_0000, &[(handles[1], 0x4000)]);
+        memory.array(COMMAND + 0x28, 0x3000, 2);
+        memory.u64(0x3000, handles[0]);
+        memory.u64(0x3008, handles[1]);
+        memory.u64(0x4000, (BASE + PRODUCTION_LINE_IDENTITY) as u64);
+        memory.u64(0x4000 + line::REFERENCE_TYPE, handles[1]);
+        memory.u64(0x4000 + line::PRODUCTION_STATUS, 0x5000);
+        memory.u64(0x5000 + status::COUNTRY, 0x6000);
+        memory.u64(0x6000, (BASE + ccountry::VTABLE_RVA) as u64);
+        memory.u32(0x6000 + ccountry::ID, 1);
+        memory.array(STATE + cgame_state::COUNTRIES, 0x8000, 2);
+        memory.array(STATE + cgame_state::COUNTRY_LINKS, 0x9000, 2);
+        memory.u64(0x8008, 0x6000);
+        memory.u32(0x9004, 1);
+        assert_eq!(resolve(&memory), Ok(Resolution::Country(1)));
+
+        memory.u64(0x3008, handles[2]);
+        assert_eq!(resolve(&memory), Ok(Resolution::Unknown));
+
+        memory.u64(COMMAND + 0x40, handles[0]);
+        assert_eq!(
+            reader(&memory, &inputs).source(
+                COMMAND,
+                Source::Reference(0x40, Object::ProductionLine),
+                1,
+                1,
+            ),
+            Err("command owner reference absent")
+        );
+
+        memory.u64(0x3008, handles[1]);
+        memory.u64(0x4000, (BASE + corders_group::VTABLE_RVA) as u64);
+        assert_eq!(
+            resolve(&memory),
+            Err("command owner object type unsupported")
+        );
+
+        memory.u64(0x4000, (BASE + PRODUCTION_LINE_IDENTITY) as u64);
+        memory.u64(0x4000 + line::REFERENCE_TYPE, handles[0]);
+        assert_eq!(
+            resolve(&memory),
+            Err("command owner reference identity mismatch")
+        );
+    }
+
+    #[test]
+    fn raid_owners_require_a_raid_status_and_a_positive_signed_country() {
+        use crate::ccountry_raid_status as status;
+        let inputs = Inputs::default();
+        let target = Target::Sources(&[Source::Reference(0x28, Object::Raid)]);
+        let resolve = |memory: &Bytes| reader(memory, &inputs).target(COMMAND, target, 1, 1);
+        let mut memory = Bytes::default();
+        let handle = (1u64 << 32) | u64::from(craid_instance::REFERENCE_TYPE_VALUE);
+        memory.references(0x1_0000, &[(handle, 0x4000)]);
+        memory.u64(COMMAND + 0x28, handle);
+        memory.u64(0x4000, (BASE + craid_instance::VTABLE_RVA) as u64);
+        memory.u64(0x4000 + craid_instance::REFERENCE_TYPE, handle);
+        memory.u64(0x4000 + craid_instance::OWNER_OBJECT, 0x5000);
+        memory.u64(0x5000, (BASE + status::VTABLE_RVA) as u64);
+        memory.u32(0x5000 + status::COUNTRY, 7);
+        assert_eq!(resolve(&memory), Ok(Resolution::Country(7)));
+
+        memory.u64(0x5000, (BASE + ccountry::VTABLE_RVA) as u64);
+        assert_eq!(
+            resolve(&memory),
+            Err("command raid status identity mismatch")
+        );
+        memory.u64(0x5000, (BASE + status::VTABLE_RVA) as u64);
+        for country in [0, -1, i32::MIN] {
+            memory.put(0x5000 + status::COUNTRY, &country.to_le_bytes());
+            assert_eq!(
+                reader(&memory, &inputs).owner(0x4000, Object::Raid),
+                Ok(None)
+            );
+            assert_eq!(resolve(&memory), Ok(Resolution::Unknown));
         }
     }
 
@@ -678,6 +925,7 @@ mod tests {
             state: 0x6000,
             inputs: &inputs,
             registry: HeaderResolver::default(),
+            object_identity: |_, _| false,
         };
         assert_eq!(reader.building(2, 8).unwrap(), Some(7));
         assert_eq!(reader.building(1, 8).unwrap(), None);

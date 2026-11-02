@@ -22,7 +22,7 @@ pub const PREPARATION_HOURS: usize = 0x44;
 /// phase-4 hour. Elapsed hours divide it by that speed; serialization emits
 /// `distance` only when nonzero.
 pub const DISTANCE: usize = 0x50;
-/// Owner-object pointer; country handle is in the owner object, class unresolved.
+/// Owning country raid-status pointer ([`crate::ccountry_raid_status`]).
 pub const OWNER_OBJECT: usize = 0x58;
 /// Embedded variables object.
 pub const VARIABLES: usize = 0x60;
