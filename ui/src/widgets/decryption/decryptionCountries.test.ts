@@ -168,7 +168,7 @@ test('actual cipher labels read the held timeline, wait only for new flags to be
     currentTrack = { ...currentTrack, branch: { ...currentTrack.branch, gaps: [{ firstHour: 130, lastHour: 130, reason: 'Synthetic recording gap' }] } };
     view = render(130); await settle();
     assert.equal(view.labels.pair(view.row).owner.flag, undefined, 'branch gaps cannot authenticate an old native tag segment');
-    assert.equal(view.labels.pair(view.row).owner.flagPending, false);
+    assert.ok(!view.labels.pair(view.row).owner.flagPending);
     currentTrack = { ...currentTrack, branch: { ...currentTrack.branch, gaps: [] } };
     const unnamed = { ...data, pairs: data.pairs.map(pair => ({ ...pair, tagRuns: [
       { firstHour: 100, lastHour: 150, ownerTag: null, targetTag: null },
