@@ -13,6 +13,7 @@ import { createWidget } from '../dashboard/model';
 import type { CountrySelection, WidgetSpec, WidgetTime } from '../dashboard/model';
 import type { OptionValue } from '../dashboard/options';
 import { PlaybackController } from '../dashboard/playback';
+import { forgetProducts } from '../dashboard/products';
 import type { DashboardClient, ProductReply, ProductRequest } from '../dashboard/client';
 import type { BranchMetadata, CountryGroupReply, CountryStyle, FactionDetailReply } from '../generated/dashboard';
 import { definition as pooledDefinition } from './faction-pooled-strength/definition';
@@ -157,7 +158,7 @@ export const fixture = {
     for (let i = 0; i < 6; i++) { await settle(); await later(); }
   },
   async release() { holding = false; const waiting = held; held = []; for (const resolve of waiting) resolve(); await settle(); },
-  reset() { requests.length = 0; },
+  reset() { forgetProducts(client, 'synthetic'); requests.length = 0; },
   members: () => [...host.querySelectorAll('tbody tr')].map(row => row.querySelector('td')?.textContent?.trim() ?? ''),
   /** What the widget shows (loading states by their spoken label), else why it shows nothing. */
   text: () => `${[...host.querySelectorAll('[role="status"][aria-label]')].map(item => item.getAttribute('aria-label')).join(' ')}${host.textContent || errors.join(' | ')} [${notes.join(' | ')}]`,

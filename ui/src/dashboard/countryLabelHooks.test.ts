@@ -129,6 +129,7 @@ test('actual dated lane and hover hooks retain empty names without widening requ
     const old = a.calls.filter(call => call.input.product === 'country-styles').at(-1)!, b = transport();
     lane = renderLane(51, visible, b.client); fixture.commit();
     assert.equal(lane.country(visible[0]).name, 'Loading name…');
+    await settle();
     assert.equal(old.signal.aborted, true);
     old.answer({ styles: [{ tag: visible[0], name: 'Old client name', color: null }] }); await settle();
     assert.equal(renderLane(51, visible, b.client).country(visible[0]).name, 'Loading name…', 'another client never shows the old client’s answer');
@@ -172,6 +173,7 @@ test('actual dated lane and hover hooks retain empty names without widening requ
     assert.equal(alias.country('A').flagPending, false, 'an uncertified sample is not a request for the new holder');
     fixture.commit();
     assert.equal(timers.size, 1, 'the production throttle is still awaiting its next sample');
+    await settle();
     assert.equal(delayed.signal.aborted, true);
     answerAlias(11, 'Late old A'); await settle();
     assert.equal(renderAlias(20).country('A').name, 'Country name unavailable', 'late old-holder replies cannot restore a look');
