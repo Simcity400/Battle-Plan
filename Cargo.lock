@@ -2280,6 +2280,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-indexes"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+ "replay-data",
+ "replay-identity",
+ "test-unify",
+]
+
+[[package]]
 name = "core-spool"
 version = "0.1.0"
 dependencies = [
@@ -9894,6 +9904,7 @@ dependencies = [
  "bytemuck",
  "engine-allocation",
  "engine-executable",
+ "foldhash 0.2.0",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
@@ -10630,7 +10641,6 @@ dependencies = [
  "cfg-if",
  "crossbeam-utils",
  "either",
- "foldhash 0.2.0",
  "memchr",
  "num-traits",
  "proc-macro2",
