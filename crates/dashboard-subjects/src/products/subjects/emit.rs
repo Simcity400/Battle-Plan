@@ -251,7 +251,7 @@ impl Emit {
             ));
         }
         self.last = Some(at);
-        self.first.get_or_insert(at);
+        self.first.get_or_insert(gap.unwrap_or(at));
         let [unobserved, starts] = self.family(writer)?;
         let observed = self
             .scan

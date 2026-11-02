@@ -534,8 +534,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["subjects"],
         queries: &["subjects", "event-feed"],
         gates: &["subjects"],
-        // 2: relations on the segment driver, published as a series root.
-        version: 2,
+        // 3: known coverage includes unobserved runs across recording gaps.
+        version: 3,
         ..family("subjects")
     },
     Descriptor {
