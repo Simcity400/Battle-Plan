@@ -485,6 +485,129 @@ fn rules(source: &Source, files: &Fixture, faction: &str, last: i32) -> FactionR
     }
 }
 #[test]
+fn shared_upgrade_group_refusals_count_runs_apart_from_member_and_minimum_selections() {
+    let mut first = frame(100);
+    *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        [(101, 7, b"mod_a"), (102, 8, b"mod_b")]
+            .into_iter()
+            .map(|(id, canonical_slot, tag)| CountryRow {
+                id,
+                canonical_slot,
+                tag: tag.to_vec(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *first.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(11, 7), (12, 8), (101, 7), (102, 8)]
+            .into_iter()
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .collect(),
+    ));
+    *first.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(
+            [(11, 0), (12, 1)]
+                .into_iter()
+                .map(|(country, ordinal)| FactionMemberRow {
+                    country,
+                    faction: 9,
+                    ordinal,
+                })
+                .collect(),
+        ));
+    *first.tables[TableId::FactionAccounts.index()] =
+        TableView::Complete(TableRows::FactionAccounts(
+            [(3, 101), (4, 102)]
+                .into_iter()
+                .map(|(account, country)| FactionAccountRow {
+                    account,
+                    country,
+                    influence_faction: 9,
+                    upgrade_groups: vec![1],
+                    upgrade_tokens: vec![2],
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *first.tables[TableId::FactionMinimumUpgrades.index()] =
+        TableView::Complete(TableRows::FactionMinimumUpgrades(vec![
+            FactionMinimumUpgradeRow {
+                faction: 9,
+                ordinal: 0,
+                group: 1,
+                token: 2,
+            },
+        ]));
+    *first.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        [
+            (1, "mod_group"),
+            (2, "mod_upgrade"),
+            (3, "mod_other_upgrade"),
+        ]
+        .into_iter()
+        .map(|(token, literal)| LexicalTokenRow {
+            token,
+            literal: literal.as_bytes().to_vec(),
+        })
+        .collect(),
+    ));
+    let mut quiet = first.clone();
+    quiet.hour = 101;
+    let mut changed = quiet.clone();
+    changed.hour = 102;
+    if let TableView::Complete(TableRows::FactionAccounts(rows)) =
+        &mut *changed.tables[TableId::FactionAccounts.index()]
+    {
+        rows[0].upgrade_tokens[0] = 3;
+    }
+    let mut after_gap = changed.clone();
+    after_gap.hour = 104;
+    let mut final_hour = after_gap.clone();
+    final_hour.hour = 105;
+    let frames = [first, quiet, changed, after_gap, final_hour];
+    let source = source(frames.to_vec());
+    let files = Fixture::new();
+    let mut state = Walked::default();
+    let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+    for (frame, (groups, selections)) in frames.iter().zip([(1, 3), (1, 3), (1, 4), (2, 7), (2, 7)])
+    {
+        let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
+        state
+            .observe(
+                &source,
+                &LoadContext { content: None },
+                frame,
+                &changes,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        publish(&mut state, &files);
+        let history = rules(&source, &files, "9", frame.hour);
+        assert_eq!(history.groups.len(), 1);
+        assert_eq!(history.members.len(), 2);
+        assert_eq!(history.minimums.len(), 1);
+        let warnings: Vec<_> = history
+            .warnings
+            .iter()
+            .filter(|why| !why.contains(" inputs are unobserved"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            warnings,
+            [
+                format!(
+                    "{selections} faction facts: Faction member upgrade needs recorded localisation"
+                ),
+                format!(
+                    "{groups} faction facts: Faction upgrade group mod_group requires recorded content"
+                ),
+            ]
+        );
+        files.reload();
+    }
+}
+
+#[test]
 fn unavailable_rules_do_not_hide_programmes_minimums_or_doctrines_and_refusals_are_scoped() {
     let mut first = frame(100);
     *first.tables[TableId::LexicalTokens.index()] =
