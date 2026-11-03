@@ -37,6 +37,7 @@ export class PlaybackController {
   private listeners = new Set<() => void>();
   private hourListeners = new Set<() => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private frame: number | null = null;
   private lastTime = 0;
 
   getSnapshot = () => this.snapshot;
@@ -92,9 +93,24 @@ export class PlaybackController {
   }
 
   stop(): void {
-    if (this.timer != null) clearInterval(this.timer);
-    this.timer = null;
+    this.cancelTimer();
     this.publish({ ...this.snapshot, position: this.bank(), playing: false });
+  }
+
+  private cancelTimer(): void {
+    if (this.timer != null) clearInterval(this.timer);
+    if (this.frame != null) cancelAnimationFrame(this.frame);
+    this.timer = null; this.frame = null;
+  }
+
+  /** One playback step: the time since the last step, at the current speed. */
+  private advance(now: number): void {
+    const seconds = Math.max(0, now - this.lastTime) / 1000;
+    this.lastTime = now;
+    const bound = this.snapshot.bounds?.lastHour ?? this.snapshot.position;
+    const position = Math.min(bound, this.snapshot.position + seconds * this.snapshot.hoursPerSecond);
+    this.publish({ ...this.snapshot, position, playing: position < bound });
+    if (!this.snapshot.playing) this.syncTimer();
   }
 
   /** The position now, with the clock's anchor moved to now. The anchor moves
@@ -118,19 +134,21 @@ export class PlaybackController {
   }
 
   private syncTimer(): void {
-    if (this.timer != null) clearInterval(this.timer);
-    this.timer = null;
+    this.cancelTimer();
     this.lastTime = performance.now();
     if (!this.snapshot.playing) return;
-    this.timer = setInterval(() => {
-      const now = performance.now();
-      const seconds = (now - this.lastTime) / 1000;
-      this.lastTime = now;
-      const bound = this.snapshot.bounds?.lastHour ?? this.snapshot.position;
-      const position = Math.min(bound, this.snapshot.position + seconds * this.snapshot.hoursPerSecond);
-      this.publish({ ...this.snapshot, position, playing: position < bound });
-      if (!this.snapshot.playing) this.syncTimer();
-    }, 50);
+    // Step once per display frame, so the playhead moves as smoothly as the screen refreshes; at 1,440 h/s a
+    // 50 ms tick moved it 72 hours at a time. Without frames (tests, a hidden window) a timer keeps time instead.
+    if (typeof requestAnimationFrame === 'function' && typeof document !== 'undefined' && document.visibilityState !== 'hidden') {
+      const step = (now: number) => {
+        this.frame = null;
+        this.advance(Math.max(now, this.lastTime));
+        if (this.snapshot.playing && this.frame == null && this.timer == null) this.frame = requestAnimationFrame(step);
+      };
+      this.frame = requestAnimationFrame(step);
+    } else {
+      this.timer = setInterval(() => this.advance(performance.now()), 50);
+    }
   }
 }
 
