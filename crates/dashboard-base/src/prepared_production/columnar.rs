@@ -6,7 +6,7 @@
 //! series are those the row walk prepares.
 
 use super::{
-    ProductionAccumulator,
+    NAMING, ProductionAccumulator,
     input::{Changed, Complete, Hour as Input, Lines, Pending, Reads, Variants},
     slot_read,
 };
@@ -165,6 +165,8 @@ struct Facts {
     /// Countries is not complete.
     countries: Option<Option<Arc<Countries>>>,
     changed: Changed,
+    /// The naming read built or dropped a name, or a naming table's completeness changed.
+    naming_moved: bool,
     reads: Reads,
     output: Option<Delta<ProductionLineOutputRow>>,
     /// Why the line output is unavailable, at a read where it is.
@@ -467,16 +469,16 @@ impl Operator<World> for Projector {
             .filter(|table| {
                 !matches!(
                     table,
-                    TableId::Campaign | TableId::Countries | TableId::CountryLinks
+                    TableId::Campaign
+                        | TableId::Countries
+                        | TableId::CountryLinks
+                        | TableId::VariantChanges
                 )
             })
             .any(|table| changed[table.index()]);
-        // A non-empty ledger is a naming read, failed or complete: it can forget or restore names.
-        let observed = whole
-            || identity
-            || reads.any()
-            || design_changed
-            || WATCHED.iter().any(|table| changed[table.index()]);
+        // A ledger hour wakes the branch only where it moves names (`ledger_moves`).
+        let observed =
+            whole || identity || reads.any() || WATCHED.iter().any(|table| changed[table.index()]);
         let variants = {
             let read = self.naming.read(
                 state,
@@ -564,6 +566,8 @@ impl Operator<World> for Projector {
             facts: Some(Box::new(Facts {
                 observed,
                 countries,
+                naming_moved: variants.is_some()
+                    || NAMING.iter().any(|table| shaped[table.index()]),
                 changed: Changed {
                     others,
                     output: changed[TableId::ProductionLineOutput.index()],
@@ -671,6 +675,7 @@ impl Branch {
         } = hour;
         let mut countries = None;
         let mut changed = Changed::default();
+        let mut naming_moved = false;
         let mut reads = Reads::default();
         let mut output_reason = None;
         let mut observed = false;
@@ -679,6 +684,7 @@ impl Branch {
                 observed: watched,
                 countries: read,
                 changed: moved,
+                naming_moved: names,
                 reads: dated,
                 output,
                 output_reason: reason,
@@ -689,6 +695,7 @@ impl Branch {
             } = *facts;
             observed = watched;
             changed = moved;
+            naming_moved = names;
             reads = dated;
             output_reason = reason;
             if let Some(built) = variants {
@@ -714,7 +721,7 @@ impl Branch {
                 self.countries = read;
             }
         }
-        if observed {
+        if observed || naming_moved || design_changed && self.accumulator.ledger_moves(complete) {
             self.settle()?;
         } else {
             match &mut self.quiet {
@@ -738,6 +745,7 @@ impl Branch {
             reads,
             complete,
             design_changed,
+            naming_moved,
             output: Rows::Keyed(&self.output),
             output_reason: output_reason.as_deref(),
             lines: Lines::Countries(&self.lines),

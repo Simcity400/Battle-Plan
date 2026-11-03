@@ -80,6 +80,17 @@ pub const TABLES: &[TableId] = &[
     TableId::RocketProductionOutput,
 ];
 
+/// The tables design names are read from; VariantChanges only witnesses a naming read.
+pub(crate) const NAMING: [TableId; 7] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::LexicalTokens,
+    TableId::VariantDefinitions,
+    TableId::VariantModules,
+    TableId::VariantUpgrades,
+];
+
 pub use dashboard_core::map_pairs;
 
 #[derive(Deserialize, Serialize)]
@@ -229,6 +240,9 @@ pub struct ProductionAccumulator {
     /// A classification changed since the open endpoint's page was last made or held.
     #[serde(default)]
     classes_moved: bool,
+    /// What names designs moved since a complete naming read last took it.
+    #[serde(default)]
+    names_dirty: bool,
     /// The variants whose classification changed since the open endpoint's names were taken
     /// ([`name_events`]); a variant may be listed more than once.
     #[serde(default)]
@@ -3106,7 +3120,10 @@ impl ProductionAccumulator {
                     .filter(|&&table| {
                         !matches!(
                             table,
-                            TableId::Campaign | TableId::Countries | TableId::CountryLinks
+                            TableId::Campaign
+                                | TableId::Countries
+                                | TableId::CountryLinks
+                                | TableId::VariantChanges
                         )
                     })
                     .any(|&table| changed(table)),
@@ -3125,6 +3142,7 @@ impl ProductionAccumulator {
             },
             complete,
             design_changed: equipment::design_changed(frame),
+            naming_moved: !consecutive || NAMING.iter().any(|&table| changed(table)),
             output: Rows::Slice(
                 frame
                     .complete::<tables::ProductionLineOutput>()
@@ -3150,6 +3168,7 @@ impl ProductionAccumulator {
         let _cpu = ::replay_frame::cpu::scope_phase("production:observe_apply");
         check_cancel(cancelled)?;
         let mut hour = hour;
+        self.names_dirty |= hour.naming_moved;
         self.spent.advance(hour.hour)?;
         let consecutive = self.last_frame.and_then(|last| last.checked_add(1)) == Some(hour.hour);
         let countries_changed = match hour.countries.take() {
@@ -3163,7 +3182,8 @@ impl ProductionAccumulator {
             || !consecutive
             || countries_changed
             || hour.changed.others
-            || hour.dated.any();
+            || hour.dated.any()
+            || hour.design_changed && self.ledger_moves(hour.complete);
         if !changed && let Some(pending) = &mut self.pending {
             pending.page.last_hour = hour.hour;
             self.advance_spent_holders(hour.hour);
@@ -3178,6 +3198,16 @@ impl ProductionAccumulator {
         let rocket_changed =
             !consecutive || countries_changed || hour.changed.rocket || hour.dated.rocket;
         self.ingest_frame(hour, cancelled, equipment_changed, rocket_changed)
+    }
+
+    /// Whether a ledger hour's naming read at `complete` would change what names hold.
+    pub(crate) fn ledger_moves(&self, complete: Complete) -> bool {
+        let variants = &self.variants;
+        if complete.countries && complete.links && complete.lexical && complete.definitions {
+            self.names_dirty || variants.known.is_none() || !variants.invalidated.is_empty()
+        } else {
+            variants.known.is_some() || !variants.classified.is_empty()
+        }
     }
 
     /// Whether hours from `first` on that change nothing production reads and date none of
@@ -3326,9 +3356,11 @@ impl ProductionAccumulator {
         self.observe_spent(at, moved)?;
         drop(cpu);
         let numeric_read = hour.reads.output || hour.reads.rocket;
+        let names_moved =
+            hour.reads.variants || hour.design_changed && self.ledger_moves(hour.complete);
         if consecutive
             && !numeric_read
-            && !names_read
+            && !names_moved
             && diagnostics_before == self.diagnostic_counts()
             && self.pending.as_ref().is_some_and(|pending| {
                 pending.page.unnamed_per_hour == 0 && self.same_holders(&pending.page, at)
@@ -3348,6 +3380,7 @@ impl ProductionAccumulator {
         if complete_names {
             self.variants
                 .read(at, hour.variants, &mut self.variant_refusals);
+            self.names_dirty = false;
             self.variants.known.get_or_insert(at);
             if hour.reads.variants {
                 self.names_hour = Some(at);

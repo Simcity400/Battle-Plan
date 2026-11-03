@@ -117,6 +117,8 @@ pub(crate) struct Hour<'a> {
     pub complete: Complete,
     /// VariantChanges holds an accepted design edit.
     pub design_changed: bool,
+    /// What names designs moved: a name read anew or dropped, or a naming table or its shape.
+    pub naming_moved: bool,
     /// Read only while complete.
     pub output: Rows<'a, ProductionLineOutputRow>,
     /// Why the line output is unavailable, where it is.
