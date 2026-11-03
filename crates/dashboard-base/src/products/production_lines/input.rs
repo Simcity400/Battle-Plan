@@ -121,6 +121,8 @@ pub(super) struct World {
     /// choice, by whether its definition was known then.
     icon_hour: Option<std::sync::Arc<Result<IconHour, String>>>,
     icon_cache: BTreeMap<u64, (bool, IconChoice)>,
+    /// The variants whose cached choice the native hour input already holds, by `known`.
+    icon_held: BTreeMap<u64, bool>,
 }
 
 /// The world in one ledger record: the latest version of each variant and the definitions
@@ -991,19 +993,14 @@ impl World {
             for spelling in self.spellings.values_mut() {
                 spelling.clear();
             }
-            self.icon_cache.clear();
+            self.forget_icons();
         }
-        for (token, spelling) in hour
-            .facts
-            .as_mut()
-            .map(|facts| std::mem::take(&mut facts.respellings))
-            .unwrap_or_default()
-        {
-            if self.spellings.get(&token) != Some(&spelling) {
-                self.spellings.insert(token, spelling);
-                self.icon_cache.clear();
-            }
-        }
+        self.respell(
+            hour.facts
+                .as_mut()
+                .map(|facts| std::mem::take(&mut facts.respellings))
+                .unwrap_or_default(),
+        );
         if hour.rebuilt.get(TableId::VariantDefinitions) {
             self.definitions_seen = false;
         }
@@ -1030,7 +1027,37 @@ impl World {
     /// Takes up spellings a native walk read before a resume.
     pub fn take_spellings(&mut self, spellings: BTreeMap<u32, String>) {
         self.spellings = spellings;
+        self.forget_icons();
+    }
+
+    fn forget_icons(&mut self) {
         self.icon_cache.clear();
+        self.icon_held.clear();
+    }
+
+    /// Takes `spellings`, forgetting only the choices of definitions whose token they changed.
+    fn respell<S: AsRef<str> + Into<String>>(
+        &mut self,
+        spellings: impl IntoIterator<Item = (u32, S)>,
+    ) {
+        let mut changed = BTreeSet::new();
+        for (token, spelling) in spellings {
+            if self.spellings.get(&token).map(String::as_str) != Some(spelling.as_ref()) {
+                self.spellings.insert(token, spelling.into());
+                changed.insert(token);
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        let definitions = &self.definitions;
+        let spelled = |id: &u64| {
+            definitions
+                .get(id)
+                .is_some_and(|definition| changed.contains(&definition.equipment_token))
+        };
+        self.icon_cache.retain(|id, _| !spelled(id));
+        self.icon_held.retain(|id, _| !spelled(id));
     }
 
     /// [`Self::quiet`] of a native hour.
@@ -1139,6 +1166,9 @@ impl World {
         previous: Option<HourInput>,
     ) -> io::Result<HourInput> {
         let at = hour.hour;
+        if previous.is_none() {
+            self.icon_held.clear();
+        }
         let (reads, complete, relevant, rebuilt, stale) = (
             hour.reads,
             hour.complete,
@@ -1173,14 +1203,11 @@ impl World {
         let mut refresh = BTreeSet::new();
         let mut altered = BTreeSet::new();
         if definitions_read && !self.definitions_seen {
-            for (token, spelling) in std::mem::take(&mut facts.spellings) {
-                if self.spellings.get(&token) != Some(&spelling) {
-                    self.spellings.insert(token, spelling);
-                    self.icon_cache.clear();
-                }
-            }
+            self.respell(std::mem::take(&mut facts.spellings));
             for definition in facts.definitions.take().unwrap_or_default() {
                 if self.definitions.get(&definition.id) != Some(&definition) {
+                    self.icon_cache.remove(&definition.id);
+                    self.icon_held.remove(&definition.id);
                     refresh.insert(definition.id);
                     if self.definitions.contains_key(&definition.id) {
                         altered.insert(definition.id);
@@ -1369,18 +1396,15 @@ impl World {
                 .as_ref()
                 .is_none_or(|held| !std::sync::Arc::ptr_eq(held, &chosen.hour))
             {
-                self.icon_cache.clear();
+                self.forget_icons();
                 self.icon_hour = Some(std::sync::Arc::clone(&chosen.hour));
             }
-            for (&token, spelling) in chosen.tokens.iter() {
-                if self.spellings.get(&token) != Some(spelling) {
-                    self.spellings.insert(token, spelling.clone());
-                    self.icon_cache.clear();
-                }
-            }
-            for id in &refresh {
-                self.icon_cache.remove(id);
-            }
+            self.respell(
+                chosen
+                    .tokens
+                    .iter()
+                    .map(|(&token, spelling)| (token, spelling.as_str())),
+            );
             let mut produced = refresh.clone();
             produced.extend(naming.iter().map(|(id, _)| *id));
             if input.lines_read {
@@ -1401,8 +1425,14 @@ impl World {
                         .map(|row| row.variant),
                 );
             }
+            let renamed: BTreeSet<u64> = naming.iter().map(|(id, _)| *id).collect();
             for id in produced {
                 let known = self.variants.current(id).is_some();
+                let named = renamed.contains(&id);
+                // The input already holds this choice; only a renamed variant dates an event.
+                if !named && self.icon_held.get(&id) == Some(&known) {
+                    continue;
+                }
                 let cached = self
                     .icon_cache
                     .get(&id)
@@ -1435,13 +1465,14 @@ impl World {
                 if definitions_read
                     && known
                     && self.definitions.contains_key(&id)
-                    && (refresh.contains(&id) || naming.iter().any(|(changed, _)| *changed == id))
+                    && (refresh.contains(&id) || named)
                 {
                     self.pending_bytes += record_bytes(&icon);
                     self.icon_events
                         .push((id, at, icon.clone(), altered.contains(&id)));
                 }
                 input.icons.insert(id, icon);
+                self.icon_held.insert(id, known);
             }
         }
         self.stale.clear();
