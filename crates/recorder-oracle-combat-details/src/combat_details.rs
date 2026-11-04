@@ -1594,18 +1594,11 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             row.detection_state,
             detail.detection_state.unwrap_or(-1),
         );
-        // Stored at its display step (replay_data::display); the save's exact
-        // value is rounded the same way.
-        let escape = r.displayed(
-            "NavalCombatShips.escape_progress",
-            replay_data::rows::NavalCombatShipRow::ESCAPE_STEP,
-            detail.escape_progress.as_ref().map_or(0, |v| v.raw),
-        );
         equal(
             r,
             format!("{label} escape_progress"),
             row.escape_progress,
-            escape,
+            detail.escape_progress.as_ref().map_or(0, |v| v.raw),
         );
         equal(
             r,
@@ -1746,16 +1739,11 @@ fn ships(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 row.strength,
                 unit.strength.raw,
             );
-            let organisation = r.displayed(
-                "NavalCombatShips.organisation",
-                replay_data::rows::NavalCombatShipRow::ORGANISATION_STEP,
-                unit.organisation.raw,
-            );
             equal(
                 r,
                 format!("NavalCombatShips {key:?} organisation"),
                 row.organisation,
-                organisation,
+                unit.organisation.raw,
             );
         }
     }

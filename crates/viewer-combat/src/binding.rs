@@ -114,7 +114,16 @@ fn bind<T>(
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavalLayout {
+    Ship,
+    Sunk,
+    AirLeft,
+    AirRight,
+}
+
 pub struct NavalEntry {
+    pub layout: NavalLayout,
     /// Combat group side and hidden-incoming identity; never inferred from a
     /// modded grid path or sprite name.
     pub side: u8,
@@ -581,7 +590,6 @@ impl Bindings {
             // the game selects the combat box from the exact state and ship
             // category. the game advances by sprite height + entry spacing,
             // adding escape-bar height for state 8. Never interpret state as HP.
-            let mut heights: BTreeMap<&str, f32> = BTreeMap::new();
             for member in members {
                 let ship = ships.get(&member.ship).copied();
                 let category = ship.map(|s| s.category);
@@ -640,7 +648,6 @@ impl Bindings {
                     member.owner,
                     1,
                     side as u8,
-                    asset[0],
                     flags,
                 );
                 if member.state == 8 {
@@ -654,14 +661,7 @@ impl Bindings {
                             "escape_icon_right"
                         }
                         .into(),
-                        Widget {
-                            offset: [
-                                super::naval_details::escape_bar_x(asset[0], static_content)
-                                    - asset[0] / 2.0,
-                                0.0,
-                            ],
-                            ..Widget::default()
-                        },
+                        Widget::default(),
                     );
                 }
                 let grid = match column {
@@ -672,24 +672,22 @@ impl Bindings {
                     "reserve" => format!("battle_window/outside_wnd/{wnd}_wnd/grid"),
                     _ => format!("battle_window/top_wnd/{wnd}_wnd/grid_{column}"),
                 };
-                let height = heights.entry(column).or_default();
                 // Sunk rows use a separate authored strip. Native damage-group
                 // merging is a gap.
-                let offset_x = if column == "sunk" {
-                    0.0
-                } else {
-                    super::naval_details::combat_box_x(asset[0])
-                };
                 self.naval_entries.push(NavalEntry {
+                    layout: if column == "sunk" {
+                        NavalLayout::Sunk
+                    } else {
+                        NavalLayout::Ship
+                    },
                     side: if wnd == "left" { 0 } else { 1 },
                     unknown: false,
                     grid,
-                    offset: super::naval_details::entry_offset(column, offset_x, *height),
+                    offset: super::naval_details::entry_offset(column, 0.0, 0.0),
                     size: asset,
                     values: row,
                     battle_slots: Vec::new(),
                 });
-                *height += asset[1] + 3.0 + if member.state == 8 { 8.0 } else { 0.0 };
             }
         }
         self.warnings.push("Combat UI: NavalCombatDetails/NavalCombatShips are not bound in this recording. Screening, phase, fleet/commander identity, ship names/maxima/damage frames, escape progress and results are empty or dash. NavalCombatParticipants supplies side/slot/ship/owner; raw state is not treated as a damage percentage. State 8 reverses the ship frame and shows the escape widget; state 32 uses the sunk strip. Category boxes use sprite-height row spacing. Submarine reveal, damage/model grouping and inline flag placement require NavalCombatShips and remain unverified; legacy slots stay separate. Ship strength/organisation are absolute values and cannot fill bars without maxima.".into());

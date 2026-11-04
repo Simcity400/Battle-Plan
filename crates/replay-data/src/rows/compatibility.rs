@@ -85,6 +85,7 @@ pub const PLAYER_COMMANDS_FORMAT: u16 = 131;
 /// ([`super::TemperatureWitness`]): their derived temperatures are refused by name.
 pub const PROVINCE_WITNESS_FORMAT: u16 = 132;
 pub const CONSTRUCTION_OUTPUT_OWNER_FORMAT: u16 = 133;
+pub const EXACT_NAVAL_CONDITION_FORMAT: u16 = 134;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -4005,6 +4006,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         participation += 1;
     }
     apply_catalog_passes(&mut history);
+    history[TableId::NavalCombatShips.index()] = table(
+        TableId::NavalCombatShips,
+        EXACT_NAVAL_CONDITION_FORMAT,
+        "exact naval condition operands",
+    );
     history[TableId::StateResourceInputs.index()] = appended_at(
         TableId::StateResourceInputs,
         104,
@@ -4860,7 +4866,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, CONSTRUCTION_OUTPUT_OWNER_FORMAT);
+        assert_eq!(FORMAT_VERSION, EXACT_NAVAL_CONDITION_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

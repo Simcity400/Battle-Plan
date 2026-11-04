@@ -13,6 +13,93 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn naval_air_labels_keep_their_own_side_specific_geometry() {
+    use crate::binding::NavalLayout;
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let windows = windows(
+        br#"guiTypes={containerWindowType={name=entry size={width=1 height=3}
+        instantTextboxType={name=desc_left position={x=-12 y=0} maxWidth=61}
+        instantTextboxType={name=desc_right position={x=17 y=0} maxWidth=61}}}"#,
+    );
+    let root = windows.gui_type(b"entry").unwrap();
+    for (layout, name, offset) in [
+        (NavalLayout::Ship, "desc_right", -21),
+        (NavalLayout::Sunk, "desc_right", -21),
+        (NavalLayout::AirLeft, "desc_left", 35),
+        (NavalLayout::AirRight, "desc_right", -90),
+    ] {
+        let (control, actual) = naval_label_offset(root, 40, layout).unwrap();
+        assert_eq!(control.name_bytes(), name.as_bytes());
+        assert_eq!(actual, offset);
+    }
+}
+
+#[test]
+fn naval_boxes_use_authored_grid_geometry_and_runtime_escape_height() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let windows = windows(
+        br#"guiTypes={
+        containerWindowType={name=view size={width=300 height=200}
+            gridBoxType={name=rows size={width=170 height=200}
+                slotsize={width=1 height=1} format=UPPER_RIGHT}}
+        containerWindowType={name=navalcombat_ship_entry position={x=1 y=0}
+            size={width=3 height=9} clipping=no
+            iconType={name=icon spriteType=GFX_even}
+            iconType={name=escape_progress spriteType=GFX_bar orientation=CENTER_UP}
+            iconType={name=escape_icon_left spriteType=GFX_even orientation=CENTER_UP}}
+    }"#,
+    );
+    let resources = fixture();
+    let view = windows.gui_type(b"view").unwrap();
+    let mut retained = Retained::new("view", view, [800, 600], &resources).unwrap();
+    let mut escaping = Values::new();
+    escaping.insert("icon".into(), super::super::Widget::default());
+    escaping.insert(
+        "escape_progress".into(),
+        super::super::Widget {
+            progress: Some(50),
+            ..Default::default()
+        },
+    );
+    escaping.insert("escape_icon_left".into(), super::super::Widget::default());
+    let mut fighting = escaping.clone();
+    fighting.get_mut("escape_progress").unwrap().hidden = true;
+    fighting.get_mut("escape_icon_left").unwrap().hidden = true;
+    let groups = vec![Group {
+        path: "rows".into(),
+        rows: [&escaping, &fighting]
+            .into_iter()
+            .enumerate()
+            .map(|(index, values)| Row {
+                naval_layout: Some(crate::binding::NavalLayout::Ship),
+                key: index.to_string(),
+                template: "navalcombat_ship_entry",
+                values,
+                explicit: Some((Some([0.0; 2]), [20.0, 10.0])),
+            })
+            .collect(),
+    }];
+    let mut refused = BTreeMap::new();
+    retained
+        .prepare(
+            view,
+            &Values::new(),
+            groups,
+            &windows,
+            &resources,
+            Tick { time: 0.0, dt: 0.0 },
+            1,
+            true,
+            true,
+            true,
+            &mut refused,
+        )
+        .unwrap();
+    assert_eq!(retained.places["rows"], [(0, [162, 0]), (1, [162, 33])]);
+    assert!(refused.is_empty(), "{refused:?}");
+}
+
+#[test]
 fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -394,6 +481,7 @@ fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
                 groups.push(Group {
                     path: grid,
                     rows: vec![Row {
+                        naval_layout: None,
                         key: "0".into(),
                         template: "entry",
                         values: &entry_values,
@@ -490,6 +578,7 @@ fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
                 .into_iter()
                 .enumerate()
                 .map(|(index, explicit)| Row {
+                    naval_layout: None,
                     key: index.to_string(),
                     template: "entry",
                     values: &entry_values,
@@ -557,6 +646,7 @@ fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
     let mut bindings = Bindings::default();
     for index in 0..4 {
         bindings.naval_entries.push(NavalEntry {
+            layout: crate::binding::NavalLayout::Sunk,
             side: 0,
             unknown: false,
             grid: "losses".into(),
@@ -1035,6 +1125,7 @@ fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
         let groups = vec![Group {
             path: "rows".into(),
             rows: vec![Row {
+                naval_layout: None,
                 key: "0".into(),
                 template: "entry",
                 values: &row,

@@ -1304,12 +1304,8 @@ fn naval(
                 TEXT,
                 anti_air,
             );
-            let flag = value
-                .summary
-                .countries
-                .first()
-                .ok_or_else(|| "NavalCombatDetails lists no country for the side".to_owned())
-                .and_then(|country| country_flag(flags, *country))
+            let flag = naval_flag_country(&value.summary.countries, &aliases, vision.ours())
+                .and_then(|country| country_flag(flags, country))
                 .map_err(|reason| format!("Naval combat {id} {label} flag is hidden: {reason}."));
             out.bind(&format!("header_container/flag_{label}"), FLAG, flag);
             let name_key = format!("header_container/leader_{label}_name");
@@ -1373,6 +1369,35 @@ fn naval(
         out.warnings.push("Naval: the perspective progress skin, recomputed screening, positioning and AA, ordered side flags and commander name/skills are bound. Forward active air groups and their carrier-grid entries are bound from recorded variants and the stacked equipment registry. Hover capture gaps are reported as counted refusals beside their affected widgets. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
     }
     Ok(())
+}
+
+fn naval_flag_country(
+    countries: &[u32],
+    aliases: &BTreeMap<u32, u32>,
+    viewer: u32,
+) -> Result<u32, String> {
+    let mut unresolved = None;
+    for &country in countries {
+        match aliases.get(&country) {
+            Some(&slot) if slot == viewer && viewer != 0 => {
+                return unresolved.map_or(Ok(country), Err);
+            }
+            Some(_) => (),
+            None if country != 0 => {
+                unresolved.get_or_insert_with(|| {
+                    format!("primary country {country} has no CountryLinks row")
+                });
+            }
+            None => (),
+        }
+    }
+    if let Some(reason) = unresolved {
+        return Err(reason);
+    }
+    countries
+        .first()
+        .copied()
+        .ok_or_else(|| "NavalCombatDetails lists no country for the side".to_owned())
 }
 
 /// Compare only the two primary country lists against the viewing country.
@@ -1454,6 +1479,7 @@ fn bind_naval_progress(values: &mut Values, shown: &str, progress: i64) {
     let key = format!("header_container/{shown}");
     show(values, &key);
     fill(values, &key, progress as f32 / 100_000.0);
+    values.entry(key).or_default().progress = Some(super::fixed::round(progress.wrapping_mul(100)));
 }
 
 tooltip_keys! {

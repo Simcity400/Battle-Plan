@@ -46,6 +46,7 @@ struct ScrollAction {
 }
 
 pub(crate) struct Row<'a> {
+    pub(crate) naval_layout: Option<super::binding::NavalLayout>,
     pub(crate) key: String,
     pub(crate) template: &'a str,
     pub(crate) values: &'a Values,
@@ -98,6 +99,70 @@ fn count(refused: &mut BTreeMap<String, usize>, path: &str, why: impl std::fmt::
         .or_default() += 1;
 }
 
+fn naval_rectangles(
+    grid: &Element,
+    parent: [i32; 2],
+    viewport: [i32; 2],
+    entries: &[(&Element, [i32; 2])],
+) -> Result<Vec<([i32; 2], [i32; 2])>, String> {
+    let mut height = 0_i32;
+    let slots = entries
+        .iter()
+        .map(|&(template, size)| {
+            let frame = native_gui::container_frame(template, Some(viewport))?;
+            let slot = [size[0].wrapping_sub(frame.size[0]) / 2, height];
+            height = height.wrapping_add(size[1]).wrapping_add(frame.size[1]);
+            Ok((template, slot))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let placed = native_gui::finalize_grid_positions(grid, parent, viewport, slots, None)
+        .map_err(|why| why.to_string())?;
+    Ok(placed
+        .items
+        .into_iter()
+        .zip(entries.iter().map(|(_, size)| *size))
+        .collect())
+}
+
+fn naval_label_offset(
+    root: &Element,
+    width: i32,
+    layout: super::binding::NavalLayout,
+) -> Option<(&Element, i32)> {
+    use super::binding::NavalLayout;
+    let right_control = root.path_named("desc_right")?;
+    let right = right_control.text_box()?;
+    let text_width = if right.max_width == 0 {
+        200
+    } else {
+        right.max_width as i32
+    };
+    match layout {
+        NavalLayout::AirLeft => {
+            let left_control = root.path_named("desc_left")?;
+            let left = left_control.text_box()?;
+            Some((
+                left_control,
+                width
+                    .wrapping_sub(right.position[0])
+                    .wrapping_sub(left.position[0]),
+            ))
+        }
+        NavalLayout::AirRight => {
+            let left = root.path_named("desc_left")?.text_box()?;
+            Some((
+                right_control,
+                left.position[0]
+                    .wrapping_sub(text_width)
+                    .wrapping_sub(right.position[0]),
+            ))
+        }
+        NavalLayout::Ship | NavalLayout::Sunk => {
+            Some((right_control, width.wrapping_sub(text_width)))
+        }
+    }
+}
+
 pub(crate) fn template<'a>(windows: &'a NativeWindows, name: &str) -> Result<&'a Element, String> {
     windows
         .gui_type(name.as_bytes())
@@ -147,6 +212,7 @@ impl Retained {
         root: &Element,
         values: &Values,
         size: Option<[f32; 2]>,
+        naval_layout: Option<super::binding::NavalLayout>,
         resources: &impl CombatResources,
         refused: &mut BTreeMap<String, usize>,
     ) -> Option<[i32; 2]> {
@@ -182,6 +248,12 @@ impl Retained {
         let runtime = self.instance.content_size(root, root);
         match (constructed, runtime) {
             (Ok(constructed), Ok(runtime)) => {
+                if let Some(layout) = naval_layout
+                    && let Some((control, offset)) = naval_label_offset(root, runtime[0], layout)
+                    && let Ok(bound) = self.instance.control(root, control)
+                {
+                    bound.offset = Some([offset, 0]);
+                }
                 // The native updater explicitly centres these controls after its flag-0 resize.
                 for key in [
                     "bar_str",
@@ -198,6 +270,45 @@ impl Retained {
                     let Some(icon) = control.icon() else { continue };
                     let from =
                         native_gui::control_anchor(icon.orientation, constructed.content_size);
+                    if let Some(naval_layout) = naval_layout {
+                        if key == "pride" && naval_layout == super::binding::NavalLayout::Sunk {
+                            continue;
+                        }
+                        if values.get(key).is_some_and(|widget| widget.hidden) {
+                            continue;
+                        }
+                        let centered = if key.starts_with("escape_icon_") {
+                            root.path_named("escape_progress").and_then(|bar| {
+                                let icon = bar.icon()?;
+                                self.instance
+                                    .drawable_extent(root, bar, resources)
+                                    .ok()
+                                    .flatten()
+                                    .map(|extent| {
+                                        runtime[0] / 2 - extent[0] / 2
+                                            + truncate_f32(icon.position[0])
+                                    })
+                            })
+                        } else {
+                            self.instance
+                                .drawable_extent(root, control, resources)
+                                .ok()
+                                .flatten()
+                                .map(|extent| runtime[0] / 2 - extent[0] / 2)
+                        };
+                        if let Some(x) = centered {
+                            if let Ok(bound) = self.instance.control(root, control) {
+                                bound.offset = Some([x.wrapping_sub(from[0]), 0]);
+                            }
+                        } else {
+                            count(
+                                refused,
+                                &control.path,
+                                "naval entry control has no drawable extent for centering",
+                            );
+                        }
+                        continue;
+                    }
                     let to = native_gui::control_anchor(icon.orientation, runtime);
                     match self.instance.control(root, control) {
                         Ok(bound) => {
@@ -248,7 +359,7 @@ impl Retained {
             let mut fresh_refused = BTreeMap::new();
             let refused = &mut fresh_refused;
             if bind {
-                self.bind(root, values, None, resources, refused);
+                self.bind(root, values, None, None, resources, refused);
             }
             let mut places = BTreeMap::new();
             let mut used = BTreeSet::new();
@@ -321,6 +432,7 @@ impl Retained {
                                     template,
                                     row.values,
                                     row.explicit.map(|(_, size)| size),
+                                    row.naval_layout,
                                     resources,
                                     refused,
                                 );
@@ -341,12 +453,31 @@ impl Retained {
                                         count(refused, &grid.path, "explicit naval grid entry lacks combat-box pixels; entry withheld");
                                         return None;
                                     };
-                                    Some((
-                                        offset.map(truncate_f32),
-                                        size.unwrap_or_else(|| raw_size.map(truncate_f32)),
-                                    ))
+                                    Some((offset.map(truncate_f32), size.unwrap_or_else(|| raw_size.map(truncate_f32))))
                                 })
                                 .collect();
+                            let rectangles =
+                                if rows.iter().all(|(_, row, _)| row.naval_layout.is_some()) {
+                                    let entries: Vec<_> = rows
+                                        .iter()
+                                        .zip(&rectangles)
+                                        .map(|((_, _, template), (_, size))| (*template, *size))
+                                        .collect();
+                                    match naval_rectangles(
+                                        grid,
+                                        holder.content,
+                                        self.instance.viewport(),
+                                        &entries,
+                                    ) {
+                                        Ok(rectangles) => rectangles,
+                                        Err(why) => {
+                                            count(refused, &grid.path, why);
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    rectangles
+                                };
                             self.instance
                                 .finalize_grid_resolved(root, grid, holder, &rectangles)
                         } else {
@@ -726,6 +857,7 @@ fn repeated(values: &Values) -> Vec<Group<'_>> {
                     .iter()
                     .enumerate()
                     .map(|(index, values)| Row {
+                        naval_layout: None,
                         key: index.to_string(),
                         template: entry_template(widget, index, name),
                         values,
@@ -904,19 +1036,30 @@ fn apply(
             count(refused, &path, why);
         }
         let info = sprite.and_then(|name| resources.sprite(name));
-        let progress = match (widget.fill, info.as_ref().map(|info| &info.kind)) {
-            (Some(fill), Some(SpriteKind::Progress { steps, .. })) => {
-                Some(truncate_f32(fill * *steps as f32))
-            }
+        let progress = match (widget.progress, info.as_ref().map(|info| &info.kind)) {
+            (Some(progress), Some(SpriteKind::Progress { .. })) => Some(progress),
             (Some(_), _) => {
                 count(
                     refused,
                     &path,
-                    "bound progress value has no native progress-bar drawable",
+                    "bound integer progress has no native progress-bar drawable",
                 );
                 None
             }
-            _ => None,
+            (None, _) => match (widget.fill, info.as_ref().map(|info| &info.kind)) {
+                (Some(fill), Some(SpriteKind::Progress { steps, .. })) => {
+                    Some(truncate_f32(fill * *steps as f32))
+                }
+                (Some(_), _) => {
+                    count(
+                        refused,
+                        &path,
+                        "bound progress value has no native progress-bar drawable",
+                    );
+                    None
+                }
+                _ => None,
+            },
         };
         let flag = widget.flag.as_deref().map(|key| {
             if matches!(
@@ -1157,6 +1300,7 @@ impl Windows {
                     rows: bindings.entries[side]
                         .iter()
                         .map(|(unit, values)| Row {
+                            naval_layout: None,
                             key: unit.to_string(),
                             template,
                             values,
@@ -1244,6 +1388,7 @@ impl Windows {
                     .iter()
                     .enumerate()
                     .map(|(index, values)| Row {
+                        naval_layout: None,
                         key: index.to_string(),
                         template: "tactics_list_entry",
                         values,
@@ -1307,6 +1452,7 @@ impl Windows {
 
 fn naval_row(index: usize, row: &super::binding::NavalEntry) -> Row<'_> {
     Row {
+        naval_layout: Some(row.layout),
         key: index.to_string(),
         // Sunk and live ship icons share this template.
         template: "navalcombat_ship_entry",

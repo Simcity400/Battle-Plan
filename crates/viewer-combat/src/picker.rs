@@ -665,6 +665,7 @@ fn draw_list(
             .iter()
             .zip(&values)
             .map(|(mode, values)| Row {
+                naval_layout: None,
                 key: mode.token.clone(),
                 template: "ConfigurableMapMode",
                 values,
@@ -741,6 +742,7 @@ fn draw_slots(
             .iter()
             .zip(&values)
             .map(|((slot, _), values)| Row {
+                naval_layout: None,
                 key: slot.to_string(),
                 template: "ConfigurableMapModeSlot",
                 values,

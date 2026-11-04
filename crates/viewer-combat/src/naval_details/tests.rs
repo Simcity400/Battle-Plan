@@ -1,6 +1,178 @@
 use super::*;
 use viewer_foundation::tooltip_text::NoIcons;
 
+#[test]
+fn aircraft_groups_follow_model_then_wing_hash_and_report_unrecorded_ties() {
+    let low = NavalCombatPlane {
+        wings: [vec![], vec![1 << 32]],
+        ..Default::default()
+    };
+    let high = NavalCombatPlane {
+        wings: [vec![], vec![2 << 32]],
+        ..Default::default()
+    };
+    let mut groups = [
+        AirGroup {
+            side: 0,
+            model: 2,
+            owner: 10,
+            planes: vec![&low],
+        },
+        AirGroup {
+            side: 0,
+            model: 7,
+            owner: 11,
+            planes: vec![&low],
+        },
+        AirGroup {
+            side: 0,
+            model: 7,
+            owner: 12,
+            planes: vec![&high],
+        },
+        AirGroup {
+            side: 1,
+            model: 9,
+            owner: 13,
+            planes: vec![&high],
+        },
+    ];
+    assert!(sort_air_groups(&mut groups).is_empty());
+    assert_eq!(groups.map(|group| group.owner), [12, 11, 10, 13]);
+    let mut tied = [
+        AirGroup {
+            side: 0,
+            model: 7,
+            owner: 11,
+            planes: vec![&low],
+        },
+        AirGroup {
+            side: 0,
+            model: 7,
+            owner: 12,
+            planes: vec![&low],
+        },
+    ];
+    assert_eq!(sort_air_groups(&mut tied), BTreeSet::from([0]));
+}
+
+#[test]
+fn distinct_nonnegative_ship_slots_resolve_order_before_the_address_tie() {
+    let mut first = NavalCombatShipRow {
+        state: 2,
+        battle_slot: 1,
+        ..Default::default()
+    };
+    let mut second = NavalCombatShipRow {
+        battle_slot: 2,
+        ..first.clone()
+    };
+    let first_key = key(&first, 7, false, 0).unwrap();
+    let second_key = key(&second, 8, false, 0).unwrap();
+    assert!(ship_order(&second_key, &[&second]) < ship_order(&first_key, &[&first]));
+    first.battle_slot = u32::MAX;
+    second.battle_slot = u32::MAX - 1;
+    assert_eq!(
+        ship_order(&first_key, &[&first]),
+        ship_order(&second_key, &[&second])
+    );
+}
+
+#[test]
+fn incoming_groups_take_the_first_unknown_or_matching_cached_identity() {
+    let row = NavalCombatShipRow {
+        state: 4,
+        live_ship: 1,
+        ..Default::default()
+    };
+    let known = key(&row, 7, false, 0).unwrap();
+    let mut unknown = key(&row, 8, true, 0).unwrap();
+    let mut slots = GroupSlots::default();
+    assert_eq!(slots.insert(&known, 0), 0);
+    assert_eq!(slots.insert(&unknown, 1), 1);
+    unknown.owner = 7;
+    assert_eq!(slots.insert(&unknown, 2), 0);
+    unknown.owner = 9;
+    assert_eq!(slots.insert(&unknown, 2), 1);
+    let mut disclosed = unknown.clone();
+    disclosed.unknown = false;
+    disclosed.owner = 8;
+    assert_eq!(slots.insert(&disclosed, 2), 1);
+    disclosed.owner = 9;
+    assert_eq!(slots.insert(&disclosed, 2), 2);
+}
+
+#[test]
+fn live_pride_uses_current_roster_ownership_and_sunk_pride_uses_the_cached_flag() {
+    let mut row = NavalCombatShipRow {
+        ship: 11,
+        live_ship: 1,
+        pride: 1,
+        ..Default::default()
+    };
+    row.weapon_context.task_force = 22;
+    let force = replay_data::rows::TaskForceRow {
+        id: 22,
+        roster_owner: 3,
+        ..Default::default()
+    };
+    let mut country = replay_data::rows::CountryCounterInputRow {
+        country: 4,
+        pride_of_the_fleet: 12,
+        ..Default::default()
+    };
+    let forces = BTreeMap::from([(22, &force)]);
+    let aliases = BTreeMap::from([(3, 30), (4, 30)]);
+    assert_eq!(
+        group_pride(
+            &[&row],
+            false,
+            &forces,
+            &BTreeMap::from([(30, &country)]),
+            &aliases
+        ),
+        Ok(false)
+    );
+    country.pride_of_the_fleet = 11;
+    row.pride = 0;
+    assert_eq!(
+        group_pride(
+            &[&row],
+            false,
+            &forces,
+            &BTreeMap::from([(30, &country)]),
+            &aliases
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        group_pride(&[&row], true, &BTreeMap::new(), &BTreeMap::new(), &aliases),
+        Ok(false)
+    );
+    row.pride = 1;
+    assert_eq!(
+        group_pride(&[&row], true, &BTreeMap::new(), &BTreeMap::new(), &aliases),
+        Ok(true)
+    );
+    assert!(group_pride(&[&row], false, &BTreeMap::new(), &BTreeMap::new(), &aliases).is_err());
+}
+
+#[test]
+fn condition_means_preserve_native_rounding_and_exceptional_operands() {
+    let mut values = Values::new();
+    for (raw, percent) in [(49_499, 49), (49_500, 50), (100_500, 101), (-500, -1)] {
+        bar(&mut values, "bar_str", raw);
+        assert_eq!(values["bar_str"].progress, Some(percent));
+    }
+    assert_eq!(fixed_ratio(i64::MAX, 100), super::super::fixed::EXCEPTIONAL);
+    assert_eq!(mean(49_999, 2), 24_999);
+    assert_eq!(mean(0, 0), 0);
+    bar(&mut values, "bar_org", fixed_ratio(1_485_001, 3_000_001));
+    assert_eq!(values["bar_org"].progress, Some(50));
+    bar(&mut values, "escape_progress", mean(49_499 + 49_501, 2));
+    assert_eq!(values["escape_progress"].progress, Some(50));
+}
+
 /// A naval plane, wing or ship may name its country by a historical alias: it names the same
 /// `Countries` row, at the canonical slot `CountryLinks` resolves it to, as the country's own id.
 #[test]
@@ -36,7 +208,7 @@ fn a_refused_flag_preserves_known_naval_counts_and_other_country_flags() {
     let mut out = Bindings::default();
     for side in 0..2 {
         let mut values = Values::new();
-        descriptions(&mut out, &mut values, 7, 3, side, 56.0, &flags);
+        descriptions(&mut out, &mut values, 7, 3, side, &flags);
         let (count, flag) = if side == 0 {
             ("desc_right", "desc_left")
         } else {
@@ -155,10 +327,8 @@ fn air_icon_frames_and_dynamic_hover_are_explicit() {
 #[test]
 fn air_entries_bind_before_carrier_ships_on_both_grids() {
     let mut out = Bindings::default();
-    let mut heights = BTreeMap::new();
     push_air_entry(
         &mut out,
-        &mut heights,
         0,
         Some("GFX_air_left".into()),
         [40.0, 20.0],
@@ -167,7 +337,6 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
     );
     push_air_entry(
         &mut out,
-        &mut heights,
         1,
         Some("GFX_air_right".into()),
         [42.0, 24.0],
@@ -176,13 +345,14 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
     );
     for side in 0..2 {
         out.naval_entries.push(NavalEntry {
+            layout: crate::binding::NavalLayout::Ship,
             side,
             unknown: false,
             grid: format!(
                 "battle_window/top_wnd/{}_wnd/grid_carrier",
                 if side == 0 { "left" } else { "right" }
             ),
-            offset: Some([0.0, heights[&(side, "carrier")]]),
+            offset: Some([0.0; 2]),
             size: [40.0, 20.0],
             values: Values::new(),
             battle_slots: vec![1],
@@ -229,17 +399,7 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
         Some("2/8")
     );
     assert!(!out.naval_entries[1].values["desc_right"].hidden);
-    assert_eq!(heights[&(0, "carrier")], 23.0);
-    assert_eq!(heights[&(1, "carrier")], 27.0);
-    push_air_entry(
-        &mut out,
-        &mut heights,
-        0,
-        None,
-        [1.0, 3.0],
-        Some("4/7".into()),
-        None,
-    );
+    push_air_entry(&mut out, 0, None, [1.0, 3.0], Some("4/7".into()), None);
     let missing = out.naval_entries.last().unwrap();
     assert!(missing.values["icon"].hidden);
     assert!(missing.values["icon"].sprite.is_none());
@@ -273,7 +433,6 @@ fn recorded_air_hover_reaches_the_air_icon_binding() {
     let mut out = Bindings::default();
     push_air_entry(
         &mut out,
-        &mut BTreeMap::new(),
         0,
         Some("GFX_air".into()),
         [40.0, 20.0],
@@ -331,10 +490,7 @@ fn organisation_uses_default_leader_and_recorded_hq_terms() {
     row.live_ship = 0;
     row.live_convoy = 1;
     row.base_organisation = 0;
-    assert_eq!(
-        organisation_maximum(&row),
-        Err("the convoy records base organisation 0, not a positive value".into())
-    );
+    assert_eq!(organisation_maximum(&row), Ok(100));
 }
 #[test]
 fn the_left_column_takes_the_second_frame_unless_reversed() {
@@ -342,9 +498,6 @@ fn the_left_column_takes_the_second_frame_unless_reversed() {
     assert_eq!(icon_frame(0, true), 0);
     assert_eq!(icon_frame(1, true), 1);
     assert_eq!(icon_frame(1, false), 0);
-    // Right-aligned widths 48 and 52 give offsets 77 and 75.
-    assert_eq!(combat_box_x(48.0), 77.0);
-    assert_eq!(combat_box_x(52.0), 75.0);
 }
 
 #[test]
@@ -383,7 +536,7 @@ fn grouping_normalizes_state_but_preserves_damage() {
     row.subunit_index = 42;
     row.owner = 8;
     row.strength = 100;
-    assert!(unknown == key(&row, 8, true, 0));
+    assert!(unknown != key(&row, 8, true, 0));
 }
 
 #[test]

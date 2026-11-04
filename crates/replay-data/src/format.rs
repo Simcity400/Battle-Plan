@@ -278,7 +278,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::PROVINCE_WITNESS_FORMAT
+            crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -288,6 +288,9 @@ mod tests {
             let format = FormatVersion::read(version).unwrap();
             // Retired tables are refused by name in every recording.
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT {
+                expected.push(TableId::NavalCombatShips);
+            }
             if version < crate::rows::compatibility::RAID_DISPATCHERS_FORMAT {
                 expected.push(TableId::RaidPathDistances);
             }
@@ -661,7 +664,11 @@ mod tests {
             crate::rows::compatibility::GAME_SCORE_FORMAT - 1,
         ] {
             let previous = FormatVersion::read(version).unwrap();
-            assert!(previous.table_refusal(TableId::NavalCombatShips).is_none());
+            assert!(
+                previous
+                    .table_refusal(TableId::NavalCombatDetails)
+                    .is_none()
+            );
             for table in [
                 TableId::CountryGameScoreInputs,
                 TableId::AirWingGameScoreStats,
@@ -679,5 +686,17 @@ mod tests {
                 assert!(table.last_change().present(FORMAT_VERSION));
             }
         }
+    }
+
+    #[test]
+    fn stepped_naval_condition_layout_is_refused_before_exact_operands() {
+        let current = crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT;
+        let previous = FormatVersion::read(current - 1).unwrap();
+        assert!(previous.table_refusal(TableId::NavalCombatShips).is_some());
+        assert!(
+            FormatVersion::CURRENT
+                .table_refusal(TableId::NavalCombatShips)
+                .is_none()
+        );
     }
 }

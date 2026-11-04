@@ -1208,24 +1208,9 @@ pub struct NavalCombatShipRow {
 // groups damaged ships by `strength < maximum_hit_points`), the received damage
 // lanes, the weapon context (night's `> 50000`, the fuel ratio) and the
 // oracle-only caches stay exact.
-impl NavalCombatShipRow {
-    /// `organisation`, which the game shows only as a share of the ship's maximum, a fixed-colour
-    /// percentage with two decimals (0.01%), and in bars: 0.001 keeps that share within its last
-    /// digit for any maximum above 10. By owner decision 2026-10-11 the share, the bars, the
-    /// average organisation and the sortie efficiency read the stepped value and can differ from
-    /// the game in their last digit at boundaries.
-    pub const ORGANISATION_STEP: crate::display::Step =
-        crate::display::Step::fixed5(100, crate::display::Rounding::TowardZero);
-    /// `escape_progress` (the naval combat member's) at the game's display precision:
-    /// Escape-progress text prints a percentage with the default two decimals, 10 raw, truncated by
-    /// the fixed5 formatter. Its colour reads the sign, so a nonzero value below one step keeps one
-    /// step with its sign. The window's bar mean reads the stepped value.
-    pub const ESCAPE_STEP: crate::display::Step =
-        crate::display::Step::fixed5(10, crate::display::Rounding::TowardZeroNonzero);
-}
 typed_codec!(NavalCombatShipRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32, ..Default::default() },
- { 0 => (ship): U64, 1 => (owner): U32, 2 => (state): U32, 3 => (member_source): U8, 4 => (group_index): U32, 5 => (member_index): U32, 6 => (convoy): U64, 7 => (subunit_index): I32, 8 => (formation_type): I32, 9 => (build_cost_ic): I64, 10 => (cached_strength_ratio): I64, 11 => (pride): U8, 12 => (is_convoy): U8, 13 => (name): Bytes, 14 => (type_name): Bytes, 15 => (sprite): Bytes, 16 => (sunk_by): Bytes, 17 => (variant): U64, 18 => (arrival_hours): I32, 19 => (received_criticals): I32, 20 => (evacuation_state): I32, 21 => (detection_state): I32, 22 => (escape_progress): I64 @ Self::ESCAPE_STEP, 23 => (escape_speed_base): I64, 24 => (last_target): Opaque, 25 => (received_damage): Opaque, 26 => (live_ship): U8, 27 => (live_convoy): U8, 28 => (strength): I64, 29 => (organisation): I64 @ Self::ORGANISATION_STEP, 30 => (base_organisation): I64, 31 => (maximum_hit_points): I64, 32 => (formation_flags): U64, 33 => (weapon_context): Opaque, 34 => (damage_entries): Opaque, 35 => (air_hits): Opaque, 36 => (naval_hits): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
+ { 0 => (ship): U64, 1 => (owner): U32, 2 => (state): U32, 3 => (member_source): U8, 4 => (group_index): U32, 5 => (member_index): U32, 6 => (convoy): U64, 7 => (subunit_index): I32, 8 => (formation_type): I32, 9 => (build_cost_ic): I64, 10 => (cached_strength_ratio): I64, 11 => (pride): U8, 12 => (is_convoy): U8, 13 => (name): Bytes, 14 => (type_name): Bytes, 15 => (sprite): Bytes, 16 => (sunk_by): Bytes, 17 => (variant): U64, 18 => (arrival_hours): I32, 19 => (received_criticals): I32, 20 => (evacuation_state): I32, 21 => (detection_state): I32, 22 => (escape_progress): I64, 23 => (escape_speed_base): I64, 24 => (last_target): Opaque, 25 => (received_damage): Opaque, 26 => (live_ship): U8, 27 => (live_convoy): U8, 28 => (strength): I64, 29 => (organisation): I64, 30 => (base_organisation): I64, 31 => (maximum_hit_points): I64, 32 => (formation_flags): U64, 33 => (weapon_context): Opaque, 34 => (damage_entries): Opaque, 35 => (air_hits): Opaque, 36 => (naval_hits): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalCombatResultDetailsRow {

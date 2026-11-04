@@ -1030,7 +1030,7 @@ pub(super) fn bind(
                     .count() as i64;
                 let sum = members
                     .iter()
-                    .filter(|r| r.live_ship != 0 || r.live_convoy == 0)
+                    .filter(|r| r.live_ship != 0)
                     .try_fold(0, |sum, r| {
                         let pride = pride_bonus
                             .get(&(r.side, r.battle_slot))

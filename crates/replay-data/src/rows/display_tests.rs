@@ -6,6 +6,36 @@ use crate::value::value_struct;
 const TENTH: Step = Step::fixed5(10_000, Rounding::TowardZero);
 const WHOLE: Step = Step::fixed5(100_000, Rounding::HalfAwayFromZero);
 
+#[test]
+fn naval_condition_operands_keep_raw_digits_through_capture_snapshot_and_delta() {
+    let row = NavalCombatShipRow {
+        combat: 7,
+        battle_slot: 1,
+        organisation: 1_485_001,
+        base_organisation: 3_000_001,
+        escape_progress: 49_499,
+        ..Default::default()
+    };
+    let mut rounded = row.clone();
+    rounded.round_to_display();
+    assert_eq!(rounded, row);
+    let mut bytes = Vec::new();
+    encode_row(&row, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(
+        decode_row::<NavalCombatShipRow>(0, &mut input).unwrap(),
+        row
+    );
+    input.finish().unwrap();
+    let next = NavalCombatShipRow {
+        organisation: 1_485_002,
+        escape_progress: 49_501,
+        ..row.clone()
+    };
+    let delta = next.delta(Some(&row)).unwrap().unwrap();
+    assert_eq!(delta.apply(Some(row)).unwrap(), next);
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Gauge {
     id: u32,

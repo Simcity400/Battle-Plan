@@ -286,6 +286,7 @@ fn combat_flags(
 /// What the window does at an hour, from its combat's flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Update {
+    Close,
     /// Rebuild its contents; `false` hides it.
     Refresh(bool),
     /// Keep the contents of the last hour it refreshed, or do not open.
@@ -299,8 +300,7 @@ enum Update {
 
 /// An active land window hides when neither side is engaged; an undecided
 /// flag keeps it open while the marker reports the gap. A naval window opens
-/// and refreshes only while engaged. Other hours hold its last engaged contents:
-/// a disengaged hour silently, an undecided or absent combat with a report.
+/// and refreshes only while engaged. Other hours hide its retained contents.
 fn update(selection: Selection, flags: &CombatFlags) -> Update {
     use viewer_foundation::engaged::Engaged;
     let flag = |flags: &BTreeMap<u64, Engaged>, id| flags.get(&id).copied();
@@ -309,7 +309,7 @@ fn update(selection: Selection, flags: &CombatFlags) -> Update {
         Selection::Naval(combat) => {
             let undecided = match flag(&flags.naval, combat) {
                 Some(Engaged::Yes) => return Update::Refresh(true),
-                Some(Engaged::No) => None,
+                Some(Engaged::No) => return Update::Close,
                 Some(Engaged::Ambiguous(cause)) => Some(cause.reason()),
                 Some(Engaged::Unknown) => Some("its engaged flag is unknown"),
                 None => Some("it is absent"),
@@ -609,6 +609,10 @@ impl Window {
             }
             let flags = combat_flags(frame, vision.ours(), engaged)?;
             let cached = match update(selection, &flags) {
+                Update::Close => {
+                    self.close();
+                    return Ok(None);
+                }
                 Update::Hold { combat, undecided } => {
                     let (previous, gui_assets, generation) =
                         self.cached.take().map_or((None, None, 0), |cached| {
@@ -622,7 +626,7 @@ impl Window {
                     Cached {
                         at: now,
                         covered,
-                        shown: contents.is_some(),
+                        shown: false,
                         contents,
                         held,
                         generation,
@@ -829,6 +833,7 @@ pub struct Widget {
     pub retain_sprite: bool,
     pub flag: Option<String>,
     pub fill: Option<f32>,
+    pub progress: Option<i32>,
     pub frame: Option<u32>,
     pub rotation: Option<f32>,
     pub opacity: Option<f32>,
@@ -898,9 +903,12 @@ mod tests {
         );
         let held = |selection, flag| match update(selection, &flags(flag)) {
             Update::Hold { combat, undecided } => Some((combat, undecided)),
-            Update::Refresh(_) => None,
+            Update::Refresh(_) | Update::Close => None,
         };
-        assert_eq!(held(Selection::Naval(2), Engaged::No), Some((2, None)));
+        assert_eq!(
+            update(Selection::Naval(2), &flags(Engaged::No)),
+            Update::Close
+        );
         assert_eq!(
             held(Selection::Naval(2), Engaged::Unknown),
             Some((2, Some("its engaged flag is unknown")))

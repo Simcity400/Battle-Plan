@@ -1,7 +1,7 @@
 //! Native naval member grouping and retained result dispatch.
 use super::{
     HoverText, Selection, Values, Widget,
-    binding::{Bindings, Flags, NavalEntry, TEXT, country_flag, fill, hide, text},
+    binding::{Bindings, Flags, NavalEntry, TEXT, country_flag, hide, text},
     tooltips::{hover_text, set_hover},
 };
 use replay_data::{
@@ -9,7 +9,11 @@ use replay_data::{
     rows::NavalCombatShipRow, rows::VariantDefinitionRow, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
-use std::{cmp::Reverse, collections::BTreeMap, io};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 use viewer_foundation::map::native_gui::container_frame;
 use viewer_foundation::table_access::Available;
 use viewer_foundation::tooltip_text::TextIcons;
@@ -41,6 +45,34 @@ fn air_group_slot(groups: &[AirGroup<'_>], side: u8, model: usize, owner: u32) -
     groups
         .iter()
         .position(|group| group.side == side && group.model == model && group.owner == owner)
+}
+
+fn air_order(group: &AirGroup<'_>) -> (u8, Reverse<i32>, Reverse<u32>) {
+    let wing = group
+        .planes
+        .iter()
+        .flat_map(|plane| &plane.wings[1])
+        .map(|handle| {
+            let product = handle
+                .rotate_left(32)
+                .wrapping_mul(engine_native::creference_registry::HASH_MULTIPLIER);
+            (product >> 32) as u32 ^ product as u32
+        })
+        .max()
+        .unwrap_or(0);
+    (
+        group.side,
+        Reverse(group.model.wrapping_add(1) as i32),
+        Reverse(wing),
+    )
+}
+
+fn sort_air_groups(groups: &mut [AirGroup<'_>]) -> BTreeSet<u8> {
+    groups.sort_by_cached_key(air_order);
+    groups
+        .windows(2)
+        .filter_map(|pair| (air_order(&pair[0]) == air_order(&pair[1])).then_some(pair[0].side))
+        .collect()
 }
 
 fn display_air_plane(plane: &NavalCombatPlane) -> bool {
@@ -183,7 +215,6 @@ fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
 
 fn push_air_entry(
     out: &mut Bindings,
-    heights: &mut BTreeMap<(u8, &str), f32>,
     side: u8,
     name: Option<String>,
     size: [f32; 2],
@@ -213,17 +244,20 @@ fn push_air_entry(
     }
     let wnd = if side == 0 { "left" } else { "right" };
     let grid = format!("battle_window/top_wnd/{wnd}_wnd/grid_carrier");
-    let height = heights.entry((side, "carrier")).or_default();
     out.naval_entries.push(NavalEntry {
+        layout: if side == 0 {
+            super::binding::NavalLayout::AirLeft
+        } else {
+            super::binding::NavalLayout::AirRight
+        },
         side,
         unknown: false,
         grid,
-        offset: Some([combat_box_x(size[0]), *height]),
+        offset: Some([0.0; 2]),
         size,
         values,
         battle_slots: Vec::new(),
     });
-    *height += size[1] + 3.0;
 }
 
 /// The carrier section appends the linked member's 0x24 (and, for a fighter
@@ -315,8 +349,7 @@ fn air_entries(
     flags: &Flags,
     aliases: &BTreeMap<u32, u32>,
     vision: &Vision,
-    heights: &mut BTreeMap<(u8, &str), f32>,
-) -> io::Result<()> {
+) -> io::Result<BTreeSet<u8>> {
     let details = rows::<tables::NavalCombatDetails>(frame)?;
     let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
         if !details.is_complete() {
@@ -324,7 +357,7 @@ fn air_entries(
                 "Naval combat {id} air entries are omitted: NavalCombatDetails is incomplete."
             ));
         }
-        return Ok(());
+        return Ok(BTreeSet::new());
     };
     let variants = rows::<tables::VariantDefinitions>(frame)?;
     let by_variant: BTreeMap<_, _> = variants.rows().iter().map(|row| (row.id, row)).collect();
@@ -428,8 +461,12 @@ fn air_entries(
         }
     }
     let Some(database) = database else {
-        return Ok(());
+        return Ok(BTreeSet::new());
     };
+    let ambiguous = sort_air_groups(&mut groups);
+    for side in &ambiguous {
+        out.refuse(format!("Naval combat {id} side {side} carrier grid is withheld: equal aircraft model and wing-hash sort keys require an unrecorded UI-address tie-break."));
+    }
     let stacking_penalty = super::tactics::viewing_side(
         &detail.sides[0].summary.countries,
         "attacker",
@@ -445,6 +482,9 @@ fn air_entries(
             .map_err(Clone::clone)
     });
     for group in groups {
+        if ambiguous.contains(&group.side) {
+            continue;
+        }
         let first = group.planes[0];
         let definition = &database.equipment[group.model];
         let archetype = &database.equipment[definition.archetype.unwrap_or(group.model)];
@@ -504,10 +544,10 @@ fn air_entries(
                 .gui_type(b"navalcombat_ship_entry")
                 .and_then(|entry| container_frame(entry, None).ok())
                 .map(|frame| frame.size.map(|value| value as f32));
-            if size.is_none() {
+            let Some(size) = size else {
                 out.refuse(format!("Naval combat {id} air group model {} layout is unavailable: navalcombat_ship_entry has no native GUI frame.", group.model + 1));
-            }
-            let size = size.unwrap_or_default();
+                continue;
+            };
             (None, size)
         };
         let hover = stacking_penalty
@@ -694,9 +734,9 @@ fn air_entries(
                 None
             }
         };
-        push_air_entry(out, heights, group.side, name, size, label, hover);
+        push_air_entry(out, group.side, name, size, label, hover);
     }
-    Ok(())
+    Ok(ambiguous)
 }
 
 pub(super) fn bind(
@@ -768,29 +808,129 @@ struct GroupKey {
     damaged: bool,
     unknown: bool,
 }
+
+type ShipOrder = (
+    u8,
+    &'static str,
+    Reverse<u8>,
+    Reverse<i32>,
+    Reverse<i32>,
+    Reverse<usize>,
+    bool,
+    Reverse<i32>,
+);
+
+fn ship_order(key: &GroupKey, members: &[&NavalCombatShipRow]) -> ShipOrder {
+    (
+        key.side,
+        key.column,
+        Reverse(key.convoy),
+        Reverse(key.formation),
+        Reverse(key.subunit),
+        Reverse(members.len()),
+        key.damaged,
+        Reverse(
+            members
+                .iter()
+                .map(|row| row.battle_slot as i32)
+                .fold(-1, i32::max),
+        ),
+    )
+}
 fn key(row: &NavalCombatShipRow, owner: u32, unknown: bool, pool_flags: u64) -> Option<GroupKey> {
     let column = column(row, pool_flags)?;
-    // The game collapses all unseen incoming entries in their box. Otherwise
-    // it compares cached formation/subunit/convoy, country aliases and damage.
     Some(GroupKey {
         side: row.side,
         column,
-        state: if unknown {
-            0
-        } else if row.state == 1 {
-            2
-        } else {
-            row.state
-        },
-        formation: if unknown { 0 } else { row.formation_type },
-        subunit: if unknown { 0 } else { row.subunit_index },
-        convoy: if unknown { 0 } else { row.is_convoy },
-        owner: if unknown { 0 } else { owner },
-        damaged: !unknown
-            && (row.live_ship != 0 || row.live_convoy != 0)
-            && row.strength < row.maximum_hit_points,
+        state: if row.state == 1 { 2 } else { row.state },
+        formation: row.formation_type,
+        subunit: row.subunit_index,
+        convoy: row.is_convoy,
+        owner,
+        damaged: (row.live_ship != 0 || row.live_convoy != 0)
+            && row.strength < row.maximum_hit_points.max(100),
         unknown,
     })
+}
+
+#[derive(Default)]
+struct GroupSlots {
+    known: BTreeMap<GroupKey, usize>,
+    unknown: BTreeMap<(u8, &'static str), usize>,
+}
+impl GroupSlots {
+    fn insert(&mut self, key: &GroupKey, next: usize) -> usize {
+        let mut identity = key.clone();
+        identity.unknown = false;
+        let slot = if key.unknown {
+            self.unknown.get(&(key.side, key.column)).copied()
+        } else {
+            None
+        }
+        .into_iter()
+        .chain(self.known.get(&identity).copied())
+        .min();
+        if let Some(slot) = slot {
+            return slot;
+        }
+        self.known.insert(identity, next);
+        if key.unknown {
+            self.unknown.insert((key.side, key.column), next);
+        }
+        next
+    }
+}
+
+fn roster_owner(
+    row: &NavalCombatShipRow,
+    forces: &BTreeMap<u64, &replay_data::rows::TaskForceRow>,
+) -> Result<u32, String> {
+    forces
+        .get(&row.weapon_context.task_force)
+        .map(|force| force.roster_owner)
+        .ok_or_else(|| {
+            format!(
+                "ship {} task force {} has no TaskForces row",
+                row.ship, row.weapon_context.task_force
+            )
+        })
+}
+
+fn group_pride(
+    members: &[&NavalCombatShipRow],
+    sunk: bool,
+    forces: &BTreeMap<u64, &replay_data::rows::TaskForceRow>,
+    countries: &BTreeMap<u32, &replay_data::rows::CountryCounterInputRow>,
+    aliases: &BTreeMap<u32, u32>,
+) -> Result<bool, String> {
+    let mut missing = None;
+    for row in members {
+        if sunk {
+            if row.pride != 0 {
+                return Ok(true);
+            }
+        } else if row.live_ship != 0 {
+            let pride = roster_owner(row, forces).and_then(|owner| {
+                let slot = aliases
+                    .get(&owner)
+                    .ok_or_else(|| format!("roster country {owner} has no CountryLinks row"))?;
+                countries
+                    .get(slot)
+                    .map(|country| country.pride_of_the_fleet == row.ship)
+                    .ok_or_else(|| {
+                        format!("roster country {owner} has no CountryCounterInputs row")
+                    })
+            });
+            match pride {
+                Ok(true) => return Ok(true),
+                Ok(false) => (),
+                Err(reason) => {
+                    missing.get_or_insert(reason);
+                }
+            }
+        }
+    }
+    missing.map_or(Ok(false), Err)
 }
 
 fn active(
@@ -831,10 +971,18 @@ fn active(
         .iter()
         .map(|r| (r.id, r.canonical_slot))
         .collect();
-    let mut lookup = BTreeMap::new();
+    let mut lookup = GroupSlots::default();
     let mut groups: Vec<(GroupKey, Vec<&NavalCombatShipRow>)> = Vec::new();
     let models = rows::<tables::ShipModels>(frame)?;
     let by_ship = models.rows().iter().map(|row| (row.ship, row)).collect();
+    let forces = rows::<tables::TaskForces>(frame)?;
+    let forces = forces.rows().iter().map(|row| (row.id, row)).collect();
+    let pride_countries = rows::<tables::CountryCounterInputs>(frame)?;
+    let pride_countries = pride_countries
+        .rows()
+        .iter()
+        .filter_map(|row| aliases.get(&row.country).map(|slot| (*slot, row)))
+        .collect();
     let model_gap = match &models {
         Available::Complete(_) => None,
         Available::Truncated { missing, .. } => Some(format!("{missing} rows not reached")),
@@ -846,7 +994,17 @@ fn active(
     let mut undecided: BTreeMap<SharingUnknown, usize> = BTreeMap::new();
     for row in members {
         let unknown = if row.state == 4 && row.live_ship != 0 {
-            match vision.sees_combat(std::iter::once(aliases.get(&row.owner).copied()), None) {
+            let owner = match roster_owner(row, &forces) {
+                Ok(owner) => owner,
+                Err(reason) => {
+                    out.refuse(format!(
+                        "NavalCombatShips slot {} incoming visibility is withheld: {reason}.",
+                        row.battle_slot
+                    ));
+                    continue;
+                }
+            };
+            match vision.sees_combat(std::iter::once(aliases.get(&owner).copied()), None) {
                 Ok(seen) => !seen,
                 Err(cause) => {
                     *undecided.entry(cause).or_default() += 1;
@@ -866,12 +1024,11 @@ fn active(
                 continue;
             }
         };
-        let Some(key) = key(
-            row,
-            aliases.get(&row.owner).copied().unwrap_or(row.owner),
-            unknown,
-            pool,
-        ) else {
+        let Some(&owner) = aliases.get(&row.owner) else {
+            out.refuse(format!("NavalCombatShips slot {} grouping is withheld: country {} has no CountryLinks row.", row.battle_slot, row.owner));
+            continue;
+        };
+        let Some(key) = key(row, owner, unknown, pool) else {
             out.warnings.push(format!(
                 "NavalCombatShips slot {}: state {} has no drawable live combat box; omitted.",
                 row.battle_slot, row.state
@@ -879,7 +1036,7 @@ fn active(
             continue;
         };
         let next = groups.len();
-        let index = *lookup.entry(key.clone()).or_insert(next);
+        let index = lookup.insert(&key, next);
         if index == next {
             groups.push((key, Vec::new()));
         }
@@ -891,42 +1048,40 @@ fn active(
             cause.describe()
         ));
     }
-    // The game sorts each combat box after grouping. More
-    // numerous groups precede smaller ones; the final native pointer tie is
-    // transient, so retain recorded insertion order for otherwise equal keys.
-    groups.sort_by_key(|(key, members)| {
-        (
-            key.side,
-            key.column,
-            Reverse(key.convoy),
-            Reverse(key.formation),
-            Reverse(key.subunit),
-            Reverse(members.len()),
-            key.damaged,
-            Reverse(members.iter().map(|r| r.battle_slot).max().unwrap_or(0)),
-        )
-    });
+    groups.sort_by_cached_key(|(key, members)| ship_order(key, members));
+    let ambiguous: BTreeSet<_> = groups
+        .windows(2)
+        .filter_map(|pair| {
+            (ship_order(&pair[0].0, &pair[0].1) == ship_order(&pair[1].0, &pair[1].1))
+                .then_some((pair[0].0.side, pair[0].0.column))
+        })
+        .collect();
+    for (side, column) in &ambiguous {
+        out.refuse(format!("Naval combat {id} side {side} {column} grid is withheld: equal ship sort keys require an unrecorded UI-address tie-break."));
+    }
     out.naval_entries.clear();
-    let mut heights = BTreeMap::<(u8, &str), f32>::new();
-    air_entries(
-        out,
-        static_content,
-        frame,
-        id,
-        flags,
-        &aliases,
-        vision,
-        &mut heights,
-    )?;
+    let ambiguous_air = air_entries(out, static_content, frame, id, flags, &aliases, vision)?;
     for (key, members) in groups {
+        if ambiguous.contains(&(key.side, key.column))
+            || (key.column == "carrier" && ambiguous_air.contains(&key.side))
+        {
+            continue;
+        }
         let first = members[0];
-        let name = if key.unknown {
-            "GFX_navalcombat_ship_icon_unknown".into()
+        let name = match if key.unknown {
+            Ok("GFX_navalcombat_ship_icon_unknown".to_owned())
         } else {
-            format!(
-                "GFX_navalcombat_ship_icon_{}",
-                String::from_utf8_lossy(&first.sprite)
-            )
+            std::str::from_utf8(&first.sprite)
+                .map(|sprite| format!("GFX_navalcombat_ship_icon_{sprite}"))
+        } {
+            Ok(name) => name,
+            Err(_) => {
+                out.refuse(format!(
+                    "NavalCombatShips slot {} sprite is not UTF-8; row omitted.",
+                    first.battle_slot
+                ));
+                continue;
+            }
         };
         let Some(asset) = static_content.assets.sprite_size(&name) else {
             out.warnings.push(format!(
@@ -966,41 +1121,32 @@ fn active(
                 first.owner,
                 members.len(),
                 key.side,
-                asset[0],
                 flags,
             );
             let live: Vec<_> = members
                 .iter()
                 .filter(|r| r.live_ship != 0 || r.live_convoy != 0)
                 .collect();
-            if !live.is_empty() && key.column != "sunk" {
-                let ratio = live
+            if key.column != "sunk" {
+                let total = live
                     .iter()
                     .map(|r| fixed_ratio(r.strength, r.maximum_hit_points.max(100)))
-                    .sum::<i128>()
-                    / live.len() as i128;
-                bar(
-                    &mut values,
-                    "bar_str",
-                    ratio as f32 / 100_000.0,
-                    asset[0],
-                    static_content,
-                );
+                    .fold(0_i64, i64::wrapping_add);
+                let ratio = mean(total, live.len());
+                bar(&mut values, "bar_str", ratio);
                 // A refused ship organisation family was reported once above.
-                if organisation_admitted {
-                    match live.iter().try_fold(0_i128, |sum, row| {
+                if organisation_admitted || live.iter().all(|row| row.live_ship == 0) {
+                    match live.iter().try_fold(0_i64, |sum, row| {
                         let maximum = organisation_maximum(row)
                             .map_err(|reason| (row.battle_slot, reason))?;
-                        Ok::<_, (u32, String)>(sum + fixed_ratio(row.organisation, maximum))
+                        Ok::<_, (u32, String)>(sum.wrapping_add(fixed_ratio(row.organisation, maximum)))
                     }) {
                         Ok(total) => {
-                            let ratio = total / live.len() as i128;
+                            let ratio = mean(total, live.len());
                             bar(
                                 &mut values,
                                 "bar_org",
-                                ratio as f32 / 100_000.0,
-                                asset[0],
-                                static_content,
+                                ratio,
                             );
                         }
                         Err((slot, reason)) => out.warnings.push(format!(
@@ -1011,48 +1157,44 @@ fn active(
             }
             if key.column == "hidden" {
                 show(&mut values, "icon_hidden");
-                center_icon(
-                    &mut values,
-                    "icon_hidden",
-                    "GFX_navalcombat_ship_hidden",
-                    asset[0],
-                    static_content,
-                );
             }
-            if members.iter().any(|r| r.pride != 0) {
+            let pride = group_pride(
+                &members,
+                key.column == "sunk",
+                &forces,
+                &pride_countries,
+                &aliases,
+            );
+            if let Err(reason) = &pride {
+                out.refuse(format!(
+                    "NavalCombatShips slot {} pride status is withheld: {reason}.",
+                    first.battle_slot
+                ));
+            }
+            if pride == Ok(true) {
+                match &static_content.assets.naval_result_pride_color {
+                    Ok(color) => values.entry("icon".into()).or_default().color = Some(*color),
+                    Err(reason) => out.refuse(format!(
+                        "NavalCombatShips slot {} pride tint is withheld: {reason}.",
+                        first.battle_slot
+                    )),
+                }
                 show(&mut values, "pride");
-                center_icon(
-                    &mut values,
-                    "pride",
-                    "GFX_NV_icon_pride_small",
-                    asset[0],
-                    static_content,
-                );
             }
         }
         if !escaping.is_empty() {
-            let ratio = escaping
+            let total = escaping
                 .iter()
-                .map(|r| i128::from(r.escape_progress))
-                .sum::<i128>()
-                / escaping.len() as i128;
-            bar(
-                &mut values,
-                "escape_progress",
-                ratio as f32 / 100_000.0,
-                asset[0],
-                static_content,
-            );
+                .map(|r| r.escape_progress)
+                .fold(0_i64, i64::wrapping_add);
+            let ratio = mean(total, escaping.len());
+            bar(&mut values, "escape_progress", ratio);
             let icon = if key.side == 0 {
                 "escape_icon_left"
             } else {
                 "escape_icon_right"
             };
             show(&mut values, icon);
-            // The game places the escape icon at the bar's final x plus the
-            // icon's authored x; CENTER_UP alone would add half the ship width.
-            values.entry(icon.into()).or_default().offset[0] =
-                escape_bar_x(asset[0], static_content) - asset[0] / 2.0;
         }
         let wnd = if key.side == 0 { "left" } else { "right" };
         let grid = match key.column {
@@ -1063,26 +1205,23 @@ fn active(
             "reserve" => format!("battle_window/outside_wnd/{wnd}_wnd/grid"),
             column => format!("battle_window/top_wnd/{wnd}_wnd/grid_{column}"),
         };
-        let height = heights.entry((key.side, key.column)).or_default();
-        let offset_x = if key.column == "sunk" {
-            0.0
-        } else {
-            combat_box_x(asset[0])
-        };
         out.naval_entries.push(NavalEntry {
+            layout: if key.column == "sunk" {
+                super::binding::NavalLayout::Sunk
+            } else {
+                super::binding::NavalLayout::Ship
+            },
             side: key.side,
             unknown: key.unknown,
             grid,
-            offset: entry_offset(key.column, offset_x, *height),
+            offset: entry_offset(key.column, 0.0, 0.0),
             size: asset,
             values,
             battle_slots: members.iter().map(|row| row.battle_slot).collect(),
         });
-        *height += asset[1] + 3.0 + if escaping.is_empty() { 0.0 } else { 8.0 };
     }
     out.warnings
         .retain(|w| !w.starts_with("NavalCombatShips: live HP/org bars"));
-    out.warnings.push("Format-22 naval rows: native state/formation/equipment/reveal boxes, source0 and retained source1 slots, normalized-state/subunit/formation/country/damaged grouping, copied sprites, native sorted group counts, mean strength/organisation and escape progress are bound. Organisation maxima apply recorded modifiers46/47/27e with default-leader and HQ sources; missing terms in complete captured sources mean zero. Sunk entries follow the content grid's slots. Pride tint, incoming-entry relation edge cases and remaining flag/text geometry remain unverified.".into());
     Ok(())
 }
 
@@ -1096,21 +1235,15 @@ pub(super) fn entry_offset(column: &str, x: f32, y: f32) -> Option<[f32; 2]> {
 pub(super) fn icon_frame(side: u8, reversed: bool) -> u32 {
     u32::from(side == 0) ^ u32::from(reversed)
 }
-/// A combat-box entry is right-aligned inside its 100-wide UPPER_RIGHT grid.
-/// Its offset subtracts half of width minus one using truncating integer division.
-pub(super) fn combat_box_x(width: f32) -> f32 {
-    100.0 - ((width - 1.0) * 0.5).trunc()
+fn fixed_ratio(value: i64, maximum: i64) -> i64 {
+    super::fixed::fraction(value, maximum).expect("condition denominator is positive")
 }
-/// The escape bar's final x in the entry: `width / 2 - bar / 2 + authored x`.
-pub(super) fn escape_bar_x(width: f32, static_content: &StaticContent) -> f32 {
-    let bar = static_content
-        .assets
-        .sprite_size("GFX_naval_combat_escape_bar")
-        .map_or(54.0, |s| s[0]);
-    (width / 2.0).trunc() - (bar / 2.0).trunc() - 1.0
-}
-fn fixed_ratio(value: i64, maximum: i64) -> i128 {
-    i128::from(value) * 100_000 / i128::from(maximum)
+fn mean(total: i64, count: usize) -> i64 {
+    if count == 0 {
+        0
+    } else {
+        fixed_ratio(total, (count as i64).wrapping_mul(100_000))
+    }
 }
 /// maximum organisation, or which operand refuses it.
 pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, String> {
@@ -1118,14 +1251,7 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
         if row.live_convoy == 0 {
             return Err("it is neither a live ship nor a live convoy".into());
         }
-        return if row.base_organisation > 0 {
-            Ok(row.base_organisation)
-        } else {
-            Err(format!(
-                "the convoy records base organisation {}, not a positive value",
-                row.base_organisation
-            ))
-        };
+        return Ok(row.base_organisation.max(100));
     }
     // Use the task force's default commander for maximum organisation.
     // Other recorded sources, including the HQ scopes, still contribute.
@@ -1159,41 +1285,17 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
 fn show(values: &mut Values, key: &str) {
     values.entry(key.into()).or_default().hidden = false;
 }
-fn bar(values: &mut Values, key: &str, value: f32, width: f32, static_content: &StaticContent) {
+fn bar(values: &mut Values, key: &str, value: i64) {
     show(values, key);
-    fill(values, key, value.clamp(0.0, 1.0));
-    let name = match key {
-        "bar_str" => "GFX_navalcombat_bar_str",
-        "bar_org" => "GFX_navalcombat_bar_org",
-        _ => "GFX_naval_combat_escape_bar",
-    };
-    center_icon(values, key, name, width, static_content);
+    values.entry(key.into()).or_default().progress =
+        Some(super::fixed::round(value.wrapping_mul(100)));
 }
-fn center_icon(
-    values: &mut Values,
-    key: &str,
-    name: &str,
-    width: f32,
-    static_content: &StaticContent,
-) {
-    if let Some(asset) = static_content.assets.sprite_size(name) {
-        // CENTER_UP already contributes width/2. Native retains authored x.
-        values.entry(key.into()).or_default().offset[0] =
-            (width / 2.0).trunc() - width / 2.0 - (asset[0] / 2.0).trunc();
-    }
-}
-/// the attacker's left column writes the country flag into
-/// `desc_left` and the count into `desc_right`; the right column swaps them.
-/// `desc_left` keeps its authored x (-8, left format). `desc_right` moves to
-/// `authored x + icon width - maxWidth` so its right-aligned text ends 8 px
-/// past the icon. The flag text is the inline 0x12 country marker.
 pub(super) fn descriptions(
     out: &mut Bindings,
     values: &mut Values,
     owner: u32,
     count: usize,
     side: u8,
-    width: f32,
     flags: &Flags,
 ) {
     let (count_key, flag_key) = if side == 0 {
@@ -1201,18 +1303,10 @@ pub(super) fn descriptions(
     } else {
         ("desc_left", "desc_right")
     };
-    let offset = |key: &str| {
-        if key == "desc_right" {
-            [width - 105.0, 0.0]
-        } else {
-            [0.0; 2]
-        }
-    };
     values.insert(
         count_key.into(),
         Widget {
             text: Some(count.to_string()),
-            offset: offset(count_key),
             ..Widget::default()
         },
     );
@@ -1222,7 +1316,6 @@ pub(super) fn descriptions(
         TEXT,
         country_flag(flags, owner).map(|flag| format!("{}{flag}", super::INLINE_FLAG)),
     );
-    values.entry(flag_key.into()).or_default().offset = offset(flag_key);
 }
 
 #[cfg(test)]

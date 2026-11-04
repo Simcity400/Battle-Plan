@@ -1090,3 +1090,12 @@ fn a_binding_after_a_refusal_shows_the_widget_again() {
     assert!(!out.values["name"].hidden);
     assert_eq!(out.values["name"].text.as_deref(), Some("late"));
 }
+#[test]
+fn naval_header_prefers_the_first_equivalent_viewer_then_the_first_country() {
+    let aliases = BTreeMap::from([(11, 1), (12, 1), (22, 2)]);
+    assert_eq!(naval_flag_country(&[22, 12, 11], &aliases, 1), Ok(12));
+    assert_eq!(naval_flag_country(&[22, 12], &aliases, 3), Ok(22));
+    assert!(naval_flag_country(&[33, 12], &aliases, 1).is_err());
+    assert_eq!(naval_flag_country(&[12, 33], &aliases, 1), Ok(12));
+    assert!(naval_flag_country(&[], &aliases, 1).is_err());
+}
