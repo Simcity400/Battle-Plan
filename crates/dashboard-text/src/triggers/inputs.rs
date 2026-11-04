@@ -26,6 +26,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     hash::{Hash, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -176,14 +177,70 @@ pub struct TableRead {
 }
 
 /// The rows of one canonical country in a table keyed by raw country
-/// first: those whose key's country (`key >> shift`) the hour's
-/// `CountryLinks` maps to `slot`, and those whose country it does not
-/// map, which a read refuses on. Which rows these are is a function of
-/// every `CountryLinks` row's slot, which such a read also reads.
+/// first: those whose key's country (the 32 bits from `shift`) `by` maps to
+/// `slot`, and those whose country it does not map. Which rows these are is
+/// a function of every slot `by` holds, which such a read also reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Owner {
     pub slot: u32,
     pub shift: u32,
+    pub by: Resolution,
+}
+
+/// What maps a raw country to its canonical slot for an [`Owner`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Resolution {
+    /// `CountryLinks`, as a row's own country reference resolves.
+    Links,
+    /// `Countries`, as a country's raw id resolves (`World::raw_country`).
+    Countries,
+}
+
+impl Resolution {
+    /// The read of every slot it maps by.
+    fn read(self) -> TableRead {
+        match self {
+            Self::Links => TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+            Self::Countries => TableRead::fields(TableId::Countries, &["canonical_slot"]),
+        }
+    }
+
+    /// `frame`'s table it maps by; none where it is not complete, so any row may be.
+    pub fn slots(self, frame: &DecodedFrame) -> Option<Slots<'_>> {
+        view_reads::unrecorded(|| match self {
+            Self::Links => frame
+                .complete::<tables::CountryLinks>()
+                .ok()
+                .map(Slots::Links),
+            Self::Countries => frame
+                .complete::<tables::Countries>()
+                .ok()
+                .map(Slots::Countries),
+        })
+    }
+}
+
+/// A complete table that maps raw countries to slots, ascending by raw id as its keys are.
+#[derive(Clone, Copy)]
+pub enum Slots<'a> {
+    Links(&'a [replay_data::rows::CountryLinkRow]),
+    Countries(&'a [replay_data::rows::CountryRow]),
+}
+
+impl Slots<'_> {
+    /// The slot it maps raw country `country` to, if any.
+    pub fn of(self, country: u32) -> Option<u32> {
+        match self {
+            Self::Links(rows) => rows
+                .binary_search_by_key(&country, |row| row.id)
+                .ok()
+                .map(|at| rows[at].canonical_slot),
+            Self::Countries(rows) => rows
+                .binary_search_by_key(&country, |row| row.id)
+                .ok()
+                .map(|at| rows[at].canonical_slot),
+        }
+    }
 }
 
 impl TableRead {
@@ -256,7 +313,25 @@ impl TableRead {
     /// country above bit `shift` ([`Owner`]).
     pub fn owned_by(self, slot: u32, shift: u32) -> Self {
         Self {
-            owner: Some(Owner { slot, shift }),
+            owner: Some(Owner {
+                slot,
+                shift,
+                by: Resolution::Links,
+            }),
+            ..self
+        }
+    }
+
+    /// Only the rows of the country whose raw id `Countries` gives canonical slot `slot`,
+    /// and the rows whose country it does not give, in a table whose key holds the raw
+    /// country above bit `shift`.
+    pub fn of_country(self, slot: u32, shift: u32) -> Self {
+        Self {
+            owner: Some(Owner {
+                slot,
+                shift,
+                by: Resolution::Countries,
+            }),
             ..self
         }
     }
@@ -273,29 +348,20 @@ impl TableRead {
     #[cfg(test)]
     pub(crate) fn reads_row(&self, key: u128, frame: &DecodedFrame) -> bool {
         self.holds(key)
-            && self.owner.is_none_or(
-                |owner| match frame.complete::<tables::CountryLinks>().ok() {
-                    Some(links) => owned(links, owner, key),
-                    None => true,
-                },
-            )
+            && self.owner.is_none_or(|owner| {
+                owner.by.slots(frame).is_none_or(|slots| {
+                    slots
+                        .of(owner.country(key))
+                        .is_none_or(|slot| slot == owner.slot)
+                })
+            })
     }
 }
 
-/// What an owned read also reads: every `CountryLinks` row's slot, which
-/// decides the rows it reads.
-fn owner_links() -> TableRead {
-    TableRead::fields(TableId::CountryLinks, &["canonical_slot"])
-}
-
-/// Whether `links` (a `CountryLinks` table's rows, ascending by raw id)
-/// maps a row keyed `key` to `owner`'s country or to none.
-fn owned(links: &[replay_data::rows::CountryLinkRow], owner: Owner, key: u128) -> bool {
-    // The raw country, the 32 bits above the shift.
-    let country = key.checked_shr(owner.shift).unwrap_or(0) as u32;
-    match links.binary_search_by_key(&country, |link| link.id) {
-        Ok(at) => links[at].canonical_slot == owner.slot,
-        Err(_) => true,
+impl Owner {
+    /// The raw country of the row keyed `key`: the 32 bits above the shift.
+    fn country(self, key: u128) -> u32 {
+        key.checked_shr(self.shift).unwrap_or(0) as u32
     }
 }
 
@@ -422,6 +488,16 @@ pub struct Since<'a> {
     /// Each read asked about, and whether it changed: the evaluations an
     /// hour confirms share most of their reads.
     asked: RefCell<std::collections::HashMap<TableRead, bool>>,
+    /// The countries an owned read's changed rows map to, by the read with its slot cleared:
+    /// every country's read of one shape shares them.
+    owned: RefCell<std::collections::HashMap<TableRead, Reached>>,
+}
+
+/// The slots changed rows map to, and whether one maps to none or none could be mapped.
+#[derive(Default)]
+struct Reached {
+    slots: HashSet<u32>,
+    any: bool,
 }
 
 impl<'a> Since<'a> {
@@ -434,6 +510,7 @@ impl<'a> Since<'a> {
             rows: Some(frame),
             tables,
             asked: RefCell::default(),
+            owned: RefCell::default(),
         })
     }
 
@@ -453,6 +530,7 @@ impl<'a> Since<'a> {
             rows,
             tables,
             asked: RefCell::default(),
+            owned: RefCell::default(),
         }
     }
 
@@ -496,39 +574,55 @@ impl<'a> Since<'a> {
                 );
                 match read.owner {
                     None => keys.next().is_some(),
-                    Some(owner) => self.owned_moved(owner, keys),
+                    Some(owner) => {
+                        let shape = TableRead {
+                            owner: Some(Owner { slot: 0, ..owner }),
+                            ..*read
+                        };
+                        if !self.owned.borrow().contains_key(&shape) {
+                            let reached = self.reached(owner, keys);
+                            self.owned.borrow_mut().insert(shape, reached);
+                        }
+                        let owned = self.owned.borrow();
+                        let reached = &owned[&shape];
+                        reached.any || reached.slots.contains(&owner.slot)
+                    }
                 }
             }
         };
         // An unmoved read's rows hold the same keys, start and end hours
         // in `rows` as at `to`; an owned read's rows are its country's while
-        // the links are the same.
+        // the slots it maps by are the same.
         moved
-            || (read.owner.is_some() && self.changed(&owner_links()))
+            || read
+                .owner
+                .is_some_and(|owner| self.changed(&owner.by.read()))
             || (read.ends
                 && self
                     .rows
                     .is_none_or(|rows| ended(rows, read, self.from, self.to)))
     }
 
-    /// Whether a row keyed by one of `keys` (changed or deleted) is one of
-    /// `owner`'s or names no country, by the links in `rows`, which equal
-    /// the links at `to` whenever an owned read can be unchanged. Without
-    /// them, any row may be.
-    fn owned_moved(&self, owner: Owner, mut keys: impl Iterator<Item = u128>) -> bool {
-        let links = self.rows.and_then(|frame| {
-            view_reads::unrecorded(|| match &*frame.tables[TableId::CountryLinks.index()] {
-                TableView::Complete(rows) => rows.rows::<tables::CountryLinks>(),
-                // A truncated table may lack the row that resolves a key.
-                TableView::Truncated { .. }
-                | TableView::Unavailable { .. }
-                | TableView::NotRecorded { .. } => None,
-            })
-        });
-        match links {
-            Some(links) => keys.any(|key| owned(links, owner, key)),
-            None => keys.next().is_some(),
+    /// The slots the rows keyed `keys` (changed or deleted) map to by `owner.by` in `rows`,
+    /// which equal those at `to` whenever an owned read can be unchanged. Without them, any
+    /// row may be any country's.
+    fn reached(&self, owner: Owner, mut keys: impl Iterator<Item = u128>) -> Reached {
+        let Some(slots) = self.rows.and_then(|frame| owner.by.slots(frame)) else {
+            return Reached {
+                slots: HashSet::new(),
+                any: keys.next().is_some(),
+            };
+        };
+        let mut reached = Reached::default();
+        for key in keys {
+            match slots.of(owner.country(key)) {
+                Some(slot) => {
+                    reached.slots.insert(slot);
+                }
+                None => reached.any = true,
+            }
         }
+        reached
     }
 }
 

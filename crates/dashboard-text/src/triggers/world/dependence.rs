@@ -114,7 +114,7 @@ fn store(store: Store, field: &str) -> Vec<TableRead> {
     match store {
         Store::Global => vec![row(0, 0)],
         // The country's raw id keys its row.
-        Store::Country(_) => vec![read, raw_ids()],
+        Store::Country(slot) => vec![prefixed(read, 1, 32).of_country(slot, 0), raw_ids()],
         Store::State(id) => vec![row(2, id)],
         Store::Character(id) => vec![row(3, id)],
         Store::Project { owner, id } => vec![

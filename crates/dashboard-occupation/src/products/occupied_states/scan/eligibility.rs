@@ -1,5 +1,7 @@
 use super::*;
-use dashboard_text::triggers::inputs::{self, Since, TableChange, TableChanges, TableRead};
+use dashboard_text::triggers::inputs::{
+    self, Resolution, Since, TableChange, TableChanges, TableRead,
+};
 
 type Key = (String, u32, u32);
 
@@ -30,7 +32,7 @@ fn evaluated<'w>(
 #[derive(Default)]
 struct Ranges {
     prefixes: HashMap<u32, HashMap<u128, HashSet<TableRead>>>,
-    owners: HashMap<u32, HashMap<u32, HashSet<TableRead>>>,
+    owners: HashMap<(u32, Resolution), HashMap<u32, HashSet<TableRead>>>,
     broad: HashSet<TableRead>,
 }
 
@@ -49,7 +51,7 @@ impl Ranges {
     fn insert(&mut self, read: TableRead) {
         if let Some(owner) = read.owner {
             self.owners
-                .entry(owner.shift)
+                .entry((owner.shift, owner.by))
                 .or_default()
                 .entry(owner.slot)
                 .or_default()
@@ -68,7 +70,8 @@ impl Ranges {
 
     fn remove(&mut self, read: &TableRead) {
         if let Some(owner) = read.owner {
-            if let Some(owners) = self.owners.get_mut(&owner.shift)
+            let by = (owner.shift, owner.by);
+            if let Some(owners) = self.owners.get_mut(&by)
                 && let Some(reads) = owners.get_mut(&owner.slot)
             {
                 reads.remove(read);
@@ -76,7 +79,7 @@ impl Ranges {
                     owners.remove(&owner.slot);
                 }
                 if owners.is_empty() {
-                    self.owners.remove(&owner.shift);
+                    self.owners.remove(&by);
                 }
             }
         } else if let Some((shift, key)) = prefix(read) {
@@ -103,7 +106,8 @@ impl Ranges {
         deleted: &[u128],
     ) -> HashSet<TableRead> {
         let mut reads = self.broad.clone();
-        let links = frame.complete::<tables::CountryLinks>().ok();
+        let links = Resolution::Links.slots(frame);
+        let countries = Resolution::Countries.slots(frame);
         for key in changed
             .iter()
             .map(|row| row.key)
@@ -114,14 +118,13 @@ impl Ranges {
                     reads.extend(found.iter().copied());
                 }
             }
-            for (&shift, owners) in &self.owners {
+            for (&(shift, by), owners) in &self.owners {
                 let raw = key.checked_shr(shift).unwrap_or(0) as u32;
-                let slot = links.and_then(|links| {
-                    links
-                        .binary_search_by_key(&raw, |row| row.id)
-                        .ok()
-                        .map(|at| links[at].canonical_slot)
-                });
+                let slots = match by {
+                    Resolution::Links => links,
+                    Resolution::Countries => countries,
+                };
+                let slot = slots.and_then(|slots| slots.of(raw));
                 match slot {
                     Some(slot) => {
                         if let Some(found) = owners.get(&slot) {
