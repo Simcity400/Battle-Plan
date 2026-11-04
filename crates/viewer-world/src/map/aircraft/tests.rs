@@ -1,4 +1,5 @@
 use super::*;
+use viewer_foundation::map::air_reachability::TargetPredicates;
 use viewer_foundation::map::aircraft_model;
 fn wing(id: u64, owner: u32, region: u32) -> AirWingRow {
     AirWingRow {
@@ -1761,8 +1762,8 @@ fn the_initial_gate_uses_the_wings_own_operands() {
 
 mod band;
 mod continuity;
-mod model_inputs;
 mod launch_effects;
+mod model_inputs;
 mod paired;
 mod training;
 
@@ -1838,7 +1839,22 @@ fn first_window_history_distinguishes_older_absence_from_captured_zero() {
         ..Default::default()
     };
     *frame.tables[TableId::AirNavalPatrolHistories.index()] =
-        TableView::Complete(TableRows::AirNavalPatrolHistories(vec![older, witness]));
+        TableView::Complete(TableRows::AirNavalPatrolHistories(vec![
+            older,
+            AirNavalPatrolHistoryRow::window_marker(
+                1,
+                7,
+                0,
+                replay_data::rows::AirHistoryWindow {
+                    complete: false,
+                    capacity: 30,
+                    current: 0,
+                    wrapped: true,
+                },
+                false,
+            ),
+            witness,
+        ]));
     let history = ScenarioHistory::read(&frame, 1).unwrap().unwrap();
     assert_eq!(
         history.region(7),
@@ -1861,6 +1877,8 @@ fn refused_scenario_history_keeps_other_regions_and_original_naval_channels() {
         enemy_ships_sunk_raw: 300_000,
         our_fighters_lost_raw: 200_000,
         scenario_channels: Recorded::Value(None),
+        menu: Default::default(),
+        ..Default::default()
     };
     let healthy = AirNavalPatrolHistoryRow {
         country: 1,
@@ -1873,7 +1891,31 @@ fn refused_scenario_history_keeps_other_regions_and_original_naval_channels() {
     *frame.tables[TableId::AirNavalPatrolHistories.index()] =
         TableView::Complete(TableRows::AirNavalPatrolHistories(vec![
             refused,
+            AirNavalPatrolHistoryRow::window_marker(
+                1,
+                7,
+                0,
+                replay_data::rows::AirHistoryWindow {
+                    complete: false,
+                    capacity: 30,
+                    current: 0,
+                    wrapped: true,
+                },
+                false,
+            ),
             healthy,
+            AirNavalPatrolHistoryRow::window_marker(
+                1,
+                8,
+                0,
+                replay_data::rows::AirHistoryWindow {
+                    complete: false,
+                    capacity: 30,
+                    current: 0,
+                    wrapped: true,
+                },
+                false,
+            ),
             AirNavalPatrolHistoryRow::availability_witness(1),
         ]));
     let history = ScenarioHistory::read(&frame, 1).unwrap().unwrap();
@@ -1895,7 +1937,7 @@ fn first_window_history_saturates_each_channel_after_each_ordered_record() {
     use replay_frame::frame::TableView;
     let (mut frame, _) = bloc_war(2);
     let limit = engine_air_history::air_kamikaze::SUM_LIMIT;
-    let rows = vec![
+    let mut rows = vec![
         AirNavalPatrolHistoryRow {
             country: 1,
             region: 7,
@@ -1920,8 +1962,21 @@ fn first_window_history_saturates_each_channel_after_each_ordered_record() {
             scenario_channels: Recorded::Value(Some([10; 7])),
             ..Default::default()
         },
+        AirNavalPatrolHistoryRow::window_marker(
+            1,
+            7,
+            0,
+            replay_data::rows::AirHistoryWindow {
+                complete: false,
+                capacity: 30,
+                current: 0,
+                wrapped: true,
+            },
+            false,
+        ),
         AirNavalPatrolHistoryRow::availability_witness(1),
     ];
+    rows.sort_unstable_by_key(|row| (row.country, row.region, row.level, row.index));
     *frame.tables[TableId::AirNavalPatrolHistories.index()] =
         TableView::Complete(TableRows::AirNavalPatrolHistories(rows));
     assert_eq!(

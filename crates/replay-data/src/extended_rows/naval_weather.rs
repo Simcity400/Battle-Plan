@@ -299,9 +299,13 @@ pub struct WeatherRegionRow {
     pub naval_detection: Recorded<Option<i64>>,
     pub air_attack: Recorded<Option<i64>>,
     pub air_defence: Recorded<Option<i64>>,
+    pub air_efficiency: Recorded<Option<Vec<ModifierBreakdownNode>>>,
 }
 typed_codec!(WeatherRegionRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
- { 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque, 9 => (air_detection): Opaque, 10 => (map_modifiers_known): Bool, 11 => (naval_detection): OptionalI64, 12 => (air_attack): OptionalI64, 13 => (air_defence): OptionalI64 }, |_row| Ok(()));
+{ 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque, 9 => (air_detection): Opaque, 10 => (map_modifiers_known): Bool, 11 => (naval_detection): OptionalI64, 12 => (air_attack): OptionalI64, 13 => (air_defence): OptionalI64, 14 => (air_efficiency): Opaque }, |row| {
+   if let Recorded::Value(Some(nodes)) = &row.air_efficiency { check_tree(nodes)?; }
+   Ok(())
+});
 
 /// Live display boundary, carried only by WeatherProvinces slot zero.
 /// These cells are excluded from dirty updates and rebuilt separately.

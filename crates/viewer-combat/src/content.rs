@@ -20,6 +20,7 @@ use viewer_foundation::{
 };
 
 pub struct Content {
+    pub air_context: Option<Arc<viewer_counter_products::map::counter_content::Content>>,
     pub attrition: std::sync::OnceLock<
         Result<viewer_foundation::map::counter_attrition::PanelContent, String>,
     >,

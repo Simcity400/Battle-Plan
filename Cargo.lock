@@ -11335,8 +11335,10 @@ dependencies = [
 name = "viewer-combat"
 version = "0.1.0"
 dependencies = [
+ "dashboard-base",
  "dashboard-text",
  "dpi",
+ "engine-allocation",
  "engine-characters",
  "engine-executable",
  "engine-native",

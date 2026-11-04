@@ -10,14 +10,18 @@
 //! item's tooltip key and its value as the received-damage formatter
 //! writes it, green for ours and red for the enemy's.
 use super::{Arg, Context, line};
-use replay::container::Replay;
+use engine_allocation::credit::MemoryBudget;
+use replay::{
+    columnar_runs::{IndexFile, Snapshots},
+    container::Replay,
+};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_derive::air_region_derive as derive;
-use replay_frame::frame::FrameDecoder;
+use replay_frame::frame::{DecodedFrame, FrameDecoder};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -82,6 +86,8 @@ const SUPERSEDED: &str = "the air roster search was superseded";
 /// it.
 struct Samples {
     replay: Arc<Replay>,
+    columnar: Option<(Arc<IndexFile>, MemoryBudget)>,
+    snapshots: OnceLock<Result<Mutex<Snapshots>, String>>,
     hours: Mutex<BTreeMap<(BranchId, Hour), Sample>>,
     distinct: Mutex<HashSet<Arc<Roster>>>,
     /// Blocks read, for the cancellation checks.
@@ -91,6 +97,65 @@ struct Samples {
 }
 
 impl Samples {
+    fn roster(&self, decoded: &DecodedFrame) -> Sample {
+        let rows = decoded
+            .complete::<tables::AirDailyRoster>()
+            .map_err(|error| error.to_string())?;
+        let links = decoded
+            .complete::<tables::CountryLinks>()
+            .map_err(|error| error.to_string())?;
+        let mut roster = Roster::default();
+        for row in rows {
+            let slot = links
+                .binary_search_by_key(&row.country, |link| link.id)
+                .map(|at| links[at].canonical_slot)
+                .map_err(|_| {
+                    format!("AirDailyRoster country {} has no CountryLink", row.country)
+                })?;
+            Roster::set(&mut roster.listed, slot);
+            if row.eligible {
+                Roster::set(&mut roster.eligible, slot);
+            }
+        }
+        Ok(self.intern(roster))
+    }
+
+    fn read_columnar(&self, branch: BranchId, hour: Hour) -> Sample {
+        let (file, memory) = self.columnar.as_ref().expect("columnar source");
+        let snapshots = self
+            .snapshots
+            .get_or_init(|| {
+                Snapshots::new(
+                    Arc::clone(file),
+                    &[TableId::AirDailyRoster, TableId::CountryLinks],
+                    self.replay.format,
+                    self.replay.capture_mode,
+                    1,
+                    memory.clone(),
+                )
+                .map(Mutex::new)
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let mut snapshots = snapshots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !snapshots
+            .move_to(branch, hour, &|| {}, &|| (self.superseded)())
+            .map_err(|error| {
+                if (self.superseded)() {
+                    SUPERSEDED.into()
+                } else {
+                    error.to_string()
+                }
+            })?
+        {
+            return Err(format!("hour {hour} of branch {branch} is not recorded"));
+        }
+        self.roster(&snapshots.build(None).map_err(|error| error.to_string())?)
+    }
+
     fn intern(&self, roster: Roster) -> Arc<Roster> {
         let mut distinct = self
             .distinct
@@ -134,28 +199,7 @@ impl Samples {
             if !matches!(at.rem_euclid(derive::DAY), 0 | 23) {
                 continue;
             }
-            let roster = (|| {
-                let rows = decoded
-                    .complete::<tables::AirDailyRoster>()
-                    .map_err(|error| error.to_string())?;
-                let links = decoded
-                    .complete::<tables::CountryLinks>()
-                    .map_err(|error| error.to_string())?;
-                let mut roster = Roster::default();
-                for row in rows {
-                    let slot = links
-                        .binary_search_by_key(&row.country, |link| link.id)
-                        .map(|at| links[at].canonical_slot)
-                        .map_err(|_| {
-                            format!("AirDailyRoster country {} has no CountryLink", row.country)
-                        })?;
-                    Roster::set(&mut roster.listed, slot);
-                    if row.eligible {
-                        Roster::set(&mut roster.eligible, slot);
-                    }
-                }
-                Ok(self.intern(roster))
-            })();
+            let roster = self.roster(decoded);
             out.insert(at, roster);
         }
         out
@@ -184,7 +228,15 @@ impl RosterSamples for Samples {
                 if (self.superseded)() {
                     return Err(SUPERSEDED.into());
                 }
-                let block = self.read_block(branch, hour);
+                let block = if self.columnar.is_some() {
+                    let sample = self.read_columnar(branch, hour);
+                    if sample.as_ref().err().is_some_and(|why| why == SUPERSEDED) {
+                        return Err(SUPERSEDED.into());
+                    }
+                    BTreeMap::from([(hour, sample)])
+                } else {
+                    self.read_block(branch, hour)
+                };
                 let mut hours = self
                     .hours
                     .lock()
@@ -360,10 +412,28 @@ impl PassRosters {
         Self::with_worker(replay, wake, true)
     }
 
+    pub fn from_columnar(
+        replay: Arc<Replay>,
+        file: Arc<IndexFile>,
+        memory: MemoryBudget,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_source(replay, wake, true, Some((file, memory)))
+    }
+
     fn with_worker(
         replay: Arc<Replay>,
         wake: impl Fn() + Send + Sync + 'static,
         spawn: bool,
+    ) -> Self {
+        Self::with_source(replay, wake, spawn, None)
+    }
+
+    fn with_source(
+        replay: Arc<Replay>,
+        wake: impl Fn() + Send + Sync + 'static,
+        spawn: bool,
+        columnar: Option<(Arc<IndexFile>, MemoryBudget)>,
     ) -> Self {
         let demand: Arc<(Mutex<Demand>, Condvar)> = Arc::default();
         let superseded = {
@@ -381,6 +451,8 @@ impl PassRosters {
             shared: Arc::new(Shared {
                 samples: Samples {
                     replay,
+                    columnar,
+                    snapshots: OnceLock::new(),
                     hours: Mutex::default(),
                     distinct: Mutex::default(),
                     blocks: AtomicUsize::new(0),
@@ -402,6 +474,10 @@ impl PassRosters {
 
     pub fn replay(&self) -> &Arc<Replay> {
         &self.shared.samples.replay
+    }
+
+    pub fn columnar(&self) -> Option<&Arc<IndexFile>> {
+        self.shared.samples.columnar.as_ref().map(|(file, _)| file)
     }
 
     /// How many answers have completed.

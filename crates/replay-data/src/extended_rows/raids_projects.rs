@@ -591,10 +591,30 @@ pub struct RaidAirScoreRow {
     /// Raw regional fixed5 spotting normalization, acquired independently of
     /// the score prefix and carried at the same native phase cadence.
     pub air_spotting_scale: Option<i64>,
+    pub menu: Option<AirPowerMenu>,
 }
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirPowerContribution {
+    pub country: u32,
+    pub amount: i64,
+}
+value_struct!(AirPowerContribution {
+    country: u32,
+    amount: i64
+});
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirPowerMenu {
+    pub coverage: i64,
+    pub reductions: [i64; 4],
+    pub contributions: [Vec<AirPowerContribution>; 2],
+}
+value_struct!(AirPowerMenu { coverage: i64, reductions: [i64; 4], contributions: [Vec<AirPowerContribution>; 2] });
+opaque_value!(Option<AirPowerMenu>);
 typed_codec!(RaidAirScoreRow, 64, |r| (r.country as u128) << 32 | r.region as u128,
  |key| Self { country: (key >> 32) as u32, region: key as u32, ..Self::default() },
- { 0 => (friendly): I64, 1 => (enemy): I64, 2 => (impact): I64, 3 => (friendly_missions): U16, 4 => (enemy_missions): U16, 5 => (air_spotting_scale): OptionalI64 }, |_row| Ok(()));
+ { 0 => (friendly): I64, 1 => (enemy): I64, 2 => (impact): I64, 3 => (friendly_missions): U16, 4 => (enemy_missions): U16, 5 => (air_spotting_scale): OptionalI64, 6 => (menu): Opaque }, |_row| Ok(()));
 
 /// Hourly raid target-intel operands for live counterintelligence rating
 /// and decryption threshold. Modifier totals preserve getter feature and

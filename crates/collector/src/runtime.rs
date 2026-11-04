@@ -4706,7 +4706,10 @@ fn spool_status<'a>(
         state: if pinned { "pinned" } else { state },
         session: session.id,
         process_start_time: session.process_start_time,
-        pool_bytes: shared.pool_bytes.load(Ordering::Relaxed),
+        pool_bytes: shared
+            .pool_bytes
+            .load(Ordering::Relaxed)
+            .saturating_add(crate::extended::air_histories::retained_bytes() as u64),
         pool_buffers: sampling::BUFFERS,
         dropped_frames: shared.dropped.load(Ordering::Relaxed),
         startup_unattributed_callbacks: startup_unknown,

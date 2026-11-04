@@ -240,6 +240,7 @@ mod tests {
                     friendly_missions: 0,
                     enemy_missions: 0,
                     air_spotting_scale: Some(0),
+                    menu: None,
                 })
                 .collect();
             *frame.tables[TableId::RaidAirScores.index()] =
@@ -276,6 +277,7 @@ mod tests {
                             friendly_missions: 0,
                             enemy_missions: 0,
                             air_spotting_scale: Some(0),
+                            menu: None,
                         });
                     }
                     4 => {

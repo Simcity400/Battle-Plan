@@ -36,7 +36,7 @@ pub struct Pipeline {
     /// Texture bindings with a filtering image/sampler pair.
     filtered: Vec<u32>,
     fallback: Option<Fallback>,
-    packed_inputs: [super::vertices::Packing; 3],
+    packed_inputs: [super::vertices::Packing; 4],
     groups: Arc<Mutex<Groups>>,
 }
 
@@ -240,7 +240,7 @@ mod program_tests;
 #[path = "gpu/session.rs"]
 mod session;
 pub use session::{BindingSession, BindingSessionStorage};
-use session::{GroupClock, GroupResources, GroupStamp, ResourceHandle, ResolvedGroups};
+use session::{GroupClock, GroupResources, GroupStamp, ResolvedGroups, ResourceHandle};
 
 /// Immutable resources of an actually successful bind, including a shader-filtered variant.
 /// This is not native retained state: callers still perform their ordered checks, fallbacks
@@ -273,15 +273,24 @@ impl BindingProgram {
         if actual.pipeline != self.pipeline || actual.groups[2] != self.samplers {
             return None;
         }
-        let groups = self.groups.lock().unwrap_or_else(|error| error.into_inner());
+        let groups = self
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         // A captured texture group may have retired. Prove the actual live group's
         // complete view list, not equality with the capture's obsolete group handle.
-        if !groups.textures.values().flatten().any(|(views, group, _)| {
-            *group == actual.groups[1] && *views == self.views
-        }) {
+        if !groups
+            .textures
+            .values()
+            .flatten()
+            .any(|(views, group, _)| *group == actual.groups[1] && *views == self.views)
+        {
             return None;
         }
-        groups.constants.iter().find(|(_, group, _)| *group == actual.groups[0])
+        groups
+            .constants
+            .iter()
+            .find(|(_, group, _)| *group == actual.groups[0])
             .map(|(buffer, _, _)| buffer.clone())
     }
 
@@ -334,7 +343,12 @@ impl BindingProgram {
         })
     }
 
-    fn resolve_groups(&self, arena: &Arena, source: wgpu::Buffer, capture_use: bool) -> Result<ResolvedGroups, String> {
+    fn resolve_groups(
+        &self,
+        arena: &Arena,
+        source: wgpu::Buffer,
+        capture_use: bool,
+    ) -> Result<ResolvedGroups, String> {
         let frame = arena.frame();
         let device = arena.device();
         let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
@@ -410,7 +424,10 @@ impl BindingProgram {
             }
         };
         groups.last = Some((self.hash, index));
-        groups.clock.hint.store(true, std::sync::atomic::Ordering::Release);
+        groups
+            .clock
+            .hint
+            .store(true, std::sync::atomic::Ordering::Release);
 
         Ok(ResolvedGroups {
             resources: GroupResources {
@@ -675,7 +692,10 @@ impl Pipeline {
             let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
             groups.clock.invalidate();
             let clock = Arc::clone(&groups.clock);
-            *groups = Groups { clock, ..Default::default() };
+            *groups = Groups {
+                clock,
+                ..Default::default()
+            };
         }
         if let Some(fallback) = &self.fallback {
             for pipeline in fallback
@@ -1239,7 +1259,9 @@ impl Pipeline {
                             .collect::<Vec<_>>(),
                     })
                 })?;
-                groups.constants.push((buffer, group.clone(), GroupStamp::new(frame)));
+                groups
+                    .constants
+                    .push((buffer, group.clone(), GroupStamp::new(frame)));
                 group
             }
         };
@@ -1292,7 +1314,10 @@ impl Pipeline {
                 group
             }
         };
-        groups.clock.hint.store(true, std::sync::atomic::Ordering::Release);
+        groups
+            .clock
+            .hint
+            .store(true, std::sync::atomic::Ordering::Release);
         let program = capture.then(|| BindingProgram {
             pipeline: self.pipeline.clone(),
             samplers: self.samplers.clone(),

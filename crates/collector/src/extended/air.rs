@@ -553,10 +553,7 @@ impl Captured {
         self.missions.is_some()
     }
 
-    /// The AirMissions job, before the Late job: the registered missions,
-    /// then the naval-patrol combats, whose regions and every registered
-    /// mission region open the hour's history parts
-    /// ([`air_histories::supply`]).
+    /// Captures registered missions and combats, then opens the history certificates.
     /// `parent` is the map census the typed visitor supplied the wing
     /// identities in, when it did.
     pub(crate) fn capture_missions(
@@ -630,7 +627,7 @@ impl Captured {
             self.identity_outcome,
             &self.registrations,
         );
-        // Every hour: the histories, which need the regions, are sliced.
+        // Task-force combats are captured independently of regional history availability.
         let regions = {
             let _reads = read_accounting::table(TableId::AirNavalPatrolCombats);
             capture_patrol_combats(
@@ -648,18 +645,7 @@ impl Captured {
             Ok((outcome, _)) => outcome,
             Err(reason) => Outcome::Unavailable { reason },
         };
-        let regions = scenario_history_regions_buffer(
-            wings,
-            registered,
-            regions,
-            Buffer::Growing(&mut self.handles),
-        );
-        air_histories::supply(
-            histories,
-            regions.map(|count| &self.handles[..count]),
-            changes,
-            &mut air_histories::opening(),
-        );
+        air_histories::supply(histories, changes, &mut air_histories::opening());
         self.missions = Some([registered_ticks, elapsed(begin)]);
     }
 
@@ -792,7 +778,7 @@ impl Captured {
     }
 
     /// The AirMissions job was interrupted: publish its tables unavailable;
-    /// the history parts have no regions. Nothing is read again.
+    /// history acquisition retains its independent writer verdict. Nothing is read again.
     pub(crate) fn fail_missions(
         &mut self,
         reason: &'static str,
@@ -802,7 +788,6 @@ impl Captured {
         self.missions = Some([0; 2]);
         air_histories::supply(
             histories,
-            Err(reason),
             &crate::history_changes::Unobserved,
             &mut air_histories::opening(),
         );
@@ -1193,6 +1178,25 @@ impl Captured {
                     friendly_missions: r.friendly_missions,
                     enemy_missions: r.enemy_missions,
                     air_spotting_scale: r.air_spotting_scale,
+                    menu: r.menu.as_ref().and_then(|menu| {
+                        let mut contributions = [Vec::new(), Vec::new()];
+                        for (output, input) in contributions.iter_mut().zip(&menu.contributions) {
+                            for row in input {
+                                if allocation::reserve_push_batch(output, 1).is_err() {
+                                    return None;
+                                }
+                                output.push(rows::AirPowerContribution {
+                                    country: row.country,
+                                    amount: row.amount,
+                                });
+                            }
+                        }
+                        Some(rows::AirPowerMenu {
+                            coverage: menu.coverage,
+                            reductions: menu.reductions,
+                            contributions,
+                        })
+                    }),
                 }
             }),
             table::<tables::AirGroundCrews, _>(outcomes[14], &self.ground_crews.rows, Clone::clone),
@@ -1324,51 +1328,6 @@ fn registered_wings<'a>(
             .map(|index| &wings[index])
             .map_err(|_| "registered mission missing from the wing census")
     }))
-}
-
-/// Registered regions supply conventional outcomes independently of the
-/// naval-combat census. Its own unavailable table already refuses naval draws.
-#[cfg(test)]
-fn scenario_history_regions(
-    wings: &[WingIdentity],
-    registered: Option<&[cair_regional_mission::Row]>,
-    combats: Result<(Outcome, (usize, usize)), &'static str>,
-    handles: &mut [u64],
-) -> Result<usize, &'static str> {
-    scenario_history_regions_buffer(wings, registered, combats, Buffer::Fixed(handles))
-}
-
-fn scenario_history_regions_buffer(
-    wings: &[WingIdentity],
-    registered: Option<&[cair_regional_mission::Row]>,
-    combats: Result<(Outcome, (usize, usize)), &'static str>,
-    mut handles: Buffer<'_, u64>,
-) -> Result<usize, &'static str> {
-    let mut count = match combats {
-        Ok((_, (first, len))) => {
-            handles.copy_within(first..first + len, 0);
-            len
-        }
-        Err(_) => 0,
-    };
-    handles.ensure(
-        count
-            .checked_add(registered.map_or(0, <[_]>::len))
-            .ok_or("air scenario history region count overflow")?,
-    )?;
-    for wing in registered_wings(wings, registered)? {
-        if let Some(region) = wing?.region {
-            let region = u64::from(region);
-            if !handles[..count].contains(&region) {
-                *handles
-                    .get_mut(count)
-                    .ok_or("air scenario history region scratch incomplete")? = region;
-                count += 1;
-            }
-        }
-    }
-    handles[..count].sort_unstable();
-    Ok(count)
 }
 
 /// Probe every wing's pool and transfer bases: local selection can ask for

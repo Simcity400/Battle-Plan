@@ -86,6 +86,8 @@ pub const PLAYER_COMMANDS_FORMAT: u16 = 131;
 pub const PROVINCE_WITNESS_FORMAT: u16 = 132;
 pub const CONSTRUCTION_OUTPUT_OWNER_FORMAT: u16 = 133;
 pub const EXACT_NAVAL_CONDITION_FORMAT: u16 = 134;
+pub const AIR_COMBAT_MENU_FORMAT: u16 = 135;
+pub const AIR_HISTORY_SLOTS_FORMAT: u16 = 136;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -4006,6 +4008,54 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         participation += 1;
     }
     apply_catalog_passes(&mut history);
+    history[TableId::RaidAirScores.index()] = LastChange {
+        introduced: history[TableId::RaidAirScores.index()].introduced,
+        ..table(
+            TableId::RaidAirScores,
+            AIR_COMBAT_MENU_FORMAT,
+            "air combat power contributions",
+        )
+    };
+    history[TableId::AirNavalPatrolHistories.index()] = LastChange {
+        introduced: history[TableId::AirNavalPatrolHistories.index()].introduced,
+        ..table(
+            TableId::AirNavalPatrolHistories,
+            AIR_HISTORY_SLOTS_FORMAT,
+            "native air history slots",
+        )
+    };
+    history[TableId::AirRegionCombat.index()] = LastChange {
+        introduced: AIR_REGION_COMBAT_FORMAT,
+        ..table(
+            TableId::AirRegionCombat,
+            AIR_COMBAT_MENU_FORMAT,
+            "air combat copied equipment",
+        )
+    };
+    history[TableId::AirMissionInputs.index()] = LastChange {
+        introduced: AIR_MAP_FORMAT,
+        ..table(
+            TableId::AirMissionInputs,
+            AIR_COMBAT_MENU_FORMAT,
+            "air combat category flags",
+        )
+    };
+    history[TableId::WeatherRegions.index()] = LastChange {
+        introduced: history[TableId::WeatherRegions.index()].introduced,
+        ..table(
+            TableId::WeatherRegions,
+            AIR_COMBAT_MENU_FORMAT,
+            "air combat efficiency breakdown",
+        )
+    };
+    history[TableId::Cryptology.index()] = LastChange {
+        introduced: history[TableId::Cryptology.index()].introduced,
+        ..table(
+            TableId::Cryptology,
+            AIR_COMBAT_MENU_FORMAT,
+            "air combat cipher order",
+        )
+    };
     history[TableId::NavalCombatShips.index()] = table(
         TableId::NavalCombatShips,
         EXACT_NAVAL_CONDITION_FORMAT,
@@ -4866,7 +4916,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, EXACT_NAVAL_CONDITION_FORMAT);
+        assert_eq!(FORMAT_VERSION, AIR_HISTORY_SLOTS_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

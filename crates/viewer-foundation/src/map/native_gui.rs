@@ -2959,7 +2959,20 @@ impl<'a> Walk<'a> {
                     ),
                 ));
             }
-            SpriteKind::PieChart { .. } | SpriteKind::LineChart { .. } => return Ok(None),
+            SpriteKind::PieChart { .. } | SpriteKind::LineChart { .. } => {
+                if self.bindings.regions {
+                    self.regions.push(Region {
+                        path: path.clone(),
+                        owner: self.region_owner.clone(),
+                        scroll: None,
+                        rect: [x, y, extent[0] as f32, extent[1] as f32],
+                        clip,
+                        hit: None,
+                        disabled: matches!(state, State::Disable),
+                    });
+                }
+                return Ok(None);
+            }
             SpriteKind::CircularProgress {
                 size,
                 rotation: turn,

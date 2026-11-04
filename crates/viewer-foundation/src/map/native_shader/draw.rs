@@ -161,6 +161,88 @@ impl Quad {
     }
 }
 
+pub fn line_chart(
+    effect: Effect,
+    rect: [f32; 4],
+    half_width: f32,
+    points: &[[f32; 4]],
+    batch: &mut crate::map::sprites::Batch,
+) -> Result<(), String> {
+    use crate::map::{native_effects::Blend, sprites};
+    if points.len() > 40 {
+        return Err("series exceeds the native linechart constant buffer".into());
+    }
+    if points.len() < 2 {
+        return Ok(());
+    }
+    let mut vertices = Vec::with_capacity((points.len() - 1) * 48);
+    for current in 0..points.len() as i16 - 1 {
+        let next = current + 1;
+        for record in [
+            [next, -1, 1, 0],
+            [current, 1, 1, 0],
+            [current, 1, -1, 0],
+            [next, -1, 1, 0],
+            [next, -1, -1, 0],
+            [current, 1, 1, 0],
+        ] {
+            for value in record {
+                vertices.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+    let mut constants = vec![0.; 184];
+    constants[..16].copy_from_slice(&Matrix::from_scale([1., -1., 1.]).to_cols_array());
+    for (index, point) in points.iter().enumerate() {
+        constants[16 + index * 4..20 + index * 4].copy_from_slice(point);
+    }
+    constants[176..180].copy_from_slice(&rect);
+    constants[180..182].copy_from_slice(&[half_width, rect[2] / (points.len() - 1) as f32]);
+    let [x, y, w, h] = rect;
+    batch.push(sprites::Quad {
+        texture: sprites::NO_TEXTURE,
+        rect,
+        uv: [0.; 4],
+        color: [1.; 4],
+        rotation: 0.,
+        layer: 0,
+        shade: 0.,
+        exact: Some(sprites::Exact {
+            native: Some(Arc::new(Quad {
+                path: "air history linechart".into(),
+                effect,
+                declaration: Declaration::LineChart,
+                vertices,
+                stride: 8,
+                constants,
+                known: 736,
+                pixel_constants: false,
+                textures: Vec::new(),
+                extra_constants: Vec::new(),
+                font_viewport: None,
+                topology: eframe::wgpu::PrimitiveTopology::TriangleList,
+                default_blend: false,
+                bake: None,
+            })),
+            corners: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+            uv: [[0.; 2]; 4],
+            scissor: None,
+            technique: 0,
+            blend: Blend::Off,
+            samplers: 0,
+            lod_bias: [0.; 3],
+            second: None,
+            masking: None,
+            offsets: [0.; 4],
+            inputs: [0.; 4],
+            second_color: [0.; 4],
+        }),
+        anchor: None,
+        present: None,
+    });
+    Ok(())
+}
+
 /// Preserve the native vertex ABI. In particular, shaders may inspect local POSITION, COLOR1
 /// or any byte of c0 regardless of the names they give their declarations.
 pub fn emit(

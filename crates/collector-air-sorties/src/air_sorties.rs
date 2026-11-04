@@ -26,6 +26,7 @@ use replay_data::{
 use replay_frame::frame::TableView;
 
 use super::air_reference_witness::BaseWitness;
+mod menu;
 use crate::{
     table_capture::{grow_capacity, grow_vec},
     table_conversion::{table, unavailable},
@@ -492,9 +493,13 @@ impl Sorties {
                 observer,
             )?;
         }
+        self.menu_modifiers(memory, base, game_state, &countries, &mut cached, observer)?;
         self.patrol_night(memory, base, game_state, &mut cached);
         self.overrides(memory, base)?;
-        self.detection_overrides(observer)
+        self.detection_overrides(observer)?;
+        self.modifiers.rows[..self.modifiers.len]
+            .sort_unstable_by_key(|row| (row.scope, row.subject, row.region));
+        Ok(())
     }
 
     /// A held night marker is acquired only for the original sampled regions

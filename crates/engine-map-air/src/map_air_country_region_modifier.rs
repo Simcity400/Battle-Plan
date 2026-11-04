@@ -123,6 +123,51 @@ pub fn country_map(
 }
 
 impl CountryMap {
+    pub fn visit(
+        self,
+        memory: &impl Memory,
+        base: usize,
+        mut each: impl FnMut(usize, u32, Region) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        let mut current = read::<u64>(
+            memory,
+            self.sentinel
+                .checked_add(8)
+                .ok_or("air modifier sentinel overflow")?,
+        )
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or("air modifier sentinel unreadable")?;
+        let mut previous = self.sentinel;
+        for _ in 0..self.size {
+            if current == 0 || current == self.sentinel {
+                return Err("air modifier list ended before its count");
+            }
+            let node =
+                read::<[u8; NODE_STRIDE]>(memory, current).ok_or("air modifier node unreadable")?;
+            if word(&node, 0)? != previous {
+                return Err("air modifier list backlink invalid");
+            }
+            let key = word(&node, 0x10)?;
+            let value = word(&node, NODE_VALUE)?;
+            let id = cstrategic_region::id(memory, base, key)?
+                .ok_or("air modifier region key is null")?;
+            authenticate(
+                memory,
+                base,
+                value,
+                REGION_OBJECT_VTABLE_RVA,
+                "air modifier region object identity invalid",
+            )?;
+            each(key, id, Region { object: value })?;
+            previous = current;
+            current = word(&node, 8)?;
+        }
+        if current != self.sentinel {
+            return Err("air modifier list exceeds its count");
+        }
+        Ok(())
+    }
+
     /// The raw key-0x11 modifier of one primary `CStrategicRegion*`, both of
     /// whose identities are checked in one guarded batch. A readable map miss
     /// or absent accumulator key returns `Value::default()`; malformed maps,

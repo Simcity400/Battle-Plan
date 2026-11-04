@@ -6,6 +6,7 @@ pub enum Selection {
     Land(u64),
     Naval(u64),
     NavalResult(u64),
+    AirRegion(u32),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {

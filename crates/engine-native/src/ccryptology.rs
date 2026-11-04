@@ -34,6 +34,7 @@ pub struct Row {
     pub bonus_days: i32,
     pub bonus_active: u8,
     pub decrypting: u8,
+    pub ordinal: u32,
 }
 
 /// Reads each authenticated country's inline decryption states without allocation.
@@ -160,6 +161,7 @@ fn walk_inner(
                 return Err("duplicate cryptology target");
             }
             row.owner_country = target.canonical_slot;
+            row.ordinal = index;
             output[len] = row;
             len += 1;
         }
@@ -313,6 +315,7 @@ fn decode_state(base: usize, bytes: [u8; 32]) -> Result<Row, &'static str> {
         bonus_active: bytes[state::BONUS_ACTIVE],
         decrypting: bytes[state::DECRYPTING],
         amount_raw: i64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+        ordinal: 0,
     })
 }
 
@@ -675,6 +678,7 @@ mod tests {
                 bonus_days: -1,
                 bonus_active: 7,
                 decrypting: 255,
+                ordinal: 0,
             }
         );
         assert_eq!(rows[1].owner_country, 4);

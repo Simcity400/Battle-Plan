@@ -33,7 +33,7 @@ pub(super) struct Content {
     screening: [[Option<i64>; 2]; 2],
     /// Equipment registration order, including generated types. Air entries
     /// group by the first variant's model ID.
-    equipment: Option<installed_content_core::equipment::Database>,
+    equipment: Option<std::sync::Arc<installed_content_core::equipment::Database>>,
 }
 
 impl Content {
@@ -60,7 +60,7 @@ impl Content {
             ));
             None
         } else {
-            Some(equipment)
+            Some(std::sync::Arc::new(equipment))
         };
         let mut content = match static_modifiers::read(layers, &requests) {
             Ok(read) => {
@@ -84,7 +84,13 @@ impl Content {
     }
 
     pub(super) fn equipment(&self) -> Option<&installed_content_core::equipment::Database> {
-        self.equipment.as_ref()
+        self.equipment.as_deref()
+    }
+
+    pub(super) fn shared_equipment(
+        &self,
+    ) -> Option<std::sync::Arc<installed_content_core::equipment::Database>> {
+        self.equipment.clone()
     }
 
     /// `values` in [`SCREENING_MODIFIERS`] x [`SORTIE_KEYS`] order.

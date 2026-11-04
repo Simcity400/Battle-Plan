@@ -775,6 +775,7 @@ fn enemy_air_superiority_slows_an_owner_at_war() {
             friendly_missions: 0,
             enemy_missions: 0,
             air_spotting_scale: Some(0),
+            menu: None,
         }]),
     );
     put(&mut frame, TableRows::WarRelations(vec![]));

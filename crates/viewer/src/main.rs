@@ -93,6 +93,8 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          --counter-colors allegiance|country --nato-counters on|off, the game's counter
            options (default: the user folder's settings.txt)
          --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result
+         --air-region <region>, open the strategic air dialog; --air-details expands its history
+         --air-range days|months|years --air-channels <bitmask>, select the history range and series
          --diagnostics, technical stats and data limitations; dumps and captures report the
            limitations either way
 Window dump: --window-dump opens a window, renders through the windowed path at --width/--height
@@ -279,6 +281,9 @@ fn parse_fraction(value: &str) -> io::Result<f32> {
 #[derive(Clone, Default)]
 struct Options {
     combat: Option<combat::Selector>,
+    air_details: bool,
+    air_range: usize,
+    air_channels: u32,
     replay: Option<PathBuf>,
     /// Where a rendered frame is written: `--dump`'s and `--window-dump`'s output.
     out: Option<PathBuf>,
@@ -460,7 +465,7 @@ impl Options {
         let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.to_str() {
-                Some("--combat" | "--combat-at") => {
+                Some("--combat" | "--combat-at" | "--air-region") => {
                     if options.combat.is_some() {
                         return Err(invalid("choose exactly one --combat or --combat-at"));
                     }
@@ -468,7 +473,13 @@ impl Options {
                         .next()
                         .and_then(|s| s.into_string().ok())
                         .ok_or_else(|| invalid("combat selection requires an integer"))?;
-                    options.combat = Some(if arg == "--combat-at" {
+                    options.combat = Some(if arg == "--air-region" {
+                        combat::Selector::AirRegion(
+                            value
+                                .parse()
+                                .map_err(|_| invalid("air region must be a u32"))?,
+                        )
+                    } else if arg == "--combat-at" {
                         combat::Selector::Province(
                             value
                                 .parse()
@@ -483,6 +494,34 @@ impl Options {
                                 .map_err(|_| invalid("combat id must be a full u64 handle"))?,
                         )
                     });
+                }
+                Some("--air-details") => options.air_details = true,
+                Some("--air-range") => {
+                    options.air_range =
+                        match args.next().as_deref().and_then(|value| value.to_str()) {
+                            Some("days") => 0,
+                            Some("months") => 1,
+                            Some("years") => 2,
+                            _ => {
+                                return Err(invalid(
+                                    "air history range must be days, months or years",
+                                ));
+                            }
+                        };
+                }
+                Some("--air-channels") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid("air channels require a bitmask"))?;
+                    options.air_channels = value
+                        .strip_prefix("0x")
+                        .map(|value| u32::from_str_radix(value, 16))
+                        .unwrap_or_else(|| value.parse())
+                        .map_err(|_| invalid("air channels require a u32 bitmask"))?;
+                    if options.air_channels >> 24 != 0 {
+                        return Err(invalid("air channels have 24 native series"));
+                    }
                 }
                 Some("--dump") if options.replay.is_none() => {
                     options.replay =
@@ -918,6 +957,11 @@ impl Options {
         }
         if options.combat.is_some() && options.replay.is_none() {
             return Err(invalid("--combat and --combat-at require a replay"));
+        }
+        if (options.air_details || options.air_range != 0 || options.air_channels != 0)
+            && !matches!(options.combat, Some(combat::Selector::AirRegion(_)))
+        {
+            return Err(invalid("air history options require --air-region"));
         }
         if options.headless_dump && (options.out.is_none() || options.hour.is_none()) {
             return Err(invalid(USAGE));
@@ -1384,8 +1428,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut window = combat::Window::default();
             let selection = selector.resolve(document.frame()?)?;
             window.open(selection);
+            window.configure_air(options.air_details, options.air_range, options.air_channels);
+            window.prepare_air(
+                &document.playback.replay_handle(),
+                document.playback.air_roster_source(),
+                || {},
+            );
+            let mut gui_elapsed = 0.0_f64;
             // Draw until every flag and portrait the window asked for is decoded.
             let drawn = loop {
+                let air_generation = window.air_generation();
                 let before = document.icons.lazy.version();
                 let drawn = window.draw(
                     &document.combat,
@@ -1397,10 +1449,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None,
                     options.counter_settings(document.game_counters).nato,
                     false,
-                    options.presentation_time,
+                    options.presentation_time + gui_elapsed as f32,
                     true,
                 )?;
                 document.icons.lazy.settle();
+                if window.settle_air_after(air_generation) {
+                    continue;
+                }
+                if gui_elapsed < f64::from(options.settle) {
+                    gui_elapsed = (gui_elapsed + 1.0 / 60.0).min(f64::from(options.settle));
+                    continue;
+                }
                 if document.icons.lazy.version() == before {
                     break drawn;
                 }

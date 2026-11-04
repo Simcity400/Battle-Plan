@@ -26,6 +26,7 @@ pub const SECOND_DAMAGE: usize = 0x38;
 pub const ATTRIBUTED_COUNTRY: usize = 0x50;
 /// Copied flag byte.
 pub const COPIED_FLAG: usize = 0x90;
+pub const EQUIPMENT_POOL: usize = 0x58;
 
 /// Full native lookup coordinates, scoped to its physical country/region vector.
 /// Lookup matches wing ID and classification among dates >= current hour;

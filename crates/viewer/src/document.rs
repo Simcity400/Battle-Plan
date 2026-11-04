@@ -1375,7 +1375,9 @@ impl Document {
             return false;
         };
         self.playback
-            .bind_map(crate::map_binding::MapBinding::columnar_only(replay, columnar));
+            .bind_map(crate::map_binding::MapBinding::columnar_only(
+                replay, columnar,
+            ));
         true
     }
 
@@ -2546,33 +2548,6 @@ impl Document {
         let vision_memo = Arc::new(Keyed::new(perspective::VISION_TABLES, VISION_MEMO));
         let modifier_names = Arc::new(combat::modifier_text::name_index_cache());
         let regions = Arc::new(regions);
-        let combat = Arc::new(combat::Content {
-            medals: Default::default(),
-            attrition: Default::default(),
-            assets: Arc::clone(&icons.combat),
-            localisation: Arc::clone(&names.localisation),
-            recorded_language: recorded_language.clone(),
-            recorded_labels: Arc::clone(&recorded_labels),
-            scripted: Arc::clone(&scripted),
-            map: Arc::clone(&map),
-            strategic_regions: Arc::clone(&regions),
-            battle_name_provinces: Arc::clone(&battle_name_provinces),
-            state_name_keys: Arc::clone(&state_name_keys),
-            province_geometry: Arc::clone(&province_geometry),
-            region_of: Arc::clone(&counters.region_of),
-            terrain: Arc::clone(&counters.terrain),
-            scores: counters.defines.land_combat.scores,
-            fog: Arc::clone(&counters.fog),
-            vision_memo: Arc::clone(&vision_memo),
-            eta_cache: Arc::clone(&eta_cache),
-            modifier_names: Arc::clone(&modifier_names),
-            movement: movement.clone(),
-            window_cache: Arc::clone(&icons.counters.window_cache),
-            small_flags: Arc::clone(&icons.counters.flags),
-            large_flags: Arc::clone(&icons.counters.large_flags),
-            lazy: Arc::clone(&icons.lazy),
-            trigger_content: Arc::new(icons.raids.trigger_content.clone()),
-        });
         let counters = Arc::new(counters);
         let province_hover = Arc::new(province_hover);
         let counter_content = Arc::new(viewer_counter_products::map::counter_content::Content {
@@ -2607,6 +2582,34 @@ impl Document {
             air_base_first_provinces: Arc::clone(&counters.air_base_first_provinces),
             movement: movement.clone(),
             eta_cache: Arc::clone(&eta_cache),
+        });
+        let combat = Arc::new(combat::Content {
+            air_context: Some(Arc::clone(&counter_content)),
+            medals: Default::default(),
+            attrition: Default::default(),
+            assets: Arc::clone(&icons.combat),
+            localisation: Arc::clone(&names.localisation),
+            recorded_language: recorded_language.clone(),
+            recorded_labels: Arc::clone(&recorded_labels),
+            scripted: Arc::clone(&scripted),
+            map: Arc::clone(&map),
+            strategic_regions: Arc::clone(&regions),
+            battle_name_provinces: Arc::clone(&battle_name_provinces),
+            state_name_keys: Arc::clone(&state_name_keys),
+            province_geometry: Arc::clone(&province_geometry),
+            region_of: Arc::clone(&counters.region_of),
+            terrain: Arc::clone(&counters.terrain),
+            scores: counters.defines.land_combat.scores,
+            fog: Arc::clone(&counters.fog),
+            vision_memo: Arc::clone(&vision_memo),
+            eta_cache: Arc::clone(&eta_cache),
+            modifier_names: Arc::clone(&modifier_names),
+            movement: movement.clone(),
+            window_cache: Arc::clone(&icons.counters.window_cache),
+            small_flags: Arc::clone(&icons.counters.flags),
+            large_flags: Arc::clone(&icons.counters.large_flags),
+            lazy: Arc::clone(&icons.lazy),
+            trigger_content: Arc::new(icons.raids.trigger_content.clone()),
         });
         let resource_icons =
             viewer_world::map::resource_icons::ResourceIconContent::load(&content.layers, &defines)
@@ -3209,16 +3212,28 @@ impl<'a> Hour<'a> {
         )
     }
     pub fn new(content: &'a Content, frame: &'a DecodedFrame, hour_fraction: f32) -> Self {
-        Self::from_input(content, replay_frame::frame::HourInput::new(frame), hour_fraction)
+        Self::from_input(
+            content,
+            replay_frame::frame::HourInput::new(frame),
+            hour_fraction,
+        )
     }
 
-    pub fn from_input(content: &'a Content, input: replay_frame::frame::HourInput<'a>, hour_fraction: f32) -> Self {
+    pub fn from_input(
+        content: &'a Content,
+        input: replay_frame::frame::HourInput<'a>,
+        hour_fraction: f32,
+    ) -> Self {
         let frame = input.frame();
         Self {
             content,
             frame,
             hour_fraction,
-            product_hour: map_products::ProductHour::from_input(&content.products, input, hour_fraction),
+            product_hour: map_products::ProductHour::from_input(
+                &content.products,
+                input,
+                hour_fraction,
+            ),
             pool_limits: Default::default(),
             worker_etas: None,
         }
@@ -3958,13 +3973,8 @@ impl<'a> Hour<'a> {
         choice: &perspective::Choice,
         colour: Option<&viewer_world::map::map_mode::ColourState>,
     ) -> io::Result<map_products::landscape::PoliticalProduct> {
-        self.product_hour.political(
-            &self.map_modes,
-            &self.naval_dominance,
-            mode,
-            choice,
-            colour,
-        )
+        self.product_hour
+            .political(&self.map_modes, &self.naval_dominance, mode, choice, colour)
     }
 
     pub(crate) fn seed_vision(

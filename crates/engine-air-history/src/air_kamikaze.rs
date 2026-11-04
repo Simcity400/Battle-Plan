@@ -447,7 +447,17 @@ pub fn region_slots(
         for index in 0..chunk.len() {
             let table = header(&table_bytes, index * 16)?;
             let wanted = regions.partition_point(|&region| (region as u32) < table.count);
-            for &region in &regions[..wanted] {
+            let count = if regions.is_empty() {
+                table.count as usize
+            } else {
+                wanted
+            };
+            for wanted_index in 0..count {
+                let region = if regions.is_empty() {
+                    wanted_index as u64
+                } else {
+                    regions[wanted_index]
+                };
                 pending[len] = (first + index, region as u32);
                 slots[len] = table
                     .element(region as u32, 8)
@@ -522,6 +532,27 @@ impl WindowScratch {
 /// initially zeroed. `each` receives the history index and a named suffix
 /// refusal for each record whose original naval-patrol pair stays available.
 pub fn history_windows(
+    memory: &impl Memory,
+    base: usize,
+    histories: &[usize],
+    scratch: &mut WindowScratch,
+    mut each: impl FnMut(
+        usize,
+        WindowState,
+        &[[i64; 9]],
+        &[Option<&'static str>],
+    ) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    read_windows(
+        memory,
+        base,
+        histories,
+        scratch,
+        |at, state, values, failures| each(at, state, values, failures),
+    )
+}
+
+fn read_windows(
     memory: &impl Memory,
     base: usize,
     histories: &[usize],

@@ -21,6 +21,7 @@ use viewer_foundation::map::visibility::Relations;
 use viewer_foundation::tooltip_painter::HoverState;
 use viewer_foundation::tooltip_painter::TooltipDefines;
 use viewer_foundation::tooltip_painter::TooltipPosition;
+mod air_menu;
 mod assets;
 pub(crate) mod availability;
 mod battle_name;
@@ -85,10 +86,14 @@ fn invalid(message: impl Into<String>) -> io::Error {
 pub enum Selector {
     Id(u64),
     Province(u32),
+    AirRegion(u32),
 }
 
 impl Selector {
     pub fn resolve(self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<Selection> {
+        if let Self::AirRegion(region) = self {
+            return Ok(Selection::AirRegion(region));
+        }
         use replay_data::rows::tables;
         use viewer_foundation::map::tables::rows;
         let mut matches = Vec::new();
@@ -96,6 +101,7 @@ impl Selector {
             if match self {
                 Self::Id(id) => id == row.id,
                 Self::Province(id) => id == row.province,
+                Self::AirRegion(_) => unreachable!(),
             } {
                 matches.push(Selection::Land(row.id));
             }
@@ -104,6 +110,7 @@ impl Selector {
             if match self {
                 Self::Id(id) => id == row.id,
                 Self::Province(id) => id == row.province,
+                Self::AirRegion(_) => unreachable!(),
             } {
                 matches.push(Selection::Naval(row.id));
             }
@@ -119,6 +126,7 @@ impl Selector {
                         && match self {
                             Self::Id(id) => id == row.id,
                             Self::Province(id) => id == row.province,
+                            Self::AirRegion(_) => unreachable!(),
                         }
                 })
                 .max_by_key(|row| (row.result_hour, row.id));
@@ -163,10 +171,13 @@ fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
 
 #[derive(Default)]
 pub struct Window {
+    air: air_menu::State,
+    air_rosters: Option<viewer_counter_products::map::province_tooltips::air_region::PassRosters>,
     /// Viewer playback pause state.
     playing: bool,
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
+    air_offset: [f32; 2],
     pub dragging: bool,
     /// The possible-tactics popup: window presentation state,
     /// never recorded.
@@ -177,6 +188,7 @@ pub struct Window {
     dragging_tactics: bool,
     hover: HoverState,
     cached: Option<Cached>,
+    bindings_dirty: bool,
     gui: gui::Windows,
     gui_time: Option<f32>,
     refused: BTreeMap<String, usize>,
@@ -317,6 +329,7 @@ fn update(selection: Selection, flags: &CombatFlags) -> Update {
             Update::Hold { combat, undecided }
         }
         Selection::NavalResult(_) => Update::Refresh(true),
+        Selection::AirRegion(_) => Update::Refresh(true),
     }
 }
 
@@ -352,6 +365,41 @@ fn hold(
 pub type HoverHit<'a> = (&'a str, Option<&'a str>, [f32; 4], Option<u32>);
 
 impl Window {
+    pub fn prepare_air(
+        &mut self,
+        replay: &Arc<replay::container::Replay>,
+        columnar: Option<(
+            Arc<replay::columnar_runs::IndexFile>,
+            engine_allocation::credit::MemoryBudget,
+        )>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) {
+        if matches!(self.selection, Some(Selection::AirRegion(_)))
+            && self.air_rosters.as_ref().is_none_or(|rosters| {
+                !Arc::ptr_eq(rosters.replay(), replay)
+                    || match (rosters.columnar(), columnar.as_ref()) {
+                        (Some(held), Some((file, _))) => !Arc::ptr_eq(held, file),
+                        (None, None) => false,
+                        _ => true,
+                    }
+            })
+        {
+            use viewer_counter_products::map::province_tooltips::air_region::PassRosters;
+            self.air_rosters = Some(match columnar {
+                Some((file, memory)) => {
+                    PassRosters::from_columnar(Arc::clone(replay), file, memory, wake)
+                }
+                None => PassRosters::new(Arc::clone(replay), wake),
+            });
+            self.air.pass = None;
+            self.bindings_dirty = true;
+        }
+    }
+
+    pub fn set_modifiers(&mut self, shift: bool, control: bool) {
+        self.air.shift = shift;
+        self.air.control = control;
+    }
     /// The speed-above-3 night picture depends on whether playback is paused.
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
@@ -385,16 +433,79 @@ impl Window {
         self.cached.as_ref().is_some_and(|cached| cached.shown) && self.gui.active()
     }
     pub fn open(&mut self, selection: Selection) {
+        if matches!(self.selection, Some(Selection::AirRegion(_))) {
+            self.air_offset = self.offset;
+        }
+        let air_offset = self.air_offset;
+        let offset = if matches!(selection, Selection::AirRegion(_)) {
+            air_offset
+        } else {
+            [0.; 2]
+        };
+        let air_rosters = self.air_rosters.take();
+        let mut air = std::mem::take(&mut self.air);
+        air.initial_side = true;
+        air.pass = None;
         *self = Self {
+            air,
+            air_offset,
+            offset,
+            air_rosters,
             selection: Some(selection),
             ..Self::default()
         };
     }
     pub fn close(&mut self) {
-        *self = Self::default();
+        if matches!(self.selection, Some(Selection::AirRegion(_))) {
+            self.air_offset = self.offset;
+        }
+        let air_offset = self.air_offset;
+        let air_rosters = self.air_rosters.take();
+        let air = std::mem::take(&mut self.air);
+        *self = Self {
+            air,
+            air_offset,
+            air_rosters,
+            ..Self::default()
+        };
+    }
+
+    pub fn configure_air(&mut self, details: bool, range: usize, channels: u32) {
+        self.air.details = details;
+        self.air.range = range;
+        self.air.channels = channels;
+        self.bindings_dirty = true;
+    }
+
+    pub fn air_generation(&self) -> Option<u64> {
+        self.air_rosters
+            .as_ref()
+            .map(|rosters| rosters.generation())
+    }
+
+    pub fn settle_air_after(&self, generation: Option<u64>) -> bool {
+        if self.air.pass.is_none()
+            && let (Some(rosters), Some(generation)) = (&self.air_rosters, generation)
+        {
+            rosters.wait_beyond(generation);
+            true
+        } else {
+            false
+        }
     }
     /// The popup's own controls; true when `point` was one of them.
     pub fn handle_click(&mut self, drawn: &Drawn, point: [f32; 2]) -> bool {
+        if matches!(self.selection, Some(Selection::AirRegion(_)))
+            && let Some((_, action)) = drawn
+                .air_controls
+                .iter()
+                .rev()
+                .find(|(rect, _)| contains(*rect, point))
+        {
+            self.air.click(action);
+            self.bindings_dirty = true;
+            return true;
+        }
         if matches!(self.selection, Some(Selection::NavalResult(_)))
             && drawn
                 .result_details_button
@@ -568,18 +679,84 @@ impl Window {
         let Some(selection) = self.selection else {
             return Ok(None);
         };
+        if matches!(selection, Selection::AirRegion(_)) {
+            let frame = frame.as_ref().map_err(|e| invalid(e.to_string()))?;
+            let vision = cached_vision(
+                frame,
+                perspective,
+                FogContent::loaded(&document.fog),
+                &document.vision_memo,
+            )?;
+            let groups = match frame.complete::<replay_data::rows::tables::SimulationFeatures>() {
+                Ok([features]) => {
+                    use replay_data::rows::*;
+                    let mask = features.dlc_mask;
+                    Ok([
+                        AIR_MENU_FIGHTER_MISSIONS
+                            | if mask & AIR_MENU_RECON_FEATURE != 0 {
+                                AIR_MENU_RECON_MISSIONS
+                            } else {
+                                0
+                            },
+                        AIR_MENU_NAVAL_MISSIONS
+                            | if mask & AIR_MENU_MINES_FEATURE != 0 {
+                                AIR_MENU_MINE_MISSIONS
+                            } else {
+                                0
+                            },
+                        AIR_MENU_STRATEGIC_MISSIONS
+                            | if mask & AIR_MENU_LOGISTICS_FEATURE != 0 {
+                                AIR_MENU_LOGISTICS_MISSIONS
+                            } else {
+                                0
+                            }
+                            | if mask & AIR_MENU_SUPPLY_FEATURE != 0 {
+                                AIR_MENU_SUPPLY_MISSIONS
+                            } else {
+                                0
+                            },
+                    ])
+                }
+                Ok(_) => Err("air mission filters need one SimulationFeatures row".into()),
+                Err(why) => Err(why.to_string()),
+            };
+            if self.air.mission_groups != groups {
+                self.air.mission_groups = groups;
+                self.bindings_dirty = true;
+            }
+            use viewer_counter_products::map::province_tooltips::air_region::Rosters;
+            let pass = self
+                .air_rosters
+                .as_ref()
+                .and_then(|rosters| rosters.visiting_pass(branch, hour, vision.ours()));
+            if self.air.pass != pass {
+                self.air.pass = pass;
+                self.bindings_dirty = true;
+            }
+            if self.air.initial_side
+                && let Selection::AirRegion(region) = selection
+                && let Ok(enemy) =
+                    air_menu::combat::initial_side(document, frame, &vision, region, &self.air)
+            {
+                self.air.enemy = enemy;
+                self.air.initial_side = false;
+                self.bindings_dirty = true;
+            }
+        }
         let covered = engaged.is_some_and(|index| index.covers(branch, hour));
-        if !self.cached.as_ref().is_some_and(|cached| {
-            cached.covered == covered
-                && cached.at.matches_request(
-                    branch,
-                    hour,
-                    selection,
-                    perspective,
-                    self.playing,
-                    nato,
-                )
-        }) {
+        if self.bindings_dirty
+            || !self.cached.as_ref().is_some_and(|cached| {
+                cached.covered == covered
+                    && cached.at.matches_request(
+                        branch,
+                        hour,
+                        selection,
+                        perspective,
+                        self.playing,
+                        nato,
+                    )
+            })
+        {
             let frame = frame?;
             let vision = cached_vision(
                 frame,
@@ -607,7 +784,11 @@ impl Window {
                     self.gui_time = None;
                 }
             }
-            let flags = combat_flags(frame, vision.ours(), engaged)?;
+            let flags = if matches!(selection, Selection::AirRegion(_)) {
+                CombatFlags::default()
+            } else {
+                combat_flags(frame, vision.ours(), engaged)?
+            };
             let cached = match update(selection, &flags) {
                 Update::Close => {
                     self.close();
@@ -638,15 +819,19 @@ impl Window {
                         .cached
                         .as_ref()
                         .map_or(1, |cached| cached.generation.wrapping_add(1));
-                    let mut bindings = Bindings::read(
-                        document,
-                        frame,
-                        selection,
-                        &vision,
-                        &flags,
-                        !self.playing,
-                        nato,
-                    )?;
+                    let mut bindings = if let Selection::AirRegion(region) = selection {
+                        air_menu::bind(document, frame, &vision, region, &self.air)?
+                    } else {
+                        Bindings::read(
+                            document,
+                            frame,
+                            selection,
+                            &vision,
+                            &flags,
+                            !self.playing,
+                            nato,
+                        )?
+                    };
                     if matches!(selection, Selection::NavalResult(_)) {
                         naval_results::show_details(&mut bindings.values, self.result_details_open);
                     }
@@ -674,6 +859,7 @@ impl Window {
                 }
             };
             self.cached = Some(cached);
+            self.bindings_dirty = false;
         }
         let cached = self.cached.as_mut().expect("bound above");
         let Some((_, bindings)) = cached.contents.as_ref().filter(|_| cached.shown) else {
@@ -723,6 +909,9 @@ impl Window {
 
 #[derive(Default)]
 pub struct Drawn {
+    air_controls: Vec<([f32; 4], air_menu::Action)>,
+    air_details_rect: Option<[f32; 4]>,
+    air_combat_rect: Option<[f32; 4]>,
     pub batch: Batch,
     pub refused: BTreeMap<String, usize>,
     pub rect: [f32; 4],
@@ -782,6 +971,12 @@ impl Drawn {
     }
     pub fn contains(&self, point: [f32; 2]) -> bool {
         contains(self.rect, point)
+            || self
+                .air_details_rect
+                .is_some_and(|rect| contains(rect, point))
+            || self
+                .air_combat_rect
+                .is_some_and(|rect| contains(rect, point))
             || self.in_popup(point)
             || self
                 .result_details_rects

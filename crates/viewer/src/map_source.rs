@@ -69,6 +69,10 @@ pub struct MapSource {
 }
 
 impl MapSource {
+    pub fn roster_source(&self) -> (Arc<IndexFile>, MemoryBudget) {
+        (Arc::clone(self.snapshots.file()), tables_memory().clone())
+    }
+
     pub fn set_workers(&mut self, workers: usize) {
         self.workers = workers.max(1);
         self.snapshots.set_workers(self.workers);

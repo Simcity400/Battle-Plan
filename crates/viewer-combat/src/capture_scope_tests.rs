@@ -22,6 +22,7 @@ fn map_battle_windows_read_only_recorded_tables() {
     let layers = Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap());
     let flags = flag_set(&layers, FlagSet::Normal, [1, 1], |_| {}, &lazy).unwrap();
     let content = StaticContent {
+        air_context: None,
         attrition: Default::default(),
         medals: Default::default(),
         assets: Arc::new(assets),

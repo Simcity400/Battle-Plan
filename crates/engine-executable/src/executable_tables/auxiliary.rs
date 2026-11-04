@@ -9,6 +9,35 @@ use std::{
 
 /// Native nonlocalized prefix used only by the simulation console override.
 const AIR_DETECTION_OVERRIDE_PREFIX: u32 = 0x029f_9030;
+const AIR_GRAPH_CHANNELS: u32 = 0x02a8_86f0;
+const AIR_GRAPH_UNIT: u32 = 0x027a_2250;
+const AIR_GRAPH_SCALE: u32 = 0x02a8_9d18;
+const AIR_GRAPH_OUR_GREEN: [u32; 11] = [
+    0x02a0_1228,
+    0x0279_dd60,
+    0x029e_9f50,
+    0x029c_72c4,
+    0x027b_6f98,
+    0x029c_0be8,
+    0x029f_5c7c,
+    0x029f_5c80,
+    0x02a8_9d10,
+    0x0279_dd64,
+    0x02a6_1748,
+];
+const AIR_GRAPH_ENEMY_RED: [u32; 11] = [
+    0x02a6_174c,
+    0x029b_3ae8,
+    0x02a8_9d14,
+    0x029c_7f24,
+    0x027b_4a54,
+    0x029f_5c90,
+    0x029e_9f58,
+    0x029f_5c88,
+    0x02a6_1748,
+    0x0279_dd64,
+    0x02a8_9d10,
+];
 
 const CATEGORY_START: u32 = 0x0100_c890;
 const CATEGORY_END: u32 = 0x0100_ca98;
@@ -63,6 +92,9 @@ const RULE_DIGEST: &str = "1b72c6a717f7942fa0de6a3f12bec1986fa0c83c0246f634beed9
 
 #[derive(Debug)]
 pub struct AuxiliaryTables {
+    pub air_graph_channels: [u32; 24],
+    pub air_graph_colors: [[f32; 4]; 24],
+    pub air_graph_scale: f32,
     pub air_detection_override_prefix: &'static str,
     pub rules: Vec<(&'static str, &'static str, bool, bool)>,
     pub equipment_categories: Vec<(u32, u64, &'static str)>,
@@ -145,6 +177,24 @@ impl AuxiliaryTables {
         let selectors = selector_projection(image, keywords)?;
         let rules = rule_projection(image, keywords)?;
         let tables = Self {
+            air_graph_scale: f32::from_bits(image.u32(AIR_GRAPH_SCALE)?),
+            air_graph_channels: (0..24)
+                .map(|at| image.u32(AIR_GRAPH_CHANNELS + at * 4))
+                .collect::<io::Result<Vec<_>>>()?
+                .try_into()
+                .unwrap(),
+            air_graph_colors: {
+                let unit = f32::from_bits(image.u32(AIR_GRAPH_UNIT)?);
+                let mut colors = [[unit, 0., 0., unit]; 24];
+                colors[12] = [unit, unit, 0., unit];
+                for (at, rva) in AIR_GRAPH_OUR_GREEN.into_iter().enumerate() {
+                    colors[at + 1][1] = f32::from_bits(image.u32(rva)?);
+                }
+                for (at, rva) in AIR_GRAPH_ENEMY_RED.into_iter().enumerate() {
+                    colors[at + 13] = [f32::from_bits(image.u32(rva)?), unit, 0., unit];
+                }
+                colors
+            },
             air_detection_override_prefix: leak_string(
                 image.string(AIR_DETECTION_OVERRIDE_PREFIX)?,
             ),
@@ -631,11 +681,7 @@ fn register_value(regs: &Registers, register: Register) -> io::Result<u64> {
     Ok(value & mask(register.size()))
 }
 
-fn set_register(
-    regs: &mut Registers,
-    register: Register,
-    value: u64,
-) -> io::Result<()> {
+fn set_register(regs: &mut Registers, register: Register, value: u64) -> io::Result<()> {
     let width = register.size();
     if width == 0 || width > 8 {
         return Err(invalid("metadata: unsupported register width"));

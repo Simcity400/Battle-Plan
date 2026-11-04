@@ -2369,6 +2369,20 @@ impl Viewer {
                     if let Some(source) = &source {
                         document.bind_source(source);
                     }
+                    if options.window_dump
+                        && let Some(path) = &options.change_runs
+                    {
+                        let index = replay::columnar_runs::IndexFile::open(path)
+                            .map_err(|error| error.to_string())?;
+                        if !document.bind_columnar(index) {
+                            return Err("--change-runs: the index does not hold exactly the replay's hours and map tables".into());
+                        }
+                        let (branch, hour) = (document.playback.branch(), document.playback.hour());
+                        document
+                            .playback
+                            .seek(branch, hour)
+                            .map_err(|error| error.to_string())?;
+                    }
                     let decoder = resources
                         .as_ref()
                         .map(|resources| {
@@ -2573,7 +2587,14 @@ impl Viewer {
                 }
                 if let Some(selector) = self.options.combat {
                     match document.frame().and_then(|frame| selector.resolve(frame)) {
-                        Ok(selection) => self.combat.open(selection),
+                        Ok(selection) => {
+                            self.combat.open(selection);
+                            self.combat.configure_air(
+                                self.options.air_details,
+                                self.options.air_range,
+                                self.options.air_channels,
+                            );
+                        }
                         Err(error) => self.error = Some(error.to_string()),
                     }
                 }
@@ -3510,7 +3531,9 @@ impl Viewer {
         }
         // The scene arrives with the document from the loading thread
         // (`load_scene`); only hour data uploads per frame from here.
-        let hour_error = self.refresh_hour(state, document, &mut laps, ui.ctx()).err();
+        let hour_error = self
+            .refresh_hour(state, document, &mut laps, ui.ctx())
+            .err();
         self.hour_error(hour_error.as_ref(), ui.ctx());
         // An error view otherwise stops repainting; a paused seek away from it
         // still needs to poll the asynchronous builders until its hour arrives.
@@ -3773,6 +3796,8 @@ impl Viewer {
                     .as_ref()
                     .is_some_and(|window| window.contains(point))
             });
+        let modifiers = ui.input(|input| input.modifiers);
+        self.combat.set_modifiers(modifiers.shift, modifiers.ctrl);
         let popup_click = response.clicked()
             && !over_picker
             && point
@@ -4093,11 +4118,17 @@ impl Viewer {
                             perspective.clone(),
                         );
                         if self.walk.stale(&key) {
-                            let figure = document.hour()
-                                .and_then(|now| now.vision_from_overlay(
-                                    &perspective,
-                                    self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables),
-                                ).map(|vision| (now.frame, vision.ours())))
+                            let figure = document
+                                .hour()
+                                .and_then(|now| {
+                                    now.vision_from_overlay(
+                                        &perspective,
+                                        self.overlay_tables
+                                            .as_ref()
+                                            .map(|(_, _, _, tables)| tables),
+                                    )
+                                    .map(|vision| (now.frame, vision.ours()))
+                                })
                                 .map_err(|error| error.to_string())
                                 .and_then(|(frame, ours)| {
                                     document.unit_models.infantry_figure(frame, ours)
@@ -4452,12 +4483,13 @@ impl Viewer {
                     document.playback.hour(),
                     perspective.clone(),
                 );
-                let tables_mismatch = self.overlay_tables.as_ref().is_none_or(
-                    |(branch, hour, perspective, _)| {
-                        (*branch, *hour, perspective)
-                            != (tables_key.0, tables_key.1, &tables_key.2)
-                    },
-                );
+                let tables_mismatch =
+                    self.overlay_tables
+                        .as_ref()
+                        .is_none_or(|(branch, hour, perspective, _)| {
+                            (*branch, *hour, perspective)
+                                != (tables_key.0, tables_key.1, &tables_key.2)
+                        });
                 let refine_arrival = engaged_arrived && !tables_mismatch;
                 let mut retired_tables = None;
                 if !stale_hour && (engaged_arrived || tables_mismatch) {
@@ -4486,7 +4518,10 @@ impl Viewer {
                         .map_err(|error| error.to_string())?
                     };
                     let replaced = self.overlay_tables.replace((
-                        tables_key.0, tables_key.1, tables_key.2, tables,
+                        tables_key.0,
+                        tables_key.1,
+                        tables_key.2,
+                        tables,
                     ));
                     if refine_arrival {
                         retired_tables = replaced;
@@ -4816,10 +4851,37 @@ impl Viewer {
                             ui.ctx().request_repaint();
                         }
                     }
-                    Some(MapHit::AirMission(_)) => {}
+                    Some(MapHit::AirMission(index)) => {
+                        self.combat
+                            .open(viewer_foundation::combat_selection::Selection::AirRegion(
+                                self.counter_report.air_mission_hits[index].region,
+                            ))
+                    }
                     Some(MapHit::Combat(index)) => self
                         .combat
                         .open(self.counter_report.combat_hits[index].selection),
+                    None if matches!(
+                        self.shown_mode(),
+                        viewer_world::map::map_mode::MapMode::Stock(
+                            viewer_world::map::map_mode::Stock::StrategicAir
+                        )
+                    ) =>
+                    {
+                        if let Some(region) = pick(
+                            &camera,
+                            point.map(|v| v * ui_scale),
+                            pixels,
+                            &document.map,
+                            document.assets.heightmap_texels(),
+                        )
+                        .map_err(|e| e.to_string())?
+                        .and_then(|province| document.content.counters.region(province))
+                        {
+                            self.combat.open(
+                                viewer_foundation::combat_selection::Selection::AirRegion(region),
+                            );
+                        }
+                    }
                     target @ (Some(MapHit::Unit(_)) | None) => {
                         let hit = match target {
                             Some(MapHit::Unit(index)) => {
@@ -4861,6 +4923,13 @@ impl Viewer {
                 .map_err(|error| error.to_string())?;
             laps.lap("engaged");
             self.combat.set_playing(self.playing);
+            let wake = ui.ctx().clone();
+            self.combat
+                .prepare_air(
+                    &document.playback.replay_handle(),
+                    document.playback.air_roster_source(),
+                    move || wake.request_repaint(),
+                );
             let drawn = self
                 .combat
                 .draw(
@@ -5964,7 +6033,9 @@ trait Delivered {
     fn epoch(&self) -> u64;
     fn at(&self) -> (replay_data::BranchId, i32);
     fn current(&self) -> &crate::playback::Current;
-    fn viewing(&self) -> Option<&Arc<hours::ViewingCountry>> { None }
+    fn viewing(&self) -> Option<&Arc<hours::ViewingCountry>> {
+        None
+    }
 }
 
 impl Delivered for hours::Built {
@@ -5979,7 +6050,9 @@ impl Delivered for hours::Built {
     fn current(&self) -> &crate::playback::Current {
         &self.current
     }
-    fn viewing(&self) -> Option<&Arc<hours::ViewingCountry>> { self.viewing.as_ref() }
+    fn viewing(&self) -> Option<&Arc<hours::ViewingCountry>> {
+        self.viewing.as_ref()
+    }
 }
 
 /// Hands a delivered hour's frame to the raid lane. Every path that

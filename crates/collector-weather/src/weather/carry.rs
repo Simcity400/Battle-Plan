@@ -124,6 +124,7 @@ pub struct WeatherCarry {
     provinces: Vec<u8>,
     /// Every region's combat modifier entries of the held read.
     combat: Vec<Option<RegionModifiers>>,
+    pub(super) air_efficiency: Vec<air_efficiency::Tree>,
     /// Every province's weather modifier accumulator of the held read.
     province_modifiers: ProvinceModifiers,
     /// This hour, set by the game thread before dispatch.
@@ -149,6 +150,7 @@ impl Default for WeatherCarry {
             regions: Vec::new(),
             provinces: Vec::new(),
             combat: Vec::new(),
+            air_efficiency: Vec::new(),
             province_modifiers: ProvinceModifiers::default(),
             hour: 0,
             force_full: false,
@@ -291,6 +293,10 @@ impl WeatherCarry {
             Part::Regions => windows.regions,
             Part::Provinces => windows.provinces,
         })
+    }
+
+    pub(super) fn region_window(&self) -> Option<(u32, u32)> {
+        self.window(Part::Regions)
     }
 }
 

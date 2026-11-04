@@ -11,6 +11,9 @@ use std::{
     io,
 };
 
+mod scans;
+pub use scans::Scans;
+
 use engine_native::cbuilding_template;
 use installed_content_core::map::ProvinceKind;
 #[cfg(test)]

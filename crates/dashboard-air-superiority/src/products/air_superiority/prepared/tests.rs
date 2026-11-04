@@ -15,6 +15,7 @@ fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRo
         friendly_missions: 0,
         enemy_missions: 0,
         air_spotting_scale: Some(0),
+        menu: None,
     }
 }
 

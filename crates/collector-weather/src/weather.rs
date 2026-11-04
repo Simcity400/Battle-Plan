@@ -22,6 +22,7 @@ use engine_native::{
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
+mod air_efficiency;
 pub mod carry;
 mod display;
 pub mod entries;
@@ -114,6 +115,7 @@ pub struct Captured {
     /// Each region record's ([`WeatherJob::combat`]) raw weather speed, attack and
     /// breakthrough entries, in region order; `None` refuses one region.
     combat: Vec<Option<RegionModifiers>>,
+    air_efficiency: Vec<air_efficiency::Tree>,
     /// Each province record's weather modifier accumulator, in slot order.
     province_modifiers: ProvinceModifiers,
     /// Raw-copy split gate for the hourly weather family (copy/decode split).
@@ -137,6 +139,7 @@ impl Captured {
             temperature_pass: None,
             temperature_read: Vec::new(),
             combat: Vec::new(),
+            air_efficiency: Vec::new(),
             province_modifiers: ProvinceModifiers::default(),
             raw_mode: false,
         }
@@ -151,6 +154,7 @@ impl Captured {
         self.daylight_feather = None;
         self.temperature_pass = None;
         self.combat.clear();
+        self.air_efficiency.clear();
         self.province_modifiers.clear();
     }
 
@@ -160,6 +164,7 @@ impl Captured {
             + self.display.allocated_bytes()
             + self.temperature_read.capacity() * size_of::<replay_data::temperature::State>()
             + self.combat.capacity() * size_of::<Option<RegionModifiers>>()
+            + air_efficiency::allocated_bytes(&self.air_efficiency)
             + self.province_modifiers.allocated_bytes()
     }
 
@@ -362,6 +367,16 @@ impl Captured {
                     .flatten()
                     .and_then(|terms| terms[4]))
                 .into(),
+                air_efficiency: rows::Recorded::Value(
+                    self.air_efficiency
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .map(|nodes| {
+                            engine_allocation::owned_vec(replay_data::value::Value::try_clone(
+                                nodes.as_ref(),
+                            ))
+                        }),
+                ),
                 max_snow: r.max_snow,
                 light_rain: r.light_rain,
                 heavy_rain: r.heavy_rain,
@@ -571,6 +586,7 @@ pub struct WeatherJob {
     /// reads through region weather modifier lookup; the outer `None` is that region's read
     /// refusal. Region order.
     combat: Vec<Option<RegionModifiers>>,
+    air_efficiency: Vec<air_efficiency::Tree>,
     /// Each province record's weather modifier accumulator; slot order.
     province_modifiers: ProvinceModifiers,
     /// One province's accumulator, as it is read.
@@ -604,6 +620,7 @@ impl WeatherJob {
             manager: 0,
             manager_authenticated: false,
             combat: Vec::new(),
+            air_efficiency: Vec::new(),
             province_modifiers: ProvinceModifiers::default(),
             province_scratch: Vec::new(),
             carry: None,
@@ -624,6 +641,7 @@ impl WeatherJob {
         self.manager = 0;
         self.manager_authenticated = false;
         self.combat.clear();
+        self.air_efficiency.clear();
         self.province_modifiers.clear();
     }
 
@@ -652,7 +670,8 @@ impl WeatherJob {
             payload_vectors: crate::raw_memory::vector_bytes(&self.regions.bytes)
                 + crate::raw_memory::vector_bytes(&self.provinces.bytes)
                 + crate::raw_memory::vector_bytes(&self.clocks.bytes)
-                + self.display.allocated_bytes() as u64,
+                + self.display.allocated_bytes() as u64
+                + air_efficiency::allocated_bytes(&self.air_efficiency) as u64,
             ..Default::default()
         });
     }
@@ -1090,6 +1109,8 @@ pub fn copy_weather_refresh(
         {
             let _reads = read_accounting::table(TableId::WeatherRegions);
             carry::capture_combat(memory, job);
+            air_efficiency::capture(memory, ctx.base, job);
+            job.update_capacity_charge();
         }
         {
             let _reads = read_accounting::table(TableId::WeatherProvinces);
@@ -1200,6 +1221,16 @@ impl Captured {
                 self.combat.clear();
                 if engine_allocation::reserve_exact(&mut self.combat, job.combat.len()).is_ok() {
                     self.combat.extend_from_slice(&job.combat);
+                }
+                self.air_efficiency.clear();
+                if engine_allocation::reserve_exact(
+                    &mut self.air_efficiency,
+                    job.air_efficiency.len(),
+                )
+                .is_ok()
+                {
+                    self.air_efficiency
+                        .extend(job.air_efficiency.iter().cloned());
                 }
                 outcome
             }

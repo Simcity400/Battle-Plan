@@ -20,6 +20,58 @@ use crate::air_mission_sources::{AirRegistrySources, MissionCountrySources, comp
 
 pub const ONE: i64 = 100_000;
 
+pub fn empty_menu_efficiency(
+    frame: &DecodedFrame,
+    country: u32,
+    region: u32,
+) -> Result<i64, String> {
+    let modifiers = frame
+        .complete::<tables::AirSortieModifiers>()
+        .map_err(|e| e.to_string())?;
+    if !modifiers.iter().any(|row| {
+        row.scope == AirSortieModifierRow::MENU_MODIFIERS_STATUS
+            && row.subject == country
+            && row.region == 0
+            && row.raw == 1
+    }) {
+        return Err("air combat menu modifier coverage is unavailable".into());
+    }
+    let [metadata] = frame
+        .complete::<tables::AirSortieModifierMetadata>()
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("sortie modifier metadata is unavailable".into());
+    };
+    let features = if metadata.feature_selector != 0 && metadata.callback_kind == 1 {
+        let [features] = frame
+            .complete::<tables::SimulationFeatures>()
+            .map_err(|e| e.to_string())?
+        else {
+            return Err("sortie modifier gate needs the DLC mask".into());
+        };
+        features.dlc_mask
+    } else {
+        0
+    };
+    let metadata = ModifierMetadata {
+        flags: metadata.flags,
+        feature_selector: metadata.feature_selector,
+        callback_kind: metadata.callback_kind,
+        feature_flags: features,
+    };
+    let get = |scope, region| {
+        metadata.effective(
+            modifiers
+                .iter()
+                .find(|row| row.scope == scope && row.subject == country && row.region == region)
+                .map_or(0, |row| row.raw),
+        )
+    };
+    Ok(ONE
+        .wrapping_add(get(AirSortieModifierRow::COUNTRY_REGION, region))
+        .wrapping_add(get(AirSortieModifierRow::COUNTRY, 0)))
+}
+
 /// Content defines of the count law and of mine-laying admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SortieDefines {
@@ -237,6 +289,44 @@ impl<'a> SortieSources<'a> {
 
     pub fn mission(&self, wing: u64) -> Option<&'a AirMissionInputRow> {
         self.missions.get(&wing).copied()
+    }
+
+    pub fn empty_region_efficiency(&self, country: u32, region: u32) -> Result<i64, &'static str> {
+        self.menu_modifier(AirSortieModifierRow::COUNTRY_REGION, country, region)
+            .map(|(_, regional)| {
+                ONE.wrapping_add(regional).wrapping_add(self.modifier(
+                    AirSortieModifierRow::COUNTRY,
+                    country,
+                    0,
+                ))
+            })
+    }
+
+    pub fn menu_modifier(
+        &self,
+        scope: u8,
+        country: u32,
+        region: u32,
+    ) -> Result<(i64, i64), &'static str> {
+        let (subject, covered_region) = if scope == AirSortieModifierRow::WEATHER {
+            (0, region)
+        } else {
+            (country, 0)
+        };
+        if self.modifiers.get(&(
+            AirSortieModifierRow::MENU_MODIFIERS_STATUS,
+            subject,
+            covered_region,
+        )) != Some(&1)
+        {
+            return Err("air combat menu modifier coverage is unavailable");
+        }
+        let raw = self
+            .modifiers
+            .get(&(scope, country, region))
+            .copied()
+            .unwrap_or(0);
+        Ok((raw, self.metadata.effective(raw)))
     }
 
     /// Host admission: a stateless base's task force in combat admits

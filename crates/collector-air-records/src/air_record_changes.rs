@@ -51,6 +51,9 @@ static FULL: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// holders found new, holders carried.
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
+static EQUIPMENT_REFUSALS: Mutex<std::collections::BTreeMap<&'static str, u64>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// Smallest touched-holder set: a set grows from live demand, never caps it.
 const MIN_SLOTS: usize = 1024;
 
@@ -243,6 +246,12 @@ struct Store {
 }
 
 fn convert(record: native::Record) -> AirCombatRecord {
+    if let Some(reason) = record.equipment_failure {
+        let mut counts = EQUIPMENT_REFUSALS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *counts.entry(reason).or_default() += 1;
+    }
     let [first, second] = record.damage;
     let damage = |entries: Vec<native::Damage>| {
         entries
@@ -264,6 +273,15 @@ fn convert(record: native::Record) -> AirCombatRecord {
         attributed_country: record.attributed_country,
         first_damage: damage(first),
         second_damage: damage(second),
+        equipment: record.equipment.map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| replay_data::rows::AirCombatEquipment {
+                    variant: entry.variant_handle,
+                    amount_raw: entry.amount_raw,
+                })
+                .collect()
+        }),
     }
 }
 
@@ -560,6 +578,7 @@ pub fn status() -> impl serde::Serialize {
     let full = FULL.each_ref().map(|value| value.load(Ordering::Relaxed));
     let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
+        "equipment_refusals": EQUIPMENT_REFUSALS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
         "configured": cfg!(feature = "air_record_changes"),
         "poisoned": POISONED.load(Ordering::SeqCst),
         "calls": TOUCHED.calls.load(Ordering::Relaxed),

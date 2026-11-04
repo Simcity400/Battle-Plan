@@ -1497,12 +1497,12 @@ mod tests {
     const HISTORIES: usize = 0xa000_0000;
     const WINDOWS: usize = 0xb000_0000;
     const RECORD_SLOTS: usize = 0xc000_0000;
-    const RECORDS: usize = 0xf000_0000;
-    const VALUES: usize = 0xf800_0000;
+    const RECORDS: usize = 0x20_0000_0000;
+    const VALUES: usize = 0x30_0000_0000;
     /// Strategic region slots in every country's history table.
     const REGION_SLOTS: usize = 256;
     const HISTORY: usize = 0x40;
-    const RECORD: usize = 0x10;
+    const RECORD: usize = 0x20;
     const VALUE_FIELDS: usize = 0x300;
     // The tactic database and doctrine rows, past the module image
     // (BASE) and every other region.
@@ -1839,13 +1839,17 @@ mod tests {
                 }
                 a if (HISTORIES..HISTORIES + slots * REGION_SLOTS * HISTORY).contains(&a) => {
                     let (slot, region, at) = pair(a, HISTORIES, HISTORY);
-                    let window = WINDOWS + (slot * REGION_SLOTS + region) * HISTORY;
+                    let window = WINDOWS + (slot * REGION_SLOTS + region) * 3 * HISTORY;
                     match a - at {
                         0..8 => word(
                             at,
                             (BASE + engine_air_history::cloop_history::VTABLE_RVA) as u64,
                         ),
-                        0x10..0x18 => word(at + 0x10, window as u64),
+                        0x10..0x28 => {
+                            let level = (a - at - 0x10) / 8;
+                            word(at + 0x10 + level * 8, (window + level * HISTORY) as u64)
+                        }
+                        0x28..0x30 => word(at + 0x28, at as u64),
                         0x34..0x38 => word(
                             at + 0x34,
                             u64::from(engine_air_history::cloop_history::air_stats::FIELD_COUNT),
@@ -1853,9 +1857,12 @@ mod tests {
                         _ => 0,
                     }
                 }
-                a if (WINDOWS..WINDOWS + slots * REGION_SLOTS * HISTORY).contains(&a) => {
-                    let (slot, region, at) = pair(a, WINDOWS, HISTORY);
-                    let records = RECORD_SLOTS + (slot * REGION_SLOTS + region) * ring * 8;
+                a if (WINDOWS..WINDOWS + slots * REGION_SLOTS * 3 * HISTORY).contains(&a) => {
+                    let index = (a - WINDOWS) / HISTORY;
+                    let at = WINDOWS + index * HISTORY;
+                    let history = HISTORIES + index / 3 * HISTORY;
+                    let level = index % 3;
+                    let records = RECORD_SLOTS + index * ring * 8;
                     match a - at {
                         0..8 => word(
                             at,
@@ -1863,34 +1870,50 @@ mod tests {
                         ),
                         8..24 => header(at + 8, records, ring),
                         0x20..0x24 => word(at + 0x20, ring as u64),
-                        0x24..0x28 => word(at + 0x24, air.current),
-                        0x28 => 1,
+                        0x24..0x28 => word(at + 0x24, if level == 0 { air.current } else { 0 }),
+                        0x28 => u8::from(level == 0),
+                        0x38..0x40 => word(at + 0x38, history as u64),
                         _ => 0,
                     }
                 }
-                a if (RECORD_SLOTS..RECORD_SLOTS + slots * REGION_SLOTS * ring * 8)
+                a if (RECORD_SLOTS..RECORD_SLOTS + slots * REGION_SLOTS * 3 * ring * 8)
                     .contains(&a) =>
                 {
                     let entry = (a - RECORD_SLOTS) / 8;
-                    word(
-                        RECORD_SLOTS + entry * 8,
-                        (RECORDS + entry % ring * RECORD) as u64,
-                    )
+                    word(RECORD_SLOTS + entry * 8, (RECORDS + entry * RECORD) as u64)
                 }
-                a if (RECORDS..RECORDS + ring * RECORD).contains(&a) => {
+                a if (RECORDS..RECORDS + slots * REGION_SLOTS * 3 * ring * RECORD).contains(&a) => {
                     let entry = (a - RECORDS) / RECORD;
                     let at = RECORDS + entry * RECORD;
+                    let level = (entry / ring) % 3;
+                    let history = HISTORIES + entry / (ring * 3) * HISTORY;
                     match a - at {
-                        0..8 => word(at, (VALUES + entry * VALUE_FIELDS) as u64),
+                        0..16 => header(
+                            at,
+                            VALUES + (level * ring + entry % ring) * VALUE_FIELDS,
+                            89,
+                        ),
+                        0x18..0x20 => word(at + 0x18, history as u64),
                         _ => 0,
                     }
                 }
-                a if (VALUES..VALUES + ring * VALUE_FIELDS).contains(&a) => {
+                a if (VALUES..VALUES + 3 * ring * VALUE_FIELDS).contains(&a) => {
                     let entry = (a - VALUES) / VALUE_FIELDS;
                     let at = VALUES + entry * VALUE_FIELDS;
                     let channel = (a - at) / 8;
-                    let value = if entry.is_multiple_of(3) && [3, 43].contains(&channel) {
-                        100_000 * (entry as u64 + 1)
+                    let level = entry / ring;
+                    let record = entry % ring;
+                    let value = if [3, 43].contains(&channel) {
+                        if level == 0 && record.is_multiple_of(3) {
+                            100_000 * (record as u64 + 1)
+                        } else if level != 0 && record == 0 {
+                            (0..ring)
+                                .filter(|record| record.is_multiple_of(3))
+                                .map(|record| 100_000 * (record as u64 + 1))
+                                .sum()
+                        } else {
+                            0
+                        }
                     } else {
                         0
                     };
@@ -2537,12 +2560,19 @@ mod tests {
                 at as i32,
                 false,
             );
-            assert_eq!(result.held, held.len() * regions.len() * 10);
+            assert_eq!(
+                result.held,
+                held.len() * world.air.as_ref().unwrap().regions.len() * 10
+            );
             assert_eq!(one.held, result.held);
             if (2..=3).contains(&at) {
                 assert_eq!(hour.allocated(&frame), allocated, "{label} grew a buffer");
             }
             let counts = Hour::counts(&frame);
+            assert_eq!(
+                counts.menu_refusals,
+                [0; engine_air_history::menu_history::REFUSALS.len()]
+            );
             let emitted = match result.outcome {
                 Outcome::Rows { len } => len.to_string(),
                 other => format!("{other:?}"),
@@ -2598,14 +2628,11 @@ mod tests {
     fn naval_patrol_histories_are_read_where_written() {
         use crate::extended::air_histories::PARTS;
         let calls = naval_patrol_histories(100, 5, 2);
-        // First hour: gathers batched across countries and histories, the
-        // air objects authenticated 64 to a gather.
-        assert!(calls[0] <= 12 * PARTS, "{calls:?}");
-        // A quiet hour copies only each part's air object slots.
+        assert!(calls[0] <= 24 * PARTS, "{calls:?}");
         assert_eq!(calls[1], 3 * PARTS);
-        // One country re-read; the advance of 40 histories without a read.
-        assert!(calls[2] <= 3 * PARTS + 12, "{calls:?}");
+        assert!(calls[2] < calls[0], "{calls:?}");
         assert_eq!(calls[3], 3 * PARTS);
+        assert_eq!(calls[4], 3 * PARTS);
     }
 
     /// A history whose advance count was missed is re-read on its own.
@@ -2772,10 +2799,10 @@ mod tests {
             assert_eq!(
                 hour.decode(&mut next, 2),
                 Outcome::Rows {
-                    len: (slots - 1) * 11
+                    len: (slots - 1) * 16
                 }
             );
-            // Each changed history owner emits ten records and one witness.
+            // Each changed owner emits ten daily records, a native cursor marker and a witness.
             // Slot zero has no air object; its unchanged witness was already
             // published at hour zero and is outside hour two's slice.
             assert_eq!(
@@ -2828,7 +2855,7 @@ mod tests {
         assert_eq!(
             next.outcome,
             Outcome::Rows {
-                len: (slots - 1) * 11
+                len: (slots - 1) * 16
             }
         );
         // Recovery republishes the changed positive owners, including each

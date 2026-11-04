@@ -30,6 +30,15 @@ const COMBAT_PORTRAIT_CAPACITY: usize = 256;
 type PortraitFailures = BTreeMap<String, (Option<native_gui::RefusalKind>, String)>;
 
 pub struct Assets {
+    pub(super) layers: Arc<ResolvedLayers>,
+    pub(super) air_icons:
+        std::sync::OnceLock<Result<dashboard_base::products::equipment_icon::IconContent, String>>,
+    pub(super) air_timeout: Result<i32, String>,
+    pub(super) air_fuel_penalty: Result<i64, String>,
+    pub(super) air_day_night: Result<replay_data::day_night::Defines, String>,
+    pub(super) air_mine_maximum: Result<i64, String>,
+    pub(super) air_cipher: Result<dashboard_text::cryptology::Defines, String>,
+    pub(super) air_cipher_modifiers: Result<installed_content_core::modifiers::Modifiers, String>,
     pub(crate) native_windows: NativeWindows,
     pub gui: GuiResources,
     window_sprites: BTreeSet<Vec<u8>>,
@@ -81,6 +90,25 @@ pub struct Assets {
     pub warnings: Vec<String>,
 }
 impl Assets {
+    pub fn prepare_air_icons(
+        &self,
+        scripted: &Result<dashboard_text::scripted_text::ScriptedContent, String>,
+    ) {
+        self.air_icons.get_or_init(|| {
+            let equipment = self
+                .naval_air_groups
+                .shared_equipment()
+                .ok_or("air combat equipment definitions are unavailable".to_owned())?;
+            dashboard_base::products::equipment_icon::IconContent::native(
+                Arc::clone(&self.layers),
+                equipment,
+                scripted,
+                self.gui.registry(),
+            )
+            .map_err(|e| e.to_string())
+        });
+    }
+
     pub fn movement_terrain(
         &self,
     ) -> Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String> {
@@ -198,6 +226,21 @@ impl Assets {
         (assets, warnings)
     }
 
+    fn lazy_sprite<'a>(&'a self, name: &'a str) -> Option<(&'a str, &'a Plain)> {
+        if let Some(path) = name
+            .strip_prefix("air_texture:")
+            .filter(|path| !path.is_empty())
+        {
+            return self
+                .lazy_sprites
+                .get("air_texture:")
+                .map(|(_, plain)| (path, plain));
+        }
+        self.lazy_sprites
+            .get(name)
+            .map(|(path, plain)| (path.as_str(), plain))
+    }
+
     pub fn native_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
         self.native_sprite_info(name).map(Cow::into_owned)
     }
@@ -208,10 +251,15 @@ impl Assets {
         &self,
         name: &[u8],
     ) -> Option<Cow<'_, native_gui::SpriteInfo>> {
-        let mut info = Cow::Borrowed(self.gui.sprite_info(name)?);
+        let key = if name.starts_with(b"air_texture:") {
+            b"air_texture:".as_slice()
+        } else {
+            name
+        };
+        let mut info = Cow::Borrowed(self.gui.sprite_info(key)?);
         let Some((path, _)) = std::str::from_utf8(name)
             .ok()
-            .and_then(|name| self.lazy_sprites.get(name))
+            .and_then(|name| self.lazy_sprite(name))
         else {
             if self
                 .gui
@@ -261,7 +309,7 @@ impl Assets {
     /// Preserve the producers' bound dimensions while the native walk owns actual geometry.
     pub fn sprite_size(&self, name: &str) -> Option<[f32; 2]> {
         let info = self.native_sprite(name.as_bytes())?;
-        if self.lazy_sprites.contains_key(name) {
+        if self.lazy_sprite(name).is_some() {
             if info.missing.is_some() || !info.refusals.is_empty() {
                 return None;
             }
@@ -281,7 +329,7 @@ impl Assets {
         names
             .into_iter()
             .filter_map(|name| {
-                let (path, plain) = self.lazy_sprites.get(std::str::from_utf8(name).ok()?)?;
+                let (path, plain) = self.lazy_sprite(std::str::from_utf8(name).ok()?)?;
                 let Lookup::Loaded { texture, size } = self.portraits.peek(path) else {
                     return None;
                 };
@@ -301,7 +349,7 @@ impl Assets {
     /// Whether `name` is a sprite a window can draw: a declared one, or a
     /// leader portrait whose texture is not known to be unreadable.
     pub fn has_sprite(&self, name: &str) -> bool {
-        if let Some((path, _)) = self.lazy_sprites.get(name) {
+        if let Some((path, _)) = self.lazy_sprite(name) {
             return self.portraits.peek(path) != Lookup::Failed;
         }
         self.gui
@@ -313,7 +361,7 @@ impl Assets {
     pub(super) fn drawable_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
         let info = self.native_sprite(name)?;
         let name = std::str::from_utf8(name).ok()?;
-        if let Some((path, _)) = self.lazy_sprites.get(name) {
+        if let Some((path, _)) = self.lazy_sprite(name) {
             (self.portraits.peek(path) != Lookup::Failed).then_some(info)
         } else {
             prepared_size(&self.gui, name.as_bytes(), &info).map(|_| info)
@@ -418,6 +466,7 @@ fn sprite_warnings(
                 info.frames
             ));
         } else if report_textures
+            && !matches!(info.kind, native_gui::SpriteKind::LineChart { .. })
             && (gui
                 .sheet(name)
                 .is_none_or(|sheet| sheet.texture == NO_TEXTURE)
@@ -433,6 +482,8 @@ fn sprite_warnings(
 
 // Retained entry templates share their registry.
 pub const WINDOW_TEMPLATES: &[&[u8]] = &[
+    b"strategicairview",
+    b"air_combat_damage_received",
     b"naval_region_modifier_entry",
     b"landcombatview",
     b"division_combat_attacker_entry",
@@ -706,6 +757,9 @@ impl Assets {
             let key = format!("combat_portrait:{texture}");
             direct.sprites.push(texture_sprite(key, texture));
         }
+        direct
+            .sprites
+            .push(texture_sprite("air_texture:".into(), String::new()));
         let content = CombatContent::read_with_products(products, layers, defines)?;
         let content_warnings: Vec<String> = content.warnings().collect();
         let CombatContent {
@@ -770,6 +824,8 @@ impl Assets {
                 || name.starts_with(b"GFX_navalcombat_air_icon_")
                 // Retained aircraft survivors use the same cascade.
                 || name.starts_with(b"GFX_navalcombat_air_small_icon_")
+                || name.ends_with(b"_medium")
+                || name.starts_with(b"air_texture:")
                 || (name.starts_with(b"GFX_unit_")
                     && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
                 || name.starts_with(b"combat_tactic:")
@@ -808,7 +864,9 @@ impl Assets {
         for name in &wanted {
             if let Some(facts) = registry.sprite(name.as_bytes())
                 && let SpriteKind::Plain(plain) = &facts.kind
-                && plain.texture.starts_with(b"gfx/leaders/")
+                && (plain.texture.starts_with(b"gfx/leaders/")
+                    || name.ends_with("_medium")
+                    || name.starts_with("air_texture:"))
                 && plain.masking_texture.is_empty()
                 && (plain.legacy_lazy_load || plain.animations.is_empty())
                 && plain.frames >= 0
@@ -1047,6 +1105,37 @@ impl Assets {
         });
         Ok(Self {
             native_windows: native_windows.clone(),
+            layers: Arc::clone(shared),
+            air_icons: Default::default(),
+            air_cipher_modifiers: installed_content_core::static_modifiers::read_blocks(
+                layers,
+                &["passive_decryption_modifier"],
+            )
+            .map_err(|why| why.to_string())
+            .and_then(|blocks| {
+                blocks
+                    .blocks
+                    .into_iter()
+                    .next()
+                    .ok_or("air cipher modifier read is incomplete".to_owned())?
+                    .map_err(|why| format!("{} in {}: {}", why.modifier, why.file, why.reason))
+            }),
+            air_timeout: defines
+                .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
+                .map_err(|e| e.to_string()),
+            air_fuel_penalty: defines
+                .fixed5("NAir", "MISSION_EFFICIENCY_MULT_AT_LACK_OF_FUEL")
+                .map_err(|e| e.to_string()),
+            air_day_night: replay_data::day_night::Defines::read(
+                |group, key| defines.int32(group, key),
+                |group, key| defines.fixed5(group, key),
+            )
+            .map_err(|e| e.to_string()),
+            air_mine_maximum: defines
+                .fixed5("NNavy", "NAVAL_MINES_IN_REGION_MAX")
+                .map(|value| value.max(100_000))
+                .map_err(|e| e.to_string()),
+            air_cipher: dashboard_text::cryptology::Defines::read(defines),
             gui,
             window_sprites,
             flag_selectors: Mutex::default(),

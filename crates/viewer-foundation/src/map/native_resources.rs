@@ -844,7 +844,11 @@ impl GuiResources {
                 animations: Vec::new(),
             },
             Declared::LineChart(line) => Prepared {
-                info: chart(SpriteKind::LineChart { size: line.size }),
+                info: {
+                    let mut info = chart(SpriteKind::LineChart { size: line.size });
+                    info.effect = self.effect_result(layers, &line.effect_file, false);
+                    info
+                },
                 sheet: sheet(&self.texture(stack, layers, b"", images)?, 1),
                 second: None,
                 masking: None,

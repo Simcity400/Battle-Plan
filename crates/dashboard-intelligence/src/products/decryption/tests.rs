@@ -48,6 +48,7 @@ pub(super) fn frame(hour: i32, count: u32, amount: i64, decrypting: u8) -> Decod
                 decrypting,
                 bonus_days: -1,
                 bonus_active: 0,
+                ordinal: slot - 2,
             })
             .collect(),
     ));
@@ -271,6 +272,7 @@ fn missing_strength_and_bonus_are_distinct_and_gaps_bound_dates() {
             bonus_active: 7,
             bonus_days: 23,
             decrypting: 0,
+            ordinal: 0,
         }]));
     *active.tables[TableId::RaidIntelInputs.index()] = TableView::Unavailable {
         reason: "missing operands".into(),

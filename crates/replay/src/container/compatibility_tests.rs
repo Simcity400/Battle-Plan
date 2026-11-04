@@ -1415,6 +1415,8 @@ fn compatibility_format99_political_snapshots_and_deltas_keep_the_old_field_seam
         enemy_ships_sunk_raw: 1,
         our_fighters_lost_raw: -1,
         scenario_channels: Some([0; 7]).into(),
+        menu: Default::default(),
+        ..Default::default()
     }, our_fighters_lost_raw => i64::MIN);
     seam!(ArmyOrderPlans, 20, rows::ArmyOrderPlanRow {
         owner_group: 1,

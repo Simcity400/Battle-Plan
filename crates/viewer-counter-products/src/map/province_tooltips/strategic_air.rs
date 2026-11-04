@@ -39,7 +39,19 @@ pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip)
     let Some(&region) = context.content.region_of.get(&context.province.id) else {
         return;
     };
-    let text = detection_text(context, region);
+    let text = regional_detection(
+        context.content,
+        context.frame,
+        context.vision.ours(),
+        region,
+        &|province| {
+            context
+                .reads
+                .updated_clock(province, context.frame.hour)
+                .map_err(str::to_owned)
+        },
+    )
+    .map(|(_, text)| text);
     line(out, "regional Air detection", 0, text);
     if !selected.is_empty() {
         line(
@@ -56,8 +68,100 @@ pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip)
     );
 }
 
-fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> {
-    if let Some(raw) = detection::console_override(context.frame, context.vision.ours())? {
+pub struct RegionalDetection<'a> {
+    content: &'a super::counter_content::Content,
+    frame: &'a replay_frame::frame::DecodedFrame,
+    region: u32,
+    links: BTreeMap<u32, u32>,
+    updated: &'a dyn Fn(u32) -> Result<replay_data::day_night::Clock, String>,
+    countries: OnceCell<Result<detection::Countries<'a>, String>>,
+    registry:
+        OnceCell<Result<viewer_foundation::map::air_registry_sources::AirRegistrySources, String>>,
+    sources: FrameSources<'a>,
+    registered:
+        OnceCell<Result<BTreeMap<u32, Vec<(u32, &'a replay_data::rows::AirWingRow)>>, String>>,
+    radar_countries:
+        OnceCell<Result<BTreeMap<u32, &'a replay_data::rows::CountryCounterInputRow>, String>>,
+    relations: OnceCell<Result<Relations, String>>,
+}
+
+impl<'a> RegionalDetection<'a> {
+    pub fn new(
+        content: &'a super::counter_content::Content,
+        frame: &'a replay_frame::frame::DecodedFrame,
+        region: u32,
+        updated: &'a dyn Fn(u32) -> Result<replay_data::day_night::Clock, String>,
+    ) -> Result<Self, String> {
+        let links = frame
+            .complete::<tables::CountryLinks>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|row| (row.id, row.canonical_slot))
+            .collect();
+        Ok(Self {
+            content,
+            frame,
+            region,
+            links,
+            updated,
+            countries: OnceCell::new(),
+            registry: OnceCell::new(),
+            sources: FrameSources::new(frame),
+            registered: OnceCell::new(),
+            radar_countries: OnceCell::new(),
+            relations: OnceCell::new(),
+        })
+    }
+
+    pub fn country(&self, ours: u32) -> Result<(i64, String), String> {
+        calculate(self, ours)
+    }
+}
+
+struct DetectionContext<'r, 'a> {
+    content: &'a super::counter_content::Content,
+    frame: &'a replay_frame::frame::DecodedFrame,
+    ours: u32,
+    links: &'r BTreeMap<u32, u32>,
+    updated: &'a dyn Fn(u32) -> Result<replay_data::day_night::Clock, String>,
+    reads: &'r RegionalDetection<'a>,
+}
+impl DetectionContext<'_, '_> {
+    fn slot(&self, raw: u32) -> Result<u32, String> {
+        if raw == 0 {
+            return Ok(0);
+        }
+        self.links
+            .get(&raw)
+            .copied()
+            .ok_or_else(|| format!("CountryLinks lacks {raw}"))
+    }
+    fn loc(&self, key: &str, args: &[(&str, Arg<'_>)]) -> Result<String, String> {
+        super::localise(&self.content.localisation, key, args)
+    }
+}
+
+pub fn regional_detection(
+    content: &super::counter_content::Content,
+    frame: &replay_frame::frame::DecodedFrame,
+    ours: u32,
+    region: u32,
+    updated: &dyn Fn(u32) -> Result<replay_data::day_night::Clock, String>,
+) -> Result<(i64, String), String> {
+    RegionalDetection::new(content, frame, region, updated)?.country(ours)
+}
+
+fn calculate(reads: &RegionalDetection<'_>, ours: u32) -> Result<(i64, String), String> {
+    let region = reads.region;
+    let context = &DetectionContext {
+        content: reads.content,
+        frame: reads.frame,
+        ours,
+        links: &reads.links,
+        updated: reads.updated,
+        reads,
+    };
+    if let Some(raw) = detection::console_override(context.frame, context.ours)? {
         if !engine_executable::executable_tables::is_initialized() {
             return Err("Air detection console prefix needs verified executable metadata".into());
         }
@@ -65,7 +169,7 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
             .auxiliary
             .air_detection_override_prefix;
         let amount = installed_content_core::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
-        return Ok(format!("{prefix}{amount}%\n"));
+        return Ok((raw, format!("{prefix}{amount}%\n")));
     }
     replay_derive::fixed_layout::validate_recording(
         context.frame,
@@ -84,7 +188,7 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
         .frame
         .complete::<tables::Provinces>()
         .map_err(|e| e.to_string())?;
-    let ours = context.vision.ours();
+    let ours = context.ours;
     let movement = context
         .content
         .movement
@@ -108,7 +212,11 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
         owned += i64::from(context.slot(province.controller)? == ours);
     }
     let occupation = fraction(owned.wrapping_mul(100_000), land, 0);
-    let countries = detection::Countries::read(context.frame)?;
+    let countries = reads
+        .countries
+        .get_or_init(|| detection::Countries::read(context.frame))
+        .as_ref()
+        .map_err(Clone::clone)?;
     let radar = radar(context, region, members.len(), provinces)?;
     let weather_rows = context
         .frame
@@ -120,12 +228,7 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
             .ok_or("Air region province night record is unavailable")?;
         let clock = super::clock::resolve(
             row,
-            |province| {
-                context
-                    .reads
-                    .updated_clock(province, context.frame.hour)
-                    .map_err(str::to_owned)
-            },
+            |province| (context.updated)(province),
             || {
                 context
                     .frame
@@ -156,23 +259,39 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
             effective(context.frame, 1, *raw)
         })
         .transpose()?;
-    let wings = context
-        .frame
-        .complete::<tables::AirWings>()
-        .map_err(|e| e.to_string())?;
-    let registry = OnceCell::new();
-    let sources = FrameSources::new(context.frame);
+    let registered = reads
+        .registered
+        .get_or_init(|| {
+            let wings = context
+                .frame
+                .complete::<tables::AirWings>()
+                .map_err(|e| e.to_string())?;
+            let mut registered = BTreeMap::<u32, Vec<(u32, &replay_data::rows::AirWingRow)>>::new();
+            for row in context
+                .frame
+                .complete::<tables::AirRegionalMissions>()
+                .map_err(|e| e.to_string())?
+            {
+                let wing = keyed(wings, row.wing, |row| row.id)
+                    .ok_or("registered Air mission wing is unavailable")?;
+                if wing.mission_region == Some(region) {
+                    registered
+                        .entry(context.slot(wing.owner)?)
+                        .or_default()
+                        .push((row.ordinal, wing));
+                }
+            }
+            for wings in registered.values_mut() {
+                wings.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+            }
+            Ok::<_, String>(registered)
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    let registry = &reads.registry;
+    let sources = &reads.sources;
     let mut missions = Vec::new();
-    for registration in context
-        .frame
-        .complete::<tables::AirRegionalMissions>()
-        .map_err(|e| e.to_string())?
-    {
-        let wing = keyed(wings, registration.wing, |row| row.id)
-            .ok_or("registered Air mission wing is unavailable")?;
-        if wing.mission_region != Some(region) || context.slot(wing.owner)? != ours {
-            continue;
-        }
+    for &(_, wing) in registered.get(&ours).into_iter().flatten() {
         let inputs = context
             .frame
             .complete::<tables::AirMissionInputs>()
@@ -261,8 +380,8 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
             normalized,
             carrier_mission,
             range,
-            &countries,
-            &sources,
+            countries,
+            sources,
         )?;
         missions.push(detection::Mission {
             execution,
@@ -280,7 +399,7 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
         weather,
         missions,
     );
-    context.loc(
+    let text = context.loc(
         "AIR_DETECTION_IN_REGION_DETAILS",
         &[
             ("TOT", Arg::Fixed5(result.total)),
@@ -291,7 +410,8 @@ fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> 
             ("NIGHT", Arg::Fixed5(result.night)),
             ("WEA", Arg::Fixed5(result.weather)),
         ],
-    )
+    )?;
+    Ok((result.total, text))
 }
 
 fn effective(
@@ -318,19 +438,26 @@ fn effective(
 /// The native regional radar counts are rebuilt by grouping the same covered
 /// province IDs. Controller share follows the host state's controller writers.
 fn radar(
-    context: &Context<'_>,
+    context: &DetectionContext<'_, '_>,
     region: u32,
     count: usize,
     provinces: &[replay_data::rows::ProvinceRow],
 ) -> Result<i64, String> {
-    let relations = OnceCell::new();
-    let countries: BTreeMap<_, _> = context
-        .frame
-        .complete::<tables::CountryCounterInputs>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .map(|row| context.slot(row.country).map(|slot| (slot, row)))
-        .collect::<Result<_, _>>()?;
+    let relations = &context.reads.relations;
+    let countries = context
+        .reads
+        .radar_countries
+        .get_or_init(|| {
+            context
+                .frame
+                .complete::<tables::CountryCounterInputs>()
+                .map_err(|e| e.to_string())?
+                .iter()
+                .map(|row| context.slot(row.country).map(|slot| (slot, row)))
+                .collect::<Result<BTreeMap<_, _>, _>>()
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     let mut strength = 0_i64;
     for group in context
         .frame
@@ -346,7 +473,7 @@ fn radar(
             continue;
         }
         let owner = context.slot(group.country)?;
-        if owner != context.vision.ours() {
+        if owner != context.ours {
             if owner == 0
                 || countries
                     .get(&owner)
@@ -366,7 +493,7 @@ fn radar(
                 })
                 .as_ref()
                 .map_err(Clone::clone)?;
-            if !relations.allied_for_fog(context.vision.ours(), owner) {
+            if !relations.allied_for_fog(context.ours, owner) {
                 continue;
             }
         }

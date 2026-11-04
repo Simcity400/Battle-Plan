@@ -841,11 +841,14 @@ fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
     let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
     assert_eq!(saved.cursor.next_block, 1);
     assert!(store.read(&key, &branch_section(2), 0).unwrap().is_none());
-    let original = store.read(&key, "country-identities-1", 0).unwrap().map(|mut page| {
-        let mut bytes = Vec::new();
-        page.read_to_end(&mut bytes).unwrap();
-        bytes
-    });
+    let original = store
+        .read(&key, "country-identities-1", 0)
+        .unwrap()
+        .map(|mut page| {
+            let mut bytes = Vec::new();
+            page.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
     flag.store(false, Ordering::Release);
     let mut accepted_blocks = Vec::new();
     let completed = run_checked(
@@ -1821,6 +1824,7 @@ fn air_superiority_unprepared_regional_spans_remain_pending_without_a_frame_samp
                     friendly_missions: 0,
                     enemy_missions: 0,
                     air_spotting_scale: Some(0),
+                    menu: None,
                 },
             ]));
         frame

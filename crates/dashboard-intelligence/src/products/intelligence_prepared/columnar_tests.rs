@@ -108,6 +108,7 @@ fn write(walk: &mut Synthetic, hour: i32) {
         bonus_days: -1,
         bonus_active: 0,
         decrypting: u8::from(hour >= 50),
+        ordinal: 0,
     }];
     if hour >= 30 {
         ciphers.push(CryptologyRow {
@@ -117,6 +118,7 @@ fn write(walk: &mut Synthetic, hour: i32) {
             bonus_days: -1,
             bonus_active: 0,
             decrypting: 0,
+            ordinal: 0,
         });
     }
     put(walk, TableId::Cryptology, &ciphers, false);
@@ -557,14 +559,21 @@ fn hours_that_change_only_unread_fields_hand_on_no_view() {
     let quiet = &hours[2];
     assert!(!quiet.opens);
     assert!(quiet.views.is_empty(), "no view is handed on");
-    assert_eq!(quiet.changed, agencies, "only the agencies' rebuild is told");
+    assert_eq!(
+        quiet.changed, agencies,
+        "only the agencies' rebuild is told"
+    );
     for table in [
         TableId::Countries,
         TableId::RaidIntelInputs,
         TableId::SimulationFeatures,
         TableId::IntelligenceAgencies,
     ] {
-        assert_ne!(quiet.rebuilt & (1 << position(table)), 0, "{table:?} rebuilt");
+        assert_ne!(
+            quiet.rebuilt & (1 << position(table)),
+            0,
+            "{table:?} rebuilt"
+        );
     }
     assert_eq!(quiet.reads, 0);
     // The day's first hour reads the memberships and operations, which changed.

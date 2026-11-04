@@ -13,10 +13,11 @@ pub enum Declaration {
     Text,
     /// float2 POSITION at 0, TEXCOORD0 at 8, TEXCOORD1 at 16.
     Circular,
+    LineChart,
 }
 
 impl Declaration {
-    pub(super) const ALL: [Self; 3] = [Self::Sprite, Self::Text, Self::Circular];
+    pub(super) const ALL: [Self; 4] = [Self::Sprite, Self::Text, Self::Circular, Self::LineChart];
 }
 
 /// The declaration belongs to the retained program; bytes/stride/count belong to this draw.
@@ -35,6 +36,8 @@ pub(super) struct Packing {
 }
 
 struct Input {
+    short: bool,
+    kind: ScalarKind,
     semantic: String,
     offset: usize,
     components: usize,
@@ -47,7 +50,7 @@ impl Packing {
         Self {
             components: inputs.iter().map(|input| input.components as usize).sum(),
             inputs: inputs.iter().map(|input| {
-                if input.kind != ScalarKind::Float {
+                if input.kind != ScalarKind::Float && declaration != Declaration::LineChart {
                     return Err(format!(
                         "native {declaration:?} declaration supplies floats for {:?}, shader expects {:?}",
                         input.semantic, input.kind
@@ -62,9 +65,12 @@ impl Packing {
                     (Declaration::Circular, "POSITION" | "POSITION0") => (0, 2, false),
                     (Declaration::Circular, "TEXCOORD" | "TEXCOORD0") => (8, 2, false),
                     (Declaration::Circular, "TEXCOORD1") => (16, 2, false),
+                    (Declaration::LineChart, "POSITION" | "POSITION0") => (0, 4, false),
                     _ => return Err(format!("native {declaration:?} declaration has no {:?} input", input.semantic)),
                 };
                 Ok(Input {
+                    short: declaration == Declaration::LineChart,
+                    kind: input.kind,
                     semantic: input.semantic.clone(), offset, components,
                     output: input.components as usize, bgra,
                 })
@@ -97,12 +103,26 @@ impl Packing {
                 let from = base
                     .checked_add(input.offset)
                     .ok_or("vertex offset overflow")?;
-                let size = if input.bgra { 4 } else { input.components * 4 };
+                let size = if input.bgra {
+                    4
+                } else if input.short {
+                    input.components * 2
+                } else {
+                    input.components * 4
+                };
                 let end = from.checked_add(size).ok_or("vertex offset overflow")?;
                 let bytes = vertices.bytes.get(from..end).ok_or_else(|| format!("native {:?} input {:?} at vertex {vertex} reads beyond supplied buffer ({} bytes)", vertices.declaration, input.semantic, vertices.bytes.len()))?;
                 // D3D's input conversion fills missing x/y/z with zero and w with one.
                 let mut value = [0.0, 0.0, 0.0, 1.0];
-                if input.bgra {
+                if input.short {
+                    for (dst, bytes) in bytes.chunks_exact(2).enumerate() {
+                        let value_raw = i16::from_le_bytes(bytes.try_into().unwrap()) as i32;
+                        value[dst] = match input.kind {
+                            ScalarKind::Float => value_raw as f32,
+                            ScalarKind::Sint | ScalarKind::Uint => f32::from_bits(value_raw as u32),
+                        };
+                    }
+                } else if input.bgra {
                     for (dst, src) in [2, 1, 0, 3].into_iter().enumerate() {
                         value[dst] = f32::from(bytes[src]) / 255.0;
                     }

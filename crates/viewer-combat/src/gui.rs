@@ -18,6 +18,12 @@ use viewer_foundation::map::{
 pub trait CombatResources: Resources + native_gui::Sheets {
     fn flag_index(&self, key: &str) -> Result<i32, String>;
     fn flag_texture(&self, key: &str, small: bool) -> Option<native_gui::Texture>;
+    fn line_chart(
+        &self,
+        _sprite: &[u8],
+    ) -> Result<(viewer_foundation::map::native_shader::draw::Effect, f32), String> {
+        Err("line chart has no compiled content effect".into())
+    }
 }
 
 #[derive(Default)]
@@ -1145,6 +1151,7 @@ pub(super) fn window_name(selection: Selection) -> &'static str {
         Selection::Land(_) => "landcombatview",
         Selection::Naval(_) => "navalcombatview",
         Selection::NavalResult(_) => "navalcombatresultswindow",
+        Selection::AirRegion(_) => "strategicairview",
     }
 }
 
@@ -1350,6 +1357,16 @@ impl Windows {
                 &mut drawn,
             ) {
                 controls(root, &prepared.layout.regions, origin, &mut drawn, false);
+                if let Some(chart) = &bindings.air_chart {
+                    super::air_menu::history::draw(
+                        root,
+                        &prepared.layout,
+                        origin,
+                        resources,
+                        chart,
+                        &mut drawn,
+                    );
+                }
                 if hovers {
                     append_hovers(&mut drawn.tooltips, prepared.hovers, origin);
                 }
@@ -1502,6 +1519,17 @@ fn controls(root: &Element, regions: &[Region], origin: [i32; 2], drawn: &mut Dr
             continue;
         };
         let name = indexed.get(region.path.as_str()).map(|path| path.as_str());
+        if root.is_named("strategicairview") {
+            if name == Some("air_combat_wnd") {
+                drawn.air_combat_rect = Some(rect);
+            }
+            if name == Some("details_wnd") {
+                drawn.air_details_rect = Some(rect);
+            }
+            if let Some(action) = name.and_then(super::air_menu::Action::from_path) {
+                drawn.air_controls.push((rect, action));
+            }
+        }
         if !popup {
             match name {
                 Some("dismiss_button") => drawn.dismiss = Some(rect),

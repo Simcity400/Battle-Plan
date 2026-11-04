@@ -2072,6 +2072,14 @@ fn prepare_draw(
     if let Some(clip) = clip {
         fade::apply(clip, &mut constants);
     }
+    // Line charts multiply a row vector; the other GUI effects multiply a column.
+    if draw.declaration == shader_pipeline::vertices::Declaration::LineChart {
+        for row in 0..4 {
+            for column in row + 1..4 {
+                constants.swap(row * 4 + column, column * 4 + row);
+            }
+        }
+    }
     let known = [std::ops::Range {
         start: 0,
         end: draw.known,

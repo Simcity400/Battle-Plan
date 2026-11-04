@@ -17,5 +17,6 @@ pub mod cair_region_combat_data;
 pub mod cloop_history;
 pub mod loop_history_record_fields;
 pub mod loop_history_window;
+pub mod menu_history;
 pub mod sair_wing_combat_data;
 pub mod sdamage_entry;

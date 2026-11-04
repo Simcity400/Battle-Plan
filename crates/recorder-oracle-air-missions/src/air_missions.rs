@@ -448,7 +448,7 @@ fn naval_patrol(
     contiguous(ordinals.values(), "naval-patrol combat")?;
     histories_structure(histories, &slots)?;
     for row in histories {
-        if matches!(row.scenario_channels, Recorded::Value(None)) {
+        if !row.is_menu() && matches!(row.scenario_channels, Recorded::Value(None)) {
             report.limitation(
                 "AirNavalPatrolHistories.scenario_channels unavailable after a current read refusal; original naval-patrol history remains readable",
                 format!("air history {}:{}:{}", row.country, row.region, row.index),
@@ -478,6 +478,21 @@ fn histories_structure(
             }
             continue;
         }
+        if row.is_window() {
+            if !slots.contains(&row.country)
+                || row.enemy_ships_sunk_raw != 0
+                || row.our_fighters_lost_raw != 0
+                || row.scenario_channels != Recorded::Value(None)
+            {
+                return Err(invalid("air history ring marker is malformed"));
+            }
+            row.window
+                .ok_or_else(|| invalid("air history ring metadata is missing"))?
+                .validate()?;
+            values.insert(row.country);
+            continue;
+        }
+        row.summation_index(rows).map_err(invalid)?;
         if !slots.contains(&row.country)
             || !row.has_values()
             || row.index == replay_data::rows::AIR_HISTORY_AVAILABILITY_INDEX
@@ -1097,20 +1112,39 @@ fn sortie_operands(
     report.compared("AirSortieBaseCountries", containers.len());
 
     let modifiers = complete::<tables::AirSortieModifiers>(frame)?;
+    let menu: BTreeMap<_, _> = modifiers
+        .iter()
+        .filter(|row| row.scope == AirSortieModifierRow::MENU_MODIFIERS_STATUS)
+        .map(|row| ((row.subject, row.region), row.raw))
+        .collect();
     for row in modifiers {
         let keyed = match row.scope {
-            AirSortieModifierRow::WEATHER => row.subject == 0 && keys.regions.contains(&row.region),
+            AirSortieModifierRow::WEATHER => {
+                row.subject == 0
+                    && (keys.regions.contains(&row.region)
+                        || menu.get(&(0, row.region)) == Some(&1))
+            }
             AirSortieModifierRow::COUNTRY => {
-                row.region == 0 && keys.positive.contains(&row.subject)
+                row.region == 0
+                    && (keys.positive.contains(&row.subject)
+                        || menu.get(&(row.subject, 0)) == Some(&1))
             }
             AirSortieModifierRow::COUNTRY_REGION => {
                 keys.country_regions.contains(&(row.subject, row.region))
+                    || (row.region != 0 && menu.get(&(row.subject, 0)) == Some(&1))
             }
             // Every console override is a row, zero included.
             AirSortieModifierRow::EFFICIENCY_OVERRIDE
             | AirSortieModifierRow::DETECTION_OVERRIDE => row.region == 0,
             AirSortieModifierRow::DETECTION_OVERRIDE_STATUS => {
                 row.region == 0 && row.subject == 0 && row.raw == 1
+            }
+            AirSortieModifierRow::MENU_MODIFIERS_STATUS => {
+                matches!(row.raw, 0 | 1)
+                    && ((row.subject == 0 && row.region != 0)
+                        || (row.region == 0
+                            && row.subject != 0
+                            && keys.countries.contains(&row.subject)))
             }
             _ => false,
         };
@@ -1120,10 +1154,11 @@ fn sortie_operands(
                     row.scope,
                     AirSortieModifierRow::EFFICIENCY_OVERRIDE
                         | AirSortieModifierRow::DETECTION_OVERRIDE
+                        | AirSortieModifierRow::MENU_MODIFIERS_STATUS
                 ))
         {
             return Err(invalid(format!(
-                "air sortie modifier {}:{}:{} is neither a registered mission's nonzero term nor an override",
+                "air sortie modifier {}:{}:{} has an invalid scope, key, value or availability witness",
                 row.scope, row.subject, row.region
             )));
         }
@@ -1998,9 +2033,25 @@ mod tests {
             enemy_ships_sunk_raw: sunk,
             our_fighters_lost_raw: lost,
             scenario_channels: Recorded::NotRecorded,
+            menu: Default::default(),
+            ..Default::default()
         };
-        // Indices 0 and 7 with the zero entries between them dropped.
-        assert!(histories_structure(&[row(0, 5, 0), row(7, 0, -2)], &slots).is_ok());
+        let marker = AirNavalPatrolHistoryRow::window_marker(
+            4,
+            9,
+            0,
+            replay_data::rows::AirHistoryWindow {
+                complete: false,
+                capacity: 30,
+                current: 0,
+                wrapped: true,
+            },
+            false,
+        );
+        let witness = AirNavalPatrolHistoryRow::availability_witness(4);
+        assert!(
+            histories_structure(&[row(0, 5, 0), row(7, 0, -2), marker, witness], &slots).is_ok()
+        );
         assert!(histories_structure(&[row(3, 0, 0)], &slots).is_err());
         let foreign = AirNavalPatrolHistoryRow {
             country: 5,
@@ -2022,7 +2073,19 @@ mod tests {
         };
         // Native null/reserved country-air slots have no save country.
         assert!(histories_structure(&[witness(0), witness(4)], &slots).is_ok());
-        assert!(histories_structure(&[row.clone(), witness(4)], &slots).is_ok());
+        let marker = AirNavalPatrolHistoryRow::window_marker(
+            4,
+            9,
+            0,
+            replay_data::rows::AirHistoryWindow {
+                complete: false,
+                capacity: 30,
+                current: 0,
+                wrapped: true,
+            },
+            false,
+        );
+        assert!(histories_structure(&[row.clone(), marker.clone(), witness(4)], &slots).is_ok());
         assert!(histories_structure(&[row], &slots).is_err());
         assert!(histories_structure(&[witness(4), witness(4)], &slots).is_err());
         let mut malformed = witness(4);
@@ -2039,7 +2102,7 @@ mod tests {
     #[test]
     fn current_scenario_refusals_remain_independent_named_history_rows() {
         let (mut frame, _, _, _) = super::super::fixtures::fixture();
-        let rows = vec![
+        let mut rows = vec![
             AirNavalPatrolHistoryRow {
                 country: 7,
                 region: 9,
@@ -2054,6 +2117,8 @@ mod tests {
                 enemy_ships_sunk_raw: 300_000,
                 our_fighters_lost_raw: 200_000,
                 scenario_channels: Recorded::Value(None),
+                menu: Default::default(),
+                ..Default::default()
             },
             AirNavalPatrolHistoryRow {
                 country: 7,
@@ -2064,6 +2129,31 @@ mod tests {
             },
             AirNavalPatrolHistoryRow::availability_witness(7),
         ];
+        rows.push(AirNavalPatrolHistoryRow::window_marker(
+            7,
+            8,
+            0,
+            replay_data::rows::AirHistoryWindow {
+                complete: false,
+                capacity: 30,
+                current: 0,
+                wrapped: true,
+            },
+            false,
+        ));
+        rows.push(AirNavalPatrolHistoryRow::window_marker(
+            7,
+            9,
+            0,
+            replay_data::rows::AirHistoryWindow {
+                complete: false,
+                capacity: 30,
+                current: 0,
+                wrapped: true,
+            },
+            false,
+        ));
+        rows.sort_unstable_by_key(|row| (row.country, row.region, row.level, row.index));
         assert!(histories_structure(&rows, &BTreeSet::from([7])).is_ok());
         *frame.tables[TableId::AirNavalPatrolHistories.index()] =
             TableView::Complete(TableRows::AirNavalPatrolHistories(rows));

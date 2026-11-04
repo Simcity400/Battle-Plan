@@ -58,6 +58,7 @@ pub struct BuildingType {
     pub specializations: Vec<String>,
     /// Nonzero air-defense weights identify air-defense buildings.
     pub air_defence: i32,
+    pub anti_air: bool,
     /// Signed land-fort weight; defaults to zero.
     pub land_fort: i32,
     /// Signed naval-fort weight; defaults to zero. A positive land or naval
@@ -647,6 +648,7 @@ fn parse_declarations(
                             });
                         }
                         Some(b"air_defence") => integer(bytes, &mut building.air_defence),
+                        Some(b"anti_air") => boolean(bytes, &mut building.anti_air),
                         Some(b"icon_frame") => integer(bytes, &mut building.icon_frame),
                         // An unrepresentable name refuses only the part that reads it, preserving
                         // map fields. Each specialization field appends its names.

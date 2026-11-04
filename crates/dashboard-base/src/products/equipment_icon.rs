@@ -248,6 +248,56 @@ pub fn inputs_stamped(layers: &installed_content_core::ResolvedLayers) -> io::Re
 }
 
 impl IconContent {
+    pub fn native(
+        layers: Arc<installed_content_core::ResolvedLayers>,
+        units: Arc<Database>,
+        scripted: &Result<dashboard_text::scripted_text::ScriptedContent, String>,
+        registry: &installed_content_core::gui::native::resources::Registry,
+    ) -> io::Result<Self> {
+        let default_map = installed_content_core::terrain::read_default_map(&layers)?;
+        let provinces = installed_content_core::map::parse_definitions(
+            &layers.read(&default_map.file("definitions")?)?,
+        )?;
+        let defines = installed_content_core::defines::read(&layers)?;
+        let mut warnings = Vec::new();
+        let names = equipment_graphics::Names::read(&layers, &default_map, &mut warnings)?;
+        let enablers = installed_content_core::technology::read_enablers(&layers, |limit| {
+            scripted
+                .as_ref()
+                .map_err(Clone::clone)?
+                .unrecorded_trigger_world()?
+                .evaluate(limit, crate::triggers::Scopes::empty())
+                .decided()
+        })?;
+        let pools = equipment_graphics::Content::load(&layers, &names)?;
+        let geography = equipment_graphics::context::Content::load(
+            &layers,
+            &default_map,
+            &provinces,
+            &defines,
+        )?;
+        let dlc = layers.dlc_names()?;
+        let sprites = installed_content_core::gui::native::sprites::registry(&registry.files)
+            .keys()
+            .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned))
+            .collect();
+        Ok(Self {
+            catalogue: None,
+            units,
+            enablers,
+            pools,
+            geography,
+            dlc,
+            sprites,
+            refused_sprites: BTreeMap::new(),
+            files: Box::new(move |path| layers.has_file(path).map_err(|e| e.to_string())),
+            stamped: false,
+            load_warnings: warnings,
+            visual: String::new(),
+        }
+        .fingerprinted())
+    }
+
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
         Self::with_equipment(catalogue, None)
     }
@@ -577,7 +627,8 @@ pub struct IconHour {
 
 /// A table's reason without the frame's hour, so the same gap read again is the same choice.
 fn undated(frame: &DecodedFrame, why: impl ToString) -> String {
-    why.to_string().replace(&format!("hour {} ", frame.hour), "")
+    why.to_string()
+        .replace(&format!("hour {} ", frame.hour), "")
 }
 
 impl IconHour {
@@ -676,7 +727,9 @@ pub fn variant_icon(
     variant: &VariantDefinitionRow,
     spelling: &str,
 ) -> Result<Option<Icon>, String> {
-    rule(content, hour, variant, spelling, &|probe| content.answer(&probe))
+    rule(content, hour, variant, spelling, &|probe| {
+        content.answer(&probe)
+    })
 }
 
 /// The variant's icon at this hour with the artwork questions left open, for any

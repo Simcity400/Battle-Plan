@@ -530,6 +530,7 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             },
             RaidAirScoreRow {
                 country: 55,
@@ -540,6 +541,7 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             },
             RaidAirScoreRow {
                 country: 66,
@@ -550,6 +552,7 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             },
             RaidAirScoreRow {
                 country: 9001,
@@ -560,6 +563,7 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             },
         ]));
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![]));
@@ -672,6 +676,7 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             });
         }
         if (36..40).contains(&hour) {
@@ -689,6 +694,7 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             });
         }
         frames.push(frame);
@@ -1010,6 +1016,7 @@ fn the_largest_region_id_never_supplies_the_absent_region_fallback() {
             friendly_missions: 0,
             enemy_missions: 0,
             air_spotting_scale: Some(0),
+            menu: None,
         });
         rows.sort_by_key(|row| (row.country, row.region));
     }
@@ -1941,6 +1948,7 @@ fn top_region_ranking_preserves_single_fixed5_unit_differences_above_f64_precisi
             friendly_missions: 0,
             enemy_missions: 0,
             air_spotting_scale: Some(0),
+            menu: None,
         });
         rows.sort_by_key(|row| (row.country, row.region));
     }

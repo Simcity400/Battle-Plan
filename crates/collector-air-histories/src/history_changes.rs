@@ -22,6 +22,8 @@ static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static SCENARIO_REFUSALS: [AtomicU64; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()] =
     [const { AtomicU64::new(0) }; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()];
+static MENU_REFUSALS: [AtomicU64; engine_air_history::menu_history::REFUSALS.len()] =
+    [const { AtomicU64::new(0) }; engine_air_history::menu_history::REFUSALS.len()];
 /// Hours that copied every held history afresh, by cause: an invalidation,
 /// a larger watch table, or the hour before failing or being dropped.
 static RESTARTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
@@ -218,6 +220,12 @@ pub fn record_scenario_refusals(
     }
 }
 
+pub fn record_menu_refusals(counts: &[u64; engine_air_history::menu_history::REFUSALS.len()]) {
+    for (target, &count) in MENU_REFUSALS.iter().zip(counts) {
+        target.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
 pub fn status() -> impl serde::Serialize {
     let event_counts = WATCHES
         .calls
@@ -243,6 +251,9 @@ pub fn status() -> impl serde::Serialize {
         "quiet_hours": reads[4],
         "scenario_refusals": crate::status::map(engine_air_history::air_kamikaze::SCENARIO_REFUSALS.into_iter()
             .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
+        "retained_buffers": crate::air_histories::retained_buffers(),
+        "menu_refusals": crate::status::map(engine_air_history::menu_history::REFUSALS.into_iter()
+            .zip(MENU_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "events": events,
         "watches": WATCHES.registry.status(),
         "restarts": {

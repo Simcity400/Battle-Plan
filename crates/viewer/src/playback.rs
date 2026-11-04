@@ -247,6 +247,15 @@ impl Playback {
         Arc::clone(&self.replay)
     }
 
+    pub fn air_roster_source(
+        &self,
+    ) -> Option<(
+        Arc<replay::columnar_runs::IndexFile>,
+        engine_allocation::credit::MemoryBudget,
+    )> {
+        self.map.as_ref().map(|map| map.roster_source())
+    }
+
     pub fn branch(&self) -> BranchId {
         self.branch
     }

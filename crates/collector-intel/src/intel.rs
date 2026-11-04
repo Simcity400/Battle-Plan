@@ -2070,6 +2070,7 @@ impl Captured {
                     bonus_days: r.bonus_days,
                     bonus_active: r.bonus_active,
                     decrypting: r.decrypting,
+                    ordinal: r.ordinal,
                 },
             )),
             sample(table::<tables::IntelNetworks, _>(

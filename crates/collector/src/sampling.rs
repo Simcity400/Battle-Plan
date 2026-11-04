@@ -1123,8 +1123,7 @@ impl FreeFrames {
 
     /// Frees a leased frame again, as old as it was when taken.
     pub fn restore(&self, index: usize) -> Result<(), usize> {
-        if index >= BUFFERS
-            || self.free.fetch_or(1 << index, Ordering::Release) & (1 << index) != 0
+        if index >= BUFFERS || self.free.fetch_or(1 << index, Ordering::Release) & (1 << index) != 0
         {
             return Err(index);
         }
@@ -1659,9 +1658,11 @@ impl Shared {
             decode_queue: decode::new_queue(),
             dropped: AtomicU64::new(0),
             pool_bytes: Arc::new(AtomicU64::new(
-                (pool_bytes + size_of::<AtomicU64>() + 2 * size_of::<usize>()
-                    + size_of::<crate::frame_priority::Pipeline>() + 2 * size_of::<usize>())
-                    as u64,
+                (pool_bytes
+                    + size_of::<AtomicU64>()
+                    + 2 * size_of::<usize>()
+                    + size_of::<crate::frame_priority::Pipeline>()
+                    + 2 * size_of::<usize>()) as u64,
             )),
             recording: AtomicBool::new(true),
             stop_spool: AtomicBool::new(false),
@@ -2852,7 +2853,11 @@ unsafe fn acquire_with_memory(
         let mut refresh = false;
         let mut attach_diagnostics = None;
         if let Some(clock) = entry {
-            attach_diagnostics = Some(crate::attach_diagnostics::begin(clock.hour, dispatched, shared.frequency));
+            attach_diagnostics = Some(crate::attach_diagnostics::begin(
+                clock.hour,
+                dispatched,
+                shared.frequency,
+            ));
             // Out of line: the layout report (about 10 KiB) stays off this frame.
             out_of_line(|| {
                 frame.fixed_layout = Some(match shared.fixed_layout.get() {
@@ -6212,15 +6217,13 @@ unsafe fn acquire_with_memory(
                 };
                 let bytes = feed.allocated_bytes();
                 if bytes >= event_feed_seal_bytes {
-                    shared.pool_bytes.fetch_add(
-                        (bytes - event_feed_seal_bytes) as u64,
-                        Ordering::Relaxed,
-                    );
+                    shared
+                        .pool_bytes
+                        .fetch_add((bytes - event_feed_seal_bytes) as u64, Ordering::Relaxed);
                 } else {
-                    shared.pool_bytes.fetch_sub(
-                        (event_feed_seal_bytes - bytes) as u64,
-                        Ordering::Relaxed,
-                    );
+                    shared
+                        .pool_bytes
+                        .fetch_sub((event_feed_seal_bytes - bytes) as u64, Ordering::Relaxed);
                 }
                 frame
                     .extended
@@ -6879,7 +6882,10 @@ unsafe fn acquire_with_memory(
         unsafe {
             std::ptr::swap(&mut frame.dropped_before, shared.pending.get());
         }
-        frame.pool_bytes = shared.pool_bytes.load(Ordering::Relaxed);
+        frame.pool_bytes = shared
+            .pool_bytes
+            .load(Ordering::Relaxed)
+            .saturating_add(crate::extended::air_histories::retained_bytes() as u64);
         frame.dropped_frames = shared.dropped.load(Ordering::Relaxed);
         shared.completed[index].store(0, Ordering::Relaxed);
         shared.callback_tail[index].store(0, Ordering::Relaxed);
@@ -7500,7 +7506,8 @@ impl PresentationPending {
                 pending,
                 |job| {
                     let (acquisition::Job::PresentationPrepare(request)
-                        | acquisition::Job::PresentationSettle(request)) = job else {
+                    | acquisition::Job::PresentationSettle(request)) = job
+                    else {
                         unreachable!("presentation preparation type")
                     };
                     request
@@ -7517,20 +7524,21 @@ impl PresentationPending {
         if request.dispatch.dispatched() {
             let count = request.dispatch.count;
             for index in 0..count {
-                self.parts[index] = batch
-                    .adopt_presentation(&mut request, index)
-                    .map(|(ticket, parked)| {
-                        if parked {
-                            PendingAcquisition::Rejected(ticket)
-                        } else {
-                            PendingAcquisition::Accepted(ticket)
-                        }
-                    });
+                self.parts[index] =
+                    batch
+                        .adopt_presentation(&mut request, index)
+                        .map(|(ticket, parked)| {
+                            if parked {
+                                PendingAcquisition::Rejected(ticket)
+                            } else {
+                                PendingAcquisition::Accepted(ticket)
+                            }
+                        });
             }
-            shared.presentation.range_dispatch_ns.fetch_add(
-                shared.ns(request.dispatch.ticks as i64),
-                Ordering::Relaxed,
-            );
+            shared
+                .presentation
+                .range_dispatch_ns
+                .fetch_add(shared.ns(request.dispatch.ticks as i64), Ordering::Relaxed);
         } else if self.failure.is_none() {
             batch.hold();
             for (index, pending) in self
@@ -7647,11 +7655,7 @@ impl PresentationPending {
                 // barrier, even while this callback installs unrelated results.
                 batch.arm_presentation(&mut request);
                 self.prepare = Some(unsafe {
-                    submit_acquisition(
-                        shared,
-                        batch,
-                        acquisition::Job::PresentationSettle(request),
-                    )
+                    submit_acquisition(shared, batch, acquisition::Job::PresentationSettle(request))
                 });
             } else {
                 // SAFETY: all shared leases were dropped above; the batch owns the stitch.

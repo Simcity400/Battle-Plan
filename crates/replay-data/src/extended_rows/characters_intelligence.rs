@@ -421,9 +421,10 @@ pub struct CryptologyRow {
     pub bonus_days: i32,
     pub bonus_active: u8,
     pub decrypting: u8,
+    pub ordinal: u32,
 }
-typed_codec!(CryptologyRow, 64, |row| (row.owner_country as u128) << 32 | row.target_country as u128, |key| Self { owner_country: (key >> 32) as u32, target_country: key as u32, amount_raw: Default::default(), bonus_days: Default::default(), bonus_active: Default::default(), decrypting: Default::default() },
- { 0 => (amount_raw): I64, 1 => (bonus_days): I32, 2 => (bonus_active): U8, 3 => (decrypting): U8 }, |_row| Ok(()));
+typed_codec!(CryptologyRow, 64, |row| (row.owner_country as u128) << 32 | row.target_country as u128, |key| Self { owner_country: (key >> 32) as u32, target_country: key as u32, ..Self::default() },
+ { 0 => (amount_raw): I64, 1 => (bonus_days): I32, 2 => (bonus_active): U8, 3 => (decrypting): U8, 4 => (ordinal): U32 }, |_row| Ok(()));
 
 /// IntelNetworks: key owner_country:target_country:state_id (96 bits), 12 payload mask bits.
 ///

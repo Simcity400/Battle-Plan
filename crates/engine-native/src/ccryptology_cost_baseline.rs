@@ -76,6 +76,7 @@ fn walk_inner(
                 return Err("duplicate cryptology target");
             }
             row.owner_country = target.canonical_slot;
+            row.ordinal = index;
             output[len] = row;
             len += 1;
         }

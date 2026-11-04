@@ -7243,6 +7243,7 @@ mod tests {
                 bonus_days: -1,
                 bonus_active: 0,
                 decrypting: 1,
+                ordinal: 0,
             },
             replay_data::rows::CryptologyRow {
                 owner_country: 102,
@@ -7251,6 +7252,7 @@ mod tests {
                 bonus_days: -1,
                 bonus_active: 0,
                 decrypting: 0,
+                ordinal: 0,
             },
         ]
     }

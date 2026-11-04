@@ -99,7 +99,24 @@ pub const AIR_MISSION_BASE_EQUIPMENT_FLAGS: u64 = 0x6_0001_0000;
 pub const AIR_MISSION_FOREIGN_TARGET_FLAG: u64 = 1 << 18;
 pub const AIR_MISSION_MAP_FLAGS: u64 = AIR_MISSION_ZERO_PLANE_FLAGS
     | AIR_MISSION_BASE_EQUIPMENT_FLAGS
-    | AIR_MISSION_FOREIGN_TARGET_FLAG;
+    | AIR_MISSION_FOREIGN_TARGET_FLAG
+    | AIR_MENU_FIGHTER_FLAGS
+    | AIR_MENU_BOMBER_FLAGS
+    | AIR_MENU_TRANSPORT_FLAGS;
+pub const AIR_MENU_FIGHTER_FLAGS: u64 = 0x1_0000_0c00;
+pub const AIR_MENU_BOMBER_FLAGS: u64 = 0x20_b000 | AIR_MISSION_ZERO_PLANE_FLAGS;
+pub const AIR_MENU_TRANSPORT_FLAGS: u64 = 1 << 14;
+pub const AIR_MENU_FIGHTER_MISSIONS: u32 = 7;
+pub const AIR_MENU_NAVAL_MISSIONS: u32 = 0x8190;
+pub const AIR_MENU_STRATEGIC_MISSIONS: u32 = 8;
+pub const AIR_MENU_RECON_MISSIONS: u32 = 1 << 14;
+pub const AIR_MENU_MINE_MISSIONS: u32 = (1 << 12) | (1 << 13);
+pub const AIR_MENU_LOGISTICS_MISSIONS: u32 = 1 << 9;
+pub const AIR_MENU_SUPPLY_MISSIONS: u32 = 1 << 10;
+pub const AIR_MENU_RECON_FEATURE: u32 = 1 << 5;
+pub const AIR_MENU_MINES_FEATURE: u32 = 1 << 4;
+pub const AIR_MENU_LOGISTICS_FEATURE: u32 = 1 << 7;
+pub const AIR_MENU_SUPPLY_FEATURE: u32 = 1 << 3;
 /// Missions whose target scans test reached-province membership: tactical
 /// bit 1, strategic 3 and 16, naval 4 and 7, port 8.
 pub const AIR_MISSION_REACHED_MEMBERSHIP: u32 = 0x1019a;
@@ -225,6 +242,7 @@ impl AirSortieModifierRow {
     pub const DETECTION_OVERRIDE: u8 = 4;
     /// Singleton 0/1 certificate witness; a complete zero-row vector is distinct from refusal.
     pub const DETECTION_OVERRIDE_STATUS: u8 = 5;
+    pub const MENU_MODIFIERS_STATUS: u8 = 6;
 }
 typed_codec!(AirSortieModifierRow, 67, |row| (row.scope as u128) << 64 | (row.subject as u128) << 32 | row.region as u128,
  |key| Self { scope: (key >> 64) as u8, subject: (key >> 32) as u32, region: key as u32, ..Default::default() },
@@ -292,26 +310,42 @@ pub const AIR_HISTORY_AVAILABILITY_INDEX: u32 = u32::MAX;
 
 opaque_value!(Option<[i64; 7]>);
 
-/// AirNavalPatrolHistories: every country's air history window zero in the
-/// registered mission and naval-combat regions. Each value or refused record
-/// keeps its summation position; zero records leave the clamped sum unchanged.
-/// A country availability witness distinguishes a captured empty/null window
-/// from an older unrecorded table. Sliced by country; SliceReads dates each
-/// owner's emitted rows.
+/// Sparse native ring slots; per-level markers certify omitted zero records and cursors.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirNavalPatrolHistoryRow {
     /// Canonical country slot.
     pub country: u32,
     pub region: u32,
+    pub level: u8,
     pub index: u32,
     pub enemy_ships_sunk_raw: i64,
     pub our_fighters_lost_raw: i64,
-    /// Window-zero raw channels 10/17/51/58/44/24/65.
-    /// None refuses only these channels, preserving the original naval pair.
-    /// Historical absence is NotRecorded; witnesses carry observed zero channels.
+    /// Raw channels 10/17/51/58/44/24/65, independent of the original naval pair.
     pub scenario_channels: Recorded<Option<[i64; 7]>>,
+    pub menu: Recorded<Option<[i64; AIR_MENU_EXTRA_CHANNELS]>>,
+    pub window: Option<AirHistoryWindow>,
 }
 impl AirNavalPatrolHistoryRow {
+    pub fn window_marker(
+        country: u32,
+        region: u32,
+        level: u8,
+        mut window: AirHistoryWindow,
+        complete: bool,
+    ) -> Self {
+        window.complete = complete;
+        Self {
+            country,
+            region,
+            level,
+            index: u32::MAX,
+            scenario_channels: Recorded::Value(None),
+            menu: Recorded::Value(None),
+            window: Some(window),
+            ..Default::default()
+        }
+    }
+
     pub fn availability_witness(country: u32) -> Self {
         Self {
             country,
@@ -327,15 +361,131 @@ impl AirNavalPatrolHistoryRow {
             && self.index == AIR_HISTORY_AVAILABILITY_INDEX
     }
 
+    pub fn is_menu(&self) -> bool {
+        self.level != 0 || self.is_window()
+    }
+
+    pub fn is_window(&self) -> bool {
+        self.region != AIR_HISTORY_AVAILABILITY_REGION && self.index == u32::MAX
+    }
+
+    pub fn channels(&self) -> Result<[i64; AIR_MENU_CHANNELS], &'static str> {
+        let Recorded::Value(Some(extra)) = &self.menu else {
+            return Err("air menu history channels unavailable");
+        };
+        let Recorded::Value(Some(scenario)) = self.scenario_channels else {
+            return Err("air menu scenario channels unavailable");
+        };
+        let known = [
+            self.enemy_ships_sunk_raw,
+            self.our_fighters_lost_raw,
+            scenario[0],
+            scenario[1],
+            scenario[2],
+            scenario[3],
+            scenario[4],
+            scenario[5],
+            scenario[6],
+        ];
+        let mut rest = extra.iter();
+        Ok(std::array::from_fn(
+            |channel| match AIR_HISTORY_SCENARIO_CHANNELS
+                .iter()
+                .position(|&known| known == channel)
+            {
+                Some(at) => known[at],
+                None => *rest.next().unwrap(),
+            },
+        ))
+    }
+
+    pub fn set_channels(&mut self, values: &[i64; AIR_MENU_CHANNELS]) {
+        self.enemy_ships_sunk_raw = values[AIR_HISTORY_SCENARIO_CHANNELS[0]];
+        self.our_fighters_lost_raw = values[AIR_HISTORY_SCENARIO_CHANNELS[1]];
+        self.scenario_channels = Recorded::Value(Some(std::array::from_fn(|at| {
+            values[AIR_HISTORY_SCENARIO_CHANNELS[at + 2]]
+        })));
+        let mut extra = values.iter().enumerate().filter_map(|(at, &value)| {
+            (!AIR_HISTORY_SCENARIO_CHANNELS.contains(&at)).then_some(value)
+        });
+        self.menu = Recorded::Value(Some(std::array::from_fn(|_| extra.next().unwrap())));
+    }
+
+    pub fn summation_index(&self, rows: &[Self]) -> Result<Option<u32>, &'static str> {
+        let at = rows
+            .binary_search_by_key(&(self.country, self.region, self.level, u32::MAX), |row| {
+                (row.country, row.region, row.level, row.index)
+            })
+            .map_err(|_| "air history window metadata missing")?;
+        let state = rows[at]
+            .window
+            .ok_or("air history window metadata unavailable")?;
+        state
+            .validate()
+            .map_err(|_| "air history window metadata invalid")?;
+        if self.index >= state.capacity {
+            return Err("air history native slot outside capacity");
+        }
+        Ok(if state.wrapped {
+            Some(
+                ((u64::from(self.index) + u64::from(state.capacity) - u64::from(state.current))
+                    % u64::from(state.capacity)) as u32,
+            )
+        } else {
+            (self.index < state.current).then_some(self.index)
+        })
+    }
+
     pub fn has_values(&self) -> bool {
         self.enemy_ships_sunk_raw != 0
             || self.our_fighters_lost_raw != 0
+            || matches!(&self.menu, Recorded::Value(Some(values)) if values.iter().any(|&value| value != 0))
             || matches!(&self.scenario_channels, Recorded::Value(values) if values.is_none_or(|values| values != [0; 7]))
     }
 }
-typed_codec!(AirNavalPatrolHistoryRow, 96, |row| (row.country as u128) << 64 | (row.region as u128) << 32 | row.index as u128,
- |key| Self { country: (key >> 64) as u32, region: (key >> 32) as u32, index: key as u32, ..Default::default() },
- { 0 => (enemy_ships_sunk_raw): I64, 1 => (our_fighters_lost_raw): I64, 2 => (scenario_channels): Opaque }, |_row| Ok(()));
+typed_codec!(AirNavalPatrolHistoryRow, 104, |row| (row.country as u128) << 72 | (row.region as u128) << 40 | (row.level as u128) << 32 | row.index as u128,
+|key| Self { country: (key >> 72) as u32, region: (key >> 40) as u32, level: (key >> 32) as u8, index: key as u32, ..Default::default() },
+{ 0 => (enemy_ships_sunk_raw): I64, 1 => (our_fighters_lost_raw): I64, 2 => (scenario_channels): Opaque, 3 => (menu): Opaque, 4 => (window): Opaque }, |row| {
+   if row.level > 2 { return Err(invalid("air history level is invalid")); }
+   if let Some(window) = row.window { window.validate()?; }
+   Ok(())
+});
+
+pub const AIR_MENU_CHANNELS: usize = 89;
+pub const AIR_MENU_EXTRA_CHANNELS: usize = AIR_MENU_CHANNELS - AIR_HISTORY_SCENARIO_CHANNELS.len();
+pub const AIR_HISTORY_SCENARIO_CHANNELS: [usize; 9] = [43, 3, 10, 17, 51, 58, 44, 24, 65];
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AirHistoryWindow {
+    pub complete: bool,
+    pub capacity: u32,
+    pub current: u32,
+    pub wrapped: bool,
+}
+value_struct!(AirHistoryWindow {
+    complete: bool,
+    capacity: u32,
+    current: u32,
+    wrapped: bool
+});
+opaque_value!(Option<AirHistoryWindow>);
+
+impl AirHistoryWindow {
+    pub fn validate(self) -> io::Result<()> {
+        if self.capacity == 0 || self.capacity > i32::MAX as u32 || self.current >= self.capacity {
+            return Err(invalid("air history ring has an invalid shape"));
+        }
+        Ok(())
+    }
+}
+opaque_value!(Option<[i64; AIR_MENU_EXTRA_CHANNELS]>);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirMenuWindow {
+    pub current: u32,
+    pub wrapped: bool,
+    pub records: Vec<[i64; AIR_MENU_CHANNELS]>,
+}
 
 /// The air mission mask bit of training. The map draws the viewing country's
 /// training wings in a separate pass by their pool base's region; only a
@@ -474,7 +624,7 @@ value_struct!(AirCombatDamage {
 /// the plane high-water mark, the ORed mission mask, the selection and classification bytes, the
 /// copied equipment's allow-zero byte and the attribution raw country, with both damage vectors in
 /// native order: `first_damage` (causes 0, 1, 2, 6 and 7) and `second_damage` (causes 3, 4, 5, 9
-/// and 10). The copied equipment lists are not recorded.
+/// and 10), plus the retained equipment pool in native order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirCombatRecord {
     pub wing_id: u32,
@@ -487,6 +637,7 @@ pub struct AirCombatRecord {
     pub attributed_country: u32,
     pub first_damage: Vec<AirCombatDamage>,
     pub second_damage: Vec<AirCombatDamage>,
+    pub equipment: Option<Vec<AirCombatEquipment>>,
 }
 value_struct!(AirCombatRecord {
     wing_id: u32,
@@ -498,7 +649,18 @@ value_struct!(AirCombatRecord {
     copied: u8,
     attributed_country: u32,
     first_damage: Vec<AirCombatDamage>,
-    second_damage: Vec<AirCombatDamage>
+    second_damage: Vec<AirCombatDamage>,
+    equipment: Option<Vec<AirCombatEquipment>>
+});
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirCombatEquipment {
+    pub variant: u64,
+    pub amount_raw: i64,
+}
+value_struct!(AirCombatEquipment {
+    variant: u64,
+    amount_raw: i64
 });
 
 /// AirRegionCombat: one regional air-combat holder of a country's strategic air region-combat

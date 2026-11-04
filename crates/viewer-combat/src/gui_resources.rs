@@ -107,6 +107,36 @@ impl<'a> GuiResources<'a> {
 }
 
 impl CombatResources for GuiResources<'_> {
+    fn line_chart(
+        &self,
+        sprite: &[u8],
+    ) -> Result<(viewer_foundation::map::native_shader::draw::Effect, f32), String> {
+        let facts = self
+            .assets
+            .gui
+            .registry()
+            .sprite(sprite)
+            .ok_or("line chart sprite declaration is unavailable")?;
+        let native::sprites::SpriteKind::LineChart(line) = &facts.kind else {
+            return Err("air history sprite is not a native line chart".into());
+        };
+        let info = self
+            .assets
+            .native_sprite_info(sprite)
+            .ok_or("line chart sprite was not loaded")?;
+        let effect = info.effect.as_ref().map_err(Clone::clone)?;
+        Ok((
+            viewer_foundation::map::native_shader::draw::Effect {
+                asset: effect
+                    .compiled
+                    .clone()
+                    .ok_or("line chart effect has no executable source")?,
+                technique: "linechart".into(),
+            },
+            line.half_width,
+        ))
+    }
+
     fn flag_index(&self, key: &str) -> Result<i32, String> {
         self.inventory.flags.get(key).cloned().unwrap_or_else(|| {
             Err(format!(

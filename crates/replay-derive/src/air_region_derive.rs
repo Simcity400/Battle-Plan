@@ -199,7 +199,7 @@ fn add_vector(
 /// For the viewing side `enemy` (the view's mission side, 0 for our missions), the first scan reads
 /// the side's own vector (the own records for ours, the foreign ones for the enemy's) with its
 /// first damage vector, the second the other vector with its second damage vector, into one
-/// aggregate in that order. Equipment totals added from the copied pools are not recorded.
+/// aggregate in that order.
 pub fn received(
     retained: Retained<'_>,
     now: Hour,
@@ -285,6 +285,16 @@ pub struct Grids {
 }
 
 pub fn grids(retained: Retained<'_>, now: Hour, enemy: bool) -> Result<Grids, &'static str> {
+    filtered_grids(retained, now, enemy, false, DEFAULT_MISSIONS)
+}
+
+pub fn filtered_grids(
+    retained: Retained<'_>,
+    now: Hour,
+    enemy: bool,
+    enemy_missions: bool,
+    missions: u32,
+) -> Result<Grids, &'static str> {
     let filter = |missions, classification| Filter {
         missions,
         window: LAST_DAY,
@@ -293,35 +303,132 @@ pub fn grids(retained: Retained<'_>, now: Hour, enemy: bool) -> Result<Grids, &'
     let side = u32::from(enemy);
     let mut grids = Grids::default();
     let air = received(retained, now, enemy, filter(5, 0))?;
-    items(&air, &[4, 5, 9], DEFAULT_MISSIONS, side + 2, &mut grids.air);
-    if enemy {
-        let first = received(retained, now, true, filter(5, 1))?;
-        items(
-            &first,
-            &[4, 5, 9],
-            DEFAULT_MISSIONS,
-            side,
-            &mut grids.ground,
-        );
-        let second = received(retained, now, true, filter(DEFAULT_MISSIONS, 1))?;
+    items(&air, &[4, 5, 9], missions, side + 2, &mut grids.air);
+    if enemy != enemy_missions {
+        let first = received(retained, now, enemy, filter(5, 1))?;
+        items(&first, &[4, 5, 9], missions, side, &mut grids.ground);
+        let second = received(retained, now, enemy, filter(missions, 1))?;
         items(
             &second,
             &[2, 0, 1, 6, 7, 9],
-            DEFAULT_MISSIONS,
+            missions,
             side,
             &mut grids.ground,
         );
     } else {
-        let ground = received(retained, now, false, filter(DEFAULT_MISSIONS, 1))?;
+        let ground = received(retained, now, enemy, filter(missions, 1))?;
         items(
             &ground,
             &[4, 5, 3, 9, 10],
-            DEFAULT_MISSIONS,
+            missions,
             side,
             &mut grids.ground,
         );
     }
     Ok(grids)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EquipmentOrder {
+    pub archetype: usize,
+    pub version: u8,
+    pub equipment: usize,
+    pub creator: u32,
+    pub origin: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EquipmentPool {
+    pub variants: Vec<(u64, i64)>,
+    pub total_raw: i64,
+}
+
+pub type EquipmentPools = [EquipmentPool; 2];
+
+pub fn equipment(
+    retained: Retained<'_>,
+    now: Hour,
+    enemy: bool,
+    filter: Filter,
+    mut order: impl FnMut(u64) -> Result<EquipmentOrder, String>,
+) -> Result<EquipmentPools, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let records = if enemy {
+        retained.foreign
+    } else {
+        retained.own
+    };
+    let start = now.wrapping_sub(filter.window);
+    let first = records
+        .iter()
+        .rposition(|record| record.date < start)
+        .map_or(0, |at| at + 1);
+    let records = &records[first..];
+    let mut best = BTreeMap::<u32, usize>::new();
+    let prefixes: Vec<_> = records
+        .iter()
+        .enumerate()
+        .map(|(at, record)| {
+            let selected = best.entry(record.wing_id).or_insert(at);
+            if record.planes >= records[*selected].planes {
+                *selected = at;
+            }
+            *selected
+        })
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut groups = [
+        Vec::<BTreeMap<(u8, usize, u32, u32), (u64, i64)>>::new(),
+        Vec::new(),
+    ];
+    let mut indices = [BTreeMap::<usize, usize>::new(), BTreeMap::new()];
+    let mut totals = [BTreeMap::<usize, i64>::new(), BTreeMap::new()];
+    for (index, record) in records.iter().enumerate().rev() {
+        if record.mission_mask & filter.missions == 0
+            || record.classification != filter.classification
+            || !seen.insert(record.wing_id)
+        {
+            continue;
+        }
+        let selected = &records[prefixes[index]];
+        let equipment = selected
+            .equipment
+            .as_ref()
+            .ok_or("retained air-combat equipment pool was unreadable")?;
+        let pool = usize::from(selected.selection != 0);
+        for entry in equipment {
+            let key = order(entry.variant)?;
+            let total = totals[pool].entry(key.archetype).or_default();
+            *total = total
+                .wrapping_add(entry.amount_raw)
+                .clamp(-0x53e2_d620_fb40, 0x53e2_d620_fb40);
+            let group = *indices[pool].entry(key.archetype).or_insert_with(|| {
+                groups[pool].push(BTreeMap::new());
+                groups[pool].len() - 1
+            });
+            let value = groups[pool][group]
+                .entry((key.version, key.equipment, key.creator, key.origin))
+                .or_insert((entry.variant, 0));
+            value.1 = value
+                .1
+                .wrapping_add(entry.amount_raw)
+                .clamp(-0x53e2_d620_fb40, 0x53e2_d620_fb40);
+        }
+    }
+    let mut groups = groups.into_iter();
+    Ok(totals.map(|totals| EquipmentPool {
+        variants: groups
+            .next()
+            .unwrap()
+            .into_iter()
+            .flat_map(BTreeMap::into_values)
+            .collect(),
+        total_raw: totals.into_values().fold(0_i64, |total, value| {
+            total
+                .wrapping_add(value)
+                .clamp(-0x53e2_d620_fb40, 0x53e2_d620_fb40)
+        }),
+    }))
 }
 
 #[cfg(test)]
@@ -450,7 +557,10 @@ mod tests {
         });
         assert_eq!(found, Ok(None));
         assert_eq!(asked, [midnight]);
-        assert_eq!(visiting_pass(Hour::MIN + 3, Hour::MIN, |_| Ok(true)), Ok(None));
+        assert_eq!(
+            visiting_pass(Hour::MIN + 3, Hour::MIN, |_| Ok(true)),
+            Ok(None)
+        );
     }
 
     #[test]

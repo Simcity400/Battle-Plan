@@ -1652,6 +1652,7 @@ mod index_tests {
                             friendly_missions: 0,
                             enemy_missions: 0,
                             air_spotting_scale: Some(0),
+                            menu: None,
                         })
                         .collect(),
                 ));
@@ -1681,6 +1682,7 @@ mod index_tests {
                             friendly_missions: 0,
                             enemy_missions: 0,
                             air_spotting_scale: Some(0),
+                            menu: None,
                         }]),
                     };
                 } else if hour == 4 {
@@ -1694,6 +1696,7 @@ mod index_tests {
                             friendly_missions: 0,
                             enemy_missions: 0,
                             air_spotting_scale: Some(0),
+                            menu: None,
                         }]));
                 }
                 let encoded = encoder.encode(frame.clone(), hour == 0).unwrap();

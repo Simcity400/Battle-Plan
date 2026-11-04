@@ -285,6 +285,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                         friendly_missions: 0,
                         enemy_missions: 0,
                         air_spotting_scale: Some(0),
+                        menu: None,
                     });
                 }
             }
@@ -297,6 +298,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             });
         }
         for index in 0..neutral_count {
@@ -309,6 +311,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                 friendly_missions: 0,
                 enemy_missions: 0,
                 air_spotting_scale: Some(0),
+                menu: None,
             });
         }
         rows.sort_by_key(|row| (row.country, row.region));

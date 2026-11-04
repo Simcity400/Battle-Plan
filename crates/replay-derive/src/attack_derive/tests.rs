@@ -685,6 +685,7 @@ fn frame() -> DecodedFrame {
             friendly_missions: 0,
             enemy_missions: 0,
             air_spotting_scale: Some(0),
+            menu: None,
         }]),
     );
     frame

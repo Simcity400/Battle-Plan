@@ -310,6 +310,8 @@ pub struct Record {
     pub attributed_country: u32,
     /// the first damage vector (causes 0, 1, 2, 6, 7) and the second (3, 4, 5, 9, 10).
     pub damage: [Vec<Damage>; 2],
+    pub equipment: Option<Vec<engine_native::equipment_entry::Row>>,
+    pub equipment_failure: Option<&'static str>,
 }
 
 /// One record vector of a holder: its native count, and the records from
@@ -428,6 +430,26 @@ fn read_record(memory: &impl Memory, base: usize, address: usize) -> Result<Reco
             });
         }
     }
+    let equipment = (|| {
+        let pool = address
+            .checked_add(sair_wing_combat_data::EQUIPMENT_POOL)
+            .ok_or("air combat equipment pool overflow")?;
+        let entries = engine_native::cequipment_variant_pool::entries(memory, base, pool)?;
+        let mut out = Vec::new();
+        crate::allocation::reserve_exact(&mut out, entries.count as usize)
+            .map_err(|_| "air combat equipment allocation failed")?;
+        for at in 0..entries.count {
+            let entry = entries
+                .element(at, engine_native::equipment_entry::STRIDE)
+                .ok_or("air combat equipment entry overflow")?;
+            out.push(engine_native::equipment_entry::read(
+                memory, base, entry, at,
+            )?);
+        }
+        Ok::<_, &'static str>(out)
+    })();
+    let equipment_failure = equipment.as_ref().err().copied();
+    let equipment = equipment.ok();
     Ok(Record {
         wing_id: row.key.wing_id,
         date: row.key.date,
@@ -438,6 +460,8 @@ fn read_record(memory: &impl Memory, base: usize, address: usize) -> Result<Reco
         copied: row.copied,
         attributed_country: row.attributed_country,
         damage,
+        equipment,
+        equipment_failure,
     })
 }
 

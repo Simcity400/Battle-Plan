@@ -2,9 +2,9 @@
 use super::counter_content;
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
-mod air_region;
+pub mod air_region;
 mod border;
-pub(super) mod clock;
+pub mod clock;
 mod inputs;
 mod mode_lines;
 pub mod naval_accidents;
@@ -15,6 +15,7 @@ mod resources;
 mod selected_attack;
 mod selection;
 mod strategic_air;
+pub use strategic_air::{RegionalDetection, regional_detection};
 mod strategic_navy;
 pub(super) mod units;
 mod weather;
@@ -63,6 +64,9 @@ pub struct Content {
 }
 
 impl Content {
+    pub fn state_members(&self) -> &BTreeMap<u32, Vec<u32>> {
+        &self.members
+    }
     pub fn load(
         layers: &installed_content_core::ResolvedLayers,
         defines: &installed_content_core::defines::Defines,

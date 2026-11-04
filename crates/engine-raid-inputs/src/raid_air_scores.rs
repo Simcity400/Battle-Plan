@@ -27,6 +27,10 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
+use std::sync::Arc;
+
+mod menu;
+pub use menu::{Contribution, Menu};
 
 /// Strategic-air region-entry selector.
 const SCORES: usize = 0xe0;
@@ -46,7 +50,7 @@ pub const COMBAT_DELAY_RVA: usize = 0x033e_0bbc;
 /// Epoch subtracted from the game hour before signed remainder.
 const HOUR_EPOCH: i32 = 43_800_000;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
     pub region: u32,
@@ -59,6 +63,7 @@ pub struct Row {
     pub friendly_missions: u16,
     pub enemy_missions: u16,
     pub air_spotting_scale: Option<i64>,
+    pub menu: Option<Arc<Menu>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,7 +139,7 @@ impl Held {
         let len = self.slots.len().max(regions);
         crate::allocation::resize(&mut self.slots, len, 0)?;
         let len = self.rows.len().max(rows);
-        crate::allocation::resize(&mut self.rows, len, Row::default())?;
+        crate::allocation::resize_default(&mut self.rows, len)?;
         Ok(())
     }
 
@@ -143,6 +148,12 @@ impl Held {
             + (self.countries.capacity() + self.next_countries.capacity()) * size_of::<Country>()
             + self.slots.capacity() * size_of::<u32>()
             + self.rows.capacity() * size_of::<Row>()
+            + self
+                .rows
+                .iter()
+                .filter_map(|row| row.menu.as_ref())
+                .map(|menu| menu.allocated_bytes())
+                .sum::<usize>()
     }
 }
 
@@ -207,7 +218,7 @@ fn walk_buffer(
     walk.outcome = match result {
         Ok((len, period)) if len <= output.len() => {
             if len <= held.rows.len() && walk.countries <= held.next_countries.len() {
-                held.rows[..len].copy_from_slice(&output[..len]);
+                held.rows[..len].clone_from_slice(&output[..len]);
                 held.row_len = len;
                 std::mem::swap(&mut held.regions, &mut held.next_regions);
                 std::mem::swap(&mut held.countries, &mut held.next_countries);
@@ -459,6 +470,7 @@ impl Target<'_> {
         slot: usize,
         pair: &[u8],
         air_spotting_scale: Option<i64>,
+        menu: Option<Arc<Menu>>,
         output: &mut Buffer<'_, Row>,
         len: &mut usize,
     ) -> Result<(), &'static str> {
@@ -476,6 +488,7 @@ impl Target<'_> {
             && friendly_missions == 0
             && enemy_missions == 0
             && air_spotting_scale == Some(0)
+            && menu.as_ref().is_some_and(|menu| menu.is_zero())
             && slot != self.last
         {
             return Ok(());
@@ -493,6 +506,7 @@ impl Target<'_> {
                 friendly_missions,
                 enemy_missions,
                 air_spotting_scale,
+                menu,
             },
         )
     }
@@ -563,9 +577,17 @@ fn read_all(
                 .ok_or("raid air scale address overflow")?;
         }
         let scales = read_scales(memory, &addresses[..count]);
+        let mut menus = menu::read(memory, &addresses[..count]);
         for (index, pair) in bytes[..count * ENTRY].chunks_exact(ENTRY).enumerate() {
             if target.regions[first + index].present {
-                target.push(first + index, pair, scales[index], output, len)?;
+                target.push(
+                    first + index,
+                    pair,
+                    scales[index],
+                    menus[index].take(),
+                    output,
+                    len,
+                )?;
             }
         }
     }
@@ -605,19 +627,27 @@ fn carry(
             return Err("raid air score pair unreadable");
         }
         let scales = read_scales(memory, &addresses[..batch.len()]);
+        let mut menus = menu::read(memory, &addresses[..batch.len()]);
         for (index, (slot, pair)) in batch
             .iter()
             .zip(bytes[..batch.len() * ENTRY].chunks_exact(ENTRY))
             .enumerate()
         {
             while let Some(row) = held.next_if(|row| row.slot < *slot) {
-                push(output, len, *row)?;
+                push(output, len, row.clone())?;
             }
-            target.push(*slot as usize, pair, scales[index], output, len)?;
+            target.push(
+                *slot as usize,
+                pair,
+                scales[index],
+                menus[index].take(),
+                output,
+                len,
+            )?;
         }
     }
     for row in held {
-        push(output, len, *row)?;
+        push(output, len, row.clone())?;
     }
     Ok(())
 }
@@ -653,7 +683,7 @@ mod tests {
             let airs = region_objects + regions * 0x200;
             let stride = 0x200 + regions * STRIDE;
             let mut world = Self {
-                bytes: vec![0; airs + countries * stride],
+                bytes: vec![0; airs + countries * stride + 32],
                 region_list,
                 region_objects,
                 airs,
@@ -683,6 +713,11 @@ mod tests {
                 world.put32(region + cstrategic_region::RUNTIME_SLOT, slot as u32);
                 world.put32(region + cstrategic_region::AIR_PHASE, slot as u32 % 8);
             }
+            let sentinel = airs + countries * stride;
+            world.put(sentinel, MEMORY + sentinel);
+            world.put(sentinel + 8, MEMORY + sentinel);
+            world.put(sentinel + 16, MEMORY + sentinel);
+            world.bytes[sentinel + 25] = 1;
             for slot in 1..slots {
                 let air = world.air(slot);
                 world.put(countries_at + slot * 8, MEMORY + air - 0x20);
@@ -693,6 +728,11 @@ mod tests {
                 world.put(air, BASE + cstrategic_air::VTABLE_RVA);
                 world.put(air + cstrategic_air::COUNTRY, slot);
                 world.header(air + SCORES, air + 0x1e0, regions);
+                for region in 0..regions {
+                    let entry = air + 0x1e0 + region * STRIDE;
+                    world.put(entry + 0x50, MEMORY + sentinel);
+                    world.put(entry + 0x60, MEMORY + sentinel);
+                }
             }
             world
         }
@@ -971,7 +1011,7 @@ mod tests {
         world.pair(1, 5, 5, 7);
         world.impact(1, 5, -40_000);
         let mut held = held(20, 1, 16);
-        let mut rows = [Row::default(); 16];
+        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
         let impacts = |walk: &Walk, rows: &[Row]| {
             rows[..walk.outcome.len()]
                 .iter()
@@ -993,7 +1033,7 @@ mod tests {
         world.pair(1, 3, 5, 0);
         world.pair(2, 12, 0, -7);
         let mut held = held(20, 3, 16);
-        let mut rows = [Row::default(); 16];
+        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
         let first = world.walk(HOUR - 1, &mut held, &mut rows);
         assert!(first.full);
         assert_eq!((first.regions, first.countries), (20, 3));
@@ -1060,7 +1100,7 @@ mod tests {
     fn each_changed_premise_rereads_what_it_cannot_carry() {
         let mut world = World::new(2, 12);
         let mut held = held(12, 2, 16);
-        let mut rows = [Row::default(); 16];
+        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
         assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
         assert!(!world.walk(HOUR, &mut held, &mut rows).full);
         // The define is read live: a different period rereads everything.
@@ -1095,7 +1135,7 @@ mod tests {
         // Slot 5 is rewritten only at phase 5; HOUR is phase 3.
         world.pair(1, 5, 9, 9);
         let mut held = held(12, 2, 16);
-        let mut rows = [Row::default(); 16];
+        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
         held.certify(Some(1));
         assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
         world.pair(1, 5, 0, 0);
@@ -1141,7 +1181,7 @@ mod tests {
     fn capacity_failures_and_bad_rosters_leave_nothing_to_carry() {
         let mut world = World::new(2, 10);
         world.pair(1, 2, 1, 1);
-        let mut rows = [Row::default(); 8];
+        let mut rows: [Row; 8] = std::array::from_fn(|_| Row::default());
         let walked = world.walk(HOUR, &mut held(9, 2, 8), &mut rows);
         assert_eq!(walked.regions, 10);
         assert_eq!(

@@ -758,7 +758,12 @@ sample_struct!(AirCombatRecord {
     copied: u8,
     attributed_country: u32,
     first_damage: Vec<AirCombatDamage>,
-    second_damage: Vec<AirCombatDamage>
+    second_damage: Vec<AirCombatDamage>,
+    equipment: Option<Vec<AirCombatEquipment>>
+});
+sample_struct!(AirCombatEquipment {
+    variant: u64,
+    amount_raw: i64
 });
 sample_struct!(SunkShipEntry { ship_name: Vec<u8>, attribution_name: Vec<u8>, class_name: Vec<u8>, attribution_class_name: Vec<u8>, victim_country: u32, attacker_country: u32, sink_hour: i32, class_token: u32, attribution_class_token: u32, attribution_class_present: u8, model_level: i32, victim_equipment_variant: u64, damage_source_reference: u64, province: u32, province_present: u8, battle: u64, cause_record: u8, assisted_kill: u8 });
 fixture!(WarOwnedRelationRow, |key| {owner: (key >> 32) as u32, ordinal: key as u32}, {first_country: u32, second_country: u32, retired: u8, first_goal_count: u32, second_goal_count: u32});
@@ -1384,7 +1389,7 @@ sample_struct!(DiplomaticPressure {
 sample_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
 fixture!(AgencyOperationBuffersRow, |key| {snapshot: key as u8}, {completed: Vec<AgencyBufferedOperation>, running: Vec<AgencyBufferedOperation>, ready: Vec<AgencyBufferedOperation>, unready: Vec<AgencyBufferedOperation>});
 fixture!(StrategicOperativeRow, |key| {country: key as u32}, {slot: u32, mission_activity: i64, operation_activity: i64, trade_influence: Vec<TradeInfluence>, diplomatic_pressure: Vec<DiplomaticPressure>});
-fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8});
+fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8, ordinal: u32});
 fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64, gain_raw: i64, gain_from_operatives_raw: i64, gain_from_adjacency_raw: i64, local_quiet: u8, gain_factor_raw: Option<i64>, strength_target_raw: Option<i64>, target_from_operatives_raw: Option<i64>, target_from_counterintelligence_raw: Option<i64>, subnetwork_quiet: u8});
 fixture!(IntelNetworkSummaryRow, |key| { owner_country: (key >> 32) as u32, target_country: key as u32 }, {
     ordinal: u32,
@@ -1634,7 +1639,12 @@ sample_struct!(RaidCounterOperative {
     context: i64
 });
 fixture!(RaidIntelInputRow, |key| {country: key as u32}, {strategic_present: u8, country_defense: i64, crypto_strength: Option<i64>, operatives: Vec<RaidCounterOperative>});
-fixture!(RaidAirScoreRow, |key| {country: (key >> 32) as u32, region: key as u32}, {friendly: i64, enemy: i64, impact: Recorded<i64>, friendly_missions: u16, enemy_missions: u16, air_spotting_scale: Option<i64>});
+sample_struct!(AirPowerContribution {
+    country: u32,
+    amount: i64
+});
+sample_struct!(AirPowerMenu { coverage: i64, reductions: [i64; 4], contributions: [Vec<AirPowerContribution>; 2] });
+fixture!(RaidAirScoreRow, |key| {country: (key >> 32) as u32, region: key as u32}, {friendly: i64, enemy: i64, impact: Recorded<i64>, friendly_missions: u16, enemy_missions: u16, air_spotting_scale: Option<i64>, menu: Option<AirPowerMenu>});
 
 #[test]
 fn air_map_mission_counters_change_independently_of_the_superiority_weights() {
@@ -1647,6 +1657,7 @@ fn air_map_mission_counters_change_independently_of_the_superiority_weights() {
         friendly_missions: 0,
         enemy_missions: 0,
         air_spotting_scale: Some(0),
+        menu: None,
     };
     let next = RaidAirScoreRow {
         friendly_missions: u16::MAX,
@@ -1779,7 +1790,7 @@ fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u3
 fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool, country_tags: Recorded<Option<Vec<Vec<u8>>>>});
 fixture!(BattleSoundRow, |key| {ordinal: key as u32}, {center_x: u32, center_z: u32, radius: u32, provinces: Vec<u32>, sounding: bool, object: u64});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
-fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>, air_detection: Recorded<Option<Option<i64>>>, map_modifiers_known: Recorded<bool>, naval_detection: Recorded<Option<i64>>, air_attack: Recorded<Option<i64>>, air_defence: Recorded<Option<i64>>});
+fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>, air_detection: Recorded<Option<Option<i64>>>, map_modifiers_known: Recorded<bool>, naval_detection: Recorded<Option<i64>>, air_attack: Recorded<Option<i64>>, air_defence: Recorded<Option<i64>>, air_efficiency: Recorded<Option<Vec<ModifierBreakdownNode>>>});
 /// Slot 0 is never updated, so its fixtures always hold their clock.
 impl Fixture for WeatherProvinceRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -2949,7 +2960,24 @@ fixture!(AirSortieSpecialBaseRow, |key| {base: key as u64}, {rocket_slots: Optio
 fixture!(AirSortieModifierMetadataRow, |_key| {}, {flags: u32, feature_selector: u32, callback_kind: u8});
 fixture!(NavalMineLevelRow, |key| {country: (key >> 32) as u32, region: key as u32}, {raw_mines: i64});
 fixture!(AirNavalPatrolCombatRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {province: u32, region: u32});
-fixture!(AirNavalPatrolHistoryRow, |key| {country: (key >> 64) as u32, region: (key >> 32) as u32, index: key as u32}, {enemy_ships_sunk_raw: i64, our_fighters_lost_raw: i64, scenario_channels: Recorded<Option<[i64; 7]>>});
+impl Fixture for AirNavalPatrolHistoryRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            country: (key >> 72) as u32,
+            region: (key >> 40) as u32,
+            level: (key >> 32) as u8,
+            index: key as u32,
+            enemy_ships_sunk_raw: i64::sample(tick),
+            our_fighters_lost_raw: i64::sample(tick),
+            scenario_channels: Recorded::<Option<[i64; 7]>>::sample(tick),
+            menu: Recorded::<Option<[i64; AIR_MENU_EXTRA_CHANNELS]>>::sample(tick),
+            window: Option::<AirHistoryWindow>::sample(tick),
+        }
+    }
+    fn largest_key() -> u128 {
+        (maximum_key::<Self>() & !(0xff_u128 << 32)) | (2_u128 << 32)
+    }
+}
 fn strategic_action_fixture(tick: usize) -> StrategicRedeploymentInputs {
     match tick % 7 {
         0 => StrategicRedeploymentInputs {
@@ -8190,4 +8218,25 @@ fn raid_dispatcher_keys_round_trip_independently_at_province_boundaries() {
     assert_eq!(rows[1].dispatcher, RaidPathDispatcher::Land);
     changed.ok = 2;
     assert!(changed.check_key_fields().is_err());
+}
+
+impl Sample for AirHistoryWindow {
+    fn sample(tick: usize) -> Self {
+        Self {
+            complete: tick % 2 == 0,
+            capacity: 4,
+            current: (tick % 4) as u32,
+            wrapped: tick > 3,
+        }
+    }
+}
+
+impl Sample for ModifierBreakdownNode {
+    fn sample(tick: usize) -> Self {
+        Self {
+            children: 0,
+            value: tick as i64,
+            name: Vec::new(),
+        }
+    }
 }

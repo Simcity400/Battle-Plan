@@ -19,6 +19,7 @@ pub(super) type NavalPenalty = (i64, i32, i32);
 
 #[derive(Default)]
 pub struct Bindings {
+    pub(super) air_chart: Option<super::air_menu::Chart>,
     pub values: Values,
     /// The possible-tactics popup of a land window.
     pub(super) tactics: super::tactics::Menu,
@@ -195,6 +196,15 @@ impl Bindings {
         nato: bool,
     ) -> io::Result<Self> {
         let mut out = Self::default();
+        if let Selection::AirRegion(region) = selection {
+            return super::air_menu::bind(
+                static_content,
+                frame,
+                vision,
+                region,
+                &Default::default(),
+            );
+        }
         out.warnings.extend(
             super::availability::combat_limitations(frame, selection)
                 .lines()
@@ -206,6 +216,7 @@ impl Bindings {
             Selection::Land(id) => out.land(static_content, frame, id, vision)?,
             Selection::Naval(id) => out.naval(static_content, frame, id, &flags)?,
             Selection::NavalResult(id) => out.naval_result(static_content, frame, id, &flags)?,
+            Selection::AirRegion(_) => unreachable!(),
         }
         super::details::bind(&mut out, static_content, frame, selection, &flags, vision)?;
         if let Selection::Naval(id) = selection {

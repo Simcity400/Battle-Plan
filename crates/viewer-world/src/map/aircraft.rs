@@ -146,7 +146,6 @@ use {
     viewer_foundation::map::air_reachability::StrategicTargetSources,
     viewer_foundation::map::air_reachability::TacticalTargetSources,
     viewer_foundation::map::air_reachability::TargetAdmission,
-    viewer_foundation::map::air_reachability::TargetPredicates,
     viewer_foundation::map::air_reachability::Wars,
     viewer_foundation::map::air_registry_sources::AirRegistrySources,
     viewer_foundation::map::aircraft_count::SortieDefines,
@@ -2423,98 +2422,7 @@ fn region_membership(
     (members, fractions)
 }
 
-/// This hour's target scans, built once and shared by every wing,
-/// with the content fractions, the DLC mask and the mine cap they meet.
-struct Scans<'a> {
-    tactical: Option<TacticalTargetSources<'a>>,
-    port: Option<PortTargetSources<'a>>,
-    strategic: Option<StrategicTargetSources<'a>>,
-    scout: Option<ScoutTargetSources<'a>>,
-    naval_combat: Option<NavalCombatTargetSources<'a>>,
-    occupants: Option<NavalOccupantSources<'a>>,
-    mine: Option<MineTargetSources<'a>>,
-    fractions: &'a BTreeMap<u32, RegionFractions>,
-    dlc_mask: Option<u32>,
-    mine_maximum_raw: i64,
-}
-
-impl Scans<'_> {
-    /// Target-admission chain for a wing over its mission region.
-    fn admission(
-        &self,
-        wing: &AirWingRow,
-        country: MissionCountry,
-        region: u32,
-        inputs: &AirMissionInputRow,
-    ) -> TargetAdmission {
-        air_reachability::target_admission(
-            wing.mission_mask,
-            inputs.reached_count,
-            self.fractions.get(&region).copied(),
-            self.dlc_mask,
-            self.predicates(wing, country, region, inputs),
-        )
-    }
-
-    /// Only the scans `target_admission` reads for this wing's mask run.
-    fn predicates(
-        &self,
-        wing: &AirWingRow,
-        country: MissionCountry,
-        region: u32,
-        inputs: &AirMissionInputRow,
-    ) -> TargetPredicates {
-        let mask = air_reachability::scanned_bits(wing.mission_mask);
-        let reached = &inputs.reached_provinces;
-        let mut targets = TargetPredicates::default();
-        if inputs.reached_count == 0 {
-            return targets;
-        }
-        if mask & (1 << 1) != 0 {
-            targets.tactical = self
-                .tactical
-                .as_ref()
-                .and_then(|scan| scan.admit(wing, country, reached));
-        }
-        if mask & (1 << 8) != 0 {
-            targets.port = self
-                .port
-                .as_ref()
-                .and_then(|scan| scan.admit(country, reached));
-        }
-        if mask & 0x1_0008 != 0
-            && let Some(scan) = &self.strategic
-        {
-            let strategic = scan.admit(country, region, reached);
-            targets.strategic = strategic.found;
-            targets.strategic_railway_gun = strategic.railway_gun;
-        }
-        if mask & (1 << 14) != 0 {
-            targets.scout = self
-                .scout
-                .as_ref()
-                .and_then(|scan| scan.admit(wing, region, inputs.definition_map_flags));
-        }
-        if mask & 0x90 != 0 {
-            targets.naval_combat = self
-                .naval_combat
-                .as_ref()
-                .and_then(|scan| scan.admit_combat(country, reached));
-            targets.naval_occupants = self
-                .occupants
-                .as_ref()
-                .map(|scan| scan.admit(country, reached))
-                .unwrap_or_default();
-        }
-        if mask & AIR_MISSION_LAY_MINES != 0 {
-            targets.mine = self
-                .mine
-                .as_ref()
-                .and_then(|scan| scan.admit(wing, region, self.mine_maximum_raw));
-        }
-        targets
-    }
-}
+use viewer_foundation::map::air_reachability::Scans;
 
 /// Wings omitted for an undecided target, counted by reason.
 #[derive(Default)]
@@ -2819,11 +2727,14 @@ impl NavalPatrolSources {
         }
         let mut entries = BTreeMap::<(u32, u32), Vec<(u32, i64, i64)>>::new();
         for row in histories {
-            if row.is_availability_witness() {
+            if row.is_availability_witness() || row.is_menu() {
                 continue;
             }
+            let Some(index) = row.summation_index(histories).map_err(invalid)? else {
+                continue;
+            };
             entries.entry((row.country, row.region)).or_default().push((
-                row.index,
+                index,
                 row.enemy_ships_sunk_raw,
                 row.our_fighters_lost_raw,
             ));
@@ -3075,9 +2986,12 @@ impl ScenarioHistory {
         let mut regions = BTreeMap::<u32, Vec<(u32, [i64; 8])>>::new();
         let mut unavailable = BTreeMap::new();
         for row in records {
-            if row.is_availability_witness() {
+            if row.is_availability_witness() || row.is_menu() {
                 continue;
             }
+            let Some(index) = row.summation_index(histories).map_err(invalid)? else {
+                continue;
+            };
             let [a, b, c, d, e, f, g] = match row.scenario_channels {
                 replay_data::rows::Recorded::Value(Some(values)) => values,
                 replay_data::rows::Recorded::Value(None) => {
@@ -3096,7 +3010,7 @@ impl ScenarioHistory {
             regions
                 .entry(row.region)
                 .or_default()
-                .push((row.index, [a, b, row.our_fighters_lost_raw, c, d, e, f, g]));
+                .push((index, [a, b, row.our_fighters_lost_raw, c, d, e, f, g]));
         }
         let sums = regions
             .into_iter()
