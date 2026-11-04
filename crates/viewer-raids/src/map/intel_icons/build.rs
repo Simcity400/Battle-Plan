@@ -47,6 +47,7 @@ enum Item<'f> {
     Shield(u32),
     Operative(&'f OperativeMissionRow),
     Operation(&'f OperationRow),
+    Offer(&'f replay_data::rows::AgencyBufferedOffer),
 }
 
 /// One state's entries before they are sorted, and whether it holds a More entry.
@@ -66,6 +67,7 @@ type RootOutStacks = BTreeMap<(u32, i32), Result<Vec<(u64, i64)>, String>>;
 /// The hour's reads every entry shares.
 pub(super) struct Shared<'h, 'f> {
     pub tables: Tables<'f>,
+    pub missions: super::missions::Inputs<'f>,
     pub names: CountryNames<'h>,
     /// Each province's state and signed victory points.
     provinces: HashMap<u32, &'f ProvinceRow>,
@@ -174,10 +176,11 @@ impl<'h, 'f> Hour<'h, 'f> {
         // Admission is the retained client UI buffer, not the saved instance roster.
         // Visit all four buckets before sorting the entries for display. The game
         // does not filter the retained buffer to a newly selected perspective.
-        match (&tables.buffers, &tables.operations) {
-            (Ok(buffers), Ok(rows)) if buffers.len() == 1 && buffers[0].snapshot == 0 => {
+        match &tables.buffers {
+            Ok(buffers) if buffers.len() == 1 && buffers[0].snapshot == 0 => {
                 let buffer = &buffers[0];
-                let by_id: HashMap<u64, &'f OperationRow> = rows.iter().map(|row| (row.id, row)).collect();
+                let by_id: Result<HashMap<u64, &'f OperationRow>, _> = tables.operations.as_ref()
+                    .map(|rows| rows.iter().map(|row| (row.id, row)).collect());
                 for buffered in buffer.completed.iter().chain(&buffer.running).chain(&buffer.ready).chain(&buffer.unready) {
                     let Some(state) = buffered.state.filter(|&state| state != 0) else {
                         continue;
@@ -188,21 +191,32 @@ impl<'h, 'f> Hour<'h, 'f> {
                         continue;
                     }
                     entry.operations += 1;
-                    let Some(&row) = by_id.get(&buffered.operation) else {
+                    let Some(&row) = by_id.as_ref().ok().and_then(|rows| rows.get(&buffered.operation)) else {
                         report.note("an admitted operation entry is withheld: its buffered reference has no recorded Operations row");
                         continue;
                     };
                     named.extend(self.slot(row.target));
                     entry.items.push(Item::Operation(row));
                 }
+                for offer in &buffer.offers {
+                    let Some(state) = offer.state.filter(|&state| state != 0) else { continue; };
+                    let entry = gathered.entry(state).or_default();
+                    if entry.operations >= i64::from(self.defines.max_stack) {
+                        entry.more = true;
+                        continue;
+                    }
+                    entry.operations += 1;
+                    named.extend(self.slot(offer.country));
+                    entry.items.push(Item::Offer(offer));
+                }
             }
-            (Err(why), _) => report.note(format!("operation entries are withheld: AgencyOperationBuffers are unavailable: {why}")),
-            (_, Err(why)) => report.note(format!("operation entries are withheld: Operations are unavailable: {why}")),
+            Err(why) => report.note(format!("operation entries are withheld: AgencyOperationBuffers are unavailable: {why}")),
             _ => report.note("operation entries are withheld: AgencyOperationBuffers has no shared client snapshot"),
         }
         let shared = Shared {
             names: CountryNames::read_selected(frame, self.localisation, named),
             root_out: self.root_out_stacks(&tables),
+            missions: super::missions::Inputs::new(self, &tables),
             tables,
             provinces,
         };
@@ -479,6 +493,15 @@ impl<'h, 'f> Hour<'h, 'f> {
                     entry,
                 )
             }
+            Item::Offer(row) => (
+                (
+                    2,
+                    Vec::new(),
+                    i64::from(self.defines.priorities.can_start),
+                    row.definition,
+                ),
+                self.offer(row),
+            ),
         }
     }
 
@@ -531,6 +554,8 @@ impl<'h, 'f> Hour<'h, 'f> {
             writes,
             tooltip: Arc::new(tooltips::shield(
                 self,
+                slot,
+                shared,
                 defense,
                 level.map(|(level, _)| level),
             )),
@@ -554,14 +579,18 @@ impl<'h, 'f> Hour<'h, 'f> {
         &self,
         row: &'f OperativeMissionRow,
         shared: &Shared<'h, 'f>,
-        report: &mut IntelReport,
+        _report: &mut IntelReport,
     ) -> Entry {
-        report.note(OPERATIVE_SELECTION_UNRECORDED);
-        report.note(OPERATIVE_WARNING_UNRECORDED);
-        let mut writes = vec![
-            Write::Shown("frame_select_hl_icn", false),
-            Write::Shown("frame_warn_hl_icn", false),
-        ];
+        let mut writes = Vec::new();
+        for (child, value) in [
+            ("frame_select_hl_icn", row.map_selected),
+            ("frame_warn_hl_icn", row.map_warning),
+        ] {
+            writes.push(match value {
+                Some(value) => Write::Shown(child, value != 0),
+                None => Write::Withheld(child, "its operative UI state was not captured".into()),
+            });
+        }
         let character = shared.tables.characters.clone().map(|rows| {
             rows.iter().find(|character| {
                 character.resolved
@@ -789,6 +818,51 @@ impl<'h, 'f> Hour<'h, 'f> {
                 Ok(values::percent(stability.min(war_support)))
             }
             variant => Err(format!("mission variant {variant} has no progress")),
+        }
+    }
+
+    fn offer(&self, row: &replay_data::rows::AgencyBufferedOffer) -> Entry {
+        let definition = (|| {
+            let spelling = super::super::raids::spelling(self.world, row.definition, "operation")?;
+            self.assets
+                .operation(spelling)?
+                .ok_or_else(|| format!("operation {spelling} is not in the content"))
+        })();
+        let mut writes = vec![
+            Write::Shown("operation_icon", false),
+            Write::Shown("phase_circular_progress_icon", false),
+            Write::Shown("phase_btn", false),
+            Write::Shown("operation_completed_overlay", false),
+            Write::Shown("operation_completed_warning", false),
+            Write::Shown("operation_equipment_overlay", false),
+            Write::Shown("portrait_btn", true),
+        ];
+        match &definition {
+            Ok(definition) => writes.push(Write::Sprite(
+                "portrait_btn",
+                definition.map_icon.as_bytes().to_vec(),
+            )),
+            Err(why) => writes.push(Write::Withheld("portrait_btn", why.clone())),
+        }
+        match row.duration {
+            Some(days) => match localise(
+                self.localisation,
+                "ABILITY_DUR_DAYS",
+                &[("num", Arg::Text(&days.to_string()))],
+            ) {
+                Ok(text) => writes.push(Write::Text("operation_progress_text", text)),
+                Err(why) => writes.push(Write::Withheld("operation_progress_text", why)),
+            },
+            None => writes.push(Write::Withheld(
+                "operation_progress_text",
+                "its duration operands were not captured".into(),
+            )),
+        }
+        Entry {
+            kind: EntryKind::Operation,
+            key: EntryKey::Offer(row.definition, row.country),
+            writes,
+            tooltip: Arc::new(tooltips::offer(self, row, definition)),
         }
     }
 

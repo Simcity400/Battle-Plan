@@ -88,6 +88,7 @@ pub const CONSTRUCTION_OUTPUT_OWNER_FORMAT: u16 = 133;
 pub const EXACT_NAVAL_CONDITION_FORMAT: u16 = 134;
 pub const AIR_COMBAT_MENU_FORMAT: u16 = 135;
 pub const AIR_HISTORY_SLOTS_FORMAT: u16 = 136;
+pub const MAP_MODE_PARITY_FORMAT: u16 = 137;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -4151,6 +4152,24 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         ],
     );
 
+    let changed = [
+        TableId::States,
+        TableId::Players,
+        TableId::OperativeMissions,
+        TableId::AgencyOperationBuffers,
+        TableId::RaidIntelInputs,
+        TableId::StrategicOperatives,
+        TableId::AirGroundCrews,
+    ];
+    let mut index = 0;
+    while index < changed.len() {
+        let id = changed[index];
+        history[id.index()] = LastChange {
+            introduced: history[id.index()].introduced,
+            ..table(id, MAP_MODE_PARITY_FORMAT, "nonpolitical map mode operands")
+        };
+        index += 1;
+    }
     history
 };
 
@@ -4916,7 +4935,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, AIR_HISTORY_SLOTS_FORMAT);
+        assert_eq!(FORMAT_VERSION, MAP_MODE_PARITY_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

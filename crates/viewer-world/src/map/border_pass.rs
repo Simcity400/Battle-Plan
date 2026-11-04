@@ -58,6 +58,7 @@ pub struct BorderAssets {
     /// The content-selected custom palette entry used by faction-theatre hover.
     /// Unsupported definitions withhold this highlight alone.
     pub faction_highlight_color: Result<[f32; 4], String>,
+    pub adjacency_highlight_color: Result<[f32; 4], String>,
 }
 
 impl BorderAssets {
@@ -99,6 +100,10 @@ impl BorderAssets {
             demilitarized_color: [channel("R")?, channel("G")?, channel("B")?, channel("A")?],
             faction_highlight_color: faction_highlight_color(defines)
                 .map_err(|why| why.to_string()),
+            adjacency_highlight_color: (|| -> io::Result<_> {
+                let channel = |name| defines.number("NGraphics", &format!("BORDER_COLOR_SELECTION_ADJACENCY_RULE_AREA_{name}")).map(|value| value as f32);
+                Ok([channel("R")?, channel("G")?, channel("B")?, channel("A")?])
+            })().map_err(|why| why.to_string()),
         })
     }
 }

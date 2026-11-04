@@ -1376,7 +1376,9 @@ fixture!(SubjectRow, |key| {overlord: (key >> 32) as u32, subject: key as u32}, 
 fixture!(AutonomyRow, |key| {subject: key as u32}, {score: i64, lower_score: i64, upper_score: i64, last_modified_bits: u32, state: Vec<u8>, previous: Option<Vec<u8>>, next: Option<Vec<u8>>});
 fixture!(IntelligenceAgencyRow, |key| {country: key as u32}, {upgrade_progress_raw: i64, defense_raw: i64, active_count: i32, admission_ceiling: i32, unknown_f0: u32, name: Vec<u8>, created: u8});
 fixture!(OperativeMembershipRow, |key| {id: (key >> 40) as u64, roster_country: (key >> 8) as u32, roster_kind: key as u8}, {owner_country: u32, legacy_description_length: u8, assignment: u32, experience_raw: i64, skill: Option<i32>, capturer_country: u32, captured_hour: i32, action_variant: Option<u32>, ordinal: Recorded<u32>, target_country: Recorded<Option<u32>>, operation: Recorded<Option<u64>>, name: Recorded<Vec<u8>>, cooldown_kind: Recorded<Option<u32>>, cooldown_start_hour: Recorded<Option<i32>>, cooldown_end_hour: Recorded<Option<i32>>});
-fixture!(OperativeMissionRow, |key| {roster_country: (key >> 64) as u32, id: key as u64}, {ordinal: u32, owner_country: u32, assignment: u32, cooldown_kind: Option<u32>, cooldown_start_hour: Option<i32>, cooldown_end_hour: Option<i32>, variant: Option<u32>, target_country: Option<u32>, target_state: Option<i32>, ideology: Vec<u8>, pending_variant: Option<u32>, pending_country: Option<u32>, pending_state: Option<i32>, pending_ideology: Vec<u8>, portrait: Vec<u8>, root_out_country_factor: Option<i64>, root_out_operative_factor: Option<i64>, root_out_nationality: Option<u8>});
+sample_struct!(OperativeEffectModifier { key: u32, value: i64, sources: Option<[std::sync::Arc<Vec<ModifierBreakdownNode>>; 3]> });
+sample_struct!(OperativeEffect { owned_states: i32, network_gain_scale: i32, trade_opinion: Option<i64>, modifiers: Vec<OperativeEffectModifier> });
+fixture!(OperativeMissionRow, |key| {roster_country: (key >> 64) as u32, id: key as u64}, {ordinal: u32, owner_country: u32, assignment: u32, cooldown_kind: Option<u32>, cooldown_start_hour: Option<i32>, cooldown_end_hour: Option<i32>, variant: Option<u32>, target_country: Option<u32>, target_state: Option<i32>, ideology: Vec<u8>, pending_variant: Option<u32>, pending_country: Option<u32>, pending_state: Option<i32>, pending_ideology: Vec<u8>, portrait: Vec<u8>, root_out_country_factor: Option<i64>, root_out_operative_factor: Option<i64>, root_out_nationality: Option<u8>, map_selected: Option<u8>, map_warning: Option<u8>, active_effect: Option<std::sync::Arc<OperativeEffect>>, pending_effect: Option<std::sync::Arc<OperativeEffect>>});
 sample_struct!(TradeInfluence {
     owner: u32,
     value: i64
@@ -1387,8 +1389,9 @@ sample_struct!(DiplomaticPressure {
     tension: i64
 });
 sample_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
-fixture!(AgencyOperationBuffersRow, |key| {snapshot: key as u8}, {completed: Vec<AgencyBufferedOperation>, running: Vec<AgencyBufferedOperation>, ready: Vec<AgencyBufferedOperation>, unready: Vec<AgencyBufferedOperation>});
-fixture!(StrategicOperativeRow, |key| {country: key as u32}, {slot: u32, mission_activity: i64, operation_activity: i64, trade_influence: Vec<TradeInfluence>, diplomatic_pressure: Vec<DiplomaticPressure>});
+sample_struct!(AgencyBufferedOffer { definition: u32, country: u32, state: Option<u32>, duration: Option<i32> });
+fixture!(AgencyOperationBuffersRow, |key| {snapshot: key as u8}, {completed: Vec<AgencyBufferedOperation>, running: Vec<AgencyBufferedOperation>, ready: Vec<AgencyBufferedOperation>, unready: Vec<AgencyBufferedOperation>, offers: Vec<AgencyBufferedOffer>});
+fixture!(StrategicOperativeRow, |key| {country: key as u32}, {slot: u32, mission_activity: i64, operation_activity: i64, trade_influence: Vec<TradeInfluence>, diplomatic_pressure: Vec<DiplomaticPressure>, mission_rosters: Option<[Vec<u64>; 5]>});
 fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8, ordinal: u32});
 fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64, gain_raw: i64, gain_from_operatives_raw: i64, gain_from_adjacency_raw: i64, local_quiet: u8, gain_factor_raw: Option<i64>, strength_target_raw: Option<i64>, target_from_operatives_raw: Option<i64>, target_from_counterintelligence_raw: Option<i64>, subnetwork_quiet: u8});
 fixture!(IntelNetworkSummaryRow, |key| { owner_country: (key >> 32) as u32, target_country: key as u32 }, {
@@ -1638,7 +1641,7 @@ sample_struct!(RaidCounterOperative {
     defense: i64,
     context: i64
 });
-fixture!(RaidIntelInputRow, |key| {country: key as u32}, {strategic_present: u8, country_defense: i64, crypto_strength: Option<i64>, operatives: Vec<RaidCounterOperative>});
+fixture!(RaidIntelInputRow, |key| {country: key as u32}, {strategic_present: u8, country_defense: i64, crypto_strength: Option<i64>, operatives: Vec<RaidCounterOperative>, defense_tree: Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>});
 sample_struct!(AirPowerContribution {
     country: u32,
     amount: i64
@@ -2949,7 +2952,13 @@ impl Fixture for NavalMissionCommanderRow {
 }
 fixture!(FactionTheatreRow, |key| {faction: (key >> 32) as u64, ordinal: key as u32}, {icon: Vec<u8>, regions: Vec<u32>, country_count: u32, hidden_for: Vec<u32>});
 fixture!(AirRegionalMissionRow, |key| {wing: key as u64}, {ordinal: u32, active_order: Option<u64>});
-fixture!(AirGroundCrewRow, |key| {country: (key >> 32) as u32, region: key as u32}, {enabled: Option<u32>});
+sample_struct!(AirSupplySummary {
+    severity: i32,
+    needed: i64,
+    supplied: i64,
+    deficit: i64
+});
+fixture!(AirGroundCrewRow, |key| {country: (key >> 32) as u32, region: key as u32}, {enabled: Option<u32>, supply: Option<AirSupplySummary>});
 fixture!(AirTransferInputRow, |key| {wing: key as u64}, {base: u64, ordinal: Option<u32>, progress_raw: Option<i64>, distance_raw: Option<i64>});
 fixture!(AirCountryRelationRow, |key| {country: (key >> 34) as u32, kind: ((key >> 32) & 3) as u8, ordinal: key as u32}, {other: u32});
 fixture!(AirReferenceWitnessRow, |key| {handle: key as u64}, {base_kind: Option<i32>, state: Option<u32>, province: Option<u32>, host: Option<u64>, host_owner: Option<u32>, host_without_task_force: bool});

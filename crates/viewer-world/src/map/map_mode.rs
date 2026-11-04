@@ -204,7 +204,7 @@ impl Stock {
             Self::Diplomacy => &[Capitulation, Subjects, FactionMembers, RelationOpinions],
             Self::Resistance | Self::Compliance => &[StateResistance],
             Self::Operatives => &[IntelNetworks],
-            Self::Infrastructure => &[StateBuildings, ResearchTechnologies, TechnologyDefinitions],
+            Self::Infrastructure => &[States, LexicalTokens],
             Self::StrategicAir => &[RaidAirScores, CountryCounterInputs],
             Self::StrategicNavy => &[
                 RaidAirScores,
@@ -616,25 +616,31 @@ impl Content {
         })
     }
 
-    /// Whose names the map writes in `mode`, far out and close in: the far names show at or
-    /// above `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF` and the near ones below it, cross-fading. The
-    /// game chooses per mode: faction names in the factions mode, players' names in the players
-    /// mode, strategic region names in the air and navy modes (admitted by the local pointer
-    /// and strategic-name preference in the name pass), country names otherwise, and none
-    /// close in; a scripted mode by its `far_text` and `near_text`, each writing none when it is
-    /// not declared.
     pub fn name_layers(&self, mode: &MapMode) -> NameLayers {
-        let stock = |far| NameLayers {
-            far,
-            near: NameLayer::Nothing,
-        };
+        let stock = |far, near| NameLayers { far, near };
         match mode {
-            MapMode::Stock(Stock::Factions) => stock(NameLayer::Factions),
-            MapMode::Stock(Stock::Players) => stock(NameLayer::Players),
+            MapMode::Stock(Stock::Factions) => stock(NameLayer::Factions, NameLayer::Factions),
+            MapMode::Stock(Stock::Players) => stock(NameLayer::Players, NameLayer::Players),
             MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy) => {
-                stock(NameLayer::StrategicRegions)
+                stock(NameLayer::StrategicRegions, NameLayer::StrategicRegions)
             }
-            MapMode::Stock(_) => stock(NameLayer::Countries),
+            MapMode::Stock(Stock::Raids) => stock(NameLayer::Countries, NameLayer::Countries),
+            MapMode::Stock(
+                Stock::States
+                | Stock::Diplomacy
+                | Stock::Infrastructure
+                | Stock::Manpower
+                | Stock::Ideology
+                | Stock::Terrain
+                | Stock::Operatives,
+            ) => stock(NameLayer::Countries, NameLayer::States),
+            MapMode::Stock(
+                Stock::Default
+                | Stock::Supply
+                | Stock::Resistance
+                | Stock::Compliance
+                | Stock::Resources,
+            ) => stock(NameLayer::Countries, NameLayer::Nothing),
             MapMode::Scripted(name) => {
                 let declared = self.scripted.get(name);
                 NameLayers {
@@ -765,13 +771,17 @@ pub fn player_labels(frame: &DecodedFrame) -> Result<GroupLabels, String> {
         groups: held
             .into_iter()
             .map(|(slot, players)| {
-                let name = match players.as_slice() {
-                    [player] => String::from_utf8(player.name.clone())
-                        .map_err(|_| "its player's name is not UTF-8".to_owned()),
-                    _ => Err(format!(
-                        "{} players hold it, and which name the game writes is not known",
-                        players.len()
-                    )),
+                let first = players.iter().min_by_key(|player| player.ordinal).unwrap();
+                let name = if players
+                    .iter()
+                    .filter(|player| player.ordinal == first.ordinal)
+                    .count()
+                    != 1
+                {
+                    Err("its first player has a duplicate roster ordinal".to_owned())
+                } else {
+                    String::from_utf8(first.name.clone())
+                        .map_err(|_| "its player's name is not UTF-8".to_owned())
                 };
                 (slot, (u64::from(slot), name))
             })
@@ -1002,9 +1012,6 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
                     .strategic
                     .layer(stock, inputs, &mut warnings)?,
             );
-            if stock == Stock::StrategicAir {
-                warnings.push(unbuilt(stock).to_owned());
-            }
             draw
         }
         // The raid mode draws no layer of its own: the countries alone. Its raid icons and
@@ -1094,9 +1101,6 @@ fn unbuilt(stock: Stock) -> &'static str {
     match stock {
         Stock::Supply => {
             "Supply map mode: its province supply and supply-border layers need each province's distributed supply, which is not recorded; both channels stay empty and the supply hub icons, flow arrows and supply tooltips are not drawn"
-        }
-        Stock::StrategicAir => {
-            "Air-supply regional summary operands are unavailable: exact consumer membership is rebuilt hourly; an extra full scan or synchronous per-consumer observation violates the recording cost rules"
         }
         _ => "This map mode's layer is not drawn",
     }

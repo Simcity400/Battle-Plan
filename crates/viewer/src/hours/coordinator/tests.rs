@@ -544,6 +544,7 @@ impl RealDriver {
             behind: 0,
             playing: true,
             perspective: Default::default(),
+            diplomatic_selected: None,
             map_mode: if scripted {
                 viewer_world::map::map_mode::MapMode::Scripted("synthetic".into())
             } else {

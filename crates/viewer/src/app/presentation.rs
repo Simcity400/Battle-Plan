@@ -305,6 +305,7 @@ impl Viewer {
             playing: self.playing,
             perspective: self.perspective.clone(),
             map_mode: self.map_mode.clone(),
+            diplomatic_selected: self.diplomatic_selected,
             show_allied_plans: self.graphics.show_allied_plans,
             counters: self.counter_view.clone(),
             view,

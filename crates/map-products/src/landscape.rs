@@ -150,6 +150,14 @@ pub struct BuildingProduct {
     pub summary: MapBuildingSummary,
 }
 
+fn diplomatic_selection(mode: &MapMode, ours: u32, selected: Option<u32>) -> u32 {
+    if matches!(mode, MapMode::Stock(map_mode::Stock::Diplomacy)) {
+        selected.unwrap_or(ours)
+    } else {
+        ours
+    }
+}
+
 pub struct NameInputs<'a> {
     pub content: &'a map_mode::Content,
     pub names: &'a NameContent,
@@ -320,14 +328,16 @@ impl ProductHour<'_> {
         content: &map_mode::Content,
         mode: &MapMode,
         choice: &perspective::Choice,
+        selected: Option<u32>,
         previous: Option<&ColourState>,
     ) -> io::Result<ModeFill> {
         if *mode == MapMode::default() {
             return Ok(ModeFill::default());
         }
         let ours = self.vision(choice)?.ours();
+        let selected = diplomatic_selection(mode, ours, selected);
         map_mode::resolved::apply(
-            self.mode_projection(content, mode, ours)?.as_ref(),
+            self.mode_projection(content, mode, selected)?.as_ref(),
             previous,
         )
     }
@@ -338,12 +348,14 @@ impl ProductHour<'_> {
         navy: &naval_dominance::Content,
         mode: &MapMode,
         choice: &perspective::Choice,
+        selected: Option<u32>,
         previous: Option<&ColourState>,
     ) -> io::Result<PoliticalProduct> {
         let _cost = replay_frame::cpu::scope("territory operands", Some("territory"));
         let started = std::time::Instant::now();
         let ours = self.vision(choice)?.ours();
-        let projection = self.mode_projection(content, mode, ours)?;
+        let selected = diplomatic_selection(mode, ours, selected);
+        let projection = self.mode_projection(content, mode, selected)?;
         let fill = map_mode::resolved::apply(&projection, previous)?;
         let colour = fill.colour.clone();
         let territory = self.territory()?;

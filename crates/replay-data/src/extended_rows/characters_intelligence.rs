@@ -273,6 +273,10 @@ typed_codec!(OperativeMembershipRow, 104, |row| (row.id as u128) << 40 | (row.ro
 /// OperativeMemberships keeps the daily census of every holding vector.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OperativeMissionRow {
+    pub active_effect: Option<std::sync::Arc<OperativeEffect>>,
+    pub pending_effect: Option<std::sync::Arc<OperativeEffect>>,
+    pub map_selected: Option<u8>,
+    pub map_warning: Option<u8>,
     pub roster_country: u32,
     pub id: u64,
     /// Native active-roster position.
@@ -312,7 +316,25 @@ pub struct OperativeMissionRow {
     pub root_out_nationality: Option<u8>,
 }
 typed_codec!(OperativeMissionRow, 96, |row| (row.roster_country as u128) << 64 | row.id as u128, |key| Self { roster_country: (key >> 64) as u32, id: key as u64, ..Default::default() },
- { 0 => (ordinal): U32, 1 => (owner_country): U32, 2 => (assignment): U32, 3 => (cooldown_kind): OptionalU32, 4 => (cooldown_start_hour): OptionalI32, 5 => (cooldown_end_hour): OptionalI32, 6 => (variant): OptionalU32, 7 => (target_country): OptionalU32, 8 => (target_state): OptionalI32, 9 => (ideology): Bytes, 10 => (pending_variant): OptionalU32, 11 => (pending_country): OptionalU32, 12 => (pending_state): OptionalI32, 13 => (pending_ideology): Bytes, 14 => (portrait): Bytes, 15 => (root_out_country_factor): OptionalI64, 16 => (root_out_operative_factor): OptionalI64, 17 => (root_out_nationality): Opaque }, |_row| Ok(()));
+ { 0 => (ordinal): U32, 1 => (owner_country): U32, 2 => (assignment): U32, 3 => (cooldown_kind): OptionalU32, 4 => (cooldown_start_hour): OptionalI32, 5 => (cooldown_end_hour): OptionalI32, 6 => (variant): OptionalU32, 7 => (target_country): OptionalU32, 8 => (target_state): OptionalI32, 9 => (ideology): Bytes, 10 => (pending_variant): OptionalU32, 11 => (pending_country): OptionalU32, 12 => (pending_state): OptionalI32, 13 => (pending_ideology): Bytes, 14 => (portrait): Bytes, 15 => (root_out_country_factor): OptionalI64, 16 => (root_out_operative_factor): OptionalI64, 17 => (root_out_nationality): Opaque, 18 => (map_selected): Opaque, 19 => (map_warning): Opaque, 20 => (active_effect): Opaque, 21 => (pending_effect): Opaque }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OperativeEffect {
+    pub owned_states: i32,
+    pub network_gain_scale: i32,
+    pub trade_opinion: Option<i64>,
+    pub modifiers: Vec<OperativeEffectModifier>,
+}
+value_struct!(OperativeEffect { owned_states: i32, network_gain_scale: i32, trade_opinion: Option<i64>, modifiers: Vec<OperativeEffectModifier> });
+opaque_value!(Option<std::sync::Arc<OperativeEffect>>);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OperativeEffectModifier {
+    pub key: u32,
+    pub value: i64,
+    pub sources: Option<[std::sync::Arc<Vec<ModifierBreakdownNode>>; 3]>,
+}
+value_struct!(OperativeEffectModifier { key: u32, value: i64, sources: Option<[std::sync::Arc<Vec<ModifierBreakdownNode>>; 3]> });
 
 /// StrategicOperatives: key country (32 bits), 5 payload mask bits.
 ///
@@ -326,6 +348,7 @@ typed_codec!(OperativeMissionRow, 96, |row| (row.roster_country as u128) << 64 |
 /// reads them every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StrategicOperativeRow {
+    pub mission_rosters: Option<[Vec<u64>; 5]>,
     pub country: u32,
     pub slot: u32,
     pub mission_activity: i64,
@@ -334,7 +357,8 @@ pub struct StrategicOperativeRow {
     pub diplomatic_pressure: Vec<DiplomaticPressure>,
 }
 typed_codec!(StrategicOperativeRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
- { 0 => (slot): U32, 1 => (mission_activity): I64, 2 => (operation_activity): I64, 3 => (trade_influence): Opaque, 4 => (diplomatic_pressure): Opaque }, |_row| Ok(()));
+ { 0 => (slot): U32, 1 => (mission_activity): I64, 2 => (operation_activity): I64, 3 => (trade_influence): Opaque, 4 => (diplomatic_pressure): Opaque, 5 => (mission_rosters): Opaque }, |_row| Ok(()));
+opaque_value!(Option<[Vec<u64>; 5]>);
 
 /// Logical saved propaganda entries. Real sequences retain their keys across
 /// daily appends/removals. The final sequence is an owner header: it preserves
@@ -1033,9 +1057,20 @@ pub struct AgencyOperationBuffersRow {
     pub running: Vec<AgencyBufferedOperation>,
     pub ready: Vec<AgencyBufferedOperation>,
     pub unready: Vec<AgencyBufferedOperation>,
+    pub offers: Vec<AgencyBufferedOffer>,
 }
 typed_codec!(AgencyOperationBuffersRow, 8, |row| row.snapshot as u128, |key| Self { snapshot: key as u8, ..Default::default() },
- { 0 => (completed): Opaque, 1 => (running): Opaque, 2 => (ready): Opaque, 3 => (unready): Opaque }, |_row| Ok(()));
+ { 0 => (completed): Opaque, 1 => (running): Opaque, 2 => (ready): Opaque, 3 => (unready): Opaque, 4 => (offers): Opaque }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AgencyBufferedOffer {
+    pub definition: u32,
+    pub country: u32,
+    pub state: Option<u32>,
+    pub duration: Option<i32>,
+}
+value_struct!(AgencyBufferedOffer { definition: u32, country: u32, state: Option<u32>, duration: Option<i32> });
+opaque_value!(Vec<AgencyBufferedOffer>);
 
 /// A raw buffered reference and the state getter result at this sample. A stale
 /// or null reference is None; a resolved operation with no state is Some(0).

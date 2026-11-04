@@ -232,6 +232,7 @@ pub struct Captured {
     programs: CaptureRows<nproject_cprogram::Row>,
     facilities: CaptureRows<raid_facilities::Row>,
     raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
+    agency_defense: Vec<Option<super::agency_defense::Tree>>,
     tooltip_operands: CaptureRows<engine_native::raid_tooltip_operands::Row>,
     counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative>,
     projects: CaptureRows<nproject_cproject::Row>,
@@ -342,6 +343,7 @@ impl Captured {
             programs: CaptureRows::new(capacity.rows[0]),
             facilities: CaptureRows::new(capacity.rows[16]),
             raid_intel: CaptureRows::new(capacity.rows[17]),
+            agency_defense: Vec::new(),
             tooltip_operands: CaptureRows::new(capacity.rows[18]),
             counteroperatives: Arena::new(capacity.counteroperatives),
             projects: CaptureRows::new(capacity.rows[1]),
@@ -411,6 +413,7 @@ impl Captured {
         self.programs.reset();
         self.facilities.reset();
         self.raid_intel.reset();
+        self.agency_defense.clear();
         self.tooltip_operands.reset();
         self.counteroperatives.reset();
         self.projects.reset();
@@ -446,6 +449,7 @@ impl Captured {
         self.project_runtime.allocated_bytes()
             + self.facilities.allocated_bytes()
             + self.raid_intel.allocated_bytes()
+            + self.agency_defense.capacity() * size_of::<Option<super::agency_defense::Tree>>()
             + self.tooltip_operands.allocated_bytes()
             + self.counteroperatives.allocated_bytes()
             + self.programs.allocated_bytes()
@@ -859,6 +863,9 @@ impl Captured {
                 carry.finish(!matches!(read.outcome, Outcome::Unavailable { .. }));
             }
             self.raid_intel.outcome = read.outcome;
+            if let Outcome::Rows { len } | Outcome::Truncated { len, .. } = read.outcome {
+                super::agency_defense::snapshot(memory, base, game_state, &self.raid_intel.rows[..len], &mut self.agency_defense);
+            }
             self.counteroperatives.required = read.operatives;
             self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
             ticks[17] = elapsed(begin);
@@ -1167,9 +1174,11 @@ impl Captured {
                     project_definition: r.project_definition,
                 }
             }),
-            table::<tables::RaidIntelInputs, _>(outcomes[17], &self.raid_intel.rows, |r| {
+            table_iter::<tables::RaidIntelInputs, _>(outcomes[17], self.raid_intel.rows.iter().take(outcomes[17].len()).enumerate(), |(index, r)| {
                 rows::RaidIntelInputRow {
                     country: r.country,
+                    defense_tree: self.agency_defense.get(index)
+                        .and_then(Clone::clone),
                     strategic_present: u8::from(r.strategic_present),
                     country_defense: r.country_defense,
                     crypto_strength: r.crypto_strength,

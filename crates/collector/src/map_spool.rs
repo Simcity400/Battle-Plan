@@ -114,12 +114,14 @@ fn players(
         |row| u128::from(row.id as u32),
         |row, previous| {
             row.id == previous.id
+                && row.ordinal == previous.ordinal
                 && row.country == previous.country
                 && row.flags == previous.flags
                 && names[row.user_start..row.user_start + row.user_len] == previous.user
                 && names[row.name_start..row.name_start + row.name_len] == previous.name
         },
         |row| PlayerRow {
+            ordinal: row.ordinal,
             id: row.id,
             country: row.country,
             flags: row.flags,
@@ -789,6 +791,7 @@ mod tests {
         set(
             &mut captured.players,
             vec![chuman::Row {
+                ordinal: 0,
                 id: i32::MIN,
                 country: u32::MAX,
                 flags: 0xa5,
@@ -959,6 +962,7 @@ mod tests {
     fn all_map_tables_preserve_native_extremes_and_ordered_arena_values() {
         let expected = [
             TableRows::Players(vec![PlayerRow {
+                ordinal: 0,
                 id: i32::MIN,
                 country: u32::MAX,
                 flags: 0xa5,

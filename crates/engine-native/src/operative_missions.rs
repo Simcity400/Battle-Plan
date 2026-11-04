@@ -35,9 +35,53 @@ pub const RESISTANCE_COUNTRY: usize = 0x50;
 /// The embedded state resistance's active byte, relative to
 /// `cstate::RESISTANCE` (engine-occupation's `cresistance::ACTIVE`).
 pub const RESISTANCE_ACTIVE: usize = 0x208;
+const MAP_SELECTED: usize = 0xf64;
+const OPERATIVE_CONTROLLER: usize = 0xa48;
+const WARNING_HANDLES: usize = 0x1b8;
+const STATIC_MODIFIER_DATABASE: usize = 0x033d_e590;
+const NATIONALITY_MODIFIER: usize = 0x130;
+const NETWORK_GAIN_CHEAT: usize = 0x033d_da94;
+const CLIENT_COUNTRY: usize = 0x520;
+const CLIENT_COUNTRY_FALLBACK: usize = 0x524;
+
+fn warning_handles(memory: &impl Memory, base: usize) -> Result<Vec<u64>, &'static str> {
+    use crate::command_inputs::{IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA};
+    let idler = field::<u64>(memory, base, IDLER_RVA)? as usize;
+    if idler == 0
+        || read::<u64>(memory, idler)
+            != base
+                .checked_add(IN_GAME_IDLER_VTABLE_RVA)
+                .map(|value| value as u64)
+    {
+        return Err("operative map idler unavailable");
+    }
+    let controller = field::<u64>(memory, idler, OPERATIVE_CONTROLLER)? as usize;
+    if controller == 0 {
+        return Ok(Vec::new());
+    }
+    let address = at(controller, WARNING_HANDLES)?;
+    let array = Array::read(memory, address, 8).ok_or("operative warning roster invalid")?;
+    let mut handles = vec![0; array.count as usize];
+    for (index, handle) in handles.iter_mut().enumerate() {
+        *handle = array
+            .element(index as u32, 8)
+            .and_then(|address| read(memory, address))
+            .ok_or("operative warning handle unreadable")?;
+    }
+    if Array::read(memory, address, 8) != Some(array)
+        || field::<u64>(memory, idler, OPERATIVE_CONTROLLER)? != controller as u64
+    {
+        return Err("operative warning roster changed during capture");
+    }
+    handles.sort_unstable();
+    Ok(handles)
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    pub native_pointer: usize,
+    pub map_selected: Option<u8>,
+    pub map_warning: Option<u8>,
     /// The agency's country id.
     pub roster_country: u32,
     pub id: u64,
@@ -160,6 +204,7 @@ fn walk_keyed(
             .ok_or("operative vtable address overflow")?;
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
+        let warnings = warning_handles(memory, base).ok();
         let (mut bytes_len, mut required_bytes) = (0_usize, 0_usize);
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
@@ -203,6 +248,16 @@ fn walk_keyed(
                     &mut *root_out,
                 )?;
                 let [active, pending] = ideologies;
+                row.map_selected = field::<u8>(memory, pointer, MAP_SELECTED)
+                    .ok()
+                    .map(|value| u8::from(value != 0));
+                row.map_warning = if row.map_selected == Some(1) {
+                    Some(0)
+                } else {
+                    warnings
+                        .as_ref()
+                        .map(|handles| u8::from(handles.binary_search(&id).is_ok()))
+                };
                 let strings = [active, pending, Some(portrait)];
                 let row_bytes = strings
                     .iter()
@@ -422,6 +477,9 @@ fn read_row<M: Memory>(
             (None, None, None, None)
         };
     let row = Row {
+        native_pointer: pointer,
+        map_selected: None,
+        map_warning: None,
         roster_country,
         id,
         ordinal: 0,
@@ -444,6 +502,125 @@ fn read_row<M: Memory>(
         root_out_nationality: root_out_operands.map(|operands| operands.2),
     };
     Ok((row, [active_ideology, pending_ideology]))
+}
+
+pub struct EffectRoots {
+    pub keys: [u32; 2],
+    pub key_count: usize,
+    pub roots: [usize; 3],
+    pub owned_states: i32,
+    pub network_gain_scale: i32,
+}
+
+pub fn effect_roots<M: Memory>(
+    memory: &M,
+    base: usize,
+    game: usize,
+    countries: &ccountry::Reader<'_, M>,
+    row: &Row,
+    pending: bool,
+) -> Result<Option<EffectRoots>, &'static str> {
+    let (variant, target, state) = if pending {
+        (row.pending_variant, row.pending_country, row.pending_state)
+    } else {
+        (row.variant, row.target_country, row.target_state)
+    };
+    let Some(variant) = variant else {
+        return Ok(None);
+    };
+    if variant == operative_action::QUIET_NETWORK {
+        return Ok(None);
+    }
+    let (keys, key_count) = match variant {
+        operative_action::BUILD_NETWORK => ([0x212, 0x213], 2),
+        operative_action::COUNTER_INTELLIGENCE => ([0x1ff, 0], 1),
+        operative_action::ROOT_OUT_RESISTANCE => ([root_out_key(memory, base)?, 0], 1),
+        operative_action::BOOST_IDEOLOGY => ([0x20e, 0], 1),
+        operative_action::CONTROL_TRADE => ([0x20b, 0], 1),
+        operative_action::DIPLOMATIC_PRESSURE => ([0x20c, 0], 1),
+        operative_action::PROPAGANDA => ([0x20d, 0], 1),
+        _ => return Err("operative effect variant unsupported"),
+    };
+    if field::<u64>(memory, row.native_pointer, IDENTITY)? != row.id
+        || field::<u32>(memory, row.native_pointer, OWNER_COUNTRY)? != row.owner_country
+    {
+        return Err("operative effect identity changed");
+    }
+    let target = target.ok_or("operative effect target absent")?;
+    let mut context = target;
+    if variant == operative_action::ROOT_OUT_RESISTANCE
+        && let Some(id) = state.filter(|&id| id > 0)
+    {
+        let states = Array::read(memory, at(game, crate::cgame_state::STATES)?, 8)
+            .ok_or("operative effect states invalid")?;
+        let state = states
+            .element(id as u32, 8)
+            .and_then(|address| read::<u64>(memory, address))
+            .filter(|&pointer| pointer != 0)
+            .ok_or("operative effect state unreadable")? as usize;
+        if state_id(memory, base, state)? != id {
+            return Err("operative effect state identity mismatch");
+        }
+        let resistance = at(state, cstate::RESISTANCE)?;
+        let country = field::<u32>(memory, resistance, RESISTANCE_COUNTRY)?;
+        if field::<u8>(memory, resistance, RESISTANCE_ACTIVE)? != 0 && country as i32 > 0 {
+            context = country;
+        }
+    }
+    let mut roots = [0; 3];
+    if variant != operative_action::COUNTER_INTELLIGENCE {
+        roots[0] = at(
+            countries.resolve(row.owner_country)?.pointer,
+            ccountry::MODIFIER_ACCUMULATOR,
+        )?;
+    }
+    roots[1] = at(row.native_pointer, MODIFIER_ACCUMULATOR)?;
+    if has_nationality(memory, countries, row.native_pointer, context)? {
+        let database = field::<u64>(memory, base, STATIC_MODIFIER_DATABASE)? as usize;
+        if database != 0 {
+            let modifier = field::<u64>(memory, database, NATIONALITY_MODIFIER)? as usize;
+            if modifier != 0 {
+                if field::<u64>(memory, modifier, 0)?
+                    != at(base, crate::cstatic_modifier::VTABLE_RVA)? as u64
+                {
+                    return Err("operative nationality modifier identity mismatch");
+                }
+                roots[2] = at(modifier, crate::cstatic_modifier::ACCUMULATOR)?;
+            }
+        }
+    }
+    let owned_states = if target as i32 > 0 {
+        field(
+            memory,
+            countries.resolve(target)?.pointer,
+            ccountry::OWNED_STATE_COUNT,
+        )?
+    } else {
+        0
+    };
+    let mut network_gain_scale = 1;
+    if variant == operative_action::BUILD_NETWORK
+        && field::<u8>(memory, base, NETWORK_GAIN_CHEAT)? != 0
+    {
+        let mut client = field::<u32>(memory, game, CLIENT_COUNTRY)?;
+        if client as i32 <= 0 {
+            client = field(memory, game, CLIENT_COUNTRY_FALLBACK)?;
+        }
+        if client == row.owner_country
+            || (client != 0
+                && countries.resolve(client)?.canonical_slot
+                    == countries.resolve(row.owner_country)?.canonical_slot)
+        {
+            network_gain_scale = 100;
+        }
+    }
+    Ok(Some(EffectRoots {
+        keys,
+        key_count,
+        roots,
+        owned_states,
+        network_gain_scale,
+    }))
 }
 
 /// A root-out-resistance mission's operands: the factor's effective value

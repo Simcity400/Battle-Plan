@@ -15,6 +15,7 @@ fn key() -> Key {
         perspective: Default::default(),
         borders: 3,
         regions: vec![7].into(),
+        adjacency: false,
     }
 }
 

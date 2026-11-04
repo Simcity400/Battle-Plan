@@ -10,10 +10,9 @@
 //! supply and resources) while the camera is strictly below
 //! `NGraphics.ADJACENCY_RULE_DISTANCE_CUTOFF` (a free eye: nearer the icon than that), whatever
 //! the rule's open, closed or trade state.
-//! It draws at the mode's `NMapIcons.<table>_PRIORITY_ADJACENCY_RULE`. The navy mode's hover
-//! highlight of the rule's area is not drawn.
+//! It draws at the mode's `NMapIcons.<table>_PRIORITY_ADJACENCY_RULE`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Arc};
 
 use installed_content_core::{adjacency_rules::AdjacencyRule, defines::Defines};
 use viewer_foundation::map::{
@@ -42,6 +41,7 @@ pub struct Icon {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdjacencyIcons {
     pub icons: Vec<Icon>,
+    pub areas: BTreeMap<u32, Arc<[u32]>>,
     /// `NGraphics.ADJACENCY_RULE_DISTANCE_CUTOFF`, or why it cannot be read.
     pub cutoff: Result<f32, String>,
     /// Rules whose icon cannot be read, by reason.
@@ -67,10 +67,17 @@ impl AdjacencyIcons {
     pub fn of(rules: &[AdjacencyRule], cutoff: Result<f32, String>) -> Self {
         let mut icons: Vec<Icon> = Vec::new();
         let mut at: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut assigned = BTreeSet::new();
+        let mut areas = BTreeMap::new();
         let mut refused = BTreeMap::new();
         for rule in rules {
+            let area: Arc<[u32]> = rule.required_provinces.iter().copied()
+                .filter(|&province| province != 0 && assigned.insert(province))
+                .collect();
             match &rule.icon {
-                Ok(Some(placement)) => match at.get(&placement.province) {
+                Ok(Some(placement)) => {
+                    areas.insert(placement.province, area);
+                    match at.get(&placement.province) {
                     Some(&index) => icons[index].offset = placement.offset,
                     None => {
                         at.insert(placement.province, icons.len());
@@ -78,6 +85,7 @@ impl AdjacencyIcons {
                             province: placement.province,
                             offset: placement.offset,
                         });
+                    }
                     }
                 },
                 Ok(None) => {}
@@ -90,6 +98,7 @@ impl AdjacencyIcons {
         }
         Self {
             icons,
+            areas,
             cutoff,
             refused,
         }
@@ -121,6 +130,13 @@ struct Placed {
     province: u32,
     screen: [f32; 2],
     anchor: IconAnchor,
+    area: Arc<[u32]>,
+}
+
+pub struct Hit {
+    pub geometry: native_gui::HitGeometry,
+    pub layer: u64,
+    pub area: Arc<[u32]>,
 }
 
 /// The icons to present this frame, farthest first.
@@ -198,6 +214,7 @@ impl AdjacencyIcons {
                         cutoff,
                         family: IconFamily::AdjacencyRules,
                     },
+                    area: self.areas.get(&icon.province).cloned().unwrap_or_default(),
                 },
             ));
         }
@@ -218,6 +235,21 @@ impl PreparedAdjacencyIcons {
         batch: &mut Batch,
         report: &mut BTreeMap<String, usize>,
     ) -> usize {
+        self.draw_with_hits(context, priority, view, batch, report, &mut Vec::new())
+    }
+
+    pub fn draw_with_hits(
+        &self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        priority: i8,
+        view: &mut PoolView,
+        batch: &mut Batch,
+        report: &mut BTreeMap<String, usize>,
+        hits: &mut Vec<Hit>,
+    ) -> usize {
+        hits.clear();
+        let control = context.windows.gui_type(ADJACENCY_RULE_WINDOW.as_bytes())
+            .and_then(|root| root.child_named("province_required_rule"));
         let owners: Vec<_> = self
             .placed
             .iter()
@@ -233,7 +265,7 @@ impl PreparedAdjacencyIcons {
             .enumerate()
             .map(|(ordinal, placed)| (placed.province, ordinal))
             .collect();
-        let mut drawn = view.present(
+        let mut drawn = view.present_with_regions(
             context,
             &Plan {
                 name: ADJACENCY_RULE_WINDOW,
@@ -249,13 +281,21 @@ impl PreparedAdjacencyIcons {
         let mut count = 0;
         for drawn in drawn {
             let ordinal = order[&drawn.owner];
-            batch.at_layer(sprites::layer(priority, ordinal as u32, 0));
+            let layer = sprites::layer(priority, ordinal as u32, 0);
+            batch.at_layer(layer);
             batch.at_anchor(Some(self.placed[ordinal].anchor));
             if let Err(why) =
                 native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch)
             {
                 count_refused(report, ADJACENCY_RULE_WINDOW, &[why]);
                 continue;
+            }
+            if let Some(geometry) = control.and_then(|control| drawn.layout.regions.iter()
+                .find(|region| region.path == control.path))
+                .and_then(|region| region.hit.as_ref())
+                .filter(|geometry| geometry.form != native_gui::Hit::Through)
+            {
+                hits.push(Hit { geometry: geometry.shifted(drawn.origin), layer, area: Arc::clone(&self.placed[ordinal].area) });
             }
             count += 1;
         }

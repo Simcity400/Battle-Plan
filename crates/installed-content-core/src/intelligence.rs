@@ -21,6 +21,7 @@ use std::{
 pub struct Operation {
     pub token: String,
     pub name: String,
+    pub description: String,
     pub sprite: String,
     /// Agency operative assignment portrait.
     pub map_icon: String,
@@ -213,6 +214,8 @@ fn parse_operations_with_notes(
         for field in fields {
             if field.keyword_is("name") {
                 operation.name = string(field).map_err(|why| note_refusal(notes, why))?;
+            } else if field.keyword_is("desc") {
+                operation.description = string(field).map_err(|why| note_refusal(notes, why))?;
             } else if field.keyword_is("icon") {
                 operation.sprite = string(field).map_err(|why| note_refusal(notes, why))?;
             } else if field.keyword_is("map_icon") {

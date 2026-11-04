@@ -96,7 +96,13 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
                 (gpu.regions[slot].fx, gpu.regions[slot].fill),
                 style_words(style(key))
             );
-            assert_eq!(gpu.thickness[slot], layer.thickness(key, area).to_bits());
+            assert_eq!(
+                gpu.thickness[slot],
+                (
+                    layer.thickness(key, area).to_bits(),
+                    layer.center(key).to_bits()
+                )
+            );
         }
         // A refused shorter extent must not disturb a pending or displayed update.
         let source = gpu.source_keys.clone();

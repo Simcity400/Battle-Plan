@@ -250,6 +250,7 @@ impl RaidDefines {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Site {
+    Radar,
     AirBase,
     Rocket,
     Gun,
@@ -693,14 +694,12 @@ impl RaidAssets {
             if let Some(reason) = &self.refused_sites {
                 return Err(reason.clone());
             }
-            if building.radar {
-                return Err("raid target radar sites are not supported".into());
-            }
             let state = scope.building_location;
             let wanted: Vec<Site> = [
                 (building.air_base, Site::AirBase),
                 (building.rocket_launch_capacity > 0, Site::Rocket),
                 (building.gun_emplacement, Site::Gun),
+                (building.radar, Site::Radar),
             ]
             .into_iter()
             .filter_map(|(has, site)| has.then_some(site))
@@ -747,7 +746,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 /// Provinces with admitted content building slots whose buckets hold an air
-/// base, rocket site or gun emplacement type.
+/// base, rocket site, radar or gun emplacement type.
 fn sites(
     layers: &ResolvedLayers,
     map: &MapData,
@@ -782,6 +781,7 @@ fn sites(
                 candidates.iter().any(|kind| kind.gun_emplacement),
             ),
             (Site::AirBase, candidates.iter().any(|kind| kind.air_base)),
+            (Site::Radar, candidates.iter().any(|kind| kind.radar)),
         ] {
             if has {
                 out.entry((slot.state, site)).or_default().push(province);
@@ -823,8 +823,7 @@ pub struct RaidReport {
     pub unresolved: usize,
     /// Wrapped byte counters: a count of 256 reads zero.
     pub wrapped: usize,
-    /// Icons with undeclared glyph sprites. The previous button sprite is
-    /// unrecorded, so replay draws these without a glyph.
+    /// Icons with undeclared glyph sprites, retaining their window's previous sprite.
     pub missing_glyphs: usize,
     /// Incoming raids whose type the port cannot use (the content declares
     /// it in a refused form, or its token is refused: no literal, a

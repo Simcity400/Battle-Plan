@@ -168,6 +168,15 @@ impl<'a> Layer<'a> {
             .and_then(|style| style(key).thickness)
             .unwrap_or_else(|| self.kind.thickness(area_pixels, self.field))
     }
+
+    pub fn center(&self, key: u32) -> f32 {
+        // Fixed map-mode shapes leave the country center band at its constructor default.
+        if self.style(key).thickness.is_some() {
+            0.0
+        } else {
+            self.field.center
+        }
+    }
 }
 
 /// The two gradient border textures, ready for a straight RGBA8 upload.
@@ -388,6 +397,7 @@ struct Regions {
     style: Vec<RegionStyle>,
     /// Field thickness `T` per dense index.
     thickness: Vec<f32>,
+    center: Vec<f32>,
     field: FieldDefines,
 }
 
@@ -458,6 +468,7 @@ impl Regions {
                 .collect(),
             style,
             thickness,
+            center: keys.iter().map(|&key| layer.center(key)).collect(),
             field: *layer.field,
         })
     }
@@ -853,7 +864,10 @@ fn sample(
         return ([red, green, blue, NO_REGION_ALPHA], [0; 4]);
     }
     let thickness = regions.thickness[region as usize];
-    let field = &regions.field;
+    let field = &FieldDefines {
+        center: regions.center[region as usize],
+        ..regions.field
+    };
     let alpha = match grid.nearest(map.width, x, y, thickness, field.center) {
         Some(distance) if distance <= field_reach(thickness, field) => {
             field_alpha(distance, thickness, field.center)

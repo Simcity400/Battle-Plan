@@ -138,18 +138,14 @@ pub(crate) fn update(
         .glyph
         .as_deref()
         .ok_or_else(|| format!("{} has no decided raid glyph", controls.glyph.path))?;
-    if !native_gui::sprite_resolves(glyph.as_bytes(), resources) {
-        return Err(format!(
-            "raid glyph {glyph} cannot replace {}",
-            controls.glyph.path
-        ));
+    if native_gui::sprite_resolves(glyph.as_bytes(), resources) {
+        instance.set_sprite(
+            root,
+            controls.glyph,
+            glyph.as_bytes(),
+            SpriteSetter::ButtonStandard,
+        )?;
     }
-    instance.set_sprite(
-        root,
-        controls.glyph,
-        glyph.as_bytes(),
-        SpriteSetter::ButtonStandard,
-    )?;
     if icon.plus {
         instance.set_hide_flag(root, controls.plus, false)?;
         instance.show(root, controls.plus)?;
@@ -760,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_raid_window_withholds_a_missing_or_undecided_glyph() {
+    fn a_reused_raid_window_keeps_an_undeclared_glyph_and_withholds_an_undecided_one() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = draw_resources();
@@ -802,6 +798,7 @@ mod tests {
             1
         );
         for glyph in [Some("missing_glyph".into()), None] {
+            let decided = glyph.is_some();
             prepared.placed[0].icon.glyph = glyph;
             batch = Batch::default();
             report = RaidReport::default();
@@ -814,10 +811,10 @@ mod tests {
                     &mut Vec::new(),
                     &mut report
                 ),
-                0
+                usize::from(decided)
             );
-            assert!(batch.is_empty());
-            assert_eq!(report.reasons.values().sum::<usize>(), 1);
+            assert_eq!(batch.is_empty(), !decided);
+            assert_eq!(report.reasons.values().sum::<usize>(), usize::from(!decided));
             assert!(report.reasons.keys().all(|why| why.contains("raid glyph")));
         }
     }

@@ -248,6 +248,7 @@ fn unit_scale_replay_layers() {
                 playing: true,
                 perspective: perspective.clone(),
                 map_mode: Default::default(),
+                diplomatic_selected: None,
                 show_allied_plans: false,
                 counters: Default::default(),
                 view: crate::hours::View {

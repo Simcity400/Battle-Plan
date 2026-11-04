@@ -30,6 +30,7 @@ pub const PLAYER_KEY: usize = 0x98;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    pub ordinal: u32,
     /// Native signed session key; reuse after removal is not ruled out.
     pub id: i32,
     /// Exact native country reference bits, including unassigned zero.
@@ -160,6 +161,7 @@ pub fn walk_buffer(
             user.copy_buffer(memory, &fields.strings[..32], &mut names, user_start)?;
             name.copy_buffer(memory, &fields.strings[32..], &mut names, name_start)?;
             output[len] = Row {
+                ordinal: index,
                 id: fields.id,
                 country: fields.country,
                 flags: fields.flags,

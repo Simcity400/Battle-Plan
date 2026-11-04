@@ -21,33 +21,13 @@ use viewer_foundation::map::{
 
 const AIR_SUPPLY: usize = 10;
 
-/// The native supply pass rebuilds its ordered consumer membership every hour.
-/// Recording that membership requires either an additional hourly full walk or
-/// synchronous per-consumer event acquisition, both excluded by the cost rules.
-/// Rounded unit footers cannot prove raw demand, severity or membership.
-const SUPPLY_REFUSAL: &str = "Air-supply regional summary operands are unavailable: exact consumer membership is rebuilt hourly; an extra full scan or synchronous per-consumer observation violates the recording cost rules";
-
-/// Supply status updates are reached for every drawn regional icon, even when
-/// no registered Air-supply wing admits its mission entry. Keep those refusals
-/// separate from the known registration count and interception warning.
-fn note_supply_refusals(count: i32, notes: &mut BTreeMap<String, usize>) {
-    let mut refuse = |fragment: &str| {
-        *notes
-            .entry(format!("{WINDOW} {fragment} withheld: {SUPPLY_REFUSAL}"))
-            .or_default() += 1;
-    };
-    if count < 0 {
-        refuse("Air-supply mission entry admission");
-    } else if count == 0 {
-        refuse("Air-supply zero-aircraft warning colour");
-    }
-    refuse("Air-supply severity icon");
-    refuse("Air-supply amount text");
-    refuse("Air-supply regional hover");
-}
+const SUPPLY_REFUSAL: &str = "regional Air supply totals were not captured";
 
 #[derive(Default)]
 pub(super) struct Prepared {
+    supply: BTreeMap<u32, replay_data::rows::AirSupplySummary>,
+    supply_complete: bool,
+    supply_hovers: BTreeMap<u32, Arc<viewer_foundation::tooltip_text::Tooltip>>,
     regions: BTreeMap<u32, [i32; MISSIONS]>,
     alerts: BTreeSet<(u32, usize)>,
     uncertain: BTreeMap<(u32, usize), &'static str>,
@@ -148,6 +128,7 @@ impl Prepared {
                     regions,
                     ..Default::default()
                 };
+                prepared.prepare_supply(inputs, frame, vision.ours());
                 let combat = frame.complete::<tables::AirRegionCombat>();
                 let links: HashMap<_, _> = frame
                     .complete::<tables::CountryLinks>()
@@ -189,7 +170,7 @@ impl Prepared {
                         counts.iter().enumerate().filter(|(_, count)| **count >= 0)
                     {
                         let mut damage = [None; 2];
-                        let alert = interception_alert(regional_wings[&region].iter().filter(|wing| {
+                        let alert = interception_alert(regional_wings.get(&region).into_iter().flatten().filter(|wing| {
                             wing.mission_mask & (1 << kind) != 0
                         }).map(|wing| {
                             let gate = gates.get(&wing.id).copied().flatten();
@@ -211,8 +192,10 @@ impl Prepared {
                             prepared.alerts.insert((region, kind));
                         }
                         let reason = alert.err();
-                        let reason =
-                            reason.or((kind == AIR_SUPPLY && count == 0).then_some(SUPPLY_REFUSAL));
+                        let reason = reason.or((kind == AIR_SUPPLY
+                            && count == 0
+                            && !prepared.supply_complete)
+                            .then_some(SUPPLY_REFUSAL));
                         if let Some(reason) = reason {
                             prepared.uncertain.insert((region, kind), reason);
                             *prepared
@@ -260,7 +243,71 @@ fn average(values: impl IntoIterator<Item = (i32, i64)>) -> Option<i64> {
     )
 }
 
+const EMPTY_SUPPLY: replay_data::rows::AirSupplySummary = replay_data::rows::AirSupplySummary {
+    severity: 2,
+    needed: 0,
+    supplied: 0,
+    deficit: 0,
+};
+
 impl Prepared {
+    fn supply(&self, region: u32) -> Option<replay_data::rows::AirSupplySummary> {
+        self.supply_complete
+            .then(|| self.supply.get(&region).copied().unwrap_or(EMPTY_SUPPLY))
+    }
+
+    fn prepare_supply(&mut self, inputs: &HourInputs<'_>, frame: &DecodedFrame, viewer: u32) {
+        use installed_content_localisation::localisation::Argument;
+        let Ok(rows) = frame.complete::<tables::AirGroundCrews>() else {
+            return;
+        };
+        self.supply_complete = rows
+            .iter()
+            .any(|row| row.country == viewer && row.region == u32::MAX && row.supply.is_some());
+        if !self.supply_complete {
+            return;
+        }
+        for row in rows
+            .iter()
+            .filter(|row| row.country == viewer && row.region != u32::MAX)
+        {
+            let Some(supply) = row.supply else {
+                continue;
+            };
+            self.supply.insert(row.region, supply);
+            if supply.severity < 2 {
+                let counts = self.regions.entry(row.region).or_insert([-1; MISSIONS]);
+                counts[AIR_SUPPLY] = counts[AIR_SUPPLY].max(0);
+            }
+        }
+        for &region in inputs.content.region_names.keys() {
+            let supply = self.supply(region).unwrap();
+            let key = match supply.severity {
+                0 => b"AIR_SUPPLY_VERY_LOW_SUPPLY".as_slice(),
+                1 => b"AIR_SUPPLY_LOW_SUPPLY".as_slice(),
+                _ => b"AIR_SUPPLY_NORMAL_SUPPLY".as_slice(),
+            };
+            let mut hover = viewer_foundation::tooltip_text::Tooltip::default();
+            hover.line(
+                false,
+                0,
+                "regional Air supply",
+                inputs
+                    .localisation
+                    .localise_with(
+                        key,
+                        &[
+                            ("NEED", Argument::Fixed5(supply.deficit)),
+                            ("VAL", Argument::Fixed5(supply.supplied)),
+                            ("MAX", Argument::Fixed5(supply.needed)),
+                        ],
+                    )
+                    .map_err(|error| error.to_string()),
+            );
+            self.supply_hovers.insert(region, Arc::new(hover));
+        }
+    }
+
     fn prepare_ground(&mut self, inputs: &HourInputs<'_>, frame: &DecodedFrame, viewer: u32) {
         use installed_content_localisation::localisation::Argument;
         use viewer_foundation::tooltip_text::Tooltip;
@@ -661,6 +708,48 @@ impl Prepared {
                         continue;
                     }
                     let alerted = self.alerts.contains(&(region, kind));
+                    let supply = (kind == AIR_SUPPLY).then(|| self.supply(region)).flatten();
+                    if kind == AIR_SUPPLY {
+                        for (name, small) in [("supply_count", false), ("supply_count_small", true)]
+                        {
+                            let control = named(item, native::Kind::TextBox, name)?;
+                            let shown =
+                                supply.is_some_and(|supply| (supply.severity == 2) == small);
+                            entry.set_hide_flag(item, control, !shown)?;
+                            if shown {
+                                entry.show(item, control)?;
+                                let supply = supply.unwrap();
+                                let number = if small {
+                                    format!(
+                                        "{}/{}",
+                                        installed_content_core::fixed5::fixed5_to_string(
+                                            supply.supplied,
+                                            0
+                                        ),
+                                        installed_content_core::fixed5::fixed5_to_string(supply.needed, 0)
+                                    )
+                                } else {
+                                    format!(
+                                        "{}R{}{}!",
+                                        viewer_foundation::map::native_text::COLOR,
+                                        installed_content_core::fixed5::fixed5_to_string(supply.deficit, 1),
+                                        viewer_foundation::map::native_text::COLOR
+                                    )
+                                };
+                                entry.set_text(item, control, &number, &resources)?;
+                            } else {
+                                entry.hide(item, control)?;
+                            }
+                        }
+                        let icon = named(item, native::Kind::Icon, "supply_icon")?;
+                        entry.set_hide_flag(item, icon, supply.is_none())?;
+                        if let Some(supply) = supply {
+                            entry.show(item, icon)?;
+                            entry.set_frame(item, icon, supply.severity + 1)?;
+                        } else {
+                            entry.hide(item, icon)?;
+                        }
+                    }
                     let alert = named(item, native::Kind::Icon, "alert")?;
                     entry.set_hide_flag(item, alert, !alerted)?;
                     if alerted {
@@ -675,7 +764,9 @@ impl Prepared {
                     } else {
                         entry.set_hide_flag(item, text, false)?;
                         entry.show(item, text)?;
-                        let text_value = if alerted {
+                        let text_value = if alerted
+                            || (count == 0 && supply.is_some_and(|supply| supply.severity < 2))
+                        {
                             let control = viewer_foundation::map::native_text::COLOR;
                             format!("{control}R{count}{control}!")
                         } else {
@@ -750,6 +841,19 @@ impl Prepared {
                         parts[at].extend(holder.place(entry.position(), &layout));
                         layout.parts = holder.place(entry.position(), &layout);
                         layout.regions = holder.place_regions(entry.position(), &layout.regions);
+                        if kind == AIR_SUPPLY
+                            && let Some(hover) = self.supply_hovers.get(&drawn.owner)
+                        {
+                            for (kind, name) in [
+                                (native::Kind::Icon, "supply_icon"),
+                                (native::Kind::TextBox, "supply_count"),
+                                (native::Kind::TextBox, "supply_count_small"),
+                            ] {
+                                if let Some(hit) = viewer_foundation::map::gui_resources::observer_hit_rectangle(named(item, kind, name)?, &layout, drawn.origin, &resources, &mut report.icon_gui_notes, viewer_foundation::map::gui_resources::HitMode::NativeGeometry) {
+                                    hits.push(AirMissionHover { region: drawn.owner, mission: None, rect: hit.rect, layer: draw_layer, text: Arc::clone(hover) });
+                                }
+                            }
+                        }
                         if let Some(hit) = hit_rectangle(
                             named(item, native::Kind::Button, "button")?,
                             &layout,
@@ -813,7 +917,14 @@ impl Prepared {
                 Ok(()) => report.air_mission_hits.extend(hits),
                 Err(why) => count_refused(&mut report.icon_gui_notes, WINDOW, &[why]),
             }
-            note_supply_refusals(counts[AIR_SUPPLY], &mut report.icon_gui_notes);
+            if !self.supply_complete {
+                *report
+                    .icon_gui_notes
+                    .entry(format!(
+                        "{WINDOW} regional Air supply withheld: {SUPPLY_REFUSAL}"
+                    ))
+                    .or_default() += 1;
+            }
         }
         batch.at_anchor(None);
     }
@@ -822,66 +933,6 @@ impl Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn supply_refusals_distinguish_unknown_entry_admission_from_known_counts() {
-        let fragments = |count| {
-            let mut notes = BTreeMap::new();
-            note_supply_refusals(count, &mut notes);
-            notes
-        };
-        let absent = fragments(-1);
-        assert_eq!(absent.len(), 4);
-        assert!(
-            absent
-                .keys()
-                .any(|key| key.contains("mission entry admission"))
-        );
-        assert!(!absent.keys().any(|key| key.contains("warning colour")));
-
-        let empty = fragments(0);
-        assert_eq!(empty.len(), 4);
-        assert!(
-            !empty
-                .keys()
-                .any(|key| key.contains("mission entry admission"))
-        );
-        assert!(
-            empty
-                .keys()
-                .any(|key| key.contains("zero-aircraft warning colour"))
-        );
-
-        let positive = fragments(17);
-        assert_eq!(positive.len(), 3);
-        assert!(
-            !positive.keys().any(
-                |key| key.contains("mission entry admission") || key.contains("warning colour")
-            )
-        );
-        for fragment in ["severity icon", "amount text", "regional hover"] {
-            assert!(positive.keys().any(|key| key.contains(fragment)));
-        }
-        assert!(positive.values().all(|&count| count == 1));
-    }
-
-    #[test]
-    fn supply_refusal_counts_follow_regional_icons_without_hiding_positive_counts() {
-        let mut notes = BTreeMap::new();
-        note_supply_refusals(8, &mut notes);
-        note_supply_refusals(8, &mut notes);
-        assert_eq!(notes.len(), 3);
-        assert!(notes.values().all(|&count| count == 2));
-        let mut counts = [-1; MISSIONS];
-        count(
-            &mut counts,
-            &AirWingRow {
-                planes: 8,
-                mission_mask: 1 << AIR_SUPPLY,
-                ..Default::default()
-            },
-        );
-        assert_eq!(counts[AIR_SUPPLY], 8);
-    }
     #[test]
     fn ground_crews_keep_active_controls_enabled_and_compare_unrounded_power() {
         assert_eq!(

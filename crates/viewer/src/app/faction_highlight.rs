@@ -13,6 +13,7 @@ pub(super) struct Key {
     pub perspective: perspective::Choice,
     pub borders: u64,
     pub regions: Arc<[u32]>,
+    pub adjacency: bool,
 }
 
 #[derive(Default)]

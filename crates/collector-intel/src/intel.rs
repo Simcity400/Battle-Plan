@@ -7,7 +7,7 @@ use crate::{
     read_accounting,
     slicing::{SliceFingerprints, SliceSelection},
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
-    table_conversion::{table, unavailable},
+    table_conversion::{table, table_iter, unavailable},
 };
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine_events::incoming_diplomatic_action_queue;
@@ -139,7 +139,10 @@ pub fn network_summary_capture_diagnostics() -> impl serde::Serialize {
 }
 
 pub fn operative_capture_diagnostics() -> impl serde::Serialize {
-    OPERATIVE_REFUSALS.diagnostics()
+    crate::status::status!({
+        "membership": OPERATIVE_REFUSALS.diagnostics(),
+        "mission_effect_cache_bytes": crate::operative_effects::allocated_bytes(),
+    })
 }
 
 static AGENCY_UPGRADE_REFUSALS: [std::sync::atomic::AtomicU64;
@@ -670,6 +673,7 @@ pub struct Captured {
     operative_refused_rows: u32,
     operative_first_refused: Option<coperative_leader::Refusal>,
     operative_missions: CaptureRows<operative_missions::Row>,
+    operative_effects: Vec<crate::operative_effects::Effects>,
     operative_mission_failure: Option<(u64, u32)>,
     strategic_operatives: CaptureRows<strategic_operatives::Row>,
     agency_operation_buffers: CaptureRows<agency_operation_buffers::Row>,
@@ -827,6 +831,7 @@ impl Captured {
             operative_refused_rows: 0,
             operative_first_refused: None,
             operative_missions: CaptureRows::new(capacity.rows[18]),
+            operative_effects: Vec::new(),
             operative_mission_failure: None,
             strategic_operatives: CaptureRows::new(capacity.rows[19]),
             agency_operation_buffers: CaptureRows::new(capacity.rows[20]),
@@ -983,6 +988,7 @@ impl Captured {
         self.operative_refused_rows = 0;
         self.operative_first_refused = None;
         self.operative_missions.reset();
+        self.operative_effects.clear();
         self.operative_mission_failure = None;
         self.strategic_operatives.reset();
         self.agency_operation_buffers.reset();
@@ -1043,6 +1049,7 @@ impl Captured {
             + self.operatives.allocated_bytes()
             + self.captured_operatives.allocated_bytes()
             + self.operative_missions.allocated_bytes()
+            + self.operative_effects.capacity() * size_of::<crate::operative_effects::Effects>()
             + self.strategic_operatives.allocated_bytes()
             + self.agency_operation_buffers.allocated_bytes()
             + self.cryptology.allocated_bytes()
@@ -1538,6 +1545,16 @@ impl Captured {
                         }
                     },
                 );
+                {
+                    let _reads = read_accounting::table(TABLES[18]);
+                    crate::operative_effects::snapshot(
+                        memory,
+                        base,
+                        state,
+                        &self.operative_missions.rows[..self.operative_missions.outcome.len()],
+                        &mut self.operative_effects,
+                    );
+                }
                 ticks[18] = elapsed(begin);
             }
             plain!(5, cryptology, ccryptology::walk_growing);
@@ -2310,8 +2327,26 @@ impl Captured {
             return unavailable("operative mission bytes lie outside captured arena");
         }
         let bytes = &self.operative_mission_bytes.first;
-        table::<tables::OperativeMissions, _>(outcome, &self.operative_missions.rows, |r| {
-            rows::OperativeMissionRow {
+        table_iter::<tables::OperativeMissions, _>(
+            outcome,
+            self.operative_missions
+                .rows
+                .iter()
+                .take(outcome.len())
+                .enumerate(),
+            |(index, r)| rows::OperativeMissionRow {
+                active_effect: self
+                    .operative_effects
+                    .get(index)
+                    .and_then(|effects| effects[0].as_ref())
+                    .cloned(),
+                pending_effect: self
+                    .operative_effects
+                    .get(index)
+                    .and_then(|effects| effects[1].as_ref())
+                    .cloned(),
+                map_selected: r.map_selected,
+                map_warning: r.map_warning,
                 roster_country: r.roster_country,
                 id: r.id,
                 ordinal: r.ordinal,
@@ -2332,8 +2367,8 @@ impl Captured {
                 root_out_country_factor: r.root_out_country_factor,
                 root_out_operative_factor: r.root_out_operative_factor,
                 root_out_nationality: r.root_out_nationality,
-            }
-        })
+            },
+        )
     }
 
     fn agency_operation_buffers_table(&self, outcome: Outcome) -> TableView {
@@ -2360,12 +2395,25 @@ impl Captured {
                         state: entry.state,
                     }))
                 };
+                let completed = list(r.counts[0]);
+                let running = list(r.counts[1]);
+                let ready = list(r.counts[2]);
+                let unready = list(r.counts[3]);
+                let offers = owned_vec(map_slice(&entries[start..start + r.counts[4]], |entry| {
+                    rows::AgencyBufferedOffer {
+                        definition: entry.definition,
+                        country: entry.country,
+                        state: entry.state,
+                        duration: entry.duration,
+                    }
+                }));
                 rows::AgencyOperationBuffersRow {
                     snapshot: 0,
-                    completed: list(r.counts[0]),
-                    running: list(r.counts[1]),
-                    ready: list(r.counts[2]),
-                    unready: list(r.counts[3]),
+                    completed,
+                    running,
+                    ready,
+                    unready,
+                    offers,
                 }
             },
         )
@@ -2385,6 +2433,18 @@ impl Captured {
         table::<tables::StrategicOperatives, _>(outcome, &self.strategic_operatives.rows, |r| {
             let trade_end = r.entries_start + r.trade_len;
             rows::StrategicOperativeRow {
+                mission_rosters: {
+                    let mut start = trade_end + r.pressure_len;
+                    Some(r.mission_counts.map(|count| {
+                        let end = start + count;
+                        let roster = entries[start..end]
+                            .iter()
+                            .map(|entry| entry.operative)
+                            .collect();
+                        start = end;
+                        roster
+                    }))
+                },
                 country: r.country,
                 slot: r.slot,
                 mission_activity: r.mission_activity,
@@ -2934,6 +2994,11 @@ impl ArenaRow<strategic_operatives::Entry> for strategic_operatives::Row {
     fn valid(&self, len: usize) -> bool {
         self.trade_len
             .checked_add(self.pressure_len)
+            .and_then(|count| {
+                self.mission_counts
+                    .into_iter()
+                    .try_fold(count, usize::checked_add)
+            })
             .is_some_and(|count| fits(self.entries_start, count, len))
     }
 }
@@ -6221,6 +6286,9 @@ mod tests {
         let (_, mut capture) = small();
         capture.operative_missions.outcome = Outcome::Rows { len: 1 };
         capture.operative_missions.rows[0] = operative_missions::Row {
+            native_pointer: 0,
+            map_selected: None,
+            map_warning: None,
             roster_country: u32::MAX,
             id: u64::MAX,
             ordinal: 2,
@@ -6249,6 +6317,10 @@ mod tests {
         assert_eq!(
             complete::<tables::OperativeMissions>(&views[18]),
             [rows::OperativeMissionRow {
+                active_effect: None,
+                pending_effect: None,
+                map_selected: None,
+                map_warning: None,
                 roster_country: u32::MAX,
                 id: u64::MAX,
                 ordinal: 2,
@@ -6297,6 +6369,7 @@ mod tests {
         let (_, mut capture) = small();
         capture.strategic_operatives.outcome = Outcome::Rows { len: 2 };
         capture.strategic_operatives.rows[0] = strategic_operatives::Row {
+            mission_counts: [0; 5],
             native_pointer: 0,
             country: u32::MAX,
             slot: 7,
@@ -6314,16 +6387,19 @@ mod tests {
         };
         capture.strategic_operative_entries.first = vec![
             strategic_operatives::Entry {
+                operative: 0,
                 owner: 2,
                 value: 250_000,
                 tension: 0,
             },
             strategic_operatives::Entry {
+                operative: 0,
                 owner: 3,
                 value: 0,
                 tension: 0,
             },
             strategic_operatives::Entry {
+                operative: 0,
                 owner: 2,
                 value: 32_768,
                 tension: -16_384,
@@ -6336,11 +6412,13 @@ mod tests {
             complete::<tables::StrategicOperatives>(&views[19]),
             [
                 rows::StrategicOperativeRow {
+                    mission_rosters: Some(Default::default()),
                     country: 2,
                     slot: 2,
                     ..Default::default()
                 },
                 rows::StrategicOperativeRow {
+                    mission_rosters: Some(Default::default()),
                     country: u32::MAX,
                     slot: 7,
                     mission_activity: i64::MIN,

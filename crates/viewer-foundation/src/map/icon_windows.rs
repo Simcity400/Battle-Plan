@@ -167,13 +167,24 @@ pub fn visible_layout<K: Copy>(
     resources: &dyn native_gui::Resources,
     notes: &mut BTreeMap<String, usize>,
 ) -> Option<Drawn<K>> {
+    visible_layout_regions(icon, root, name, resources, notes, false)
+}
+
+fn visible_layout_regions<K: Copy>(
+    icon: &Visible<'_, K>,
+    root: &native::Element,
+    name: &str,
+    resources: &dyn native_gui::Resources,
+    notes: &mut BTreeMap<String, usize>,
+    regions: bool,
+) -> Option<Drawn<K>> {
     if let Some(why) = icon.withheld {
         *notes
             .entry(format!("{name} is not drawn: {why}"))
             .or_default() += 1;
         return None;
     }
-    match icon.instance.layout(root, resources, None) {
+    match icon.instance.layout_with_regions(root, resources, None, regions) {
         Ok(Some(layout)) => {
             count_noted(notes, name, &layout.diagnostics);
             Some(Drawn {
@@ -254,8 +265,31 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
         plan: &Plan<'_, K>,
         initialize: native_gui::lifecycle::Setup,
+        update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
+        notes: &mut BTreeMap<String, usize>,
+    ) -> Vec<Drawn<K>> {
+        self.present_regions(context, plan, initialize, update, notes, false)
+    }
+
+    pub fn present_with_regions(
+        &mut self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        plan: &Plan<'_, K>,
+        initialize: native_gui::lifecycle::Setup,
+        update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
+        notes: &mut BTreeMap<String, usize>,
+    ) -> Vec<Drawn<K>> {
+        self.present_regions(context, plan, initialize, update, notes, true)
+    }
+
+    fn present_regions(
+        &mut self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        plan: &Plan<'_, K>,
+        initialize: native_gui::lifecycle::Setup,
         mut update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
         notes: &mut BTreeMap<String, usize>,
+        regions: bool,
     ) -> Vec<Drawn<K>> {
         let mut drawn = Vec::with_capacity(plan.owners.len());
         let run = || -> Result<(), String> {
@@ -338,7 +372,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                     continue;
                 }
                 if let Some(layout) =
-                    visible_layout(&icon, root, plan.name, context.resources, notes)
+                    visible_layout_regions(&icon, root, plan.name, context.resources, notes, regions)
                 {
                     drawn.push(layout);
                 }

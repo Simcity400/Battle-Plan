@@ -21,13 +21,29 @@ typed_codec!(AirTransferInputRow, 64, |row| row.wing as u128,
 /// unavailable certificate or read, never an observed false value.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirGroundCrewRow {
+    pub supply: Option<AirSupplySummary>,
     pub country: u32,
     pub region: u32,
     pub enabled: Option<u32>,
 }
 typed_codec!(AirGroundCrewRow, 64, |row| (row.country as u128) << 32 | row.region as u128,
  |key| Self { country: (key >> 32) as u32, region: key as u32, ..Self::default() },
- { 0 => (enabled): OptionalU32 }, |_row| Ok(()));
+ { 0 => (enabled): OptionalU32, 1 => (supply): Opaque }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AirSupplySummary {
+    pub severity: i32,
+    pub needed: i64,
+    pub supplied: i64,
+    pub deficit: i64,
+}
+value_struct!(AirSupplySummary {
+    severity: i32,
+    needed: i64,
+    supplied: i64,
+    deficit: i64
+});
+opaque_value!(Option<AirSupplySummary>);
 
 /// AirRegionalMissions: one registered mission in its country's regional
 /// vector. `ordinal` is the wing's position there; its owner and region are

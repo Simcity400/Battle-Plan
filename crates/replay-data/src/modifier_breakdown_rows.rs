@@ -4,6 +4,7 @@ pub use engine_native::modifier_breakdown::Node as ModifierBreakdownNode;
 value_struct!(ModifierBreakdownNode { children: u32, value: i64, name: Vec<u8> });
 opaque_value!(Vec<ModifierBreakdownNode>);
 opaque_value!(Option<Vec<ModifierBreakdownNode>>);
+opaque_value!(Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>);
 opaque_value!(Vec<Vec<u8>>);
 
 /// Retired: the reserve reinforcement hover's country (kind 0) or selected

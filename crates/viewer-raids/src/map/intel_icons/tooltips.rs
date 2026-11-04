@@ -2,19 +2,12 @@
 //! (`OPERATION_ONMAP_CLICK_FOR_DETAILS`, `OPERATION_ONMAP_CLICK_FOR_MORE`) are left out, as the
 //! other map hovers leave theirs; a line whose operands are not recorded is refused by name.
 
-use super::build::{
-    BOOST_IDEOLOGY, BUILD_NETWORK, CONTROL_TRADE, COUNTER_INTELLIGENCE, DIPLOMATIC_PRESSURE, Hour,
-    PROPAGANDA, QUIET_NETWORK, ROOT_OUT, Shared,
-};
+use super::build::{Hour, Shared};
 use super::values::{self, ONE};
 use super::*;
 use installed_content_localisation::localisation::Argument as Arg;
 use replay_data::rows::CharacterOperativeRow;
-use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::localise;
-
-/// Why a secondary line is not drawn: its layout and some of its operands are not established.
-const UNESTABLISHED: &str = "its separators and operands are not established for this hover";
 
 /// The More entry's hover: only its click footer, which is left out.
 pub(super) fn more() -> Tooltip {
@@ -25,11 +18,18 @@ pub(super) fn more() -> Tooltip {
 /// the activity level.
 pub(super) fn shield(
     hour: &Hour<'_, '_>,
+    slot: u32,
+    shared: &Shared<'_, '_>,
     defense: Result<i64, String>,
     level: Result<usize, String>,
 ) -> Tooltip {
     let mut text = Tooltip::default();
-    text.refuse("the agency defense breakdown", UNESTABLISHED.into());
+    text.line(
+        false,
+        0,
+        "agency defense breakdown",
+        defense_breakdown(hour, slot, shared),
+    );
     let loc = hour.localisation;
     text.line(
         false,
@@ -62,10 +62,115 @@ pub(super) fn shield(
     text
 }
 
+fn defense_breakdown(
+    hour: &Hour<'_, '_>,
+    slot: u32,
+    shared: &Shared<'_, '_>,
+) -> Result<String, String> {
+    use dashboard_text::modifier_text::{self, Breakdown};
+    let row = shared
+        .tables
+        .defense
+        .as_ref()
+        .map_err(Clone::clone)?
+        .iter()
+        .find(|row| hour.slot(row.country) == Some(slot))
+        .ok_or("country counterintelligence operands unavailable")?;
+    if row.strategic_present == 0 {
+        return Ok(String::new());
+    }
+    let defines = hour.defines.counter.as_ref().map_err(Clone::clone)?;
+    let rating = values::counter_rating(row, defines)?;
+    let header = localise(
+        hour.localisation,
+        "AGENCY_DEFENSE_LEVEL",
+        &[("LEVEL", Arg::Fixed5(rating))],
+    )?;
+    let mut text = values::coloured('H', &header);
+    text.push('\n');
+    if defines.base != 0 {
+        let base = installed_content_core::fixed5::fixed5_to_string(defines.base, 1);
+        text.push_str(&localise(
+            hour.localisation,
+            "MODIFIER_BASE_VALUE_STR",
+            &[("VALUE", Arg::Text(&base))],
+        )?);
+        text.push('\n');
+    }
+    let nodes = row
+        .defense_tree
+        .as_deref()
+        .ok_or("country counterintelligence modifier sources were not captured")?;
+    if !nodes.is_empty() {
+        text.push_str(&modifier_text::breakdown(
+            nodes,
+            Breakdown {
+                depth: -1,
+                prefix: "",
+                suffix: "",
+            },
+            |node| {
+                let mut text = dashboard_text::scripted_text::stored_text(
+                    hour.localisation,
+                    hour.language,
+                    &node.name,
+                    "counterintelligence source",
+                )?;
+                if !text.is_empty() {
+                    text.push_str(": ");
+                }
+                let definition = hour
+                    .frame
+                    .complete::<tables::ModifierDefinitions>()
+                    .map_err(|error| error.to_string())?
+                    .iter()
+                    .find(|definition| {
+                        definition.index
+                            == engine_executable::modifier_keys::INTELLIGENCE_AGENCY_DEFENSE
+                    })
+                    .ok_or("counterintelligence modifier definition unavailable")?;
+                text.push_str(&modifier_text::value_text(
+                    definition,
+                    node.value,
+                    2,
+                    false,
+                    false,
+                    |key, _| {
+                        let key = std::str::from_utf8(key)
+                            .map_err(|_| "counterintelligence modifier key is not UTF-8")?;
+                        localise(hour.localisation, key, &[])
+                    },
+                )?);
+                Ok(text)
+            },
+        )?);
+    }
+    let contribution = values::counter_contributions(row, defines)?
+        .into_iter()
+        .fold(0i64, |sum, (_, value)| sum.wrapping_add(value));
+    if contribution > 0 {
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&localise(
+            hour.localisation,
+            "MODIFIER_FROM_OPERATIVE",
+            &[],
+        )?);
+        text.push_str(": ");
+        text.push_str(&values::coloured(
+            'H',
+            &installed_content_core::fixed5::fixed5_to_string(contribution, 1),
+        ));
+        text.push('\n');
+    }
+    Ok(text)
+}
+
 /// The operative's name and codename, two newlines, then its mission's tooltip.
 pub(super) fn operative<'h, 'f>(
     hour: &Hour<'h, 'f>,
-    row: &OperativeMissionRow,
+    row: &'f OperativeMissionRow,
     character: Result<Option<&CharacterOperativeRow>, String>,
     shared: &Shared<'h, 'f>,
 ) -> Tooltip {
@@ -91,311 +196,62 @@ pub(super) fn operative<'h, 'f>(
         )
     })();
     text.line(false, 0, "OPERATIVE_NAME_AND_CODENAME", header);
-    // A relocating operative carries its pending mission.
-    let (variant, country, state) = if row.assignment == 3 {
-        (row.variant, row.target_country, row.target_state)
-    } else {
-        (row.pending_variant, row.pending_country, row.pending_state)
-    };
-    let Some(variant) = variant else {
-        return text;
-    };
-    let country = country.and_then(|raw| hour.slot(raw));
-    let names = &shared.names;
-    let country_name = |suffix: &str| -> Result<String, String> {
-        let slot = country.ok_or("the mission's target country has no CountryLinks row")?;
-        names.name_with(slot, suffix)
-    };
-    let flag = || -> Result<String, String> {
-        let slot = country.ok_or("the mission's target country has no CountryLinks row")?;
-        let tag = hour
-            .world
-            .tag(slot)
-            .ok_or("the mission's target country has no tag")?;
-        Ok(format!("{FLAG}{}", String::from_utf8_lossy(tag)))
-    };
-    let state_name = || -> Result<String, String> {
-        let state = state
-            .filter(|&state| state > 0)
-            .ok_or("the mission has no target state")?;
-        hour.state_name(shared, state as u32)
-    };
-    let key = match variant {
-        BUILD_NETWORK => "OPERATIVE_MISSION_BUILD_INTEL_NETWORK_TT",
-        QUIET_NETWORK => "OPERATIVE_MISSION_QUIET_INTEL_NETWORK_TT",
-        COUNTER_INTELLIGENCE => "OPERATIVE_MISSION_COUNTER_INTELLIGENCE_TT",
-        ROOT_OUT => "OPERATIVE_MISSION_ROOT_OUT_RESISTANCE_TT",
-        BOOST_IDEOLOGY => "OPERATIVE_MISSION_BOOST_IDEOLOGY_TT",
-        CONTROL_TRADE => "OPERATIVE_MISSION_CONTROL_TRADE_TT",
-        DIPLOMATIC_PRESSURE => "OPERATIVE_MISSION_DIPLOMATIC_PRESSURE_TT",
-        PROPAGANDA => "OPERATIVE_MISSION_PROPAGANDA_TT",
-        _ => return text,
-    };
-    let first = match variant {
-        BUILD_NETWORK | QUIET_NETWORK => (|| -> Result<String, String> {
-            let (definite, flag, state) = (country_name("_DEF")?, flag()?, state_name()?);
-            localise(
-                loc,
-                key,
-                &[
-                    ("COUNTRY_DEF", Arg::Text(&definite)),
-                    ("FLAG", Arg::Text(&flag)),
-                    ("STATE", Arg::Text(&state)),
-                ],
-            )
-        })(),
-        COUNTER_INTELLIGENCE => localise(loc, key, &[]),
-        ROOT_OUT => (|| -> Result<String, String> {
-            let (state, adjective, flag) = (state_name()?, country_name("_ADJ")?, flag()?);
-            localise(
-                loc,
-                key,
-                &[
-                    ("STATE", Arg::Text(&state)),
-                    ("COUNTRY_ADJ", Arg::Text(&adjective)),
-                    ("FLAG", Arg::Text(&flag)),
-                ],
-            )
-        })(),
-        DIPLOMATIC_PRESSURE => (|| -> Result<String, String> {
-            let (definite, flag) = (country_name("_DEF")?, flag()?);
-            localise(
-                loc,
-                key,
-                &[
-                    ("COUNTRY_DEF", Arg::Text(&definite)),
-                    ("FLAG", Arg::Text(&flag)),
-                ],
-            )
-        })(),
-        // Their VALUE, WAR_SUPPORT and STABILITY operands are the missions' daily effects,
-        // which are not recorded.
-        _ => Err("its mission's daily effect operands are not recorded".to_owned()),
-    };
-    text.line(false, 2, key, first);
-    if variant == BUILD_NETWORK {
-        let gain = hour.network(row, shared).and_then(|network| {
-            localise(
-                loc,
-                "OPERATIVE_INTEL_NETWORK_GAIN",
-                &[("GAIN", Arg::Fixed5(network.map_or(0, |row| row.gain_raw)))],
-            )
-        });
-        text.line(false, 1, "OPERATIVE_INTEL_NETWORK_GAIN", gain);
-    }
-    if matches!(variant, BUILD_NETWORK | QUIET_NETWORK) {
-        let summary = (|| -> Result<String, String> {
-            let target = country.ok_or("the mission's target country has no CountryLinks row")?;
-            let rows = shared
-                .tables
-                .network_summaries
-                .as_ref()
-                .map_err(Clone::clone)?;
-            let row = rows
-                .iter()
-                .find(|summary| {
-                    hour.slot(summary.owner_country) == Some(hour.ours)
-                        && hour.slot(summary.target_country) == Some(target)
-                })
-                .ok_or("the mission has no recorded national network cache")?;
-            Ok(network_cache_text(row))
-        })();
-        text.line(true, 2, "national network cache", summary);
-    }
-    for line in secondary(variant) {
-        text.refuse(line, UNESTABLISHED.into());
-    }
-    if variant == PROPAGANDA {
-        let detail = (|| -> Result<String, String> {
-            let target = country.ok_or("the mission's target country has no CountryLinks row")?;
-            let rows = shared.tables.propaganda.as_ref().map_err(Clone::clone)?;
-            propaganda_history_text(rows, target)
-        })();
-        text.line(true, 2, "recent propaganda effort", detail);
-    }
-    if let Some(target) = country {
-        let detail = (|| -> Result<String, String> {
-            let contributions = shared.tables.contributions.as_ref().map_err(Clone::clone)?;
-            let sources = shared.tables.sources.as_ref().map_err(Clone::clone)?;
-            let selected: Vec<_> = contributions
-                .iter()
-                .filter(|row| {
-                    hour.slot(row.owner) == Some(hour.ours)
-                        && row.ordinal != u32::MAX
-                        && u32::try_from(row.target)
-                            .ok()
-                            .and_then(|raw| hour.slot(raw))
-                            == Some(target)
-                })
-                .collect();
-            let selected_sources: Vec<_> = sources
-                .iter()
-                .filter(|row| {
-                    hour.slot(row.owner) == Some(hour.ours)
-                        && row.pool != u32::MAX
-                        && row.ordinal != u32::MAX
-                        && u32::try_from(row.target)
-                            .ok()
-                            .and_then(|raw| hour.slot(raw))
-                            == Some(target)
-                })
-                .collect();
-            source_values_text(&selected, &selected_sources)
-        })();
-        text.line(true, 2, "recorded intel sources", detail);
-    }
+    super::missions::append(hour, row, shared, &mut text);
     text
 }
 
-/// Source contributions are independent cached four-lane values; do not add
-/// them to produce a new headline or replace the observed UI estimate.
-pub(super) fn source_values_text(
-    contributions: &[&replay_data::rows::IntelContributionRow],
-    sources: &[&replay_data::rows::IntelSourceRow],
-) -> Result<String, String> {
-    use std::fmt::Write;
-    let mut text = "Recorded intel sources (civilian / army / navy / air)".to_owned();
-    let lanes = |values: [i64; 4]| {
-        values
-            .map(|raw| {
-                let magnitude = raw.unsigned_abs();
-                format!(
-                    "{}{}.{:05}",
-                    if raw < 0 { "-" } else { "" },
-                    magnitude / 100_000,
-                    magnitude % 100_000
-                )
-            })
-            .join(" / ")
-    };
-    for row in contributions {
-        let family = match row.kind {
-            0 => "Allied",
-            1 => "Cryptology",
-            2 => "Static contribution",
-            3 => "Dynamic contribution",
-            4 => "Prior-day dynamic contribution",
-            5 => "Pending dynamic",
-            6 => "Dynamic accumulator",
-            other => return Err(format!("unknown intel contribution family {other}")),
-        };
-        let _ = write!(
-            text,
-            "\n{family}, pool {}, entry {}: {}",
-            row.pool,
-            row.ordinal,
-            lanes([row.civilian, row.army, row.navy, row.air])
-        );
-    }
-    for row in sources {
-        let _ = write!(
-            text,
-            "\nStatic pool {}, source {}, entry {}: {}",
-            row.pool,
-            row.source,
-            row.ordinal,
-            lanes([row.civilian, row.army, row.navy, row.air])
-        );
-    }
-    if contributions.is_empty() && sources.is_empty() {
-        text.push_str("\nNo held keyed entries for this target; dense zero entries are omitted.");
-    }
-    Ok(text)
-}
-
-pub(super) fn propaganda_history_text(
-    rows: &[replay_data::rows::PropagandaEffortRow],
-    slot: u32,
-) -> Result<String, String> {
-    use replay_data::rows::PropagandaEffortRow;
-    let (stability, war_support) = PropagandaEffortRow::weekly_drift(rows, slot)
-        .ok_or("the target has no recorded propaganda history")?;
-    let percentage = |raw: i64| {
-        let scaled = (i128::from(raw).abs() * 100 * 100_000 + 16_384) / 32_768;
-        format!(
-            "{}{}.{:05}%",
-            if raw < 0 { "-" } else { "" },
-            scaled / 100_000,
-            scaled % 100_000
-        )
-    };
-    let begin = rows.partition_point(|row| row.slot < slot);
-    let end = rows.partition_point(|row| row.slot <= slot);
-    let mut text = format!(
-        "Recorded propaganda history\nWeekly stability drift: {}\nWeekly war support drift: {}",
-        percentage(stability),
-        percentage(war_support)
+pub(super) fn offer(
+    hour: &Hour<'_, '_>,
+    row: &replay_data::rows::AgencyBufferedOffer,
+    definition: Result<&installed_content_core::intelligence::Operation, String>,
+) -> Tooltip {
+    let mut text = Tooltip::default();
+    text.line(
+        false,
+        0,
+        "operation offer name",
+        definition
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|definition| {
+                let name = localise(hour.localisation, &definition.name, &[])?;
+                localise(hour.localisation, "HEADER", &[("KEY", Arg::Text(&name))])
+            }),
     );
-    for (ordinal, row) in rows[begin..end - 1].iter().enumerate() {
-        use std::fmt::Write;
-        let _ = write!(
-            text,
-            "\nEffort {}: stability {}, war support {}",
-            ordinal + 1,
-            percentage(row.stability),
-            percentage(row.war_support)
-        );
-    }
-    Ok(text)
+    text.line(
+        true,
+        0,
+        "operation offer description",
+        definition.and_then(|definition| {
+            use dashboard_text::scripted_text::{
+                EventObject, EventScope, EventScopes, Link, ScriptedText,
+            };
+            let text = localise(hour.localisation, &definition.description, &[])?;
+            if !text.contains('[') {
+                return Ok(text);
+            }
+            let target = hour
+                .slot(row.country)
+                .ok_or("operation offer target has no CountryLinks row")?;
+            let content = hour
+                .assets
+                .scripted
+                .as_ref()
+                .ok_or("operation offer scripted content unavailable")?
+                .as_ref()
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let mut owner = EventScope::of(EventObject::Country(hour.ours));
+            owner.from = Link::Scope(1);
+            let scopes =
+                EventScopes::new(vec![owner, EventScope::of(EventObject::Country(target))]);
+            ScriptedText::new(hour.frame, hour.localisation, content, hour.ours)
+                .expand_in(&text, &scopes)
+        }),
+    );
+    text
 }
 
-/// Replay detail for the independently retained national cache. State values
-/// never stand in for it; integer formatting retains every fixed5 digit.
-pub(super) fn network_cache_text(row: &replay_data::rows::IntelNetworkSummaryRow) -> String {
-    let fixed = |value: i64| {
-        let amount = value.unsigned_abs();
-        format!(
-            "{}{}.{:05}",
-            if value < 0 { "-" } else { "" },
-            amount / 100_000,
-            amount % 100_000
-        )
-    };
-    format!(
-        "Recorded national network cache\nNetwork order: {}\nCovered core states: {}\nCovered controlled states: {}\nCovered owned worth: {}\nControlled strength sum: {}\nCore strength sum: {}\nMaximum state strength: {}",
-        u64::from(row.ordinal) + 1,
-        row.covered_core_states,
-        row.covered_controlled_states,
-        row.covered_worth,
-        fixed(row.controlled_strength_sum),
-        fixed(row.core_strength_sum),
-        fixed(row.max_state_strength),
-    )
-}
-
-/// The breakdown lines after a mission's first, which this hover refuses by name.
-fn secondary(variant: u32) -> &'static [&'static str] {
-    match variant {
-        BUILD_NETWORK => &["MODIFIER_OPERATIVE_STACKING_FACTOR"],
-        COUNTER_INTELLIGENCE => &[
-            "OPERATIVE_INTELLIGENCE_AGENCY_DEFENSE",
-            "MODIFIER_OPERATIVE_STACKING_FACTOR",
-        ],
-        ROOT_OUT => &[
-            "OPERATIVE_MISSION_ROOT_OUT_RESISTANCE_EFFORT",
-            "MODIFIER_OPERATIVE_STACKING_FACTOR",
-            "OPERATIVE_MISSION_ROOT_OUT_RESISTANCE_STATE_MODIFIER",
-        ],
-        BOOST_IDEOLOGY | PROPAGANDA => &[
-            "the propaganda effort and drift lines",
-            "MODIFIER_NATIONAL_COVERAGE_FACTOR",
-            "MODIFIER_OPERATIVE_STACKING_FACTOR",
-            "MODIFIER_TARGET_INTELLIGENCE_DEFENSE",
-        ],
-        CONTROL_TRADE => &[
-            "MODIFIER_OPERATIVE_STACKING_FACTOR",
-            "CONTROL_TRADE_PROGRESS",
-        ],
-        DIPLOMATIC_PRESSURE => &[
-            "the opinion and tension drift lines",
-            "MODIFIER_OPERATIVE_STACKING_FACTOR",
-        ],
-        _ => &[],
-    }
-}
-
-/// The operative's codename: its stored custom name, as the game stores it. A name drawn from
-/// a name group is refused.
 fn codename(hour: &Hour<'_, '_>, character: &CharacterOperativeRow) -> Result<String, String> {
     let field = "operative codename";
     let name = character
@@ -407,9 +263,15 @@ fn codename(hour: &Hour<'_, '_>, character: &CharacterOperativeRow) -> Result<St
         return Err(format!("{field} has naming kind {}, expected 2", name.kind));
     }
     if name.custom.is_empty() {
-        return Err(format!(
-            "{field} is drawn from a name group, which this hover does not read"
-        ));
+        let group =
+            std::str::from_utf8(&name.group).map_err(|_| format!("{field} group is not UTF-8"))?;
+        return hour
+            .raids
+            .tooltip
+            .unit_names
+            .as_ref()
+            .map_err(Clone::clone)?
+            .name(group, name.order, name.ordered != 0);
     }
     if name.programmatic != 0 {
         return dashboard_text::scripted_text::stored_text(
@@ -446,10 +308,18 @@ pub(super) fn operation(
         (OperationState::Finished, _) | (OperationState::Running { remaining: 0, .. }, _) => {
             localise(loc, "OPERATION_ONMAP_STATUS_COMPLETED", &[])
         }
-        (OperationState::Running { .. }, _) => Err(
-            "OPERATION_ONMAP_STATUS_IN_PROGRESS: the end date's localised form is not built"
-                .to_owned(),
-        ),
+        (OperationState::Running { .. }, _) => {
+            let end = row
+                .start_hour
+                .wrapping_add(row.duration_days.wrapping_mul(24));
+            operation_date(end, loc).and_then(|date| {
+                localise(
+                    loc,
+                    "OPERATION_ONMAP_STATUS_IN_PROGRESS",
+                    &[("DATE", Arg::Text(&date))],
+                )
+            })
+        }
         (OperationState::Preparing, Some(Ok(ONE))) => {
             localise(loc, "OPERATION_ONMAP_STATUS_READY", &[])
         }
@@ -463,4 +333,21 @@ pub(super) fn operation(
     };
     text.line(false, 1, "the operation's status", status);
     text
+}
+
+fn operation_date(hour: i32, localisation: &Localisation) -> Result<String, String> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let elapsed = hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
+    let year = elapsed / (365 * 24);
+    let mut day = elapsed / 24 % 365;
+    for (index, length) in engine_native::cdate::MONTH_LENGTHS.into_iter().enumerate() {
+        if day < length {
+            let month = localise(localisation, MONTHS[index], &[])?;
+            return Ok(format!("{} {month} {year}", day + 1));
+        }
+        day -= length;
+    }
+    Err("operation end date has no calendar month".into())
 }

@@ -127,6 +127,7 @@ fn every_slot_reads_its_activity_and_both_maps_in_table_order() {
         rows[..2],
         [
             Row {
+                mission_counts: [0; 5],
                 native_pointer: fixture.objects[0],
                 country: 1,
                 slot: 1,
@@ -149,16 +150,19 @@ fn every_slot_reads_its_activity_and_both_maps_in_table_order() {
         entries[..3],
         [
             Entry {
+                operative: 0,
                 owner: 2,
                 value: 250_000,
                 tension: 0,
             },
             Entry {
+                operative: 0,
                 owner: 3,
                 value: 0,
                 tension: 0,
             },
             Entry {
+                operative: 0,
                 owner: 2,
                 value: 32_768,
                 tension: -16_384,

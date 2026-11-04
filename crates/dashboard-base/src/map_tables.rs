@@ -69,6 +69,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::HumanControllers,
             TableId::IntelContributions,
             TableId::IntelNetworks,
+            TableId::IntelligenceAgencies,
             TableId::IntelNetworkSummaries,
             TableId::IntelSources,
             TableId::LandCombatDetails,

@@ -339,6 +339,7 @@ impl Request {
             }
             walk.outcome
         });
+        cstate::infrastructure_map::snapshot(memory, base, game_state, report.result, &mut census.payload);
         let ticks = sampling::qpc() - begin;
         let occupation_begin = sampling::qpc();
         let (sources, source_outcome, _) = visitor.completed_sources();
@@ -602,6 +603,7 @@ pub(crate) mod tests {
             &mut request.names.bytes,
         );
         // Run acquires the flags and active border trees after its census.
+        cstate::infrastructure_map::snapshot(memory, 0, STATE, names.outcome, &mut request.census.payload);
         request.visitor.acquire_owned(memory, 0, STATE, true);
         names.outcome
     }

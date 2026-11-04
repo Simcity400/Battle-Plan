@@ -1296,13 +1296,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )));
         }
         // A dump is a fresh open: a scripted mode's colour borders start empty.
-        let mode = hour.map_mode_fill(&options.map_mode, &options.perspective, None)?;
+        let mode = hour.map_mode_fill(&options.map_mode, &options.perspective, None, None)?;
         for line in &mode.warnings {
             eprintln!("Warning: {line}");
         }
         println!("Map mode: {}", options.map_mode.token());
         let layers = hour
-            .political_product(&options.map_mode, &options.perspective, None)?
+            .political_product(&options.map_mode, &options.perspective, None, None)?
             .layers;
         let mut omitted = options.layers;
         omitted.borders |= options.debug_borders;

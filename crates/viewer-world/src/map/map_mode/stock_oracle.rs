@@ -41,9 +41,6 @@ pub(super) fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> 
                 inputs,
                 &mut warnings,
             ));
-            if stock == Stock::StrategicAir {
-                warnings.push(unbuilt(stock).to_owned());
-            }
             draw
         }
         // The raid mode draws no layer of its own: the countries alone. Its raid icons and
@@ -133,9 +130,6 @@ fn unbuilt(stock: Stock) -> &'static str {
     match stock {
         Stock::Supply => {
             "Supply map mode: its province supply and supply-border layers need each province's distributed supply, which is not recorded; both channels stay empty and the supply hub icons, flow arrows and supply tooltips are not drawn"
-        }
-        Stock::StrategicAir => {
-            "Air-supply regional summary operands are unavailable: exact consumer membership is rebuilt hourly; an extra full scan or synchronous per-consumer observation violates the recording cost rules"
         }
         _ => "This map mode's layer is not drawn",
     }

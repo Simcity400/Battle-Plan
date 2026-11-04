@@ -918,14 +918,14 @@ pub struct PoliticalGpu {
     keys: HashMap<u32, usize>,
     free: Vec<usize>,
     areas: Vec<u64>,
-    thickness: Vec<u32>,
+    thickness: Vec<(u32, u32)>,
     regions: Vec<Region>,
     region_buffer: wgpu::Buffer,
     alpha: Vec<u8>,
     alpha_buffer: wgpu::Buffer,
     alpha_stride: usize,
     capacity: usize,
-    alpha_keys: HashMap<u32, usize>,
+    alpha_keys: HashMap<(u32, u32), usize>,
     alpha_free: Vec<usize>,
     alpha_slots: usize,
     cells: wgpu::Buffer,
@@ -1161,7 +1161,7 @@ impl PoliticalGpu {
             keys: HashMap::from([(0, 0)]),
             free: Vec::new(),
             areas: vec![0],
-            thickness: vec![u32::MAX],
+            thickness: vec![(u32::MAX, u32::MAX)],
             regions: vec![Region::default()],
             region_buffer,
             alpha: Vec::new(),
@@ -1280,7 +1280,8 @@ impl PoliticalGpu {
                             == layer.region_attributes.map_or(0, |read| read(key).packed())
                         && (self.regions[slot].fx, self.regions[slot].fill)
                             == style_words(layer.style(key))
-                        && self.thickness[slot] == layer.thickness(key, self.areas[slot]).to_bits())
+                        && self.thickness[slot]
+                            == (layer.thickness(key, self.areas[slot]).to_bits(), layer.center(key).to_bits()))
             })
         {
             self.dispatched_cells = 0;
@@ -1315,9 +1316,9 @@ impl PoliticalGpu {
                 "{region_slots} political regions exceed the device storage limit {storage}"
             )));
         }
-        let active_thickness: HashSet<u32> = area_of
+        let active_thickness: HashSet<(u32, u32)> = area_of
             .iter()
-            .map(|(&key, &area)| layer.thickness(key, area).to_bits())
+            .map(|(&key, &area)| (layer.thickness(key, area).to_bits(), layer.center(key).to_bits()))
             .collect();
         let reusable = self.alpha_free.len()
             + self
@@ -1359,7 +1360,7 @@ impl PoliticalGpu {
                         let slot = self.free.pop().unwrap_or_else(|| {
                             self.regions.push(Region::default());
                             self.areas.push(0);
-                            self.thickness.push(u32::MAX);
+                            self.thickness.push((u32::MAX, u32::MAX));
                             self.regions.len() - 1
                         });
                         self.keys.insert(key, slot);
@@ -1399,15 +1400,16 @@ impl PoliticalGpu {
                 self.alpha.resize(self.alpha_slots * self.alpha_stride, 0);
                 self.alpha_slots - 1
             });
-            let t = f32::from_bits(bits);
-            let reach = gradient::field_reach(t, layer.field);
+            let t = f32::from_bits(bits.0);
+            let field = FieldDefines { center: f32::from_bits(bits.1), ..*layer.field };
+            let reach = gradient::field_reach(t, &field);
             for (d2, a) in self.alpha[slot * self.alpha_stride..(slot + 1) * self.alpha_stride]
                 .iter_mut()
                 .enumerate()
             {
                 let d = (d2 as f32).sqrt();
                 *a = if d <= reach {
-                    gradient::field_alpha(d, t, layer.field.center)
+                    gradient::field_alpha(d, t, field.center)
                 } else {
                     0
                 };
@@ -1421,8 +1423,10 @@ impl PoliticalGpu {
                 continue;
             }
             let t = layer.thickness(key, self.areas[slot]);
-            let radius = search_radius(t, layer.field, self.params.width, self.params.height);
-            let alpha_slot = self.alpha_keys[&t.to_bits()];
+            let field = FieldDefines { center: layer.center(key), ..*layer.field };
+            let radius = search_radius(t, &field, self.params.width, self.params.height);
+            let shape = (t.to_bits(), field.center.to_bits());
+            let alpha_slot = self.alpha_keys[&shape];
             let (fx, fill) = style_words(layer.style(key));
             let region = Region {
                 color: rgb((layer.region_color)(key)),
@@ -1438,9 +1442,9 @@ impl PoliticalGpu {
                 self.regions[slot] = region;
                 region_changes.push(slot);
             }
-            if self.thickness[slot] != t.to_bits() {
+            if self.thickness[slot] != shape {
                 affected[slot] = true;
-                self.thickness[slot] = t.to_bits();
+                self.thickness[slot] = shape;
             }
         }
         let halo = (self.params.distance_cap + 1).max(

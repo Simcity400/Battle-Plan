@@ -22,6 +22,7 @@ engine-events.workspace = true
 engine-intelligence.workspace = true
 engine-mutations.workspace = true
 engine-native.workspace = true
+engine-resources.workspace = true
 engine-scripts.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

@@ -81,6 +81,7 @@ pub const BORDER_CONFLICT_ACTIVE: usize = 0x865;
 /// Pointer-ordered border-combat set size.
 pub const BORDER_CONFLICT_SIZE: usize = 0x8a8;
 mod border_conflicts;
+pub mod infrastructure_map;
 /// Embedded state manpower object.
 pub const MANPOWER: usize = 0x838;
 /// Stored signed available manpower summed across pools and serialized.
@@ -584,6 +585,7 @@ fn infrastructure_value(maximum: i32, level: i32, per_level: i64) -> i64 {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    pub infrastructure: Option<infrastructure_map::Infrastructure>,
     pub id: u32,
     pub owner: u32,
     pub controller: u32,

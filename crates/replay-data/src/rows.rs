@@ -158,6 +158,7 @@ impl ProvinceRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateRow {
+    pub infrastructure: Recorded<Option<StateInfrastructure>>,
     pub id: u32,
     /// Raw country link id; zero is retained as read from the engine.
     pub owner: u32,
@@ -199,6 +200,14 @@ pub struct StateRow {
     /// levels. None is a counted read refusal.
     pub category: Recorded<Option<u32>>,
 }
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StateInfrastructure {
+    pub building_type: u32,
+    pub level: i32,
+    pub maximum: i32,
+}
+crate::value::value_struct!(StateInfrastructure { building_type: u32, level: i32, maximum: i32 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionRow {
@@ -299,6 +308,7 @@ pub struct FactionMemberRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PlayerRow {
+    pub ordinal: u32,
     /// Native signed session id; its raw u32 bits form the row key.
     pub id: i32,
     pub country: u32,
@@ -3172,12 +3182,12 @@ mod event_feed;
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
 row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
-row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32}, |_row| Ok(()));
+row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque}, |_row| Ok(()));
 row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
 row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
 row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes, 1 => template_token: OptionalU32, 2 => color_red: U32, 3 => color_green: U32, 4 => color_blue: U32, 5 => color_alpha: U32, 6 => color_overridden: U8}, |_row| Ok(()));
 row_codec!(FactionMemberRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => faction: U64, 1 => ordinal: U32}, |_row| Ok(()));
-row_codec!(PlayerRow, 32, |row| row.id as u32 as u128, |key| { id: key as u32 as i32 }, {0 => country: U32, 1 => flags: U8, 2 => user: Bytes, 3 => name: Bytes}, |_row| Ok(()));
+row_codec!(PlayerRow, 32, |row| row.id as u32 as u128, |key| { id: key as u32 as i32 }, {0 => country: U32, 1 => flags: U8, 2 => user: Bytes, 3 => name: Bytes, 4 => ordinal: U32}, |_row| Ok(()));
 row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => count: I8}, |_row| Ok(()));
 row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List, 5 => attacker_classes: U32List, 6 => defender_classes: U32List}, |_row| Ok(()));
 row_codec!(FleetRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => home_base: U32, 2 => name: Opaque, 3 => leader: OptionalU64}, |_row| Ok(()));
@@ -3779,6 +3789,7 @@ macro_rules! opaque_value {
 opaque_value!(crate::event_feed_rows::EventFeedCoverage);
 opaque_value!(Option<crate::event_feed_rows::EventFeedCounts>);
 opaque_value!(Option<ShipNamingOperands>);
+opaque_value!(Option<StateInfrastructure>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedEvent>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedScope>);
 
@@ -4496,6 +4507,7 @@ mod tests {
         round_trip(
             TableId::States,
             StateRow {
+                infrastructure: Default::default(),
                 manpower_locked: Default::default(),
 
                 id: u32::MAX,
@@ -4732,6 +4744,7 @@ mod tests {
         round_trip(
             TableId::Players,
             PlayerRow {
+                ordinal: 0,
                 id: i32::MIN,
                 country: u32::MAX,
                 flags: u8::MAX,
@@ -4905,6 +4918,7 @@ mod tests {
         assert_eq!(old.delta(Some(&old)).unwrap(), None);
         for mask in 1..=TableId::States.full_mask() {
             let new = StateRow {
+                infrastructure: Recorded::Value((mask & 8192 != 0).then_some(StateInfrastructure { building_type: 1, level: 2, maximum: 3 })),
                 manpower_locked: Recorded::Value(if mask & 1024 != 0 { -1 } else { 0 }),
 
                 id: old.key().try_into().unwrap(),
@@ -4934,7 +4948,7 @@ mod tests {
             assert_eq!(delta.mask, mask);
             let mut bytes = Vec::new();
             encode_delta(TableId::States, &delta, 0, &mut bytes).unwrap();
-            // Thirteen fields take a two-byte mask.
+            // Fourteen fields take a two-byte mask.
             let scalars = 5
                 + 2
                 + usize::from(mask & 1 != 0)
@@ -4947,7 +4961,8 @@ mod tests {
                 + 3 * usize::from(mask & 512 != 0)
                 + usize::from(mask & 1024 != 0)
                 + 2 * usize::from(mask & 2048 != 0)
-                + 2 * usize::from(mask & 4096 != 0);
+                + 2 * usize::from(mask & 4096 != 0)
+                + 5 * usize::from(mask & 8192 != 0);
             // The name fields add their own length-prefixed bytes.
             let names = 6 * usize::from(mask & 8 != 0) + 5 * usize::from(mask & 16 != 0);
             if names == 0 {

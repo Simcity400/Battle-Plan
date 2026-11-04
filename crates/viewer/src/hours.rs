@@ -110,6 +110,7 @@ pub struct Want {
     pub perspective: perspective::Choice,
     /// The view's map mode, which chooses the political fill's country channel.
     pub map_mode: viewer_world::map::map_mode::MapMode,
+    pub diplomatic_selected: Option<u32>,
     pub show_allied_plans: bool,
     /// The window's counter options and memory, which its hours are laid out with.
     pub counters: CounterView,
@@ -180,7 +181,9 @@ impl Want {
         // Selection and the active GUI object are viewer-local overlay inputs.
         // Their prepared snapshot is checked when installed; pointer motion
         // must not cancel simulation-hour builders or restart their epoch.
-        self.map_mode != next.map_mode || self.invalidates_parts(next)
+        self.map_mode != next.map_mode
+            || self.diplomatic_selected != next.diplomatic_selected
+            || self.invalidates_parts(next)
     }
 
     /// Whether mode-independent parts must also be rebuilt.
@@ -2069,9 +2072,10 @@ impl coordinator::BuildTarget for Coordinator {
         let content = self.content.clone();
         let mode = plan.want.map_mode.clone();
         let perspective = plan.want.perspective.clone();
+        let selected = plan.want.diplomatic_selected;
         plan.colour_work(current, self.events.clone(), move |frame, colour| {
             Ok(HourView::new(&content, frame, 0.0)
-                .map_mode_fill(&mode, &perspective, colour)?
+                .map_mode_fill(&mode, &perspective, selected, colour)?
                 .colour)
         })
     }
@@ -2239,6 +2243,7 @@ impl coordinator::BuildTarget for Coordinator {
             let near_regions = slots_of(&neighbours, |slots| &slots.political);
             let political_perspective = want.perspective.clone();
             let map_mode = want.map_mode.clone();
+            let selected = want.diplomatic_selected;
             let near_borders = slots_of(&neighbours, |slots| &slots.borders);
             // Carry from the preceding built hour, including the mode-only
             // refreshes of skipped recorded hours. With no predecessor the
@@ -2263,6 +2268,7 @@ impl coordinator::BuildTarget for Coordinator {
                         let product = view.political_product(
                             &map_mode,
                             &political_perspective,
+                            selected,
                             colour.as_deref(),
                         )?;
                         let near = wait_all(near_regions.clone());
@@ -3058,6 +3064,7 @@ mod mode_tests {
             playing: false,
             perspective: Default::default(),
             map_mode: Default::default(),
+            diplomatic_selected: None,
             show_allied_plans: false,
             counters: Default::default(),
             view: View {

@@ -37,6 +37,7 @@ use viewer_foundation::{map::native_gui, tooltip_text::Tooltip};
 use super::raids::{RaidAssets, script::World};
 
 mod build;
+mod missions;
 mod tooltips;
 pub mod values;
 pub mod windows;
@@ -100,6 +101,7 @@ pub struct ActivityDefines {
 /// part that reads them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IntelDefines {
+    pub missions: Result<missions::Defines, String>,
     /// `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF` as stored, fixed5.
     pub cutoff: i64,
     /// `NMapIcons.INTEL_MAP_MODE_MAP_ICON_OFFSET`, each truncated.
@@ -162,6 +164,7 @@ impl IntelDefines {
             Ok(ActivityDefines { thresholds, colors })
         })();
         Ok(Self {
+            missions: missions::Defines::read(d),
             cutoff: d.fixed5("NGraphics", "UNITS_ICONS_DISTANCE_CUTOFF")?,
             offset: [x, y].map(|value| value.trunc() as i32),
             max_stack: d.int32("NMapMode", "MAP_MODE_INTEL_MAX_HORIZONTAL_STACK")?,
@@ -218,6 +221,7 @@ impl IntelDefines {
 /// Everything static the layer reads, from the recorded content stack.
 pub struct IntelAssets {
     pub defines: Result<IntelDefines, String>,
+    pub scripted: Option<Arc<Result<dashboard_text::scripted_text::ScriptedContent, String>>>,
     operations: Result<installed_content_core::intelligence::Intelligence, String>,
     phases: Result<installed_content_core::intelligence::OperationPhases, String>,
     /// The nationality modifier's root-out effectiveness factor, fixed5.
@@ -299,6 +303,7 @@ impl IntelAssets {
         }
         Self {
             defines,
+            scripted: None,
             operations,
             phases,
             nationality,
@@ -316,6 +321,7 @@ impl IntelAssets {
     ) -> Self {
         Self {
             defines: Ok(defines),
+            scripted: None,
             operations: Ok(installed_content_core::intelligence::Intelligence {
                 operations: operations
                     .into_iter()
@@ -425,6 +431,7 @@ pub enum EntryKey {
     Operative(u32, u64),
     /// An operation instance, by its handle.
     Operation(u64),
+    Offer(u32, u32),
     More,
 }
 
@@ -498,15 +505,6 @@ pub struct IntelIcons {
     pub built_for: Option<(replay_data::BranchId, replay_data::Hour, u32)>,
 }
 
-/// One view-level omission; the number of cached offers itself is unrecorded.
-const OPERATION_OFFERS_UNRECORDED: &str =
-    "operation offers are not drawn: their UI cache state is not recorded";
-/// Counted once for each operative entry whose highlight is hidden.
-const OPERATIVE_SELECTION_UNRECORDED: &str =
-    "frame_select_hl_icn is hidden: the operative selection UI state is not recorded";
-const OPERATIVE_WARNING_UNRECORDED: &str =
-    "frame_warn_hl_icn is hidden: the operative warning UI state is not recorded";
-
 /// The hour's icons for canonical country `ours`. `language` is the recording's client
 /// language, which stored names are drawn in.
 pub fn icons(
@@ -521,7 +519,6 @@ pub fn icons(
         built_for: Some((frame.branch, frame.hour, ours)),
         ..IntelIcons::default()
     };
-    out.report.note(OPERATION_OFFERS_UNRECORDED);
     let defines = match &assets.defines {
         Ok(defines) => defines,
         Err(why) => {
@@ -572,10 +569,6 @@ struct Tables<'a> {
     strategic: Result<&'a [replay_data::rows::StrategicOperativeRow], String>,
     defense: Result<&'a [replay_data::rows::RaidIntelInputRow], String>,
     networks: Result<&'a [replay_data::rows::IntelNetworkRow], String>,
-    network_summaries: Result<&'a [replay_data::rows::IntelNetworkSummaryRow], String>,
-    propaganda: Result<&'a [replay_data::rows::PropagandaEffortRow], String>,
-    contributions: Result<&'a [replay_data::rows::IntelContributionRow], String>,
-    sources: Result<&'a [replay_data::rows::IntelSourceRow], String>,
     stability: Result<&'a [replay_data::rows::CountryStabilityInputRow], String>,
     parties: Result<&'a [replay_data::rows::PoliticalPartyRow], String>,
     characters: Result<&'a [replay_data::rows::CharacterOperativeRow], String>,
@@ -592,13 +585,6 @@ impl<'a> Tables<'a> {
             strategic: complete::<tables::StrategicOperatives>(frame, "StrategicOperatives"),
             defense: complete::<tables::RaidIntelInputs>(frame, "RaidIntelInputs"),
             networks: complete::<tables::IntelNetworks>(frame, "IntelNetworks"),
-            network_summaries: complete::<tables::IntelNetworkSummaries>(
-                frame,
-                "IntelNetworkSummaries",
-            ),
-            propaganda: complete::<tables::PropagandaEfforts>(frame, "PropagandaEfforts"),
-            contributions: complete::<tables::IntelContributions>(frame, "IntelContributions"),
-            sources: complete::<tables::IntelSources>(frame, "IntelSources"),
             stability: complete::<tables::CountryStabilityInputs>(frame, "CountryStabilityInputs"),
             parties: complete::<tables::PoliticalParties>(frame, "PoliticalParties"),
             characters: complete::<tables::CharacterOperatives>(frame, "CharacterOperatives"),

@@ -382,7 +382,7 @@ fn ground_crews(
     }
     let rows = complete::<tables::AirGroundCrews>(frame)?;
     for row in rows {
-        if !demanded.contains(&(row.country, row.region))
+        if (!demanded.contains(&(row.country, row.region)) && row.supply.is_none())
             || row.enabled.is_some_and(|enabled| enabled > 1)
         {
             return Err(invalid(
@@ -1996,6 +1996,7 @@ mod tests {
             *frame.tables[TableId::AirGroundCrews.index()] =
                 TableView::Complete(TableRows::AirGroundCrews(vec![
                     replay_data::rows::AirGroundCrewRow {
+                        supply: None,
                         country: 7,
                         region: 9,
                         enabled,

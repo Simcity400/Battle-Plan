@@ -4854,6 +4854,7 @@ fn state_table(
         &captured.states,
         |state| u128::from(state.id),
         |state| StateRow {
+            infrastructure: replay_data::rows::Recorded::Value(state.infrastructure.map(|value| replay_data::rows::StateInfrastructure { building_type: value.building_type, level: value.level, maximum: value.maximum })),
             id: state.id,
             owner: state.owner,
             controller: state.controller,

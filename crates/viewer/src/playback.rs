@@ -801,6 +801,7 @@ pub(crate) mod tests {
                         ordinal: 0,
                     }])),
                     TableView::Complete(TableRows::Players(vec![PlayerRow {
+                        ordinal: 0,
                         id: i32::MIN,
                         country: 1,
                         flags: 0x81,

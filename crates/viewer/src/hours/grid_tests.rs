@@ -40,6 +40,7 @@ fn want(hour: Hour) -> Want {
         playing: true,
         perspective: Default::default(),
         map_mode: Default::default(),
+        diplomatic_selected: None,
         show_allied_plans: false,
         counters: Default::default(),
         view: super::tests::test_view(),

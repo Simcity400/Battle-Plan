@@ -30,11 +30,14 @@ pub const PRESSURE_STRIDE: usize = 0x28;
 pub const PRESSURE_ACCEPTANCE: usize = 0x10;
 /// Diplomatic-pressure tension, signed i64 Q15.
 pub const PRESSURE_TENSION: usize = 0x18;
+pub const MISSION_ROSTERS: [(u32, usize); 5] =
+    [(3, 0x28), (5, 0x58), (8, 0x70), (6, 0x88), (7, 0xa0)];
 // Both entry kinds hold their first value at the same offset.
 const _: () = assert!(TRADE_VALUE == PRESSURE_ACCEPTANCE);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    pub mission_counts: [usize; 5],
     /// Acquisition identity for certified auxiliary readers; never recorded.
     pub native_pointer: usize,
     /// The object's raw owner country reference.
@@ -56,6 +59,7 @@ pub struct Row {
 /// `value` and its tension.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
+    pub operative: u64,
     /// The influencing country's raw reference.
     pub owner: u32,
     pub value: i64,
@@ -167,8 +171,20 @@ pub fn walk_buffer(
                 at(object, strategic::DIPLOMATIC_PRESSURE)?,
                 PRESSURE_STRIDE,
             )?;
+            let mut rosters = [Array::default(); 5];
+            let mut mission_counts = [0; 5];
+            let mut mission_entries = 0usize;
+            for (index, (_, offset)) in MISSION_ROSTERS.into_iter().enumerate() {
+                rosters[index] = Array::read(memory, at(object, offset)?, 8)
+                    .ok_or("strategic operative mission roster invalid")?;
+                mission_counts[index] = rosters[index].count as usize;
+                mission_entries = mission_entries
+                    .checked_add(mission_counts[index])
+                    .ok_or("strategic operative mission extent overflow")?;
+            }
             let count = (trade.count as usize)
                 .checked_add(pressure.count as usize)
+                .and_then(|count| count.checked_add(mission_entries))
                 .ok_or("strategic operative entry count overflow")?;
             required_entries = required_entries
                 .checked_add(count)
@@ -184,6 +200,7 @@ pub fn walk_buffer(
                 map.visit(memory, &countries, |owner, slot| {
                     if fits {
                         entries[entries_len + written] = Entry {
+                            operative: 0,
                             owner,
                             value: word(slot, TRADE_VALUE),
                             tension: tension.map_or(0, |at| word(slot, at)),
@@ -192,6 +209,44 @@ pub fn walk_buffer(
                     }
                 })?;
             }
+            let mut resolver = engine_native::creference_registry::ScopedResolver::new(base);
+            for (roster, (_, offset)) in rosters.into_iter().zip(MISSION_ROSTERS) {
+                for index in 0..roster.count {
+                    let handle = roster
+                        .element(index, 8)
+                        .and_then(|address| read::<u64>(memory, address))
+                        .ok_or("strategic operative mission reference unreadable")?;
+                    let operative = match resolver.resolve(memory, handle)? {
+                        None => 0,
+                        Some(pointer) => {
+                            if field::<u64>(memory, pointer, 0)?
+                                != base
+                                    .checked_add(engine_native::coperative_leader::VTABLE_RVA)
+                                    .ok_or("strategic operative mission vtable overflow")?
+                                    as u64
+                                || field::<u64>(
+                                    memory,
+                                    pointer,
+                                    engine_native::coperative_leader::IDENTITY,
+                                )? != handle
+                            {
+                                return Err("strategic operative mission identity mismatch");
+                            }
+                            handle
+                        }
+                    };
+                    if fits {
+                        entries[entries_len + written] = Entry {
+                            operative,
+                            ..Entry::default()
+                        };
+                        written += 1;
+                    }
+                }
+                if Array::read(memory, at(object, offset)?, 8) != Some(roster) {
+                    return Err("strategic operative mission roster changed during capture");
+                }
+            }
             if !fits {
                 unread_rows = unread_rows
                     .checked_add(1)
@@ -199,6 +254,7 @@ pub fn walk_buffer(
                 continue;
             }
             output[len] = Row {
+                mission_counts,
                 native_pointer: object,
                 country: owner,
                 slot,
@@ -363,6 +419,62 @@ impl Map {
         }
         Ok(())
     }
+}
+
+pub fn trade_influence<M: Memory>(
+    memory: &M,
+    base: usize,
+    game: usize,
+    countries: &ccountry::Reader<'_, M>,
+    target: u32,
+    owner: u32,
+) -> Result<i64, &'static str> {
+    let target = countries.resolve(target)?;
+    let owner = countries.resolve(owner)?;
+    let manager = pointer(memory, game, cgame_state::STRATEGIC_OPERATIVE_MANAGER)?;
+    if manager == 0 {
+        return Ok(0);
+    }
+    let objects = Array::read(memory, at(manager, manager::OPERATIVES_DATA)?, 8)
+        .ok_or("strategic operative membership invalid")?;
+    let object = objects
+        .element(target.canonical_slot, 8)
+        .and_then(|p| read::<u64>(memory, p))
+        .ok_or("strategic operative target unreadable")? as usize;
+    if object == 0 {
+        return Ok(0);
+    }
+    if field::<u64>(memory, object, 0)? != at(base, strategic::VTABLE_RVA)? as u64
+        || countries
+            .resolve(field(memory, object, strategic::OWNER)?)?
+            .canonical_slot
+            != target.canonical_slot
+    {
+        return Err("strategic operative target identity mismatch");
+    }
+    let at = at(object, strategic::TRADE_INFLUENCE)?;
+    let header =
+        read::<[u8; 25]>(memory, at).ok_or("strategic operative trade header unreadable")?;
+    let map = Map::read(memory, at, TRADE_STRIDE)?;
+    let mut value = 0;
+    let mut invalid = false;
+    let mut found = false;
+    map.visit(memory, countries, |raw, slot| {
+        if raw == owner.id
+            || (raw != 0
+                && countries
+                    .resolve(raw)
+                    .is_ok_and(|c| c.canonical_slot == owner.canonical_slot))
+        {
+            invalid |= found;
+            found = true;
+            value = word(slot, TRADE_VALUE);
+        }
+    })?;
+    if invalid || read::<[u8; 25]>(memory, at) != Some(header) {
+        return Err("strategic operative trade map changed");
+    }
+    Ok(value)
 }
 
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {

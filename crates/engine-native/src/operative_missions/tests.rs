@@ -188,6 +188,8 @@ fn active_roster_identity_order_owner_assignment_and_portrait_are_read() {
     assert_eq!(
         rows[0],
         Row {
+            native_pointer: OPERATIVE,
+            map_selected: Some(0),
             roster_country: 1,
             id: HANDLE,
             ordinal: 0,

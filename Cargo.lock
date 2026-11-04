@@ -1192,6 +1192,7 @@ dependencies = [
  "engine-intelligence",
  "engine-mutations",
  "engine-native",
+ "engine-resources",
  "engine-scripts",
  "replay-data",
  "replay-derive",

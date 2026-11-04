@@ -36,6 +36,7 @@ static FORWARDED: AtomicBool = AtomicBool::new(false);
 static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// Leaders the latest quiet hour visited, for off-thread sizing.
 static LEADERS: AtomicUsize = AtomicUsize::new(0);
+static OPERATIVE_EFFECTS: AtomicUsize = AtomicUsize::new(0);
 
 /// The leader lifetime sites [`crate::naval_tree_changes`] patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,7 +147,9 @@ pub fn boundary(invalidate: bool) {
 /// Off the game thread: size the watches for the leaders the latest quiet
 /// hour visited.
 pub fn presize() {
-    let leaders = LEADERS.load(Ordering::Relaxed);
+    let leaders = LEADERS
+        .load(Ordering::Relaxed)
+        .saturating_add(OPERATIVE_EFFECTS.load(Ordering::Relaxed));
     if leaders != 0 {
         WATCHES.registry.offer(leaders);
     }
@@ -155,6 +158,10 @@ pub fn presize() {
 /// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
+}
+
+pub fn operative_effects(receivers: usize) {
+    OPERATIVE_EFFECTS.fetch_max(receivers, Ordering::Relaxed);
 }
 
 /// One quiet hour's leaders.

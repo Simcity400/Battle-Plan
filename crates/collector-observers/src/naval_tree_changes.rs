@@ -65,6 +65,7 @@ static RESERVE_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 /// Countries the latest RaidIntelInputs walk keyed
 /// ([`crate::extended::raid_intel_carry`]).
 static RAID_INTEL_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
+static OPERATIVE_EFFECT_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 /// The counter walk's fresh ETA censuses served from a held capture.
 static CENSUSES: AtomicU64 = AtomicU64::new(0);
 /// The held trees, between the naval combat part's captures.
@@ -113,6 +114,7 @@ fn demand() -> usize {
         .saturating_add(MISSION_RECEIVERS.load(Ordering::Relaxed))
         .saturating_add(SHIP_MODEL_RECEIVERS.load(Ordering::Relaxed))
         .saturating_add(RAID_INTEL_RECEIVERS.load(Ordering::Relaxed))
+        .saturating_add(OPERATIVE_EFFECT_RECEIVERS.load(Ordering::Relaxed))
         .saturating_add(RESERVE_RECEIVERS.load(Ordering::Relaxed))
         .saturating_add(DIVISION_RECEIVERS.load(Ordering::Relaxed))
 }
@@ -133,6 +135,10 @@ pub fn raid_intel(receivers: usize) {
     if receivers != 0 {
         RAID_INTEL_RECEIVERS.store(receivers, Ordering::Relaxed);
     }
+}
+
+pub fn operative_effects(receivers: usize) {
+    OPERATIVE_EFFECT_RECEIVERS.fetch_max(receivers, Ordering::Relaxed);
 }
 
 /// A complete ShipModels capture over `task_forces` task forces, whose
@@ -285,6 +291,7 @@ pub fn status() -> impl serde::Serialize {
             "receivers": MISSION_RECEIVERS.load(Ordering::Relaxed),
             "ship_model_receivers": SHIP_MODEL_RECEIVERS.load(Ordering::Relaxed),
             "raid_intel_receivers": RAID_INTEL_RECEIVERS.load(Ordering::Relaxed),
+            "operative_effect_receivers": OPERATIVE_EFFECT_RECEIVERS.load(Ordering::Relaxed),
             "scope": "cumulative since attach; a naval mission country is read within the hour its certificate (its own and its fleet leaders' tree certificates, its navy's stored hubs and its headquarters commanders' skill objects) moves",
         }),
         "counter_censuses": crate::status::status!({

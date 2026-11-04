@@ -18,4 +18,5 @@ pub mod map_air_carrier_operands;
 pub mod map_air_country_region_modifier;
 pub mod map_air_rocket_slots;
 pub mod map_air_sortie_inputs;
+pub mod map_air_supply;
 pub mod radar_group;

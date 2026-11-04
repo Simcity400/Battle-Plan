@@ -24,6 +24,7 @@ pub mod daily_intel;
 pub mod flag_changes;
 mod hook_errors;
 pub mod intel;
+mod operative_effects;
 pub mod network_auxiliary;
 pub mod propaganda_changes;
 mod retained_snapshot;

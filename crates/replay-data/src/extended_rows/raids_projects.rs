@@ -625,6 +625,7 @@ pub struct RaidIntelInputRow {
     pub country: u32,
     pub strategic_present: u8,
     pub country_defense: i64,
+    pub defense_tree: Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>,
     pub crypto_strength: Option<i64>,
     pub operatives: Vec<RaidCounterOperative>,
 }
@@ -642,7 +643,7 @@ value_struct!(RaidCounterOperative {
 opaque_value!(Vec<RaidCounterOperative>);
 typed_codec!(RaidIntelInputRow, 32, |r| r.country as u128,
  |key| Self { country: key as u32, ..Self::default() },
- { 0 => (strategic_present): U8, 1 => (country_defense): I64, 2 => (crypto_strength): OptionalI64, 3 => (operatives): Opaque },
+ { 0 => (strategic_present): U8, 1 => (country_defense): I64, 2 => (crypto_strength): OptionalI64, 3 => (operatives): Opaque, 4 => (defense_tree): Opaque },
  |_r| Ok(()));
 
 opaque_value!(Option<[Option<i64>; 2]>);

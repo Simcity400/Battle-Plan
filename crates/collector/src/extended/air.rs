@@ -312,6 +312,8 @@ pub struct Captured {
     sorties: Sorties,
     ground_crews: CaptureRows<rows::AirGroundCrewRow>,
     ground_demand: Vec<ground_crews::Demand>,
+    ground_index: std::collections::HashMap<(u32, u32), usize>,
+    supply: engine_map_air::map_air_supply::Capture,
     transfers: CaptureRows<rows::AirTransferInputRow>,
     transfer_demand: Vec<usize>,
     transfer_ticks: u64,
@@ -435,6 +437,8 @@ impl Captured {
             sorties: Sorties::with_capacities(&capacity.sorties),
             ground_crews: CaptureRows::new(capacity.wings),
             ground_demand: allocation::owned_vec(allocation::default_vec(capacity.wings)),
+            ground_index: Default::default(),
+            supply: Default::default(),
             transfers: CaptureRows::new(capacity.wings),
             transfer_demand: Vec::new(),
             transfer_ticks: 0,
@@ -510,6 +514,8 @@ impl Captured {
             + self.transfers.allocated_bytes()
             + self.transfer_demand.capacity() * size_of::<usize>()
             + self.ground_demand.capacity() * size_of::<ground_crews::Demand>()
+            + self.supply.allocated_bytes()
+            + self.ground_index.capacity() * std::mem::size_of::<((u32, u32), usize)>()
             + self.patrol_combats.allocated_bytes()
     }
 
@@ -721,8 +727,11 @@ impl Captured {
         };
         ticks[0] = elapsed(begin);
         let begin = qpc();
-        let ((ground_outcome, ground_ticks), stable) =
-            crate::ground_crew_changes::with_flags(memory, base, wings.len(), |flags| {
+        let ((ground_outcome, ground_ticks), stable) = crate::ground_crew_changes::with_flags(
+            memory,
+            base,
+            wings.len(),
+            |flags| {
                 if !self.active[7] {
                     self.sorties.fail(SKIPPED, SKIPPED);
                 } else if let Outcome::Rows { len } = self.references.outcome {
@@ -754,17 +763,87 @@ impl Captured {
                     SKIPPED
                 } else {
                     let _reads = read_accounting::table(TableId::AirGroundCrews);
-                    ground_crews::capture(
+                    let outcome = ground_crews::capture(
                         wings,
                         registered,
                         Buffer::Growing(&mut self.ground_demand),
                         Buffer::Growing(&mut self.ground_crews.rows),
                         |country, region| flags.get(country, region),
                     )
-                    .unwrap_or_else(|reason| Outcome::Unavailable { reason })
+                    .unwrap_or_else(|reason| Outcome::Unavailable { reason });
+                    if let Outcome::Rows { len } = outcome {
+                        self.ground_crews.rows.truncate(len);
+                        if self.supply.read(memory, base, game_state).is_ok() {
+                            self.ground_index.clear();
+                            if allocation::reserve_map(
+                                &mut self.ground_index,
+                                self.ground_crews.rows.len(),
+                            )
+                            .is_err()
+                            {
+                                return (
+                                    Outcome::Unavailable {
+                                        reason: "regional Air supply projection index allocation failed",
+                                    },
+                                    elapsed(begin_ground),
+                                );
+                            }
+                            self.ground_index.extend(
+                                self.ground_crews
+                                    .rows
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, row)| ((row.country, row.region), index)),
+                            );
+                            for sample in &self.supply.rows {
+                                let supply = Some(rows::AirSupplySummary {
+                                    severity: sample.severity,
+                                    needed: sample.needed,
+                                    supplied: sample.supplied,
+                                    deficit: sample.deficit,
+                                });
+                                if let Some(&index) =
+                                    self.ground_index.get(&(sample.country, sample.region))
+                                {
+                                    self.ground_crews.rows[index].supply = supply;
+                                } else if allocation::reserve(&mut self.ground_crews.rows, 1)
+                                    .is_ok()
+                                {
+                                    self.ground_crews.rows.push(rows::AirGroundCrewRow {
+                                        country: sample.country,
+                                        region: sample.region,
+                                        enabled: if sample.region == u32::MAX {
+                                            None
+                                        } else {
+                                            flags
+                                                .get(sample.country_pointer, sample.region_pointer)
+                                                .map(u32::from)
+                                        },
+                                        supply,
+                                    });
+                                } else {
+                                    return (
+                                        Outcome::Unavailable {
+                                            reason: "regional Air supply projection allocation failed",
+                                        },
+                                        elapsed(begin_ground),
+                                    );
+                                }
+                            }
+                        }
+                        self.ground_crews
+                            .rows
+                            .sort_unstable_by_key(|row| (row.country, row.region));
+                        Outcome::Rows {
+                            len: self.ground_crews.rows.len(),
+                        }
+                    } else {
+                        outcome
+                    }
                 };
                 (outcome, elapsed(begin_ground))
-            });
+            },
+        );
         self.ground_crews.outcome = if stable || registered.is_some_and(<[_]>::is_empty) {
             ground_outcome
         } else {

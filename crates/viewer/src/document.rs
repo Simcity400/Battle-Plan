@@ -486,6 +486,7 @@ pub struct PreparedOverlay {
     occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
     occupation_hits: Vec<viewer_world::map::occupation_icons::Hit>,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
+    adjacency_hits: Vec<viewer_world::map::adjacency_icons::Hit>,
     /// The strait and canal icons' priority in the view's map mode.
     adjacency_priority: i8,
     /// The resource, occupation and adjacency icons as last drawn.
@@ -744,6 +745,7 @@ impl PreparedOverlay {
         let adjacency_icons = &self.adjacency_icons;
         let adjacency_priority = self.adjacency_priority;
         let occupation_hits = &mut self.occupation_hits;
+        let adjacency_hits = &mut self.adjacency_hits;
         let icons = &mut self.icons;
         let order = crate::map_views::ResourceOrder::default();
         let mut views = self
@@ -873,12 +875,13 @@ impl PreparedOverlay {
                         for (reason, count) in &adjacency_icons.report {
                             *refused.entry(reason.clone()).or_default() += count;
                         }
-                        adjacency_icons.draw(
+                        adjacency_icons.draw_with_hits(
                             context,
                             adjacency_priority,
                             adjacency_rules,
                             &mut mode_icons,
                             &mut refused,
+                            adjacency_hits,
                         );
                     });
                     (
@@ -958,6 +961,10 @@ impl PreparedOverlay {
 
     pub fn occupation_hits(&self) -> &[viewer_world::map::occupation_icons::Hit] {
         &self.occupation_hits
+    }
+
+    pub fn adjacency_hits(&self) -> &[viewer_world::map::adjacency_icons::Hit] {
+        &self.adjacency_hits
     }
 
     /// All views upload this same current secondary province field, including its empty clear.
@@ -1560,10 +1567,10 @@ impl Document {
         uncovered_reads: installed_content_core::content::UncoveredReads,
     ) -> io::Result<Self> {
         let content = Arc::new(content);
-        let scripted = dashboard::scripted_text::ScriptedContent::read(
+        let scripted = Arc::new(dashboard::scripted_text::ScriptedContent::read(
             Arc::clone(&content),
             recorded_language.clone(),
-        );
+        ));
         let map = product_loader.map()?;
         let (terrain, default_map) = product_loader.terrain()?;
         // The game logs a malformed terrain entry or field and loads the rest.
@@ -1778,17 +1785,6 @@ impl Document {
                     rail_defines,
                 ))
             });
-            // The infrastructure map mode's limit operands: locations and enabling technologies.
-            let h_infrastructure_reads = scope.spawn(|| -> io::Result<_> {
-                let mode_layers = product_loader.reader(layers, "display/modes");
-                let layers = &mode_layers;
-                let locations = installed_content_core::strategic_locations::read(layers)?;
-                let technologies = layers
-                    .key_names()
-                    .and_then(|names| installed_content_core::technology::Catalog::read(layers, &names))
-                    .map_err(|error| error.to_string());
-                Ok((locations, technologies))
-            });
             let h_trains = scope.spawn(|| -> io::Result<_> {
                 let (trains, warnings) = layers.artwork("supply trains", |stack| {
                     let mut warnings = Vec::new();
@@ -1968,9 +1964,6 @@ impl Document {
             joined_warnings.extend(frame_warnings);
             let (cities, city_styles, buildings_read, building_types, rail_defines) =
                 h_rail_reads.join().expect("rail reads loader panicked")?;
-            let infrastructure_reads = h_infrastructure_reads
-                .join()
-                .expect("infrastructure reads loader panicked")?;
             let (ideologies, warnings) =
                 h_ideologies.join().expect("ideologies loader panicked")?;
             joined_warnings.extend(
@@ -2044,7 +2037,6 @@ impl Document {
                 city_styles,
                 buildings_read,
                 building_types,
-                infrastructure_reads,
                 rail_defines,
                 trains,
                 aircraft,
@@ -2082,7 +2074,6 @@ impl Document {
             city_styles,
             buildings_read,
             building_types,
-            (strategic_locations, technologies),
             rail_defines,
             trains,
             aircraft,
@@ -2336,13 +2327,7 @@ impl Document {
                 ));
             }
             let categories = installed_content_state_categories::state_categories::read(&mode_layers)?;
-            let infrastructure = viewer_world::map::map_mode::infrastructure::Content::new(
-                &building_types,
-                &defines,
-                &categories,
-                &strategic_locations,
-                technologies.as_ref().map_err(Clone::clone),
-            )?;
+            let infrastructure = viewer_world::map::map_mode::infrastructure::Content::new(&building_types);
             let terrain_categories = combat_assets.movement_terrain();
             let provinces: Vec<u32> = map.definitions.keys().copied().collect();
             let province_terrain = |province| {
@@ -2387,7 +2372,8 @@ impl Document {
             )?)
         };
         // The intel icons' content, and the sprites their code sets that no template names.
-        let intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
+        let mut intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
+        intel_assets.scripted = Some(Arc::clone(&scripted));
         warnings.extend(intel_assets.warnings.iter().cloned());
         let mut counter_assets = counter_assets;
         let mut icon_images = icon_images;
@@ -2532,7 +2518,6 @@ impl Document {
                 .map_err(String::as_str),
             &defines,
         );
-        let scripted = Arc::new(scripted);
         let raid_hover = Arc::new(raids::tooltips::Content {
             assets: Arc::clone(&icons.raids),
             flags: Arc::clone(&icons.counters.flags),
@@ -3954,27 +3939,35 @@ impl<'a> Hour<'a> {
         self.product_hour.limitations(perspective)
     }
 
-    /// The map mode's country channel this hour; the viewing country is its selected country.
+    /// The map mode's country channel this hour.
     /// `colour` is a scripted mode's borders as the previous hour kept them.
     pub fn map_mode_fill(
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
         choice: &perspective::Choice,
+        selected: Option<u32>,
         colour: Option<&viewer_world::map::map_mode::ColourState>,
     ) -> io::Result<viewer_world::map::map_mode::ModeFill> {
         let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
         self.product_hour
-            .mode(&self.map_modes, mode, choice, colour)
+            .mode(&self.map_modes, mode, choice, selected, colour)
     }
 
     pub fn political_product(
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
         choice: &perspective::Choice,
+        selected: Option<u32>,
         colour: Option<&viewer_world::map::map_mode::ColourState>,
     ) -> io::Result<map_products::landscape::PoliticalProduct> {
-        self.product_hour
-            .political(&self.map_modes, &self.naval_dominance, mode, choice, colour)
+        self.product_hour.political(
+            &self.map_modes,
+            &self.naval_dominance,
+            mode,
+            choice,
+            selected,
+            colour,
+        )
     }
 
     pub(crate) fn seed_vision(
@@ -4587,6 +4580,7 @@ impl<'a> Hour<'a> {
                 resource_icons,
                 occupation_icons,
                 occupation_hits: Vec::new(),
+                adjacency_hits: Vec::new(),
                 adjacency_icons,
                 adjacency_priority,
                 mode_icons: Batch::default(),

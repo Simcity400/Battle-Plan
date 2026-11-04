@@ -655,6 +655,7 @@ enum MapHit {
     Intel,
     /// An occupation percentage or one definition badge, with its own control geometry.
     Occupation(usize),
+    Adjacency(usize),
     Combat(usize),
     NavalObserver(usize),
     PortTooltip(usize),
@@ -1200,6 +1201,7 @@ pub struct Viewer {
     perspective: Choice,
     /// The view's map mode; the picker, its shortcuts and the host set it.
     map_mode: viewer_world::map::map_mode::MapMode,
+    diplomatic_selected: Option<u32>,
     /// The map mode picker drawn over the map, its slots and what it tells the host.
     picker: picker::PickerState,
     picker_error: Option<String>,
@@ -1629,6 +1631,7 @@ impl Viewer {
             fleet_selection: Default::default(),
             perspective,
             map_mode,
+            diplomatic_selected: None,
             picker: Default::default(),
             picker_error: None,
             picker_refused: Default::default(),
@@ -2447,6 +2450,7 @@ impl Viewer {
         self.opened = Some(Instant::now());
         self.combat.close();
         self.document = None;
+        self.diplomatic_selected = None;
         self.raid_tooltips = Default::default();
         self.land_marker_tooltips = Default::default();
         self.naval_marker_tooltips = Default::default();
@@ -2807,7 +2811,7 @@ impl Viewer {
     }
 
     fn map_hit(&self, point: [f32; 2]) -> Option<MapHit> {
-        top_map_hit(
+        let top = top_map_hit(
             point,
             &self.counter_report,
             self.prepared_overlay
@@ -2820,7 +2824,27 @@ impl Viewer {
             self.prepared_overlay
                 .as_ref()
                 .and_then(|map| map.intel_at(point, self.looks.as_ref())),
-        )
+        );
+        if top == Some(MapHit::Blocked) {
+            return top;
+        }
+        let rank = |family, layer| match &self.looks {
+            None => Some((point, 0)),
+            Some(looks) => looks.hit(family, layer, point),
+        };
+        let mut key = top.and_then(|hit| self.hit_layer(hit))
+            .and_then(|(family, layer)| rank(family, layer).map(|(_, rank)| (rank, layer)));
+        let mut top = top;
+        for (index, hit) in self.prepared_overlay.as_ref().map_or(&[][..], |map| map.adjacency_hits()).iter().enumerate() {
+            if let Some((local, rank)) = rank(free_icons::IconFamily::AdjacencyRules, hit.layer)
+                && hit.geometry.contains(local)
+                && key.is_none_or(|key| (rank, hit.layer) >= key)
+            {
+                key = Some((rank, hit.layer));
+                top = Some(MapHit::Adjacency(index));
+            }
+        }
+        top
     }
 
     /// The layer key of `target`'s hit shape; `None` for targets that are not one map icon.
@@ -2828,6 +2852,8 @@ impl Viewer {
         use free_icons::IconFamily;
         let report = &self.counter_report;
         match target {
+            MapHit::Adjacency(index) => self.prepared_overlay.as_ref()?.adjacency_hits()
+                .get(index).map(|hit| (IconFamily::AdjacencyRules, hit.layer)),
             MapHit::AirMission(index) => report
                 .air_mission_hits
                 .get(index)
@@ -2947,13 +2973,20 @@ impl Viewer {
         queue: &eframe::wgpu::Queue,
         point: Option<[f32; 2]>,
     ) -> Result<(), String> {
-        let Ok(color) = &document.border_assets.faction_highlight_color else {
+        let adjacency = self.map_mode == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::StrategicNavy);
+        let color = if adjacency { &document.border_assets.adjacency_highlight_color } else { &document.border_assets.faction_highlight_color };
+        let Ok(color) = color else {
             return Ok(());
         };
-        let selected = point
-            .and_then(|point| self.faction_pin_at(point))
-            .map(|hit| Arc::clone(&hit.regions))
-            .unwrap_or_default();
+        let selected = if adjacency {
+            point.and_then(|point| match self.map_hit(point) {
+                Some(MapHit::Adjacency(index)) => self.prepared_overlay.as_ref()?.adjacency_hits().get(index),
+                _ => None,
+            }).map(|hit| Arc::clone(&hit.area)).unwrap_or_default()
+        } else {
+            point.and_then(|point| self.faction_pin_at(point))
+                .map(|hit| Arc::clone(&hit.regions)).unwrap_or_default()
+        };
         let Some(shown) = &self.shown else {
             return Ok(());
         };
@@ -2967,6 +3000,7 @@ impl Viewer {
             perspective: self.perspective.clone(),
             borders: borders.id,
             regions: Arc::clone(&selected),
+            adjacency,
         };
         let scene = self.scene.as_mut().expect("scene built");
         if self.faction_highlight.requested() != Some(&key)
@@ -2994,7 +3028,9 @@ impl Viewer {
             key,
             |job| hours.try_submit(job),
             move || {
-                let provinces = selected
+                let provinces = if adjacency {
+                    selected.iter().copied().collect()
+                } else { selected
                     .iter()
                     .flat_map(|id| {
                         content
@@ -3003,7 +3039,7 @@ impl Viewer {
                             .into_iter()
                             .flat_map(|region| region.provinces.iter().copied())
                     })
-                    .collect();
+                    .collect() };
                 viewer_world::map::scene::FactionHighlight::new(
                     &content.border_meshes,
                     &political.layers.regions,
@@ -4744,6 +4780,21 @@ impl Viewer {
                 && (!free_mode || icon_click)
                 && let Some(point) = point
             {
+                if matches!(self.shown_mode(), viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Diplomacy))
+                    && self.map_hit(point).is_none()
+                    && let Some(province) = pick(
+                        &camera,
+                        point.map(|value| value * ui_scale),
+                        pixels,
+                        &document.map,
+                        document.assets.heightmap_texels(),
+                    ).map_err(|error| error.to_string())?
+                    && let Some(country) = self.counter_report.perspective.province_controller(province)
+                    && self.diplomatic_selected != Some(country)
+                {
+                    self.diplomatic_selected = Some(country);
+                    ui.ctx().request_repaint();
+                }
                 match self.map_hit(point) {
                     Some(MapHit::NavalMission(index))
                         if self.counter_report.naval_mission_hits[index].mission != 0 =>

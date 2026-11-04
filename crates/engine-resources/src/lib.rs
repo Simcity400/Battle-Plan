@@ -17,3 +17,4 @@ pub mod cstrategic_resource_database;
 pub mod cstrategic_resource_pool;
 pub mod resource_map;
 pub mod state_resource_entry;
+pub mod trade_opinion;

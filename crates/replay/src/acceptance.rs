@@ -642,6 +642,7 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
         push_map::<tables::Players>(
             tables,
             PlayerRow {
+                ordinal: 0,
                 id: [0, i32::MAX, i32::MIN][ordinal],
                 country,
                 flags: RAW_FLAG_CASES[tick % RAW_FLAG_CASES.len()],
@@ -955,6 +956,7 @@ fn source_with_faults(
     }
     let mut states: Vec<_> = (0..=2)
         .map(|id| StateRow {
+            infrastructure: Default::default(),
             manpower_locked: Default::default(),
 
             id,

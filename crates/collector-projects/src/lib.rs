@@ -19,6 +19,7 @@ use collector_test_support as _;
 
 pub mod projects;
 pub mod raid_intel_carry;
+mod agency_defense;
 pub mod raid_target_statuses;
 
 #[cfg(test)]

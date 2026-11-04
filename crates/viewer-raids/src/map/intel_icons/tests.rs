@@ -8,57 +8,9 @@ use replay_data::{
 };
 use viewer_foundation::map::{native_resources::Context, sprites::Batch, test_support::gui};
 
-#[test]
-fn propaganda_history_hover_uses_recorded_order_and_independent_drift() {
-    use replay_data::rows::PropagandaEffortRow as Row;
-    let rows = [
-        Row {
-            slot: 7,
-            country: 101,
-            sequence: 12,
-            stability: 32768,
-            war_support: -16384,
-            derived_drift: 0,
-        },
-        Row {
-            slot: 7,
-            country: 101,
-            sequence: u64::MAX,
-            stability: -8192,
-            war_support: 65536,
-            derived_drift: 0,
-        },
-    ];
-    let text = tooltips::propaganda_history_text(&rows, 7).unwrap();
-    assert!(text.contains("Weekly stability drift: -25.00000%"));
-    assert!(text.contains("Weekly war support drift: 200.00000%"));
-    assert!(text.contains("Effort 1: stability 100.00000%, war support -50.00000%"));
-    assert!(tooltips::propaganda_history_text(&rows, 8).is_err());
-}
-
-#[test]
-fn national_network_cache_detail_uses_recorded_aggregates_without_float_rounding() {
-    let row = replay_data::rows::IntelNetworkSummaryRow {
-        covered_core_states: 17,
-        covered_controlled_states: 29,
-        covered_worth: -1,
-        controlled_strength_sum: i64::MIN,
-        core_strength_sum: -1,
-        max_state_strength: i64::MAX,
-        ..Default::default()
-    };
-    let text = tooltips::network_cache_text(&row);
-    assert!(text.contains("Network order: 1"));
-    assert!(text.contains("Covered core states: 17"));
-    assert!(text.contains("Covered controlled states: 29"));
-    assert!(text.contains("Covered owned worth: -1"));
-    assert!(text.contains("Controlled strength sum: -92233720368547.75808"));
-    assert!(text.contains("Core strength sum: -0.00001"));
-    assert!(text.contains("Maximum state strength: 92233720368547.75807"));
-}
-
 fn defines() -> IntelDefines {
     IntelDefines {
+        missions: Err("synthetic mission defines absent".into()),
         cutoff: 90_000_000,
         offset: [12, 40],
         max_stack: 2,
@@ -325,6 +277,8 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
     );
     let hour = frame.hour;
     let operative = |id: u64, ordinal, assignment| OperativeMissionRow {
+        map_selected: Some(0),
+        map_warning: Some(0),
         roster_country: 10,
         id: (id << 32) | 9,
         ordinal,
@@ -398,10 +352,6 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
         &installed_content_localisation::localisation::Localisation::default(),
         "english",
     );
-    // One omission for this view's offers, and one per hidden operative highlight.
-    assert_eq!(icons.report.reasons[OPERATION_OFFERS_UNRECORDED], 1);
-    assert_eq!(icons.report.reasons[OPERATIVE_SELECTION_UNRECORDED], 3);
-    assert_eq!(icons.report.reasons[OPERATIVE_WARNING_UNRECORDED], 3);
     let states: Vec<u32> = icons.states.iter().map(|state| state.state).collect();
     assert_eq!(states, [10, 20], "{:?}", icons.report);
     let [ger, eng] = &icons.states[..] else {
@@ -1033,42 +983,5 @@ fn a_nonterminal_operation_at_zero_remaining_days_has_the_finished_entry_present
         entry
             .writes
             .contains(&Write::Shown("operation_completed_overlay", true))
-    );
-}
-
-#[test]
-fn intel_sources_hover_keeps_keyed_zero_duplicate_occurrences_and_prior_day_separate() {
-    use replay_data::rows::IntelContributionRow;
-    let rows = [
-        IntelContributionRow {
-            kind: 4,
-            pool: 17,
-            ordinal: 2,
-            civilian: -1,
-            ..Default::default()
-        },
-        IntelContributionRow {
-            kind: 4,
-            pool: 17,
-            ordinal: 3,
-            ..Default::default()
-        },
-        IntelContributionRow {
-            kind: 5,
-            pool: 17,
-            ordinal: 0,
-            navy: 300_000,
-            ..Default::default()
-        },
-    ];
-    let text = super::tooltips::source_values_text(&rows.iter().collect::<Vec<_>>(), &[]).unwrap();
-    assert!(text.contains(
-        "Prior-day dynamic contribution, pool 17, entry 2: -0.00001 / 0.00000 / 0.00000 / 0.00000"
-    ));
-    assert!(text.contains(
-        "Prior-day dynamic contribution, pool 17, entry 3: 0.00000 / 0.00000 / 0.00000 / 0.00000"
-    ));
-    assert!(
-        text.contains("Pending dynamic, pool 17, entry 0: 0.00000 / 0.00000 / 3.00000 / 0.00000")
     );
 }
