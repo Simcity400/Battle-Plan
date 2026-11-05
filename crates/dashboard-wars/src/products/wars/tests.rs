@@ -90,6 +90,67 @@ fn first_goal_zero_country_uses_dated_reserved_names_and_refuses_missing_input()
     );
 }
 
+/// A name refused for a goal list not read is worded at each hour naming reads again, though
+/// only the overview's scores move and the representative stays.
+#[test]
+fn a_refused_name_is_worded_at_each_hour_naming_reads_again() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
+        "localisation/mod_l_english.yml",
+        "\u{feff}l_english:\n ONE:0 \"One\"\n ONE_ADJ:0 \"First\"\n TWO:0 \"Two\"\n TWO_ADJ:0 \"Second\"\n THREE:0 \"Three\"\n THREE_ADJ:0 \"Third\"\n",
+    )]);
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut frame = recorded(hour);
+            let TableView::Complete(TableRows::WarOwnedRelations(owned)) =
+                &mut *frame.tables[TableId::WarOwnedRelations.index()]
+            else {
+                panic!()
+            };
+            for row in owned {
+                row.first_goal_count = 1;
+            }
+            frame.tables[TableId::WarRelationGoals.index()] = TableView::Unavailable {
+                reason: "synthetic goals not read".into(),
+            }
+            .into();
+            let TableView::Complete(TableRows::WarOverviewCountries(scores)) =
+                &mut *frame.tables[TableId::WarOverviewCountries.index()]
+            else {
+                panic!()
+            };
+            scores[0].divisions = hour - 100;
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(
+        b"analytics-test".to_vec(),
+        &[dashboard_base::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    let cat = Arc::new(cat);
+    super::columnar_tests::assert_native_parity(&replay, Some(&cat), &[None, Some("TWO")]);
+    let reply = scan(&replay, 1, None, Some(&cat), &AtomicBool::new(false)).unwrap();
+    let observations: Vec<_> = reply
+        .wars
+        .iter()
+        .flat_map(|war| &war.observations)
+        .collect();
+    assert!(
+        observations
+            .iter()
+            .any(|observation| observation.first_hour > 100)
+    );
+    for observation in observations {
+        let reason = observation.name.reason.as_deref().unwrap();
+        assert!(
+            reason.starts_with(&format!("hour {} WarRelationGoals", observation.first_hour)),
+            "{reason}"
+        );
+    }
+}
+
 #[test]
 fn selected_native_viewpoint_uses_dated_tags_and_refuses_their_replacement() {
     use replay_data::rows::TableRows;
@@ -302,11 +363,11 @@ fn viewpoint_runs_do_not_index_a_missing_country_tag() {
     let mut reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
     reply.viewpoints.clear();
     let mut inputs = Hour::read(&frame, None).unwrap();
-    append_viewpoint(&mut reply, &inputs, 100);
-    append_viewpoint(&mut reply, &inputs, 101);
+    append_viewpoint(&mut reply, inputs.tags.get(&inputs.view), 100);
+    append_viewpoint(&mut reply, inputs.tags.get(&inputs.view), 101);
     assert_eq!(reply.viewpoints[0].last_hour, 101);
     inputs.tags.remove(&inputs.view);
-    append_viewpoint(&mut reply, &inputs, 102);
+    append_viewpoint(&mut reply, inputs.tags.get(&inputs.view), 102);
     assert_eq!(reply.viewpoints.len(), 1);
     assert_eq!(reply.viewpoints[0].last_hour, 101);
 }
@@ -372,7 +433,7 @@ fn label_catalogue_resolves_only_changed_naming_inputs_and_their_subjects() {
     labels.observe(&first, Some(&cat));
     assert_eq!(labels.resolutions, 3);
     let inputs = Hour::read(&first, None).unwrap();
-    labels.include(&inputs, &inputs.observe(&first, Some(&cat), true));
+    labels.include(&Viewed::of(&inputs), &inputs.observe(&first, Some(&cat), true));
 
     let mut daily = first.clone();
     for day in 1..=10 {
@@ -449,7 +510,6 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame),
     );
     assert_eq!(name.text, "First versus Second");
     assert!(name.known);
@@ -481,7 +541,6 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame),
     );
     assert_eq!(name.text, "Defender suffix");
     assert!(name.known);
@@ -505,7 +564,6 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
             &hour,
             pair(1, 2),
             Some(&cat),
-            &naming::Inputs::read(&frame)
         )
         .text,
         "Defender suffix"
@@ -520,7 +578,6 @@ fn content_mod_override_native_key_fallback_and_missing_first_goal() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame),
     );
     assert!(!name.known);
     assert_eq!(name.text, "Not recorded");
@@ -547,7 +604,6 @@ fn alliance_name_variant_reads_the_viewpoint_predicate_only_when_its_key_exists(
             &hour,
             pair(1, 2),
             Some(cat),
-            &naming::Inputs::read(frame),
         )
     }
     fn plain(name: WarName, text: &str, key: &str) {
@@ -811,7 +867,6 @@ fn fallback_goal_name_preserves_plain_state_text_and_first_country_operands() {
         &hour,
         pair(1, 2),
         Some(&cat),
-        &naming::Inputs::read(&frame),
     );
     assert!(name.known, "{:?}", name.reason);
     assert_eq!(name.key.as_deref(), Some("MOD"));
@@ -1528,7 +1583,7 @@ fn overlapping_branch(hours: i32) -> Replay {
 fn walk_overlapping(hours: i32, redeclare: bool) -> io::Result<WarsReply> {
     let mut walk = Walk::new(1, 100);
     for frame in overlapping_frames(hours, redeclare) {
-        walk.observe(&frame, None, None, None, None);
+        walk.observe_frame(&frame, None, None, None);
     }
     walk.finish(99 + hours, None)
 }

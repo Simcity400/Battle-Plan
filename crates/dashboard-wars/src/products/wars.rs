@@ -4,6 +4,7 @@ pub mod emit;
 pub mod facts;
 mod inputs;
 mod labels;
+mod layers;
 mod naming;
 mod native;
 mod participation;
@@ -32,20 +33,20 @@ use dashboard_core::invalid;
 use dashboard_text::metadata::branch_bounds;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
-use native::{Pair, World, pair};
+use native::{Blob, Pair, World, pair};
 #[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
 use replay_data::{rows, rows::TableId, rows::tables};
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
-use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::atomic::Ordering;
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -57,7 +58,7 @@ pub struct WarsParams {
     /// None follows the recording client's playing/observer country.
     pub viewpoint_tag: Option<String>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WarName {
     /// Exact plain text, or "Not recorded" with a reason.
@@ -348,6 +349,202 @@ struct OpenWar {
     /// Each distinct relation once, so overlapping groups never count twice.
     loss_pairs: Vec<(Pair, bool)>,
 }
+/// The countries an hour reads: each canonical slot's tag and native identity, and each raw
+/// link's slot.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub(crate) struct Countries {
+    tags: foldhash::HashMap<u32, String>,
+    identities: foldhash::HashMap<u32, (u32, u32)>,
+    raw_to_slot: foldhash::HashMap<u32, u32>,
+}
+impl Countries {
+    /// `frame`'s countries, or why it holds none.
+    fn read(frame: &DecodedFrame) -> Result<Self, String> {
+        let countries = frame
+            .complete::<tables::Countries>()
+            .map_err(|e| e.to_string())?;
+        let links = frame
+            .complete::<tables::CountryLinks>()
+            .map_err(|e| e.to_string())?;
+        Self::of(
+            countries
+                .iter()
+                .map(|c| (c.canonical_slot, c.id, c.tag.as_slice())),
+            links.iter().map(|r| (r.id, r.canonical_slot)),
+        )
+    }
+    /// The countries of complete Countries rows (slot, native id, tag) and links (raw id, slot).
+    fn of<'t>(
+        countries: impl Iterator<Item = (u32, u32, &'t [u8])>,
+        links: impl Iterator<Item = (u32, u32)>,
+    ) -> Result<Self, String> {
+        let rows: Vec<_> = countries.collect();
+        let tags = rows
+            .iter()
+            .map(|&(slot, _, tag)| {
+                std::str::from_utf8(tag)
+                    .map(|tag| (slot, tag.to_owned()))
+                    .map_err(|_| "country tag is not UTF-8".to_owned())
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            tags,
+            identities: rows
+                .iter()
+                .map(|&(slot, id, _)| (slot, (slot, id)))
+                .collect(),
+            raw_to_slot: links.collect(),
+        })
+    }
+    fn slot(&self, raw: u32) -> Result<u32, String> {
+        linked(&self.tags, &self.raw_to_slot, raw)
+    }
+    /// The slot tagged `tag`; the lowest when several are.
+    fn holding(&self, tag: &str) -> Option<u32> {
+        self.tags
+            .iter()
+            .filter(|(_, held)| held.as_str() == tag)
+            .map(|(&slot, _)| slot)
+            .min()
+    }
+}
+/// The canonical slot of raw country link `raw`, among the countries tagged.
+fn linked(
+    tags: &foldhash::HashMap<u32, String>,
+    raw_to_slot: &foldhash::HashMap<u32, u32>,
+    raw: u32,
+) -> Result<u32, String> {
+    raw_to_slot
+        .get(&raw)
+        .copied()
+        .filter(|s| tags.contains_key(s))
+        .ok_or_else(|| format!("Not recorded: canonical country link {raw}"))
+}
+/// The recording client's playing or observer country at `frame`'s hour.
+fn recorded_view(frame: &DecodedFrame, countries: &Countries) -> Option<u32> {
+    frame
+        .complete::<tables::LocalPlayer>()
+        .ok()
+        .and_then(|r| r.first())
+        .and_then(|r| {
+            countries
+                .slot(if r.country as i32 > 0 {
+                    r.country
+                } else {
+                    r.observer_country
+                })
+                .ok()
+        })
+}
+/// Each owner's owned war occurrences, and each live occurrence by its pair.
+type Owned = (
+    foldhash::HashMap<u32, Vec<u32>>,
+    foldhash::HashMap<Pair, rows::WarOwnedRelationRow>,
+);
+/// `frame`'s owned war occurrences, or why they cannot be read: an hour's reads past its
+/// viewpoint fail here first.
+fn owned(frame: &DecodedFrame, countries: &Countries) -> Result<Owned, String> {
+    let rows = frame
+        .complete::<tables::WarOwnedRelations>()
+        .map_err(|e| e.to_string())?;
+    let mut owned = foldhash::HashMap::<u32, Vec<u32>>::default();
+    // Keys preserve the complete vector's ordinals, not a tag sort.
+    let mut goal_owned = foldhash::HashMap::default();
+    for r in rows {
+        let (owner, a, b) = (
+            countries.slot(r.owner)?,
+            countries.slot(r.first_country)?,
+            countries.slot(r.second_country)?,
+        );
+        if a == b || (owner != a && owner != b) {
+            return Err("Not recorded: owned war endpoints disagree with owner".into());
+        }
+        owned
+            .entry(owner)
+            .or_default()
+            .push(if owner == a { b } else { a });
+        if owner == a && r.retired == 0 && goal_owned.insert(pair(a, b), r.clone()).is_some() {
+            return Err("Not recorded: multiple live owned war occurrences for one pair".into());
+        }
+    }
+    Ok((owned, goal_owned))
+}
+/// The war overview's scores by slot; none where the overview was not read whole.
+fn scores(
+    frame: &DecodedFrame,
+    tags: &foldhash::HashMap<u32, String>,
+    raw_to_slot: &foldhash::HashMap<u32, u32>,
+) -> Result<foldhash::HashMap<u32, rows::WarOverviewCountryRow>, String> {
+    let mut held = foldhash::HashMap::default();
+    if let Ok(scores) = frame.complete::<tables::WarOverviewCountries>() {
+        for r in scores {
+            held.insert(linked(tags, raw_to_slot, r.country)?, r.clone());
+        }
+    }
+    Ok(held)
+}
+/// The war world past the owned occurrences: the active relations and their row order, the
+/// faction memberships, the naming rule's viewpoint check and the scores, or why not.
+fn world(
+    frame: &DecodedFrame,
+    countries: &Countries,
+    recorded_view: Option<u32>,
+    owned: foldhash::HashMap<u32, Vec<u32>>,
+) -> Result<(World, Vec<Pair>), String> {
+    let mut world = World {
+        owned,
+        relations: Default::default(),
+        adjacent: Default::default(),
+        factions: Default::default(),
+        scores: Default::default(),
+    };
+    let mut relation_order = Vec::new();
+    for r in frame
+        .complete::<tables::WarRelations>()
+        .map_err(|e| e.to_string())?
+    {
+        let mut r = r.clone();
+        r.first_country = countries.slot(r.first_country)?;
+        r.second_country = countries.slot(r.second_country)?;
+        let p = pair(r.first_country, r.second_country);
+        if p.0 == p.1 || world.relations.insert(p, r).is_some() {
+            return Err("Not recorded: duplicate canonical active war pair".into());
+        }
+        relation_order.push(p);
+        world.adjacent.entry(p.0).or_default().push(p.1);
+        world.adjacent.entry(p.1).or_default().push(p.0);
+    }
+    // Factions are equality operands, never side rosters.
+    frame
+        .complete::<tables::Factions>()
+        .map_err(|e| e.to_string())?;
+    for r in frame
+        .complete::<tables::FactionMembers>()
+        .map_err(|e| e.to_string())?
+    {
+        let country = countries.slot(r.country)?;
+        if world.factions.insert(country, r.faction).is_some() {
+            return Err("Not recorded: a country has multiple faction memberships".into());
+        }
+    }
+    let rules = frame
+        .complete::<tables::WarNameRules>()
+        .map_err(|_| "Not recorded: war overview viewpoint")?;
+    if rules.len() != 1 || rules[0].index != 0 {
+        return Err("Not recorded: war overview viewpoint row absent or repeated".into());
+    }
+    if rules[0].viewpoint == 0
+        || Some(
+            countries
+                .slot(rules[0].viewpoint)
+                .map_err(|_| "Not recorded: war overview viewpoint cannot be resolved")?,
+        ) != recorded_view
+    {
+        return Err("Not recorded: war overview viewpoint differs from LocalPlayer".into());
+    }
+    world.scores = scores(frame, &countries.tags, &countries.raw_to_slot)?;
+    Ok((world, relation_order))
+}
 #[derive(Clone)]
 struct Hour {
     world: World,
@@ -360,18 +557,17 @@ struct Hour {
     recorded_view: Option<u32>,
     goal_owned: foldhash::HashMap<Pair, rows::WarOwnedRelationRow>,
 }
-/// The inputs a viewpoint reads at an hour and the groups it observes there, or why it cannot.
-type HourRead = Result<(Hour, Vec<Observed>), String>;
 
-/// What `view`, or the viewpoint among `identities`, reads at `decoded`, each group's losses
-/// summed when `losses` are kept.
+/// What `view`, or the viewpoint among `identities`, reads at `decoded` and the groups it
+/// observes there, each group's losses summed when `losses` are kept; or why it cannot.
+#[cfg(any(test, feature = "test-support"))]
 fn read_hour(
     decoded: &DecodedFrame,
     view: Option<&str>,
     identities: Option<&HashSet<(u32, u32)>>,
     cat: Option<&Catalogue>,
     losses: bool,
-) -> HourRead {
+) -> Result<(Hour, Vec<Observed>), String> {
     identities
         .map_or_else(
             || Ok(view.map(str::to_owned)),
@@ -384,34 +580,8 @@ fn read_hour(
         })
 }
 
-/// An hour read ahead of the walk, with the groups its observation opens at its hour
-/// ([`opening`]), which a structural change continues, when it keeps losses.
-struct ReadyHour {
-    read: HourRead,
-    opened: Option<Vec<Observed>>,
-}
-
-/// [`read_hour`] ahead of the walk, the groups it opens at `decoded`'s hour built too when it
-/// keeps `losses`: without them opening only copies the groups.
-fn read_ahead(
-    decoded: &DecodedFrame,
-    view: Option<&str>,
-    identities: Option<&HashSet<(u32, u32)>>,
-    cat: Option<&Catalogue>,
-    losses: bool,
-) -> ReadyHour {
-    let read = read_hour(decoded, view, identities, cat, losses);
-    let opened = read
-        .as_ref()
-        .ok()
-        .filter(|_| losses)
-        .map(|(inputs, observed)| opening(inputs, observed, decoded.hour, losses));
-    ReadyHour { read, opened }
-}
-
-/// Each group `observed` at `hour`, as a structural change opens it, with its losses there when
-/// they are kept.
-fn opening(inputs: &Hour, observed: &[Observed], hour: i32, losses: bool) -> Vec<Observed> {
+/// Each group `observed` at `hour`, as a structural change opens it.
+fn opening(observed: &[Observed], hour: i32) -> Vec<Observed> {
     observed
         .iter()
         .map(|o| Observed {
@@ -420,24 +590,14 @@ fn opening(inputs: &Hour, observed: &[Observed], hour: i32, losses: bool) -> Vec
                 last_hour: hour,
                 ..o.data.clone()
             },
-            relations: o.relations.clone(),
-            losses: if losses {
-                inputs.losses(&o.loss_pairs)
-            } else {
-                Default::default()
-            },
-            loss_pairs: o.loss_pairs.clone(),
-            representative: o.representative.clone(),
+            ..o.clone()
         })
         .collect()
 }
 
 /// Whether `held`, an hour read again, observes exactly the groups `before` held, their losses
 /// aside: continuing each war with them then extends it exactly as its losses alone do.
-fn same_groups(before: &HeldHour, held: &HeldHour) -> bool {
-    let (Ok((_, before)), Ok((_, held))) = (&before.observed, &held.observed) else {
-        return false;
-    };
+fn same_groups(before: &[Observed], held: &[Observed]) -> bool {
     before.len() == held.len()
         && before.iter().zip(held).all(|(a, b)| {
             let WarObservation {
@@ -462,29 +622,38 @@ fn same_groups(before: &HeldHour, held: &HeldHour) -> bool {
         })
 }
 
-/// The tables whose change makes a walk read its hour's inputs again.
-fn compared_tables() -> Vec<TableId> {
-    TABLES
-        .iter()
-        .copied()
-        .filter(|&t| {
-            t != TableId::Clock
-                && t != TableId::Campaign
-                && t != TableId::Capitulation
-                && t != TableId::WarRelations
-        })
-        .collect()
-}
-
+/// The countries a walk's hour read, and its viewpoint's slot among them.
 #[derive(Clone)]
-struct HeldHour {
-    /// Identities, not views: holding a view copies it when the next hour changes it.
-    tables: Vec<ViewIdentity>,
-    observed: Result<(Hour, Vec<Observed>), String>,
+pub(crate) struct Viewed {
+    countries: Arc<Countries>,
+    view: u32,
+}
+#[cfg(any(test, feature = "test-support"))]
+impl Viewed {
+    fn of(hour: &Hour) -> Self {
+        Self {
+            countries: Arc::new(Countries {
+                tags: hour.tags.clone(),
+                identities: hour.identities.clone(),
+                raw_to_slot: hour.raw_to_slot.clone(),
+            }),
+            view: hour.view,
+        }
+    }
 }
 
-fn append_viewpoint(reply: &mut WarsReply, inputs: &Hour, hour: i32) {
-    let Some(tag) = inputs.tags.get(&inputs.view) else {
+/// An hour a walk observes: what its viewpoint reads there and the groups it sees, or why it
+/// cannot; the capitulations (each capitulated country's raw id and date), or none where they
+/// were not read whole; and what sums a group's losses where the walk keeps them.
+pub(crate) struct Seen<'a> {
+    hour: i32,
+    read: Result<(Viewed, Vec<Observed>), String>,
+    capitulations: Result<&'a [(u32, i32)], ()>,
+    losses: Option<&'a Losses<'a>>,
+}
+
+fn append_viewpoint(reply: &mut WarsReply, tag: Option<&String>, hour: i32) {
+    let Some(tag) = tag else {
         return;
     };
     if let Some(run) = reply.viewpoints.last_mut()
@@ -500,145 +669,135 @@ fn append_viewpoint(reply: &mut WarsReply, inputs: &Hour, hour: i32) {
         });
     }
 }
+/// The group `blob` that `view` observes at `hour` in `world`, named for its representative or
+/// why it has none, its losses summed by `losses` where they are kept.
+#[allow(clippy::too_many_arguments)]
+fn observed(
+    world: &World,
+    countries: (
+        &foldhash::HashMap<u32, String>,
+        &foldhash::HashMap<u32, (u32, u32)>,
+    ),
+    view: u32,
+    blob: Blob,
+    named: Result<(Pair, WarName), String>,
+    losses: Option<&Losses<'_>>,
+    hour: i32,
+) -> Observed {
+    let (tags, identities) = countries;
+    let first: HashSet<_> = blob.first.iter().copied().collect();
+    let inside = world.inside(&blob);
+    let loss_pairs = inside
+        .iter()
+        .map(|&p| (p, first.contains(&world.relations[&p].first_country)))
+        .collect::<Vec<_>>();
+    let losses = losses.map_or_else(Default::default, |losses| losses(&loss_pairs));
+    let relations = loss_pairs
+        .iter()
+        .map(|&(p, first_side)| {
+            let r = &world.relations[&p];
+            let (a, b) = (&tags[&p.0], &tags[&p.1]);
+            let (first, second) = if a < b { (a, b) } else { (b, a) };
+            let identity = WarRelationKey::new(identities[&p.0], identities[&p.1], r.start_hour);
+            let canonical = identities[&r.first_country] == identity.first;
+            RelationRun {
+                first: first.clone(),
+                second: second.clone(),
+                start: r.start_hour,
+                oriented: first_side == canonical,
+                identity,
+            }
+        })
+        .collect();
+    let representative = named.as_ref().ok().map(|(p, _)| {
+        WarRelationKey::new(
+            identities[&p.0],
+            identities[&p.1],
+            world.relations[p].start_hour,
+        )
+    });
+    let (orientation, represented, name) = match named {
+        Ok((p, name)) => {
+            let r = &world.relations[&p];
+            let instigator = if r.first_was_instigator != 0 {
+                r.first_country
+            } else {
+                r.second_country
+            };
+            (
+                Some(first.contains(&instigator)),
+                Some([
+                    tags[&r.first_country].clone(),
+                    tags[&r.second_country].clone(),
+                ]),
+                name,
+            )
+        }
+        Err(reason) => (None, None, naming::unknown(reason)),
+    };
+    Observed {
+        relations,
+        losses,
+        loss_pairs,
+        representative,
+        data: WarObservation {
+            first_hour: hour,
+            last_hour: hour,
+            viewpoint_tag: tags[&view].clone(),
+            viewpoint_side: blob.first.iter().map(|s| tags[s].clone()).collect(),
+            opposing_side: blob.second.iter().map(|s| tags[s].clone()).collect(),
+            attackers_are_viewpoint: orientation,
+            representative: represented,
+            name,
+        },
+    }
+}
 impl Hour {
     fn read(frame: &DecodedFrame, view: Option<&str>) -> Result<Self, String> {
-        let countries = frame
-            .complete::<tables::Countries>()
-            .map_err(|e| e.to_string())?;
-        let links = frame
-            .complete::<tables::CountryLinks>()
-            .map_err(|e| e.to_string())?;
-        let tags: foldhash::HashMap<_, _> = countries
-            .iter()
-            .map(|c| {
-                std::str::from_utf8(&c.tag)
-                    .map(|tag| (c.canonical_slot, tag.to_owned()))
-                    .map_err(|_| "country tag is not UTF-8".to_owned())
-            })
-            .collect::<Result<_, _>>()?;
-        let raw_to_slot: foldhash::HashMap<_, _> =
-            links.iter().map(|r| (r.id, r.canonical_slot)).collect();
-        let identities = countries
-            .iter()
-            .map(|r| (r.canonical_slot, (r.canonical_slot, r.id)))
-            .collect();
-        let slot = |raw: u32| -> Result<u32, String> {
-            raw_to_slot
-                .get(&raw)
-                .copied()
-                .filter(|s| tags.contains_key(s))
-                .ok_or_else(|| format!("Not recorded: canonical country link {raw}"))
-        };
-        let recorded_view = frame
-            .complete::<tables::LocalPlayer>()
-            .ok()
-            .and_then(|r| r.first())
-            .and_then(|r| {
-                slot(if r.country as i32 > 0 {
-                    r.country
-                } else {
-                    r.observer_country
-                })
-                .ok()
-            });
+        let countries = Countries::read(frame)?;
+        let recorded_view = recorded_view(frame, &countries);
         let viewpoint = match view {
-            Some(tag) => tags
-                .iter()
-                .find_map(|(&s, t)| (t == tag).then_some(s))
+            Some(tag) => countries
+                .holding(tag)
                 .ok_or_else(|| format!("Not in this recording: viewpoint {tag}"))?,
             None => recorded_view.ok_or("Not recorded: local playing/observer country")?,
         };
-        let mut world = World {
-            owned: Default::default(),
-            relations: Default::default(),
-            adjacent: Default::default(),
-            factions: Default::default(),
-            scores: Default::default(),
-        };
-        let owned = frame
-            .complete::<tables::WarOwnedRelations>()
-            .map_err(|e| e.to_string())?;
-        // Keys preserve the complete vector's ordinals, not a tag sort.
-        let mut goal_owned = foldhash::HashMap::default();
-        for r in owned {
-            let (owner, a, b) = (
-                slot(r.owner)?,
-                slot(r.first_country)?,
-                slot(r.second_country)?,
-            );
-            if a == b || (owner != a && owner != b) {
-                return Err("Not recorded: owned war endpoints disagree with owner".into());
-            }
-            world
-                .owned
-                .entry(owner)
-                .or_default()
-                .push(if owner == a { b } else { a });
-            if owner == a && r.retired == 0 && goal_owned.insert(pair(a, b), r.clone()).is_some() {
-                return Err(
-                    "Not recorded: multiple live owned war occurrences for one pair".into(),
-                );
-            }
-        }
-        let mut relation_order = Vec::new();
-        for r in frame
-            .complete::<tables::WarRelations>()
-            .map_err(|e| e.to_string())?
-        {
-            let mut r = r.clone();
-            r.first_country = slot(r.first_country)?;
-            r.second_country = slot(r.second_country)?;
-            let p = pair(r.first_country, r.second_country);
-            if p.0 == p.1 || world.relations.insert(p, r).is_some() {
-                return Err("Not recorded: duplicate canonical active war pair".into());
-            }
-            relation_order.push(p);
-            world.adjacent.entry(p.0).or_default().push(p.1);
-            world.adjacent.entry(p.1).or_default().push(p.0);
-        }
-        // Factions are equality operands, never side rosters.
-        frame
-            .complete::<tables::Factions>()
-            .map_err(|e| e.to_string())?;
-        for r in frame
-            .complete::<tables::FactionMembers>()
-            .map_err(|e| e.to_string())?
-        {
-            let country = slot(r.country)?;
-            if world.factions.insert(country, r.faction).is_some() {
-                return Err("Not recorded: a country has multiple faction memberships".into());
-            }
-        }
-        let rules = frame
-            .complete::<tables::WarNameRules>()
-            .map_err(|_| "Not recorded: war overview viewpoint")?;
-        if rules.len() != 1 || rules[0].index != 0 {
-            return Err("Not recorded: war overview viewpoint row absent or repeated".into());
-        }
-        if rules[0].viewpoint == 0
-            || Some(
-                slot(rules[0].viewpoint)
-                    .map_err(|_| "Not recorded: war overview viewpoint cannot be resolved")?,
-            ) != recorded_view
-        {
-            return Err("Not recorded: war overview viewpoint differs from LocalPlayer".into());
-        }
-        if let Ok(scores) = frame.complete::<tables::WarOverviewCountries>() {
-            for r in scores {
-                world.scores.insert(slot(r.country)?, r.clone());
-            }
-        }
-        Ok(Self {
+        let (owned, goal_owned) = owned(frame, &countries)?;
+        let (world, relation_order) = world(frame, &countries, recorded_view, owned)?;
+        Ok(Self::of(
+            countries,
+            (world, relation_order, goal_owned),
+            viewpoint,
+            recorded_view,
+        ))
+    }
+    fn of(
+        countries: Countries,
+        (world, relation_order, goal_owned): (
+            World,
+            Vec<Pair>,
+            foldhash::HashMap<Pair, rows::WarOwnedRelationRow>,
+        ),
+        view: u32,
+        recorded_view: Option<u32>,
+    ) -> Self {
+        let Countries {
+            tags,
+            identities,
+            raw_to_slot,
+        } = countries;
+        Self {
             world,
             relation_order,
             tags,
             identities,
             raw_to_slot,
-            view: viewpoint,
+            view,
             recorded_view,
             goal_owned,
-        })
+        }
     }
+    #[cfg(test)]
     fn refresh_losses(&mut self, frame: &DecodedFrame) -> bool {
         let Ok(rows) = frame.complete::<tables::WarRelations>() else {
             return false;
@@ -695,122 +854,95 @@ impl Hour {
         }
         true
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn losses(&self, pairs: &[(Pair, bool)]) -> [String; 4] {
-        let mut sums = [0_i128; 4];
-        // A country's unknown loss is copied into each of its relations: the game
-        // adds its largest counter (at least zero) once per country.
-        let mut unknown = foldhash::HashMap::<(u32, usize), i64>::with_capacity_and_hasher(
-            2 * pairs.len(),
-            Default::default(),
-        );
-        for &(p, first) in pairs {
-            let r = &self.world.relations[&p];
-            let (a, b) = if first { (0, 2) } else { (2, 0) };
-            sums[a] += i128::from(r.first_casualties);
-            sums[b] += i128::from(r.second_casualties);
-            for (country, side, value) in [
-                (r.first_country, a + 1, r.first_unknown_casualties),
-                (r.second_country, b + 1, r.second_unknown_casualties),
-            ] {
-                let held = unknown.entry((country, side)).or_default();
-                *held = (*held).max(value);
-            }
-        }
-        for ((_, side), value) in unknown {
-            sums[side] += i128::from(value);
-        }
-        sums.map(|n| n.to_string())
+        losses_of(&self.world, pairs)
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn observe(
         &self,
         frame: &DecodedFrame,
         cat: Option<&Catalogue>,
         losses: bool,
     ) -> Vec<Observed> {
-        let naming = naming::Inputs::read(frame);
+        let namer = naming::Namer::new(frame, cat);
+        let count = |pairs: &[(Pair, bool)]| self.losses(pairs);
         self.world
             .blobs(self.view)
             .into_iter()
             .map(|blob| {
-                let first: HashSet<_> = blob.first.iter().copied().collect();
-                let inside = self.world.inside(&blob);
-                let loss_pairs = inside
-                    .iter()
-                    .map(|&p| (p, first.contains(&self.world.relations[&p].first_country)))
-                    .collect::<Vec<_>>();
-                let losses = if losses {
-                    self.losses(&loss_pairs)
-                } else {
-                    Default::default()
-                };
-                let relations = loss_pairs
-                    .iter()
-                    .map(|&(p, first_side)| {
-                        let r = &self.world.relations[&p];
-                        let (a, b) = (&self.tags[&p.0], &self.tags[&p.1]);
-                        let (first, second) = if a < b { (a, b) } else { (b, a) };
-                        let identity = WarRelationKey::new(
-                            self.identities[&p.0],
-                            self.identities[&p.1],
-                            r.start_hour,
-                        );
-                        let canonical = self.identities[&r.first_country] == identity.first;
-                        RelationRun {
-                            first: first.clone(),
-                            second: second.clone(),
-                            start: r.start_hour,
-                            oriented: first_side == canonical,
-                            identity,
-                        }
-                    })
-                    .collect();
-                let representative = self.world.representative(&blob);
-                let identity = representative.as_ref().ok().map(|p| {
-                    WarRelationKey::new(
-                        self.identities[&p.0],
-                        self.identities[&p.1],
-                        self.world.relations[p].start_hour,
-                    )
-                });
-                let (orientation, represented, name) = match representative {
-                    Ok(p) => {
-                        let r = &self.world.relations[&p];
-                        let instigator = if r.first_was_instigator != 0 {
-                            r.first_country
-                        } else {
-                            r.second_country
-                        };
-                        let name = naming::name(frame, self, p, cat, &naming);
-                        (
-                            Some(first.contains(&instigator)),
-                            Some([
-                                self.tags[&r.first_country].clone(),
-                                self.tags[&r.second_country].clone(),
-                            ]),
-                            name,
-                        )
-                    }
-                    Err(reason) => (None, None, naming::unknown(reason)),
-                };
-                Observed {
-                    relations,
-                    losses,
-                    loss_pairs,
-                    representative: identity,
-                    data: WarObservation {
-                        first_hour: frame.hour,
-                        last_hour: frame.hour,
-                        viewpoint_tag: self.tags[&self.view].clone(),
-                        viewpoint_side: blob.first.iter().map(|s| self.tags[s].clone()).collect(),
-                        opposing_side: blob.second.iter().map(|s| self.tags[s].clone()).collect(),
-                        attackers_are_viewpoint: orientation,
-                        representative: represented,
-                        name,
-                    },
-                }
+                let named = self
+                    .world
+                    .representative(&blob)
+                    .map(|p| (p, namer.name(self, p).0));
+                observed(
+                    &self.world,
+                    (&self.tags, &self.identities),
+                    self.view,
+                    blob,
+                    named,
+                    losses.then_some(&count as &Losses<'_>),
+                    frame.hour,
+                )
             })
             .collect()
     }
+}
+/// A group's losses from the counters of the relations of `world` it holds.
+fn losses_of(world: &World, pairs: &[(Pair, bool)]) -> [String; 4] {
+    let mut sums = [0_i128; 4];
+    // A country's unknown loss is copied into each of its relations: the game
+    // adds its largest counter (at least zero) once per country.
+    let mut unknown = foldhash::HashMap::<(u32, usize), i64>::with_capacity_and_hasher(
+        2 * pairs.len(),
+        Default::default(),
+    );
+    for &(p, first) in pairs {
+        let r = &world.relations[&p];
+        let (a, b) = if first { (0, 2) } else { (2, 0) };
+        sums[a] += i128::from(r.first_casualties);
+        sums[b] += i128::from(r.second_casualties);
+        for (country, side, value) in [
+            (r.first_country, a + 1, r.first_unknown_casualties),
+            (r.second_country, b + 1, r.second_unknown_casualties),
+        ] {
+            let held = unknown.entry((country, side)).or_default();
+            *held = (*held).max(value);
+        }
+    }
+    for ((_, side), value) in unknown {
+        sums[side] += i128::from(value);
+    }
+    sums.map(|n| n.to_string())
+}
+/// Whether an overview operand table was recorded at `frame`'s hour, even if incomplete.
+fn available(frame: &DecodedFrame) -> bool {
+    [
+        TableId::WarOwnedRelations,
+        TableId::WarRelationGoals,
+        TableId::WarOverviewCountries,
+        TableId::WarNameRules,
+    ]
+    .iter()
+    .any(|table| {
+        !matches!(
+            &*frame.tables[table.index()],
+            TableView::Unavailable { .. }
+        )
+    })
+}
+/// Each capitulated country's raw id and date at `frame`'s hour, or none where the
+/// capitulations were not read whole.
+fn capitulations(frame: &DecodedFrame) -> Result<Vec<(u32, i32)>, ()> {
+    frame
+        .complete::<tables::Capitulation>()
+        .map(|rows| {
+            rows.iter()
+                .filter(|r| r.capitulated != 0)
+                .map(|r| (r.country, r.capitulated_hour))
+                .collect()
+        })
+        .map_err(drop)
 }
 fn span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
     if first > last {
@@ -1109,20 +1241,31 @@ fn continue_wars(
 }
 // Resolve the selected native holder's actual dated tag, never a later tag
 // replacement or the recording's local player when that holder is missing.
+#[cfg(any(test, feature = "test-support"))]
 fn selected_view(frame: &DecodedFrame, identities: &HashSet<(u32, u32)>) -> Result<String, String> {
     let countries = frame
         .complete::<tables::Countries>()
         .map_err(|e| e.to_string())?;
-    let mut found = countries
-        .iter()
-        .filter(|row| identities.contains(&(row.canonical_slot, row.id)));
-    let row = found
+    selected_holder(
+        countries
+            .iter()
+            .map(|row| (row.canonical_slot, row.id, row.tag.as_slice())),
+        identities,
+    )
+}
+/// The tag of the one row of `countries` (slot, native id, tag) holding a selected identity.
+fn selected_holder<'t>(
+    countries: impl Iterator<Item = (u32, u32, &'t [u8])>,
+    identities: &HashSet<(u32, u32)>,
+) -> Result<String, String> {
+    let mut found = countries.filter(|&(slot, id, _)| identities.contains(&(slot, id)));
+    let (_, _, tag) = found
         .next()
         .ok_or("Not recorded: selected native war viewpoint holder")?;
     if found.next().is_some() {
         return Err("Not recorded: multiple selected native war viewpoint holders".into());
     }
-    std::str::from_utf8(&row.tag)
+    std::str::from_utf8(tag)
         .map(str::to_owned)
         .map_err(|_| "country tag is not UTF-8".into())
 }
@@ -1136,6 +1279,7 @@ fn scan(
 ) -> io::Result<WarsReply> {
     scan_selected(replay, branch, view, None, cat, cancelled)
 }
+#[cfg(any(test, feature = "test-support"))]
 const TABLES: &[TableId] = &[
     TableId::Clock,
     TableId::Campaign,
@@ -1206,7 +1350,7 @@ fn scan_selected(
                         }
                     };
                     validate_campaign(decoded, replay)?;
-                    walk.observe(decoded, view, identities, cat, None);
+                    walk.observe_frame(decoded, view, identities, cat);
                 }
             }
             Ok(())
@@ -1217,6 +1361,7 @@ fn scan_selected(
 
 /// The groups `view` sees at `frame`'s hour, from that frame alone
 /// ([`WarsAtHour`]): the branch walk's observation of one hour.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn at_hour(
     branch: u64,
     frame: &DecodedFrame,
@@ -1232,18 +1377,31 @@ pub(crate) fn at_hour(
     .into();
     let mut walk = Walk::new(branch, hour);
     walk.labels = false;
-    walk.observe(&frame, view, None, cat, None);
-    let mut reply = walk.finish(hour, cat)?;
+    walk.observe_frame(&frame, view, None, cat);
+    let reply = walk.finish(hour, cat)?;
+    Ok(at_hour_reply(
+        hour,
+        reply,
+        participation::read(&frame, view, cat),
+    ))
+}
+
+/// The reply of one hour's walk, its wars named by that hour.
+fn at_hour_reply(
+    hour: i32,
+    mut reply: WarsReply,
+    contributions: Vec<WarContributionGroup>,
+) -> WarsAtHour {
     for (index, war) in reply.wars.iter_mut().enumerate() {
         war.id = format!("@{hour}:{index}");
     }
-    Ok(WarsAtHour {
+    WarsAtHour {
         hour,
-        contributions: participation::read(&frame, view, cat),
+        contributions,
         available: reply.available,
         wars: reply.wars,
         warnings: reply.warnings,
-    })
+    }
 }
 
 #[derive(Clone)]
@@ -1258,21 +1416,22 @@ struct Walk {
     identity_since: foldhash::HashMap<u32, (String, i32)>,
     warnings: BTreeSet<String>,
     last_frame: Option<i32>,
-    held: Option<HeldHour>,
+    /// What the last hour observed read and the groups it saw, while it read.
+    held: Option<(Viewed, Vec<Observed>)>,
     country_labels: labels::CountryLabels,
     /// Whether historical country names are measured: one hour's walk ([`at_hour`]) names
     /// only that hour's countries.
     labels: bool,
-    compared: Vec<TableId>,
-    /// Whether an hour read again that observes the very groups held before still continues
-    /// its wars as a structural change does: only the reference walk the tests compare with.
+    /// Whether an hour observing the very groups held before still continues its wars as a
+    /// structural change does: only the reference walk the tests compare with.
     regroup_unchanged: bool,
     /// Whether each war's loss runs are kept: a query reads its casualties from the prepared
-    /// counters at the hours it asks for instead.
+    /// counters at the hours it asks for instead. A walk keeping them observes every hour it
+    /// walks and never extends.
     losses: bool,
-    /// The Countries and CountryLinks views identities and involved countries were last
-    /// refreshed from: an hour holding the same ones refreshes neither again.
-    identified: Option<[ViewIdentity; 2]>,
+    /// The countries identities and involved countries were last refreshed from: an hour
+    /// holding the same ones refreshes neither again.
+    identified: Option<Arc<Countries>>,
     /// Each held group's war as the last structural change assigned it ([`assignment`]).
     assigned: Vec<usize>,
     // Continuation reads the previous assignment even when every input table stays unchanged.
@@ -1294,7 +1453,6 @@ impl Walk {
             held: None,
             country_labels: Default::default(),
             labels: true,
-            compared: compared_tables(),
             regroup_unchanged: false,
             losses: true,
             identified: None,
@@ -1302,33 +1460,50 @@ impl Walk {
             settled: false,
         }
     }
-    /// Observes `decoded`, its hour `ready` when it was read ahead from this frame. The hour it
-    /// held before, when this replaced it, is returned for the caller to free.
-    fn observe(
+    /// Observes `decoded` as a frame read whole.
+    #[cfg(any(test, feature = "test-support"))]
+    fn observe_frame(
         &mut self,
         decoded: &DecodedFrame,
         view: Option<&str>,
         identities: Option<&HashSet<(u32, u32)>>,
         cat: Option<&Catalogue>,
-        ready: Option<ReadyHour>,
-    ) -> Option<HeldHour> {
+    ) {
         if self.labels {
             self.country_labels.observe(decoded, cat);
         }
-        self.reply.available |= [
-            TableId::WarOwnedRelations,
-            TableId::WarRelationGoals,
-            TableId::WarOverviewCountries,
-            TableId::WarNameRules,
-        ]
-        .iter()
-        .any(|table| {
-            !matches!(
-                &*decoded.tables[table.index()],
-                TableView::Unavailable { .. }
-            )
-        });
-        let hour = decoded.hour;
+        self.reply.available |= available(decoded);
+        let capitulations = capitulations(decoded);
+        let capitulations = capitulations.as_deref().map_err(|_| ());
+        match read_hour(decoded, view, identities, cat, self.losses) {
+            Ok((hour, observed)) => {
+                let losses = |pairs: &[(Pair, bool)]| hour.losses(pairs);
+                self.observe(Seen {
+                    hour: decoded.hour,
+                    read: Ok((Viewed::of(&hour), observed)),
+                    capitulations,
+                    losses: Some(&losses as &Losses<'_>),
+                });
+            }
+            Err(reason) => self.observe(Seen {
+                hour: decoded.hour,
+                read: Err(reason),
+                capitulations,
+                losses: None,
+            }),
+        }
+    }
+    /// Each open war's open participants end at its last hour.
+    fn settle_open(&mut self) {
+        for OpenWar { id, .. } in &self.open {
+            let war: &mut WarTimeline = &mut self.reply.wars[*id];
+            for &index in war.open_participants.values() {
+                war.participants[index].last_hour = war.last_hour;
+            }
+        }
+    }
+    fn observe(&mut self, seen: Seen<'_>) {
+        let hour = seen.hour;
         if let Some(before) = self.last_frame
             && before.checked_add(1) != Some(hour)
         {
@@ -1338,212 +1513,146 @@ impl Walk {
                 before + 1,
                 hour - 1,
             );
-            for OpenWar { id, .. } in &self.open {
-                let war: &mut WarTimeline = &mut self.reply.wars[*id];
-                for &index in war.open_participants.values() {
-                    war.participants[index].last_hour = war.last_hour;
-                }
-            }
+            self.settle_open();
             self.previous = None;
             self.open.clear();
             self.identity_since.clear();
         }
         self.last_frame = Some(hour);
-        let same = self.held.as_mut().is_some_and(|old| {
-            old.tables
-                .iter()
-                .zip(&self.compared)
-                .all(|(seen, table)| seen.is(&decoded.tables[table.index()]))
-                && old
-                    .observed
-                    .as_mut()
-                    .is_ok_and(|(inputs, _)| inputs.refresh_losses(decoded))
-        });
-        // The groups the hour opens, built ahead with its read.
-        let mut opened = None;
-        // An hour read again that observes the very groups held before changes only its losses.
-        let mut regrouped = false;
-        let mut released = None;
-        if !same {
-            let read = ready.map(|ready| {
-                opened = ready.opened;
-                ready.read
-            });
-            let before = self.held.take();
-            self.hold(decoded, view, identities, cat, read);
-            regrouped = !self.regroup_unchanged
-                && before
-                    .as_ref()
-                    .zip(self.held.as_ref())
-                    .is_some_and(|(before, held)| same_groups(before, held));
-            released = before;
-        }
-        let countries =
-            [TableId::Countries, TableId::CountryLinks].map(|table| &decoded.tables[table.index()]);
+        let (viewed, observed) = match seen.read {
+            Ok(read) => read,
+            Err(reason) => {
+                self.warnings.insert(reason);
+                span(&mut self.reply.unobserved, hour, hour);
+                span(&mut self.reply.capitulations_unobserved, hour, hour);
+                self.settle_open();
+                self.previous = None;
+                self.open.clear();
+                self.identity_since.clear();
+                self.held = None;
+                return;
+            }
+        };
+        // An hour observing the very groups held before changes only its losses.
+        let regrouped = !self.regroup_unchanged
+            && self
+                .held
+                .as_ref()
+                .is_some_and(|(_, before)| same_groups(before, &observed));
         let identified = self
             .identified
             .as_ref()
-            .is_some_and(|seen| seen.iter().zip(countries).all(|(seen, view)| seen.is(view)));
-        if let Ok((inputs, observed)) = &self.held.as_ref().expect("held hour").observed {
-            let viewpoint = inputs.identities.get(&inputs.view).copied();
-            // The same groups of the same countries, seen by the same viewpoint, involve no
-            // country they did not.
-            if self.labels
-                && (self.previous.is_none()
-                    || (!same && !(identified && regrouped && self.previous_view == viewpoint)))
-            {
-                self.country_labels.include(inputs, observed);
+            .is_some_and(|countries| Arc::ptr_eq(countries, &viewed.countries));
+        let viewpoint = viewed.countries.identities.get(&viewed.view).copied();
+        // The same groups of the same countries, seen by the same viewpoint, involve no
+        // country they did not.
+        if self.labels
+            && (self.previous.is_none()
+                || !(identified && regrouped && self.previous_view == viewpoint))
+        {
+            self.country_labels.include(&viewed, &observed);
+        }
+        append_viewpoint(
+            &mut self.reply,
+            viewed.countries.tags.get(&viewed.view),
+            hour,
+        );
+        if self.previous_view != viewpoint {
+            self.settle_open();
+            self.previous = None;
+            self.open.clear();
+        }
+        self.previous_view = viewpoint;
+        let losses = if self.losses { seen.losses } else { None };
+        // The very groups held before continue as losses alone only while continuing them
+        // would assign each to the war it holds: overlapping groups can trade wars.
+        if regrouped
+            && self.settled
+            && self.previous.is_some()
+            && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len()
+        {
+            // Loss-only hours retain native groups and continuity. No
+            // side lists, membership sets or relation runs are rebuilt.
+            for open in &self.open {
+                let war = &mut self.reply.wars[open.id];
+                if let Some(losses) = losses {
+                    append_losses(war, hour, losses(&open.loss_pairs), self.previous);
+                }
+                append_relations(war, hour, &open.relations);
+                war.last_hour = hour;
+                war.observations
+                    .last_mut()
+                    .expect("open war observation")
+                    .last_hour = hour;
             }
-            append_viewpoint(&mut self.reply, inputs, hour);
-            let view = inputs.identities.get(&inputs.view).copied();
-            if self.previous_view != view {
+        } else {
+            // A structural change settles the held participant bounds
+            // before splitting, merging or ending the previous groups.
+            if let Some(last) = self.previous {
                 for OpenWar { id, .. } in &self.open {
                     let war = &mut self.reply.wars[*id];
                     for &index in war.open_participants.values() {
-                        war.participants[index].last_hour = war.last_hour;
+                        war.participants[index].last_hour = last;
                     }
                 }
-                self.previous = None;
-                self.open.clear();
             }
-            self.previous_view = view;
-            // The very groups held before continue as losses alone only while continuing them
-            // would assign each to the war it holds: overlapping groups can trade wars.
-            if (same || regrouped)
-                && self.settled
-                && self.previous.is_some()
-                && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len()
-            {
-                // Loss-only hours retain native groups and continuity. No
-                // side lists, membership sets or relation runs are rebuilt.
-                for open in &self.open {
-                    let war = &mut self.reply.wars[open.id];
-                    if self.losses {
-                        append_losses(war, hour, inputs.losses(&open.loss_pairs), self.previous);
-                    }
-                    append_relations(war, hour, &open.relations);
-                    war.last_hour = hour;
-                    war.observations
-                        .last_mut()
-                        .expect("open war observation")
-                        .last_hour = hour;
+            let observations = opening(&observed, hour);
+            self.assigned = assignment(self.reply.wars.len(), &self.open, &observations);
+            self.open = continue_wars(
+                &mut self.reply.wars,
+                &self.open,
+                observations,
+                self.previous,
+                losses,
+            );
+            self.settled = assignment(self.reply.wars.len(), &self.open, &observed) == self.assigned;
+        }
+        // The same countries after an observed hour leave every identity as it was.
+        if self.previous.is_none() || !identified {
+            let countries = &viewed.countries;
+            self.identity_since.retain(|raw, _| {
+                countries
+                    .raw_to_slot
+                    .get(raw)
+                    .is_some_and(|slot| countries.tags.contains_key(slot))
+            });
+            for (&raw, &slot) in &countries.raw_to_slot {
+                let Some(tag) = countries.tags.get(&slot) else {
+                    continue;
+                };
+                let entry = self
+                    .identity_since
+                    .entry(raw)
+                    .or_insert_with(|| (tag.clone(), hour));
+                if &entry.0 != tag || self.previous.is_none() {
+                    *entry = (tag.clone(), hour);
                 }
-            } else {
-                // A structural change settles the held participant bounds
-                // before splitting, merging or ending the previous groups.
-                if let Some(last) = self.previous {
-                    for OpenWar { id, .. } in &self.open {
-                        let war = &mut self.reply.wars[*id];
-                        for &index in war.open_participants.values() {
-                            war.participants[index].last_hour = last;
-                        }
-                    }
-                }
-                let observations = opened
-                    .take()
-                    .unwrap_or_else(|| opening(inputs, observed, hour, self.losses));
-                let losses = |pairs: &[(Pair, bool)]| inputs.losses(pairs);
-                self.assigned = assignment(self.reply.wars.len(), &self.open, &observations);
-                self.open = continue_wars(
-                    &mut self.reply.wars,
-                    &self.open,
-                    observations,
-                    self.previous,
-                    self.losses.then_some(&losses as &Losses<'_>),
-                );
-                self.settled =
-                    assignment(self.reply.wars.len(), &self.open, observed) == self.assigned;
             }
-            // Unchanged inputs after an observed hour, or the same countries, leave every
-            // identity as it was.
-            if self.previous.is_none() || (!same && !identified) {
-                self.identified = Some(countries.map(|view| view.identity()));
-                self.identity_since.retain(|raw, _| {
-                    inputs
-                        .raw_to_slot
-                        .get(raw)
-                        .is_some_and(|slot| inputs.tags.contains_key(slot))
-                });
-                for (&raw, &slot) in &inputs.raw_to_slot {
-                    let Some(tag) = inputs.tags.get(&slot) else {
+            self.identified = Some(Arc::clone(countries));
+        }
+        match seen.capitulations {
+            Ok(rows) => {
+                for &(country, capitulated) in rows {
+                    let Some((tag, since)) = self.identity_since.get(&country) else {
                         continue;
                     };
-                    let entry = self
-                        .identity_since
-                        .entry(raw)
-                        .or_insert_with(|| (tag.clone(), hour));
-                    if &entry.0 != tag || self.previous.is_none() {
-                        *entry = (tag.clone(), hour);
+                    if capitulated < *since || capitulated > hour {
+                        self.warnings.insert(CAPITULATIONS_UNOBSERVED.into());
+                        continue;
                     }
-                }
-            }
-            match decoded.complete::<tables::Capitulation>() {
-                Ok(rows) => {
-                    for r in rows.iter().filter(|r| r.capitulated != 0) {
-                        let Some((tag, since)) = self.identity_since.get(&r.country) else {
-                            continue;
-                        };
-                        if r.capitulated_hour < *since || r.capitulated_hour > hour {
-                            self.warnings.insert(CAPITULATIONS_UNOBSERVED.into());
-                            continue;
-                        }
-                        if !self.seen_caps.insert((tag.clone(), r.capitulated_hour)) {
-                            continue;
-                        }
-                        self.dated_caps
-                            .entry(tag.clone())
-                            .or_default()
-                            .push(r.capitulated_hour);
+                    if !self.seen_caps.insert((tag.clone(), capitulated)) {
+                        continue;
                     }
-                }
-                Err(_) => span(&mut self.reply.capitulations_unobserved, hour, hour),
-            }
-            self.previous = Some(hour);
-        } else {
-            self.warnings.insert(
-                self.held
-                    .as_ref()
-                    .expect("held hour")
-                    .observed
-                    .as_ref()
-                    .err()
-                    .expect("failed hour")
-                    .clone(),
-            );
-            span(&mut self.reply.unobserved, hour, hour);
-            span(&mut self.reply.capitulations_unobserved, hour, hour);
-            for OpenWar { id, .. } in &self.open {
-                let war: &mut WarTimeline = &mut self.reply.wars[*id];
-                for &index in war.open_participants.values() {
-                    war.participants[index].last_hour = war.last_hour;
+                    self.dated_caps
+                        .entry(tag.clone())
+                        .or_default()
+                        .push(capitulated);
                 }
             }
-            self.previous = None;
-            self.open.clear();
-            self.identity_since.clear();
-            self.held = None;
+            Err(()) => span(&mut self.reply.capitulations_unobserved, hour, hour),
         }
-        released
-    }
-    /// Hold the inputs `view` reads at `decoded` and the groups it observes there, `ready` when
-    /// they were read ahead from this frame.
-    fn hold(
-        &mut self,
-        decoded: &DecodedFrame,
-        view: Option<&str>,
-        identities: Option<&HashSet<(u32, u32)>>,
-        cat: Option<&Catalogue>,
-        ready: Option<HourRead>,
-    ) {
-        self.held = Some(HeldHour {
-            tables: self
-                .compared
-                .iter()
-                .map(|table| decoded.tables[table.index()].identity())
-                .collect(),
-            observed: ready
-                .unwrap_or_else(|| read_hour(decoded, view, identities, cat, self.losses)),
-        });
+        self.previous = Some(hour);
+        self.held = Some((viewed, observed));
     }
     /// Extend unchanged inputs across accepted hours without walking those hours.
     fn extend(&mut self, last: i32) {
@@ -1552,11 +1661,7 @@ impl Walk {
             return;
         }
         if self.previous == Some(first) {
-            if let Some(HeldHour {
-                observed: Ok((inputs, observed)),
-                ..
-            }) = &self.held
-            {
+            if let Some((_, observed)) = &self.held {
                 let mut at = first;
                 while at < last && !self.settled {
                     at += 1;
@@ -1567,15 +1672,14 @@ impl Walk {
                             war.participants[index].last_hour = war.last_hour;
                         }
                     }
-                    let observations = opening(inputs, observed, at, self.losses);
-                    let losses = |pairs: &[(Pair, bool)]| inputs.losses(pairs);
+                    let observations = opening(observed, at);
                     self.assigned = assignment(self.reply.wars.len(), &self.open, observed);
                     self.open = continue_wars(
                         &mut self.reply.wars,
                         &self.open,
                         observations,
                         self.previous,
-                        self.losses.then_some(&losses as &Losses<'_>),
+                        None,
                     );
                     self.settled =
                         assignment(self.reply.wars.len(), &self.open, observed) == self.assigned;

@@ -4,8 +4,7 @@ use crate::products::war_casualties::same_name_rows;
 use installed_content_country_names::{
     country_names, country_names::CountryNames, country_names::Operands,
 };
-use replay_frame::frame::SharedView;
-use std::collections::BTreeMap;
+use replay_frame::frame::{SharedView, ViewIdentity};
 
 #[derive(Clone, Default)]
 pub(super) struct CountryLabels {
@@ -17,6 +16,8 @@ pub(super) struct CountryLabels {
     inputs: HashMap<u32, Option<Result<Operands, String>>>,
     resolved: HashMap<u32, String>,
     names: HashMap<u32, BTreeSet<String>>,
+    /// Each name added since they were last taken, by raw country id.
+    fresh: Vec<(u32, String)>,
     involved: HashSet<u32>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) resolutions: usize,
@@ -110,16 +111,20 @@ impl CountryLabels {
         }
         self.inputs = inputs;
         for country in countries {
-            if let Some(name) = self.resolved.get(&country.canonical_slot) {
-                self.names
+            if let Some(name) = self.resolved.get(&country.canonical_slot)
+                && self
+                    .names
                     .entry(country.id)
                     .or_default()
-                    .insert(name.clone());
+                    .insert(name.clone())
+            {
+                self.fresh.push((country.id, name.clone()));
             }
         }
     }
 
-    pub fn include(&mut self, inputs: &Hour, observed: &[Observed]) {
+    pub fn include(&mut self, viewed: &Viewed, observed: &[Observed]) {
+        let countries = &viewed.countries;
         let mut tags: HashSet<&str> = observed
             .iter()
             .flat_map(|o| {
@@ -130,11 +135,11 @@ impl CountryLabels {
                     .map(String::as_str)
             })
             .collect();
-        if let Some(tag) = inputs.tags.get(&inputs.view) {
+        if let Some(tag) = countries.tags.get(&viewed.view) {
             tags.insert(tag);
         }
-        for (&raw, slot) in &inputs.raw_to_slot {
-            if inputs
+        for (&raw, slot) in &countries.raw_to_slot {
+            if countries
                 .tags
                 .get(slot)
                 .is_some_and(|tag| tags.contains(tag.as_str()))
@@ -144,38 +149,14 @@ impl CountryLabels {
         }
     }
 
-    /// The names read so far by raw country id and the countries involved:
-    /// all [`Self::finish`] reads, in key order.
-    pub fn saved(&self) -> (BTreeMap<u32, BTreeSet<String>>, BTreeSet<u32>) {
-        (
-            self.names
-                .iter()
-                .map(|(&raw, names)| (raw, names.clone()))
-                .collect(),
-            self.involved.iter().copied().collect(),
-        )
+    /// The names added since they were last taken: each raw country id and name once.
+    pub fn take_fresh(&mut self) -> Vec<(u32, String)> {
+        std::mem::take(&mut self.fresh)
     }
 
-    /// Labels holding `saved` names and involved countries and no read
-    /// operands: observing the frame they were last read from reads them
-    /// again and adds no name.
-    pub fn restored((names, involved): (BTreeMap<u32, BTreeSet<String>>, BTreeSet<u32>)) -> Self {
-        Self {
-            names: names.into_iter().collect(),
-            involved: involved.into_iter().collect(),
-            ..Default::default()
-        }
-    }
-
-    /// Held operands, names and views, counted for a walk cache's byte estimate.
-    #[cfg(test)]
-    pub fn entries(&self) -> usize {
-        self.seen.len()
-            + self.read.len()
-            + self.inputs.len()
-            + self.resolved.len()
-            + self.names.values().map(BTreeSet::len).sum::<usize>()
-            + self.involved.len()
+    /// A name `raw` was read under, as the walk's preparation read it.
+    pub fn add(&mut self, raw: u32, name: String) {
+        self.names.entry(raw).or_default().insert(name);
     }
 
     pub fn finish(self) -> Vec<String> {

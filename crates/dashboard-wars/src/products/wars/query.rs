@@ -1,73 +1,41 @@
-//! Wars replies from the family's publication ([`super::emit`]): each viewpoint's walk over the
-//! change inputs, kept on the source so a later query walks only the inputs published since; each
-//! war's casualties at the hours asked, from the counters of the relations it held then; and the
-//! groups and contributions at an hour, from the tables of the inputs covering it, the counters
-//! and the participation parts there.
+//! Wars replies from the family's publication ([`super::emit`]): the viewpoint's walk over the
+//! prepared layers ([`super::layers`]), read in hour order and holding only what the hour read
+//! holds, observing each hour where what it reads changes and extending between; each war's
+//! casualties at the hours asked, from the counters of the relations it held then; and the groups
+//! and contributions at an hour, from the layers there, the counters and the participation parts.
+//! No recorded table is read.
 
-use super::emit::{COUNTERS, COVERAGE, DIFFS, FAMILY, INPUT, WHOLES};
-use super::inputs::{self, INPUTS, Input, PARTICIPATION};
+use super::emit::{COUNTERS, GROUPS, Keys, viewpoint_name};
+use super::inputs::{self, PARTICIPATION};
+use super::layers::{self, Capitulations, Failure, Identity, Label, Members, Mode, Roster, State};
 use super::*;
 use dashboard_base::prepared::published::Opened;
 use dashboard_series::{
-    Cell, Cursor, EventQuery, KeyHandle, Observation, PageRead, Selection, Snapshot, Span,
+    Cell, Cursor, EventQuery, KeyHandle, Observation, PageRead, Run, Selection, Snapshot, Span,
     family::Directory, query::EventView,
 };
 use replay_frame::frame::not_selected;
 use serde_json::Value;
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    time::Duration,
-};
+use std::collections::{BTreeMap, VecDeque};
 
-/// Viewpoint walks kept per source, the most recently used first.
-const CACHED_WALKS: usize = 4;
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    /// Change inputs decoded on this thread.
-    static DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Change inputs decoded on this thread.
-#[cfg(any(test, feature = "test-support"))]
-pub fn decoded_inputs() -> usize {
-    DECODED.with(std::cell::Cell::get)
-}
+/// The bytes a page of events or runs a walk holds at once may take.
+const PAGE: usize = 1 << 16;
 
 fn missing() -> io::Error {
     invalid("The wars publication is missing a key")
-}
-
-/// The family's keys a reply reads.
-#[derive(Clone, Copy)]
-struct Keys {
-    input: KeyHandle,
-    coverage: KeyHandle,
-    wholes: KeyHandle,
-    diffs: KeyHandle,
-}
-
-impl Keys {
-    fn of(directory: &Directory) -> io::Result<Self> {
-        let key = |measure| directory.key(FAMILY, measure, None).ok_or_else(missing);
-        Ok(Self {
-            input: key(INPUT)?,
-            coverage: key(COVERAGE)?,
-            wholes: key(WHOLES)?,
-            diffs: key(DIFFS)?,
-        })
-    }
 }
 
 fn selection(key: KeyHandle) -> Selection<'static> {
     Selection {
         key,
         membership: None,
+    }
+}
+
+fn earliest(a: Option<i32>, b: Option<i32>) -> Option<i32> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -88,430 +56,524 @@ fn event_bytes<P: PageRead>(
     Ok(bytes)
 }
 
-/// The change inputs as a walk reads them.
-struct Inputs<'s, 'p, P: PageRead> {
-    snapshot: &'s mut Snapshot<'p, P>,
-    keys: Keys,
+/// One key's events over a span in native order, read a page at a time.
+struct Events {
+    key: KeyHandle,
+    /// None once every page is read.
+    span: Option<Span>,
+    cursor: Option<Cursor>,
+    page: VecDeque<EventView>,
 }
 
-impl<P: PageRead> Inputs<'_, '_, P> {
-    /// The change input at `ordinal`: its hour and its event's bytes.
-    fn raw(&mut self, ordinal: u64) -> io::Result<(i32, Vec<u8>)> {
-        let view = self
-            .snapshot
-            .event_raw(selection(self.keys.input), None, ordinal)?
-            .ok_or_else(|| invalid("A wars change input is missing"))?;
-        let hour = match view {
-            EventView::Family(event) => event.native_hour,
-            EventView::Evidence { .. } => return Err(invalid("A wars input is not an event")),
-        };
-        Ok((hour, event_bytes(self.snapshot, view)?))
-    }
-
-    /// The inputs published through `hour`.
-    fn count_through(&mut self, hour: i32) -> io::Result<u64> {
-        self.snapshot
-            .event_count_through(self.keys.input, hour, None)
-    }
-
-    fn date(&mut self, ordinal: u64) -> io::Result<Option<i32>> {
-        self.snapshot
-            .event_date(selection(self.keys.input), None, ordinal)
-    }
-
-    /// The hours the input covering `hour` covers, and its ordinal; none at an hour not walked.
-    fn coverage(&mut self, hour: i32) -> io::Result<Option<(Span, u64)>> {
-        Ok(match self.snapshot.value_at(self.keys.coverage, hour)? {
-            Observation::Value { run, .. } => Some((
-                run.span,
-                u64::try_from(run.value)
-                    .map_err(|_| invalid("A wars coverage is not an ordinal"))?,
-            )),
-            _ => None,
-        })
-    }
-
-    /// The coverage of the input at `ordinal`, published at `hour`.
-    fn span(&mut self, ordinal: u64, hour: i32) -> io::Result<Span> {
-        self.coverage(hour)?
-            .filter(|&(span, held)| held == ordinal && span.first == hour)
-            .map(|(span, _)| span)
-            .ok_or_else(|| invalid("Wars change coverage is missing"))
-    }
-}
-
-/// A change input row's changed tables' indices and its decoded packet.
-fn decode(hour: i32, branch: u64, row: &[u8]) -> io::Result<(Vec<usize>, DecodedFrame)> {
-    let input = Input::decode(row)?;
-    let packet = input.frame(branch, hour).map_err(|error| {
-        io::Error::new(error.kind(), format!("Wars input at {hour}: {error}"))
-    })?;
-    Ok((
-        input.changed.iter().map(|table| table.index()).collect(),
-        packet,
-    ))
-}
-
-struct Key {
-    store: store::SourceKey,
-    branch: u64,
-    view: Option<String>,
-    selected: Option<HashSet<(u32, u32)>>,
-    /// Held, so its address names this catalogue while the walk is kept.
-    catalogue: Option<Arc<Catalogue>>,
-}
-
-impl Key {
-    fn same(&self, other: &Self) -> bool {
-        self.store == other.store
-            && self.branch == other.branch
-            && self.view == other.view
-            && self.selected == other.selected
-            && match (&self.catalogue, &other.catalogue) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-    }
-}
-
-#[derive(Default)]
-struct Walks(Vec<(Key, Arc<Mutex<Option<Resume>>>)>);
-
-#[derive(Clone)]
-struct Resume {
-    /// The ordinal of the next change input; every earlier one is observed.
-    next: u64,
-    /// The hour of the last observed input. Its coverage, which still grows while it is the
-    /// last published input, is extended into the walk just before the next input is observed.
-    hour: Option<i32>,
-    walk: Walk,
-    decoded: Option<DecodedFrame>,
-}
-
-/// Inputs a walk's tail reads ahead of the one it takes: at least this many, and enough to keep
-/// each of its workers busy.
-const AHEAD: u64 = 16;
-const AHEAD_PER_WORKER: u64 = 4;
-
-/// A walk's work for its workers, by its input's ordinal.
-enum Job {
-    /// An input's row, published at its hour, to decode.
-    Decode(u64, i32, Vec<u8>),
-    /// The frame an input leaves the walk holding, whose hour's inputs to read.
-    Read(u64, DecodedFrame),
-    /// What the walk let go of (table views, a held hour), to free here rather than on the
-    /// walking thread.
-    Drop(Box<dyn Send>),
-}
-
-/// A worker's finished job, by its input's ordinal.
-enum Done {
-    Decoded(u64, i32, io::Result<(Vec<usize>, DecodedFrame)>),
-    Read(u64, ReadyHour),
-    /// The job panicked: the walk panics with it.
-    Panicked(Box<dyn std::any::Any + Send>),
-}
-
-/// An input read ahead of the walk.
-struct Slot {
-    hour: Option<i32>,
-    decoded: Option<io::Result<(Vec<usize>, DecodedFrame)>>,
-    /// Its hour's inputs once asked for, None inside until they are read.
-    read: Option<Option<ReadyHour>>,
-}
-
-/// The tail's inputs read in order here, decoded on other cores and put together as the walk
-/// puts them together; each frame changing a table the walk compares has its hour's inputs read
-/// on those cores too. Each input's decode failure is returned only when the walk takes that
-/// input.
-struct Ahead {
-    /// The next input the walk takes, the first not yet put together, and the first not yet read.
-    next: u64,
-    composed: u64,
-    read: u64,
-    end: u64,
-    window: u64,
-    slots: VecDeque<Slot>,
-    /// The frame the walk will hold once it takes the inputs before `composed`.
-    frame: Option<DecodedFrame>,
-    /// Whether each table is one the walk compares.
-    compared: Vec<bool>,
-    jobs: mpsc::Sender<Job>,
-    done: mpsc::Receiver<Done>,
-}
-
-impl Ahead {
-    /// Decodes inputs `next..end` ahead of a walk that holds `frame`, on threads of `scope` that
-    /// end once this is dropped or `stopped` is set, an hour's inputs as `read` reads them.
-    fn start<'s>(
-        scope: &'s std::thread::Scope<'s, '_>,
-        (next, end): (u64, u64),
-        branch: u64,
-        frame: Option<DecodedFrame>,
-        stopped: &'s AtomicBool,
-        read: &'s (dyn Fn(&DecodedFrame) -> ReadyHour + Sync),
-    ) -> Self {
-        let (jobs, work) = mpsc::channel::<Job>();
-        let (finished, done) = mpsc::channel();
-        let work = Arc::new(Mutex::new(work));
-        let workers = std::thread::available_parallelism()
-            .map_or(1, |cores| cores.get().saturating_sub(1))
-            .min((end - next).div_ceil(AHEAD) as usize)
-            .max(1);
-        for _ in 0..workers {
-            let (work, finished) = (Arc::clone(&work), finished.clone());
-            scope.spawn(move || {
-                loop {
-                    let job = work
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .recv_timeout(Duration::from_millis(50));
-                    let job = match job {
-                        Ok(job) => job,
-                        Err(mpsc::RecvTimeoutError::Timeout)
-                            if !stopped.load(Ordering::Acquire) =>
-                        {
-                            continue;
-                        }
-                        Err(_) => return,
-                    };
-                    let job = match job {
-                        Job::Drop(views) => {
-                            drop(views);
-                            continue;
-                        }
-                        job => job,
-                    };
-                    let outcome =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
-                            Job::Decode(ordinal, hour, row) => {
-                                Done::Decoded(ordinal, hour, decode(hour, branch, &row))
-                            }
-                            Job::Read(ordinal, frame) => Done::Read(ordinal, read(&frame)),
-                            Job::Drop(_) => unreachable!("views are dropped above"),
-                        }));
-                    let panicked = outcome.is_err();
-                    if finished
-                        .send(outcome.unwrap_or_else(Done::Panicked))
-                        .is_err()
-                        || panicked
-                    {
-                        return;
-                    }
-                }
-            });
-        }
-        let mut compared = vec![false; TableId::ALL.len()];
-        for table in compared_tables() {
-            compared[table.index()] = true;
-        }
+impl Events {
+    fn new(key: KeyHandle, span: Option<Span>) -> Self {
         Self {
-            next,
-            composed: next,
-            read: next,
-            end,
-            window: AHEAD.max(AHEAD_PER_WORKER * workers as u64),
-            slots: VecDeque::new(),
-            frame,
-            compared,
-            jobs,
-            done,
+            key,
+            span,
+            cursor: None,
+            page: VecDeque::new(),
         }
     }
-
-    /// The input at `self.next` and its hour's inputs if they were read, after reading the rows
-    /// up to the window beyond it with `raw`.
-    fn take(
+    /// The hour of the next event.
+    fn peek<P: PageRead>(&mut self, snapshot: &mut Snapshot<'_, P>) -> io::Result<Option<i32>> {
+        while self.page.is_empty() {
+            let Some(span) = self.span else {
+                return Ok(None);
+            };
+            let selections = [selection(self.key)];
+            let page = &mut self.page;
+            let read = snapshot.event_page(
+                EventQuery {
+                    selection: &selections,
+                    native: span,
+                    as_of: None,
+                    order: dashboard_series::EventOrder::Native,
+                },
+                self.cursor,
+                PAGE,
+                |view| {
+                    page.push_back(view);
+                    Ok(())
+                },
+            )?;
+            self.cursor = read.next;
+            if self.cursor.is_none() {
+                self.span = None;
+            }
+        }
+        Ok(self.page.front().map(|view| view.native_hour()))
+    }
+    /// The next event: its hour and bytes.
+    fn next<P: PageRead>(
         &mut self,
-        raw: &mut dyn FnMut(u64) -> io::Result<(i32, Vec<u8>)>,
-    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
-        while self.read < self.end && self.read <= self.next + self.window {
-            let (hour, row) = raw(self.read)?;
-            self.jobs
-                .send(Job::Decode(self.read, hour, row))
-                .map_err(|_| io::Error::other("Wars input decoding stopped"))?;
-            self.slots.push_back(Slot {
-                hour: None,
-                decoded: None,
-                read: None,
-            });
-            self.read += 1;
+        snapshot: &mut Snapshot<'_, P>,
+    ) -> io::Result<Option<(i32, Vec<u8>)>> {
+        if self.peek(snapshot)?.is_none() {
+            return Ok(None);
+        }
+        let view = self.page.pop_front().expect("a peeked event");
+        Ok(Some((view.native_hour(), event_bytes(snapshot, view)?)))
+    }
+    /// Passes every event through `hour`, returning the last.
+    fn pass<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        hour: i32,
+    ) -> io::Result<Option<EventView>> {
+        let mut last = None;
+        while self.peek(snapshot)?.is_some_and(|at| at <= hour) {
+            last = self.page.pop_front();
+        }
+        Ok(last)
+    }
+    /// The bytes of the last event through `hour`, every event through it passed.
+    fn through<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        hour: i32,
+    ) -> io::Result<Option<Vec<u8>>> {
+        match self.pass(snapshot, hour)? {
+            Some(view) => Ok(Some(event_bytes(snapshot, view)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// The last event of `key` through `hour`: its hour and bytes.
+fn latest<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    key: KeyHandle,
+    hour: i32,
+) -> io::Result<Option<(i32, Vec<u8>)>> {
+    match snapshot.latest_event(selection(key), hour, None)? {
+        Some(view) => Ok(Some((view.native_hour(), event_bytes(snapshot, view)?))),
+        None => Ok(None),
+    }
+}
+
+/// The runs of `key` over `span`.
+fn runs<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    key: KeyHandle,
+    span: Span,
+) -> io::Result<Vec<Run>> {
+    let mut held = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = snapshot.run_page(selection(key), span, cursor, 1 << 20, |run| {
+            held.push(run);
+            Ok(())
+        })?;
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(held)
+}
+
+/// Whether a coverage run's value marks an hour naming reads again ([`super::emit`]).
+fn names_again(run: &Run) -> bool {
+    run.value & 1 == 1
+}
+
+/// Whether the walk names its groups again at `hour`: a coverage run starts there whose tables
+/// naming reads changed.
+fn renamed<P: PageRead>(snapshot: &mut Snapshot<'_, P>, keys: Keys, hour: i32) -> io::Result<bool> {
+    // Read over the hour before too: a run read at one hour alone starts again at each cut.
+    let span = Span::new(hour.saturating_sub(1), hour)?;
+    let mut renamed = false;
+    snapshot.run_page(selection(keys.coverage), span, None, PAGE, |run| {
+        renamed |= run.span.first == hour && names_again(&run);
+        Ok(())
+    })?;
+    Ok(renamed)
+}
+
+/// The coverage runs a walk reads ahead of the hour it observes: the hours it reads its tables
+/// again, or only those naming reads again, where `naming`. Read once forward as hours rise.
+#[derive(Default)]
+struct Starts {
+    naming: bool,
+    /// The hour and last hour read from: every run starting after it through the last is in
+    /// `page` or past `cursor`.
+    held: Option<(i32, i32)>,
+    span: Option<Span>,
+    cursor: Option<Cursor>,
+    page: VecDeque<Run>,
+}
+
+impl Starts {
+    fn naming(naming: bool) -> Self {
+        Self {
+            naming,
+            ..Self::default()
+        }
+    }
+    fn fetch<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        key: KeyHandle,
+        cursor: Option<Cursor>,
+    ) -> io::Result<()> {
+        let span = self
+            .span
+            .ok_or_else(|| invalid("Wars coverage read past its span"))?;
+        let page = &mut self.page;
+        let read = snapshot.run_page(selection(key), span, cursor, PAGE, |run| {
+            page.push_back(run);
+            Ok(())
+        })?;
+        self.cursor = read.next;
+        Ok(())
+    }
+    /// Reads the runs over `hour` through `last`; the one holding `hour` is clipped to it.
+    fn open<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        key: KeyHandle,
+        hour: i32,
+        last: i32,
+    ) -> io::Result<()> {
+        self.span = Some(Span::new(hour, last)?);
+        self.held = Some((hour, last));
+        self.page.clear();
+        self.fetch(snapshot, key, None)
+    }
+    /// The first hour after `hour`, through `last`, at which a coverage run starts (one whose
+    /// tables naming reads changed, where naming).
+    fn after<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        key: KeyHandle,
+        (hour, last): (i32, i32),
+    ) -> io::Result<Option<i32>> {
+        if hour >= last {
+            return Ok(None);
+        }
+        if self
+            .held
+            .is_none_or(|(from, through)| through != last || hour < from)
+        {
+            self.open(snapshot, key, hour, last)?;
         }
         loop {
-            self.compose();
-            let slot = self
-                .slots
+            while self
+                .page
                 .front()
-                .ok_or_else(|| invalid("Wars inputs ran out ahead of the walk"))?;
-            if slot.decoded.is_some() && !matches!(slot.read, Some(None)) {
-                break;
+                .is_some_and(|run| run.span.first <= hour || (self.naming && !names_again(run)))
+            {
+                self.page.pop_front();
             }
-            match self.done.recv() {
-                Ok(Done::Decoded(ordinal, hour, decoded)) => {
-                    let slot = &mut self.slots[(ordinal - self.next) as usize];
-                    slot.hour = Some(hour);
-                    slot.decoded = Some(decoded);
-                }
-                Ok(Done::Read(ordinal, read)) => {
-                    self.slots[(ordinal - self.next) as usize].read = Some(Some(read));
-                }
-                Ok(Done::Panicked(panic)) => std::panic::resume_unwind(panic),
-                Err(_) => return Err(io::Error::other("Wars input decoding stopped")),
+            if let Some(run) = self.page.front() {
+                return Ok(Some(run.span.first));
             }
-        }
-        let slot = self.slots.pop_front().expect("the input was read");
-        self.next += 1;
-        let hour = slot.hour.expect("the input's row was read");
-        let (changed, packet) = slot.decoded.expect("the input was decoded")?;
-        Ok((hour, changed, packet, slot.read.flatten()))
-    }
-
-    /// Puts the decoded inputs together in order, as [`Resume::step`] does, and asks for the
-    /// hour's inputs of each frame changing a compared table, or of the walk's first frame.
-    fn compose(&mut self) {
-        while let Some(slot) = self.slots.get_mut((self.composed - self.next) as usize) {
-            let Some(Ok((changed, packet))) = &slot.decoded else {
-                return;
+            let Some(cursor) = self.cursor else {
+                return Ok(None);
             };
-            let mut read = self.frame.is_none();
-            let mut frame = self.frame.take().unwrap_or_else(|| packet.clone());
-            frame.branch = packet.branch;
-            frame.hour = packet.hour;
-            for &index in changed {
-                frame.tables[index] = packet.tables[index].clone();
-                read |= self.compared[index];
-            }
-            if read {
-                let job = Job::Read(self.composed, frame.clone());
-                if self.jobs.send(job).is_ok() {
-                    slot.read = Some(None);
-                }
-            }
-            self.frame = Some(frame);
-            self.composed += 1;
+            self.fetch(snapshot, key, Some(cursor))?;
         }
     }
 }
 
-/// What a walk reads its inputs with, and how.
-struct Walker<'r, 's, 'p, P: PageRead> {
-    inputs: &'r mut Inputs<'s, 'p, P>,
-    branch: u64,
-    view: Option<&'r str>,
-    selected: Option<&'r HashSet<(u32, u32)>>,
-    cat: Option<&'r Catalogue>,
-    cancelled: &'r AtomicBool,
-    /// Inputs decoded ahead of the walk while it steps its tail.
-    ahead: Option<Ahead>,
+/// A roster and the countries it reads, or why it reads none.
+struct Rostered {
+    roster: Roster,
+    countries: Result<Arc<Countries>, Failure>,
 }
 
-impl<P: PageRead> Walker<'_, '_, '_, P> {
-    fn input(
-        &mut self,
-        ordinal: u64,
-    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
-        let inputs = &mut *self.inputs;
-        if let Some(ahead) = self.ahead.as_mut().filter(|ahead| ahead.next == ordinal) {
-            return ahead.take(&mut |ordinal| inputs.raw(ordinal));
-        }
-        let (hour, row) = inputs.raw(ordinal)?;
-        let (changed, packet) = decode(hour, self.branch, &row)?;
-        Ok((hour, changed, packet, None))
-    }
-
-    /// Frees `released` on a worker when the walk reads ahead, else here.
-    fn discard(&self, released: impl Send + 'static) {
-        if let Some(ahead) = &self.ahead {
-            let _ = ahead.jobs.send(Job::Drop(Box::new(released)));
-        }
-    }
+fn rostered(bytes: &[u8]) -> io::Result<Rostered> {
+    let roster = Roster::decode(bytes)?;
+    let countries = roster.resolve().map(Arc::new);
+    Ok(Rostered { roster, countries })
 }
 
-impl Resume {
-    fn start(branch: u64, first: i32) -> Self {
-        Self {
-            next: 0,
-            hour: None,
-            walk: Walk {
-                losses: false,
-                ..Walk::new(branch, first)
-            },
-            decoded: None,
-        }
-    }
+/// The layers every viewpoint reads alike, as they hold at the hour read.
+#[derive(Default)]
+struct Shared {
+    roster: Option<Rostered>,
+    state: Option<State>,
+    /// The active relations' bytes, decoded once a group reads them.
+    relations: Option<Vec<u8>>,
+    graph: Option<Arc<World>>,
+    capitulations: Option<Capitulations>,
+}
 
-    /// Observes the next change input and returns its coverage. `known` is the last observed
-    /// input's coverage when this query already read it.
-    fn step<P: PageRead>(
-        &mut self,
-        walker: &mut Walker<'_, '_, '_, P>,
-        known: Option<Span>,
-    ) -> io::Result<Span> {
-        dashboard_text::metadata::check_cancel(walker.cancelled)?;
-        let ordinal = self.next;
-        let (hour, changed, packet, read) = walker.input(ordinal)?;
-        #[cfg(any(test, feature = "test-support"))]
-        DECODED.with(|count| count.set(count.get() + 1));
-        let before = match (self.hour, known) {
-            (Some(_), Some(known)) => Some(known),
-            (Some(previous), None) => Some(walker.inputs.span(ordinal - 1, previous)?),
-            (None, _) => None,
+impl Shared {
+    /// The layers at `hour` alone.
+    fn at<P: PageRead>(snapshot: &mut Snapshot<'_, P>, keys: Keys, hour: i32) -> io::Result<Self> {
+        let roster = match latest(snapshot, keys.roster, hour)? {
+            Some((_, bytes)) => Some(rostered(&bytes)?),
+            None => None,
         };
-        let span = walker.inputs.span(ordinal, hour)?;
-        // Every read succeeded: the input is applied whole or not at all.
-        if let Some(before) = before {
-            self.walk.extend(before.last);
-        }
-        let mut current = self.decoded.take().unwrap_or_else(|| packet.clone());
-        current.branch = packet.branch;
-        current.hour = packet.hour;
-        let mut replaced = Vec::with_capacity(changed.len());
-        for index in changed {
-            replaced.push(std::mem::replace(
-                &mut current.tables[index],
-                packet.tables[index].clone(),
-            ));
-        }
-        let frame = self.decoded.insert(current);
-        let released = self
-            .walk
-            .observe(frame, walker.view, walker.selected, walker.cat, read);
-        walker.discard((replaced, released));
-        self.next += 1;
-        self.hour = Some(hour);
-        Ok(span)
+        let state = match latest(snapshot, keys.state, hour)? {
+            Some((_, bytes)) => Some(State::decode(&bytes)?),
+            None => None,
+        };
+        Ok(Self {
+            roster,
+            state,
+            relations: latest(snapshot, keys.relations, hour)?.map(|(_, bytes)| bytes),
+            graph: None,
+            capitulations: None,
+        })
     }
-
-    /// Whether the publication still holds every input this walk observed: one only appends,
-    /// and a rebuilt one that disagrees starts the walk again.
-    fn holds<P: PageRead>(&self, inputs: &mut Inputs<'_, '_, P>, end: u64) -> io::Result<bool> {
-        if self.next > end {
-            return Ok(false);
+    /// The slot `mode` views and its identity, or why the hour cannot be read ([`layers::read`]).
+    fn read(&self, mode: &Mode<'_>, counted: bool) -> Result<(u32, Identity), Failure> {
+        let roster = self
+            .roster
+            .as_ref()
+            .ok_or_else(|| Failure::plain("Not recorded: war countries"))?;
+        let view = layers::read(
+            mode,
+            &roster.roster,
+            &roster.countries,
+            self.state.as_ref(),
+            counted,
+        )?;
+        roster
+            .countries
+            .as_ref()
+            .ok()
+            .and_then(|countries| countries.identities.get(&view).copied())
+            .map(|identity| (view, identity))
+            .ok_or_else(|| Failure::plain("Not recorded: viewpoint identity"))
+    }
+    fn countries(&self) -> io::Result<Arc<Countries>> {
+        self.roster
+            .as_ref()
+            .and_then(|roster| roster.countries.as_ref().ok())
+            .cloned()
+            .ok_or_else(|| invalid("The wars publication holds no countries for a read hour"))
+    }
+    /// The active relations.
+    fn graph(&mut self) -> io::Result<Arc<World>> {
+        if let Some(graph) = &self.graph {
+            return Ok(Arc::clone(graph));
         }
-        match self.hour {
-            Some(hour) => Ok(inputs.date(self.next - 1)? == Some(hour)),
-            None => Ok(true),
+        let bytes = self
+            .relations
+            .as_ref()
+            .ok_or_else(|| invalid("The wars publication holds no relations for a group"))?;
+        let graph = Arc::new(layers::graph(&layers::decode_relations(bytes)?));
+        self.graph = Some(Arc::clone(&graph));
+        Ok(graph)
+    }
+    fn capitulations(&self) -> Result<&[(u32, i32)], ()> {
+        match &self.capitulations {
+            Some(Ok(rows)) => Ok(rows.as_slice()),
+            _ => Err(()),
         }
     }
 }
 
-fn cached(source: &Source, key: Key) -> Arc<Mutex<Option<Resume>>> {
-    let state = source.state::<Walks>();
-    let mut walks = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(at) = walks.0.iter().position(|(held, _)| held.same(&key)) {
-        walks.0[..=at].rotate_right(1);
-    } else {
-        walks.0.insert(0, (key, Arc::new(Mutex::new(None))));
-        walks.0.truncate(CACHED_WALKS);
-    }
-    Arc::clone(&walks.0[0].1)
+/// The shared layers' changes over the hours a walk reads.
+struct Changes {
+    roster: Events,
+    state: Events,
+    relations: Events,
+    capitulations: Events,
+    dated: Events,
 }
 
-/// What a walk of one branch reads: its source and publication, and its viewpoint.
+impl Changes {
+    fn over(keys: Keys, span: Span) -> Self {
+        let events = |key| Events::new(key, Some(span));
+        Self {
+            roster: events(keys.roster),
+            state: events(keys.state),
+            relations: events(keys.relations),
+            capitulations: events(keys.capitulations),
+            dated: events(keys.dated),
+        }
+    }
+    /// Brings `shared` to `hour`.
+    fn apply<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        shared: &mut Shared,
+        hour: i32,
+    ) -> io::Result<()> {
+        if let Some(bytes) = self.roster.through(snapshot, hour)? {
+            shared.roster = Some(rostered(&bytes)?);
+        }
+        if let Some(bytes) = self.state.through(snapshot, hour)? {
+            shared.state = Some(State::decode(&bytes)?);
+        }
+        if let Some(bytes) = self.relations.through(snapshot, hour)? {
+            shared.relations = Some(bytes);
+            shared.graph = None;
+        }
+        if let Some(bytes) = self.capitulations.through(snapshot, hour)? {
+            shared.capitulations = Some(layers::decode_capitulations(&bytes)?);
+        }
+        self.dated.pass(snapshot, hour)?;
+        Ok(())
+    }
+    /// The next hour a walk reads its tables differently at.
+    fn next<P: PageRead>(&mut self, snapshot: &mut Snapshot<'_, P>) -> io::Result<Option<i32>> {
+        let mut next = None;
+        for events in [
+            &mut self.roster,
+            &mut self.state,
+            &mut self.relations,
+            &mut self.capitulations,
+            &mut self.dated,
+        ] {
+            next = earliest(next, events.peek(snapshot)?);
+        }
+        Ok(next)
+    }
+}
+
+/// One group as a list names it.
+type Listed = (Arc<Members>, Arc<Label>);
+
+fn record<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    key: KeyHandle,
+    ordinal: u32,
+) -> io::Result<Vec<u8>> {
+    let view = snapshot
+        .event_raw(selection(key), None, u64::from(ordinal))?
+        .ok_or_else(|| invalid("A wars group record is missing"))?;
+    event_bytes(snapshot, view)
+}
+
+/// The groups one viewpoint identity sees, from the hour a walk began reading them, with the
+/// records of the list it holds alone.
+struct Viewing {
+    identity: Identity,
+    events: Events,
+    list: Vec<(u32, u32)>,
+    groups: Vec<Listed>,
+    /// Whether a label's refusal is worded with the hour naming reads it at.
+    stamped: bool,
+}
+
+impl Viewing {
+    /// `identity`'s groups at `hour`, with their changes through `last`.
+    fn open<P: PageRead>(
+        snapshot: &mut Snapshot<'_, P>,
+        directory: &Directory,
+        keys: Keys,
+        identity: Identity,
+        (hour, last): (i32, i32),
+    ) -> io::Result<Self> {
+        let mut viewing = Self {
+            identity,
+            events: Events::new(keys.members, None),
+            list: Vec::new(),
+            groups: Vec::new(),
+            stamped: false,
+        };
+        let Some(key) = directory
+            .actor(&viewpoint_name(identity))
+            .and_then(|actor| directory.key(actor, GROUPS, None))
+        else {
+            return Ok(viewing);
+        };
+        if let Some((_, bytes)) = latest(snapshot, key, hour)? {
+            viewing.hold(snapshot, keys, layers::decode_list(&bytes)?)?;
+        }
+        if hour < last {
+            viewing.events = Events::new(key, Some(Span::new(hour + 1, last)?));
+        }
+        Ok(viewing)
+    }
+    /// Brings the groups to `hour`.
+    fn apply<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        keys: Keys,
+        hour: i32,
+    ) -> io::Result<()> {
+        if let Some(bytes) = self.events.through(snapshot, hour)? {
+            self.hold(snapshot, keys, layers::decode_list(&bytes)?)?;
+        }
+        Ok(())
+    }
+    /// Holds `list`, reading the records the list before did not hold.
+    fn hold<P: PageRead>(
+        &mut self,
+        snapshot: &mut Snapshot<'_, P>,
+        keys: Keys,
+        list: Vec<(u32, u32)>,
+    ) -> io::Result<()> {
+        let mut members: HashMap<u32, Arc<Members>> = HashMap::new();
+        let mut labels: HashMap<u32, Arc<Label>> = HashMap::new();
+        for (&(held_members, held_label), (record_members, record_label)) in
+            self.list.iter().zip(&self.groups)
+        {
+            members.insert(held_members, Arc::clone(record_members));
+            labels.insert(held_label, Arc::clone(record_label));
+        }
+        let mut groups = Vec::with_capacity(list.len());
+        for &(ordinal_members, ordinal_label) in &list {
+            let group_members = match members.get(&ordinal_members) {
+                Some(held) => Arc::clone(held),
+                None => {
+                    let held = Arc::new(Members::decode(&record(
+                        snapshot,
+                        keys.members,
+                        ordinal_members,
+                    )?)?);
+                    members.insert(ordinal_members, Arc::clone(&held));
+                    held
+                }
+            };
+            let group_label = match labels.get(&ordinal_label) {
+                Some(held) => Arc::clone(held),
+                None => {
+                    let held = Arc::new(Label::decode(&record(
+                        snapshot,
+                        keys.labels,
+                        ordinal_label,
+                    )?)?);
+                    labels.insert(ordinal_label, Arc::clone(&held));
+                    held
+                }
+            };
+            groups.push((group_members, group_label));
+        }
+        self.stamped = groups.iter().any(|(_, label)| label.stamped());
+        self.list = list;
+        self.groups = groups;
+        Ok(())
+    }
+}
+
+/// The groups `view` sees at `hour`, as a walk observes them, named as naming at `named` words
+/// them.
+fn observations(
+    countries: &Countries,
+    graph: &World,
+    view: u32,
+    groups: &[Listed],
+    losses: Option<&Losses<'_>>,
+    (hour, named): (i32, i32),
+) -> Vec<Observed> {
+    groups
+        .iter()
+        .map(|(members, label)| {
+            observed(
+                graph,
+                (&countries.tags, &countries.identities),
+                view,
+                Blob {
+                    first: members.first.clone(),
+                    second: members.second.clone(),
+                },
+                label.at(named),
+                losses,
+                hour,
+            )
+        })
+        .collect()
+}
+
+/// What a walk of one branch reads: its viewpoint, and the content naming its wars.
 pub(crate) struct Walked<'a> {
-    pub source: &'a Source,
-    pub store: &'a store::SourceKey,
     pub branch: u64,
     pub bounds: (i32, i32),
     pub view: Option<&'a str>,
@@ -520,88 +582,127 @@ pub(crate) struct Walked<'a> {
     pub cancelled: &'a AtomicBool,
 }
 
-/// The viewpoint's whole-branch walk, continued from its kept state through every published
-/// change input.
-fn walk<P: PageRead>(walked: &Walked<'_>, inputs: &mut Inputs<'_, '_, P>) -> io::Result<WarsReply> {
+impl Walked<'_> {
+    fn mode(&self) -> Mode<'_> {
+        match (self.selected, self.view) {
+            (Some(selected), _) => Mode::Selected(selected),
+            (None, Some(tag)) => Mode::Tag(tag),
+            (None, None) => Mode::Recorded,
+        }
+    }
+}
+
+/// The viewpoint's whole-branch walk over the prepared layers, read in hour order: each walked
+/// run observed at its first hour, wherever a layer it reads changes, and, while a refusal is
+/// worded with the hour of a read, at each hour that read is made again; extended between.
+fn walk<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    keys: Keys,
+    walked: &Walked<'_>,
+) -> io::Result<WarsReply> {
     let (first, last) = walked.bounds;
     if first > last {
-        return Err(invalid("Wars change inputs: invalid branch"));
+        return Err(invalid("Wars: invalid branch"));
     }
-    let end = inputs.count_through(last)?;
-    let shared = cached(
-        walked.source,
-        Key {
-            store: walked.store.clone(),
-            branch: walked.branch,
-            view: walked.view.map(str::to_owned),
-            selected: walked.selected.cloned(),
-            catalogue: walked.cat.cloned(),
-        },
-    );
-    let mut guard = match shared.lock() {
-        Ok(guard) => guard,
-        // A walk that panicked part way is started again.
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = None;
-            shared.clear_poison();
-            guard
+    let cat = walked.cat.map(|cat| &**cat);
+    let mut walk = Walk {
+        losses: false,
+        ..Walk::new(walked.branch, first)
+    };
+    let accepted = snapshot.publication().accepted;
+    let Some(span) = Span::new(first, last)?.intersect(accepted) else {
+        return walk.finish(last, cat);
+    };
+    let mut available = Events::new(keys.available, Some(span));
+    while let Some((_, bytes)) = available.next(snapshot)? {
+        walk.reply.available |= bytes.as_slice() == [1];
+    }
+    let mut names = Events::new(keys.names, Some(span));
+    while let Some((_, bytes)) = names.next(snapshot)? {
+        for (raw, name) in layers::decode_names(&bytes)? {
+            walk.country_labels.add(raw, name);
         }
-    };
-    let holds = match guard.as_ref() {
-        Some(entry) => entry.holds(inputs, end)?,
-        None => false,
-    };
-    if !holds {
-        *guard = Some(Resume::start(walked.branch, first));
     }
-    let entry = guard.as_mut().expect("kept walk");
-    let (view, selected) = (walked.view, walked.selected);
-    let catalogue = walked.cat.map(|cat| &**cat);
-    let read = move |frame: &DecodedFrame| read_ahead(frame, view, selected, catalogue, false);
-    let mut walker = Walker {
-        inputs,
-        branch: walked.branch,
-        view,
-        selected,
-        cat: catalogue,
-        cancelled: walked.cancelled,
-        ahead: None,
-    };
-    let stopped = AtomicBool::new(false);
-    let mut known = None;
-    std::thread::scope(|scope| {
-        // Ends the workers before the scope joins them, however the walk ends.
-        struct Stop<'s>(&'s AtomicBool);
-        impl Drop for Stop<'_> {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
+    let mode = walked.mode();
+    let mut changes = Changes::over(keys, span);
+    let mut shared = Shared::default();
+    let mut starts = Starts::naming(false);
+    let mut naming_starts = Starts::naming(true);
+    let mut viewing: Option<Viewing> = None;
+    // The hour the walk last read the tables its groups are named from; none after an hour that
+    // did not read.
+    let mut named: Option<i32> = None;
+    for run in runs(snapshot, keys.walked, span)? {
+        let (a, b) = (run.span.first, run.span.last);
+        let mut hour = a;
+        loop {
+            dashboard_text::metadata::check_cancel(walked.cancelled)?;
+            changes.apply(snapshot, &mut shared, hour)?;
+            let mut next = changes.next(snapshot)?;
+            let read = match shared.read(&mode, false) {
+                Err(failure) => {
+                    viewing = None;
+                    named = None;
+                    if failure.stamped() {
+                        let again = starts.after(snapshot, keys.coverage, (hour, b))?;
+                        next = earliest(next, again);
+                    }
+                    Err(failure.at(hour))
+                }
+                Ok((view, identity)) => {
+                    if viewing
+                        .as_ref()
+                        .is_none_or(|held| held.identity != identity)
+                    {
+                        viewing = Some(Viewing::open(
+                            snapshot,
+                            directory,
+                            keys,
+                            identity,
+                            (hour, span.last),
+                        )?);
+                    }
+                    let held = viewing.as_mut().expect("the viewpoint's groups are read");
+                    held.apply(snapshot, keys, hour)?;
+                    next = earliest(next, held.events.peek(snapshot)?);
+                    if held.stamped {
+                        if named.is_none() || renamed(snapshot, keys, hour)? {
+                            named = Some(hour);
+                        }
+                        let again = naming_starts.after(snapshot, keys.coverage, (hour, b))?;
+                        next = earliest(next, again);
+                    }
+                    let countries = shared.countries()?;
+                    let observed = if held.groups.is_empty() {
+                        Vec::new()
+                    } else {
+                        let graph = shared.graph()?;
+                        let at = (hour, named.unwrap_or(hour));
+                        observations(&countries, &graph, view, &held.groups, None, at)
+                    };
+                    Ok((Viewed { countries, view }, observed))
+                }
+            };
+            walk.observe(Seen {
+                hour,
+                read,
+                capitulations: shared.capitulations(),
+                losses: None,
+            });
+            match next.filter(|&next| next <= b) {
+                Some(next) => {
+                    walk.extend(next - 1);
+                    hour = next;
+                }
+                None => {
+                    walk.extend(b);
+                    break;
+                }
             }
         }
-        let _stop = Stop(&stopped);
-        walker.ahead = (entry.next < end).then(|| {
-            let frame = entry.decoded.clone();
-            Ahead::start(scope, (entry.next, end), walked.branch, frame, &stopped, &read)
-        });
-        let walking = (|| {
-            while entry.next < end {
-                known = Some(entry.step(&mut walker, known)?);
-            }
-            io::Result::Ok(())
-        })();
-        walker.ahead = None;
-        walking
-    })?;
-    let mut walk = entry.walk.clone();
-    if let Some(hour) = entry.hour {
-        let span = match known {
-            Some(span) => span,
-            None => walker.inputs.span(entry.next - 1, hour)?,
-        };
-        walk.extend(span.last);
     }
-    drop(guard);
-    walk.finish(last, catalogue)
+    walk.finish(last, cat)
 }
 
 /// Adds one counter's run to a war's hour: a known counter to its side's sum, an unknown one to
@@ -610,7 +711,7 @@ fn accumulate(
     sums: &mut (i32, i32, [i128; 4]),
     unknown: &mut BTreeMap<(usize, u32), i128>,
     (output, country): (usize, u32),
-    run: dashboard_series::Run,
+    run: Run,
 ) {
     let (first, last, values) = sums;
     if output % 2 == 0 {
@@ -623,9 +724,23 @@ fn accumulate(
     *last = (*last).min(run.span.last);
 }
 
+/// The counters' keys of the relation lifetime `key`.
+fn counter_keys(directory: &Directory, key: &WarRelationKey) -> io::Result<[KeyHandle; 4]> {
+    let actor = directory
+        .actor(&inputs::relation_name(key))
+        .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
+    let mut held = [0; 4];
+    for (field, handle) in held.iter_mut().enumerate() {
+        *handle = directory
+            .key(actor, COUNTERS + field as u64, None)
+            .ok_or_else(missing)?;
+    }
+    Ok(held)
+}
+
 /// Each war's casualties at `hours`, keyed by its place in `wars`: those of the wars observed at
 /// an hour, summed over the relations they held then ([`super::WarRelationMembership`]), each
-/// run bounded by the change input covering the hour and by every counter's run.
+/// run bounded by the coverage run holding the hour and by every counter's run.
 fn casualties_at<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
@@ -663,15 +778,7 @@ fn casualties_at<P: PageRead>(
                 let held = match counters.get(&membership.key) {
                     Some(&held) => held,
                     None => {
-                        let actor = directory
-                            .actor(&inputs::relation_name(&membership.key))
-                            .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
-                        let mut held = [0; 4];
-                        for (field, key) in held.iter_mut().enumerate() {
-                            *key = directory
-                                .key(actor, COUNTERS + field as u64, None)
-                                .ok_or_else(missing)?;
-                        }
+                        let held = counter_keys(directory, &membership.key)?;
                         counters.insert(membership.key.clone(), held);
                         held
                     }
@@ -740,13 +847,7 @@ pub(crate) fn projection(
     opened.read(walked.cancelled, |snapshot, directory| {
         let keys = Keys::of(directory)?;
         let cpu = replay_frame::cpu::scope_phase("wars:query_walk");
-        let mut reply = walk(
-            walked,
-            &mut Inputs {
-                snapshot: &mut *snapshot,
-                keys,
-            },
-        )?;
+        let mut reply = walk(snapshot, directory, keys, walked)?;
         drop(cpu);
         if !hours.is_empty() {
             let casualties = casualties_at(snapshot, directory, keys, &reply.wars, hours)?;
@@ -757,85 +858,19 @@ pub(crate) fn projection(
     })
 }
 
-/// The tables at `hour` of the input covering it, `ordinal`: each input table's view from the
-/// last input publishing it, the relations' counters, and the participation parts there.
-fn frame_at<P: PageRead>(
+/// The participation tables at `hour`: the last whole parts, then each hour's diff since.
+fn participation_tables<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
-    directory: &Directory,
     keys: Keys,
     branch: u64,
-    (hour, ordinal): (i32, u64),
+    hour: i32,
 ) -> io::Result<DecodedFrame> {
-    let mut reader = Inputs { snapshot, keys };
-    let (published, row) = reader.raw(ordinal)?;
-    let covering = Input::decode(&row)?;
     let mut frame = DecodedFrame {
         branch,
         hour,
         metrics: Default::default(),
         tables: std::array::from_fn(|_| not_selected()),
     };
-    let mut decoded: HashMap<u32, DecodedFrame> = HashMap::new();
-    decoded.insert(ordinal as u32, covering.frame(branch, published)?);
-    for (&table, &held) in INPUTS.iter().zip(&covering.refs) {
-        if held == u32::MAX {
-            continue;
-        }
-        if let std::collections::hash_map::Entry::Vacant(entry) = decoded.entry(held) {
-            let (at, row) = reader.raw(u64::from(held))?;
-            entry.insert(Input::decode(&row)?.frame(branch, at)?);
-        }
-        frame.tables[table.index()] = decoded[&held].tables[table.index()].clone();
-    }
-    // The relations' counters at the hour.
-    if let Some(lifetimes) = inputs::lifetimes(&frame) {
-        let relations = &mut frame.tables[TableId::WarRelations.index()];
-        let mut restored = Vec::with_capacity(lifetimes.len());
-        let mut counted = true;
-        for lifetime in &lifetimes {
-            let Some((key, _)) = lifetime else {
-                restored.push(None);
-                continue;
-            };
-            let Some(actor) = directory.actor(&inputs::relation_name(key)) else {
-                counted = false;
-                break;
-            };
-            let mut held = [0_i64; 4];
-            for (field, value) in held.iter_mut().enumerate() {
-                let key = directory
-                    .key(actor, COUNTERS + field as u64, None)
-                    .ok_or_else(missing)?;
-                let Observation::Value { run, .. } = reader.snapshot.value_at(key, hour)? else {
-                    counted = false;
-                    break;
-                };
-                *value = i64::try_from(run.value)
-                    .map_err(|_| invalid("A wars casualty counter is out of range"))?;
-            }
-            if !counted {
-                break;
-            }
-            restored.push(Some(held));
-        }
-        if counted {
-            if let TableView::Complete(rows::TableRows::WarRelations(rows)) = &mut **relations {
-                for ((row, lifetime), held) in rows.iter_mut().zip(&lifetimes).zip(restored) {
-                    if let (Some((_, reversed)), Some(held)) = (lifetime, held) {
-                        inputs::restore_counters(row, held, *reversed);
-                    }
-                }
-            }
-        } else {
-            // Never zero for counters the walk did not hold.
-            *relations = TableView::Unavailable {
-                reason: "Not recorded: war casualty counters at this hour".into(),
-            }
-            .into();
-        }
-    }
-    // The participation parts: the last whole ones, then each hour's diff since.
-    let snapshot = reader.snapshot;
     if let Some(whole) = snapshot.latest_event(selection(keys.wholes), hour, None)? {
         let EventView::Family(event) = whole else {
             return Err(invalid("A wars event is not the family's"));
@@ -843,31 +878,10 @@ fn frame_at<P: PageRead>(
         let mut held = [None, None];
         inputs::fold(&mut held, inputs::unpack_parts(&event_bytes(snapshot, whole)?)?)?;
         if event.native_hour < hour {
-            let mut diffs = Vec::new();
-            let selections = [selection(keys.diffs)];
-            let mut cursor: Option<Cursor> = None;
-            loop {
-                let page = snapshot.event_page(
-                    EventQuery {
-                        selection: &selections,
-                        native: Span::new(event.native_hour + 1, hour)?,
-                        as_of: None,
-                        order: dashboard_series::EventOrder::Native,
-                    },
-                    cursor,
-                    1 << 20,
-                    |view| {
-                        diffs.push(view);
-                        Ok(())
-                    },
-                )?;
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
-                }
-            }
-            for view in diffs {
-                inputs::fold(&mut held, inputs::unpack_parts(&event_bytes(snapshot, view)?)?)?;
+            let since = Span::new(event.native_hour + 1, hour)?;
+            let mut diffs = Events::new(keys.diffs, Some(since));
+            while let Some((_, bytes)) = diffs.next(snapshot)? {
+                inputs::fold(&mut held, inputs::unpack_parts(&bytes)?)?;
             }
         }
         for (table, folded) in PARTICIPATION.iter().zip(&held) {
@@ -879,9 +893,111 @@ fn frame_at<P: PageRead>(
     Ok(frame)
 }
 
-/// The groups and contributions at each requested hour within what the publication accepted,
-/// each from the tables there ([`super::at_hour`]); an hour outside the branch or not walked is
-/// unavailable, and one past what was accepted is left out, still being prepared.
+/// The groups and contributions the viewpoint sees at `hour`, a walked hour, as one hour's walk
+/// reads them ([`WarsAtHour`]): its relations carrying the counters prepared for that hour.
+fn at_hour<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    keys: Keys,
+    walked: &Walked<'_>,
+    hour: i32,
+) -> io::Result<WarsAtHour> {
+    let cat = walked.cat.map(|cat| &**cat);
+    let mut shared = Shared::at(snapshot, keys, hour)?;
+    let mut walk = Walk::new(walked.branch, hour);
+    walk.labels = false;
+    walk.reply.available = latest(snapshot, keys.available, hour)?
+        .is_some_and(|(_, bytes)| bytes.as_slice() == [1]);
+    let mut contributions = Vec::new();
+    match shared.read(&walked.mode(), true) {
+        Err(failure) => walk.observe(Seen {
+            hour,
+            read: Err(failure.at(hour)),
+            capitulations: Err(()),
+            losses: None,
+        }),
+        Ok((view, identity)) => {
+            let countries = shared.countries()?;
+            let groups = Viewing::open(snapshot, directory, keys, identity, (hour, hour))?.groups;
+            let mut counted = World {
+                owned: Default::default(),
+                relations: Default::default(),
+                adjacent: Default::default(),
+                factions: Default::default(),
+                scores: Default::default(),
+            };
+            let mut blobs = Vec::with_capacity(groups.len());
+            let mut graph = None;
+            if !groups.is_empty() {
+                let held = shared.graph()?;
+                for (members, _) in &groups {
+                    let blob = Blob {
+                        first: members.first.clone(),
+                        second: members.second.clone(),
+                    };
+                    for p in held.inside(&blob) {
+                        if counted.relations.contains_key(&p) {
+                            continue;
+                        }
+                        let mut row = held.relations[&p].clone();
+                        let key = WarRelationKey::new(
+                            countries.identities[&p.0],
+                            countries.identities[&p.1],
+                            row.start_hour,
+                        );
+                        let reversed = countries.identities[&row.first_country] != key.first;
+                        let mut values = [0_i64; 4];
+                        for (value, handle) in values.iter_mut().zip(counter_keys(directory, &key)?)
+                        {
+                            let Observation::Value { run, .. } = snapshot.value_at(handle, hour)?
+                            else {
+                                return Err(invalid("Missing prepared war casualty value"));
+                            };
+                            *value = i64::try_from(run.value)
+                                .map_err(|_| invalid("A wars casualty counter is out of range"))?;
+                        }
+                        inputs::restore_counters(&mut row, values, reversed);
+                        counted.relations.insert(p, row);
+                    }
+                    blobs.push(blob);
+                }
+                graph = Some(held);
+            }
+            let losses = |pairs: &[(Pair, bool)]| losses_of(&counted, pairs);
+            let observed = match &graph {
+                Some(graph) => observations(
+                    &countries,
+                    graph,
+                    view,
+                    &groups,
+                    Some(&losses as &Losses<'_>),
+                    (hour, hour),
+                ),
+                None => Vec::new(),
+            };
+            let tables = participation_tables(snapshot, keys, walked.branch, hour)?;
+            contributions = participation::contributions(
+                &blobs,
+                (&countries.tags, &countries.raw_to_slot),
+                &|a, b| graph.as_ref().is_some_and(|graph| graph.active(a, b)),
+                &tables,
+                participation::factors(cat),
+            );
+            walk.observe(Seen {
+                hour,
+                read: Ok((Viewed { countries, view }, observed)),
+                capitulations: Err(()),
+                losses: Some(&losses as &Losses<'_>),
+            });
+        }
+    }
+    let reply = walk.finish(hour, cat)?;
+    Ok(at_hour_reply(hour, reply, contributions))
+}
+
+/// The groups and contributions at each requested hour within what the publication accepted
+/// ([`at_hour`]); an hour outside the branch or not walked is unavailable, and one past what was
+/// accepted is left out, still being prepared.
 fn current<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
@@ -897,32 +1013,21 @@ fn current<P: PageRead>(
         if hour > accepted.last {
             continue;
         }
-        let covering = if (first..=last).contains(&hour) {
-            Inputs {
-                snapshot: &mut *snapshot,
-                keys,
-            }
-            .coverage(hour)?
+        let covered = (first..=last).contains(&hour)
+            && matches!(
+                snapshot.value_at(keys.coverage, hour)?,
+                Observation::Value { .. }
+            );
+        current.push(if covered {
+            at_hour(snapshot, directory, keys, walked, hour)?
         } else {
-            None
-        };
-        current.push(match covering {
-            Some((_, ordinal)) => {
-                let frame = frame_at(snapshot, directory, keys, walked.branch, (hour, ordinal))?;
-                super::at_hour(
-                    walked.branch,
-                    &frame,
-                    walked.view,
-                    walked.cat.map(|cat| &**cat),
-                )?
-            }
-            None => WarsAtHour {
+            WarsAtHour {
                 hour,
                 contributions: Vec::new(),
                 available: false,
                 wars: Vec::new(),
                 warnings: Vec::new(),
-            },
+            }
         });
     }
     Ok(current)
@@ -963,7 +1068,7 @@ pub fn query(
     source: &Source,
     value: &Value,
     opened: Option<&Opened>,
-    store: &store::SourceKey,
+    _store: &store::SourceKey,
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
@@ -980,8 +1085,6 @@ pub fn query(
     let reads: BTreeSet<i32> = requested.reads.iter().map(|read| read.hour).collect();
     let asked: BTreeSet<i32> = requested.current.iter().map(|read| read.hour).collect();
     let walked = Walked {
-        source,
-        store,
         branch,
         bounds,
         view: params.viewpoint_tag.as_deref(),
@@ -1022,15 +1125,13 @@ pub fn selected_structure(
     params: &WarsParams,
     selected: &HashSet<(u32, u32)>,
     opened: Option<&Opened>,
-    store: &store::SourceKey,
+    _store: &store::SourceKey,
     cat: Option<&Arc<Catalogue>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<WarsReply>> {
     let (branch, bounds) = bounds(source, params)?;
     projection(
         &Walked {
-            source,
-            store,
             branch,
             bounds,
             view: params.viewpoint_tag.as_deref(),
@@ -1043,8 +1144,8 @@ pub fn selected_structure(
     )
 }
 
-/// The replies a walk of `snapshot`, a publication of the family, gives `params` and `reads`,
-/// for tests holding it to the row walk.
+/// The replies a walk of `snapshot`, a publication of the family, gives `walked`, `reads` and
+/// `asked`, for tests holding it to the row walk.
 #[cfg(test)]
 pub(crate) fn walk_snapshot<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
@@ -1054,13 +1155,7 @@ pub(crate) fn walk_snapshot<P: PageRead>(
     asked: &BTreeSet<i32>,
 ) -> io::Result<(WarsReply, Vec<WarsAtHour>)> {
     let keys = Keys::of(directory)?;
-    let mut reply = walk(
-        walked,
-        &mut Inputs {
-            snapshot: &mut *snapshot,
-            keys,
-        },
-    )?;
+    let mut reply = walk(snapshot, directory, keys, walked)?;
     if !reads.is_empty() {
         let casualties = casualties_at(snapshot, directory, keys, &reply.wars, reads)?;
         place_casualties(&mut reply, casualties);

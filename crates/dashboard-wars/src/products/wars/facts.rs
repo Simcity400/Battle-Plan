@@ -1,10 +1,11 @@
 //! Wars facts, projected hour by hour from a columnar walk ([`replay::segments`]): the input
 //! tables that changed in a field the wars compare ([`inputs::same_inputs`]) and their packed
-//! change input; every input table's view at a segment's first hour, which the ordered emit
+//! views; every input table's view at a segment's first hour, which the ordered emit
 //! ([`super::emit`]) compares with what came before; the next captured capitulation's date where
-//! it is read again; the war relations' lifetimes and casualty counters, whole where the
-//! relations are joined again and else only those that changed; and the participation tables'
-//! changed rows. An hour that changes none of it carries nothing but its hour.
+//! it is read again; what the hour changed of the prepared layers ([`super::layers`]); the war
+//! relations' lifetimes and casualty counters, whole where the relations are joined again and
+//! else only those that changed; and the participation tables' changed rows. An hour that
+//! changes none of it carries nothing but its hour.
 //!
 //! Tables whose readers read a few of their fields are held by those fields alone, so an hour
 //! changing only others is not read. The relations are joined again only where a table the join
@@ -13,6 +14,7 @@
 //! it published as packets.
 
 use super::inputs::{self, INPUTS, JOIN, PARTICIPATION, PartRef};
+use super::layers::{Layered, Layers};
 use super::*;
 use dashboard_world::{Hold, Needs, World as Shared};
 use replay::{
@@ -129,6 +131,8 @@ pub struct Facts {
     pub relations: Option<Relations>,
     /// The participation tables' packed parts, and whether they are whole.
     pub parts: Option<(Vec<u8>, bool)>,
+    /// What the hour changed of the prepared layers.
+    pub layers: Option<Box<Layered>>,
 }
 
 /// One hour of a segment.
@@ -153,6 +157,7 @@ impl Item for Hour {
             })
             + facts.packet.as_ref().map_or(0, Vec::capacity)
             + facts.parts.as_ref().map_or(0, |(parts, _)| parts.capacity())
+            + facts.layers.as_ref().map_or(0, |layers| layers.heap())
             + match &facts.relations {
                 Some(Relations::Whole(list)) => {
                     list.capacity() * size_of::<(WarRelationKey, [i64; 4])>()
@@ -182,11 +187,15 @@ const COUNTER_FIELDS: [&str; 4] = [
 /// Each joined relation's place by its WarRelations row's key.
 type Places = foldhash::HashMap<u128, u32>;
 
-const SAVED: &[u8] = b"wars-projector-2";
+const SAVED: &[u8] = b"wars-projector-3";
 
 /// The segment's projector.
 pub struct Projector {
     format: FormatVersion,
+    /// The content the layers name wars and countries with; none without the game's content.
+    cat: Option<Arc<Catalogue>>,
+    /// The layers this segment computed so far.
+    layers: Layers,
     /// How the walk's frame is asked for each input table, by [`INPUTS`] place.
     inputs: Vec<(TableId, Hold)>,
     /// The fields of each input table whose change it reads again, by [`INPUTS`] place.
@@ -277,7 +286,7 @@ fn held_view(table: TableId, view: &SharedView) -> SharedView {
 }
 
 impl Projector {
-    pub fn new(format: FormatVersion) -> io::Result<Self> {
+    pub fn new(format: FormatVersion, cat: Option<Arc<Catalogue>>) -> io::Result<Self> {
         let holds = holds()?;
         let hold = |table: TableId| {
             holds
@@ -301,6 +310,8 @@ impl Projector {
             .collect();
         Ok(Self {
             format,
+            layers: Layers::new(cat.clone()),
+            cat,
             inputs: INPUTS.iter().map(|&table| hold(table)).collect(),
             watched,
             rejoins: INPUTS.iter().map(|&table| rejoined(table)).collect(),
@@ -498,6 +509,9 @@ impl Operator<Shared> for Projector {
         let (at, state, world) = (hour.hour, hour.state, hour.world);
         let whole = self.cold || hour.starts;
         let follows = !whole && self.last.and_then(|last| last.checked_add(1)) == Some(at);
+        if whole {
+            self.layers = Layers::new(self.cat.clone());
+        }
         self.cold = false;
         self.last = Some(at);
         self.asks.clear();
@@ -544,6 +558,22 @@ impl Operator<Shared> for Projector {
             });
             Some(inputs::pack(views, &mut self.scratch)?)
         };
+        let layers = if !follows || changed != 0 {
+            let mut tables = DecodedFrame {
+                branch: hour.branch,
+                hour: at,
+                metrics: Default::default(),
+                tables: std::array::from_fn(|_| not_selected()),
+            };
+            for (view, &table) in self.held.iter().zip(INPUTS) {
+                if let Some(view) = view {
+                    tables.tables[table.index()] = view.clone();
+                }
+            }
+            self.layers.hour(&tables, !follows, changed).map(Box::new)
+        } else {
+            None
+        };
         // A capitulation read before becomes usable at its date.
         let next = if whole
             || asked & 1 << self.capitulation != 0
@@ -584,7 +614,8 @@ impl Operator<Shared> for Projector {
             && changed == 0
             && next.is_none()
             && relations.is_none()
-            && parts.is_none();
+            && parts.is_none()
+            && layers.is_none();
         out.push(Hour {
             branch: hour.branch,
             hour: at,
@@ -597,6 +628,7 @@ impl Operator<Shared> for Projector {
                     next,
                     relations,
                     parts,
+                    layers,
                 })
             }),
         })
@@ -618,7 +650,7 @@ impl Operator<Shared> for Projector {
                 "Not a saved wars projector",
             ));
         }
-        *self = Self::new(self.format)?;
+        *self = Self::new(self.format, self.cat.clone())?;
         Ok(())
     }
 }

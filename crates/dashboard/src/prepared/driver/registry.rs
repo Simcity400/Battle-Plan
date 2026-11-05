@@ -567,8 +567,10 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["wars"],
         gates: &["wars"],
         // 3: change inputs, counters and participation parts on the segment driver, published
-        // as a series root. 4: inputs and parts packed as only their own tables.
-        version: 4,
+        // as a series root. 4: inputs and parts packed as only their own tables. 5: prepared
+        // layers and each viewpoint's groups instead of change inputs. 6: labels' refusals
+        // without their hour, and the hours naming reads again marked on coverage.
+        version: 6,
         ..family("wars")
     },
     Descriptor {

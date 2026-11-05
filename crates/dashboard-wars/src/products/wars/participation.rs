@@ -31,11 +31,12 @@ pub struct WarContributionGroup {
     pub reason: Option<String>,
 }
 
-fn factors(cat: Option<&Catalogue>) -> Result<Factors, String> {
+pub(super) fn factors(cat: Option<&Catalogue>) -> Result<Factors, String> {
     cat.ok_or("Recorded content is needed for lend-lease participation")?
         .war_participation_factors()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn read(
     frame: &DecodedFrame,
     view: Option<&str>,
@@ -43,6 +44,7 @@ pub(super) fn read(
 ) -> Vec<WarContributionGroup> {
     read_with_factors(frame, view, factors(cat))
 }
+#[cfg(any(test, feature = "test-support"))]
 fn read_with_factors(
     frame: &DecodedFrame,
     view: Option<&str>,
@@ -51,8 +53,28 @@ fn read_with_factors(
     let Ok(hour) = Hour::read(frame, view) else {
         return Vec::new();
     };
+    contributions(
+        &hour.world.blobs(hour.view),
+        (&hour.tags, &hour.raw_to_slot),
+        &|a, b| hour.world.active(a, b),
+        frame,
+        factors,
+    )
+}
+/// Each of the viewpoint's `blobs`' contributions from the participation tables `frame` holds,
+/// countries resolved through the hour's tags and links; `active` tells the hour's relations.
+pub(super) fn contributions(
+    blobs: &[Blob],
+    (tags, raw_to_slot): (
+        &foldhash::HashMap<u32, String>,
+        &foldhash::HashMap<u32, u32>,
+    ),
+    active: &dyn Fn(u32, u32) -> bool,
+    frame: &DecodedFrame,
+    factors: Result<Factors, String>,
+) -> Vec<WarContributionGroup> {
     let slot = |raw| {
-        hour.raw_to_slot
+        raw_to_slot
             .get(&raw)
             .copied()
             .ok_or_else(|| format!("Unresolved participation country {raw}"))
@@ -92,13 +114,12 @@ fn read_with_factors(
         }
         Ok((ledgers, histories, factors))
     })();
-    hour.world
-        .blobs(hour.view)
-        .into_iter()
+    blobs
+        .iter()
         .map(|blob| {
             let mut group = WarContributionGroup {
-                viewpoint_side: blob.first.iter().map(|id| hour.tags[id].clone()).collect(),
-                opposing_side: blob.second.iter().map(|id| hour.tags[id].clone()).collect(),
+                viewpoint_side: blob.first.iter().map(|id| tags[id].clone()).collect(),
+                opposing_side: blob.second.iter().map(|id| tags[id].clone()).collect(),
                 participants: Vec::new(),
                 reason: None,
             };
@@ -113,7 +134,7 @@ fn read_with_factors(
                     for &country in own {
                         let mut directional = Vec::new();
                         for &opponent in opponents {
-                            if hour.world.active(country, opponent) {
+                            if active(country, opponent) {
                                 directional.push(
                                     *ledgers
                                         .get(&(country, opponent))
@@ -123,7 +144,7 @@ fn read_with_factors(
                         }
                         let mut deliveries = Vec::new();
                         for &ally in own {
-                            if ally != country && !hour.world.active(country, ally) {
+                            if ally != country && !active(country, ally) {
                                 deliveries.push(
                                     histories.get(&(country, ally)).copied().unwrap_or_default(),
                                 );
@@ -133,7 +154,7 @@ fn read_with_factors(
                     }
                     for (&country, score) in own.iter().zip(&scores) {
                         participants.push(country_view(
-                            hour.tags[&country].clone(),
+                            tags[&country].clone(),
                             side,
                             *score,
                             derive::share(

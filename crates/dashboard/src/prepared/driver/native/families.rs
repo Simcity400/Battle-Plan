@@ -2358,6 +2358,8 @@ impl Native for PoliticsState {
 
 struct Wars {
     format: FormatVersion,
+    /// The recorded content wars and countries are named with; none without the game's content.
+    catalogue: Option<Arc<Catalogue>>,
 }
 
 fn wars<'p>(
@@ -2367,7 +2369,8 @@ fn wars<'p>(
     taken: Taken<'p>,
 ) -> Made<'p> {
     let format = content.source.replay_ref().format;
-    bound(id, Wars { format }, stage, taken)
+    let catalogue = content.factions()?.clone();
+    bound(id, Wars { format, catalogue }, stage, taken)
 }
 
 impl Native for Wars {
@@ -2383,7 +2386,7 @@ impl Native for Wars {
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        crate::products::wars::facts::Projector::new(self.format)
+        crate::products::wars::facts::Projector::new(self.format, self.catalogue.clone())
     }
 
     fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {

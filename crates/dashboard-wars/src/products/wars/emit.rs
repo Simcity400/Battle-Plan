@@ -1,18 +1,28 @@
-//! Wars' emit: the change inputs as events of the family's INPUT key, the hours each input covers
-//! as runs of its ordinal on COVERAGE, each war relation lifetime's four casualty counters as
-//! runs of its actor, and the participation tables' parts as events of WHOLES (both tables
-//! whole) and DIFFS.
+//! Wars' emit: the hours walked as runs of WALKED; the hours each set of input tables covers as
+//! runs of its ordinal on COVERAGE; the prepared layers ([`super::layers`]) as events where they
+//! change; each war relation lifetime's four casualty counters as runs of its actor; and the
+//! participation tables' parts as events of WHOLES (both tables whole) and DIFFS.
 //!
-//! An input is published where a table changed in a compared field since the input before, at
-//! the first hour after one not walked, and where a captured capitulation's date is reached. A
-//! segment's first hour is compared with the tables the emit holds, so its whole read publishes
-//! only what changed. An hour not walked ends every run.
+//! A coverage run starts where an input table changed in a compared field since the run before,
+//! at the first hour after one not walked, and where a captured capitulation's date is reached
+//! (DATED): the hours a walk reads its tables again, at which it words a refused hour again too.
+//! A segment's first hour is compared with the tables the emit holds, so its whole read starts a
+//! run only where something changed. An hour not walked ends every run. A run's value is its
+//! ordinal, doubled, and one more where a table a walk names its groups from changed ([`renames`]):
+//! the hours it words a refused name again.
 //!
-//! The emit holds each input table as the packet last publishing it, unpacked only when a
+//! Each viewpoint at war is an actor whose GROUPS events list its groups as the ordinals of
+//! their members (MEMBERS) and labels (LABELS), each defined once while some list holds it.
+//!
+//! The emit holds each input table as the packet last changing it, unpacked only when a
 //! segment's first hour compares it.
 
 use super::facts::{self, Relations};
 use super::inputs::{self, INPUTS};
+use super::layers::{
+    self, Capitulations, Group, Groups, Identity, Label, Layered, Members, Out, Relation, Roster,
+    State,
+};
 use super::*;
 use dashboard_series::{
     Cell, Event, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
@@ -24,61 +34,263 @@ use replay_frame::frame::SharedView;
 use std::{io::Read as _, sync::Arc};
 
 /// The family's keys are spelled under it.
-pub const SCHEMA: u64 = 1;
+pub const SCHEMA: u64 = 2;
 /// The actor of the family's own keys.
 pub const FAMILY: u64 = u64::MAX;
-/// The family's keys: the change inputs, the ordinal of the input covering each walked hour,
-/// and the participation parts, whole and as diffs.
-pub const INPUT: u64 = 0;
-pub const COVERAGE: u64 = 1;
-pub const WHOLES: u64 = 2;
-pub const DIFFS: u64 = 3;
+/// The family's keys: the ordinal of the tables covering each walked hour, the participation
+/// parts, whole and as diffs, and the hours walked.
+pub const COVERAGE: u64 = 0;
+pub const WHOLES: u64 = 1;
+pub const DIFFS: u64 = 2;
+pub const WALKED: u64 = 3;
 /// A relation lifetime's counters, by measure: its first endpoint's casualties and unknown
 /// casualties, then its second's.
 pub const COUNTERS: u64 = 4;
+/// The layers every viewpoint reads alike, each an event where it changed: whether the overview
+/// was recorded, the countries, the war tables' state, the active relations, the capitulations,
+/// the hours reaching a captured capitulation's date and the historical names first read.
+pub const AVAILABLE: u64 = 8;
+pub const ROSTER: u64 = 9;
+pub const STATE: u64 = 10;
+pub const RELATIONS: u64 = 11;
+pub const CAPITULATIONS: u64 = 12;
+pub const DATED: u64 = 13;
+pub const NAMES: u64 = 14;
+/// The groups' members and labels, the n-th event of each defining its ordinal n.
+pub const MEMBERS: u64 = 15;
+pub const LABELS: u64 = 16;
+/// A viewpoint actor's groups.
+pub const GROUPS: u64 = 17;
 /// Every key's evidence: each walked hour is known.
 const DOMAIN: u64 = 0;
 
-/// Event kinds: an input ([`inputs::Input`]), or packed participation parts, each the event's
-/// one text cell.
+/// The input tables whose change makes a walk name its groups again: all but the campaign and the
+/// capitulations, which it reads apart from them.
+fn renames() -> u32 {
+    [TableId::Campaign, TableId::Capitulation]
+        .into_iter()
+        .filter_map(inputs::input)
+        .fold((1 << INPUTS.len()) - 1, |set, place| set & !(1 << place))
+}
+
+/// The family's own keys, in [`Self::MEASURES`] order.
+#[derive(Clone, Copy)]
+pub(crate) struct Keys {
+    pub coverage: KeyHandle,
+    pub wholes: KeyHandle,
+    pub diffs: KeyHandle,
+    pub walked: KeyHandle,
+    pub available: KeyHandle,
+    pub roster: KeyHandle,
+    pub state: KeyHandle,
+    pub relations: KeyHandle,
+    pub capitulations: KeyHandle,
+    pub dated: KeyHandle,
+    pub names: KeyHandle,
+    pub members: KeyHandle,
+    pub labels: KeyHandle,
+}
+
+impl Keys {
+    const MEASURES: [u64; 13] = [
+        COVERAGE,
+        WHOLES,
+        DIFFS,
+        WALKED,
+        AVAILABLE,
+        ROSTER,
+        STATE,
+        RELATIONS,
+        CAPITULATIONS,
+        DATED,
+        NAMES,
+        MEMBERS,
+        LABELS,
+    ];
+    fn from(keys: [KeyHandle; 13]) -> Self {
+        let [
+            coverage,
+            wholes,
+            diffs,
+            walked,
+            available,
+            roster,
+            state,
+            relations,
+            capitulations,
+            dated,
+            names,
+            members,
+            labels,
+        ] = keys;
+        Self {
+            coverage,
+            wholes,
+            diffs,
+            walked,
+            available,
+            roster,
+            state,
+            relations,
+            capitulations,
+            dated,
+            names,
+            members,
+            labels,
+        }
+    }
+    /// The keys `directory` spells.
+    pub(crate) fn of(directory: &Directory) -> io::Result<Self> {
+        let mut keys = [0; 13];
+        for (key, measure) in keys.iter_mut().zip(Self::MEASURES) {
+            *key = directory
+                .key(FAMILY, measure, None)
+                .ok_or_else(|| invalid("The wars publication is missing a key"))?;
+        }
+        Ok(Self::from(keys))
+    }
+}
+
+/// A viewpoint identity's actor name.
+pub(crate) fn viewpoint_name((slot, id): Identity) -> [u8; 9] {
+    let mut name = [0; 9];
+    name[0] = b'v';
+    name[1..5].copy_from_slice(&slot.to_le_bytes());
+    name[5..9].copy_from_slice(&id.to_le_bytes());
+    name
+}
+
+/// Event kinds: packed participation parts, or a layer, each the event's one text cell.
 pub mod kind {
-    pub const INPUT: u64 = 0;
     pub const PARTS: u64 = 1;
+    pub const LAYER: u64 = 2;
 }
 
 fn saved_invalid() -> io::Error {
     invalid("Saved wars emit is not valid")
 }
 
-/// An input table as the emit holds it: the packet that last published it, and its view once
+/// An input table as the emit holds it: the packet that last changed it, and its view once
 /// unpacked.
 struct Held {
     packet: Arc<Vec<u8>>,
     view: Option<SharedView>,
 }
 
+/// The records the published lists hold: each one's ordinal, defined once while some list holds
+/// it, and how many lists hold it.
+struct Records<T> {
+    ordinals: HashMap<T, u32>,
+    held: HashMap<u32, (T, u32)>,
+    defined: u32,
+}
+
+impl<T: Clone + Eq + std::hash::Hash> Records<T> {
+    fn new() -> Self {
+        Self {
+            ordinals: HashMap::new(),
+            held: HashMap::new(),
+            defined: 0,
+        }
+    }
+
+    fn get(&self, record: &T) -> Option<u32> {
+        self.ordinals.get(record).copied()
+    }
+
+    /// The ordinal `record` is held under, defined anew with `define` when none holds it.
+    fn ordinal(
+        &mut self,
+        record: &T,
+        define: &mut dyn FnMut(&T) -> io::Result<()>,
+    ) -> io::Result<u32> {
+        if let Some(ordinal) = self.get(record) {
+            return Ok(ordinal);
+        }
+        define(record)?;
+        let ordinal = self.defined;
+        self.defined = ordinal
+            .checked_add(1)
+            .ok_or_else(|| invalid("Too many wars group records"))?;
+        self.ordinals.insert(record.clone(), ordinal);
+        self.held.insert(ordinal, (record.clone(), 0));
+        Ok(ordinal)
+    }
+
+    /// One more list holding `ordinal`, or one fewer: a record none holds is let go.
+    fn hold(&mut self, ordinal: u32, more: bool) {
+        let Some(entry) = self.held.get_mut(&ordinal) else {
+            return;
+        };
+        if more {
+            entry.1 += 1;
+        } else {
+            entry.1 = entry.1.saturating_sub(1);
+        }
+        if entry.1 == 0
+            && let Some((record, _)) = self.held.remove(&ordinal)
+        {
+            self.ordinals.remove(&record);
+        }
+    }
+
+    fn save(&self, out: &mut Out, encode: impl Fn(&T) -> Vec<u8>) {
+        out.word(self.defined);
+        let mut held: Vec<_> = self.held.iter().collect();
+        held.sort_unstable_by_key(|(ordinal, _)| **ordinal);
+        out.var(held.len() as u64);
+        for (&ordinal, (record, holders)) in held {
+            out.word(ordinal);
+            out.word(*holders);
+            out.bytes(&encode(record));
+        }
+    }
+
+    fn load(d: &mut Decode<'_>, decode: impl Fn(&[u8]) -> io::Result<T>) -> io::Result<Self> {
+        let mut records = Self::new();
+        records.defined = layers::word(d)?;
+        for _ in 0..d.var()? {
+            let (ordinal, holders) = (layers::word(d)?, layers::word(d)?);
+            let record = decode(&layers::bytes(d)?)?;
+            records.ordinals.insert(record.clone(), ordinal);
+            records.held.insert(ordinal, (record, holders));
+        }
+        Ok(records)
+    }
+}
+
 /// The family's emit on one branch.
 pub struct Emit {
     actors: Actors,
     carry: Carry,
-    /// INPUT, COVERAGE, WHOLES and DIFFS.
-    family: Option<[KeyHandle; 4]>,
+    family: Option<Keys>,
     last: Option<i32>,
     /// The first hour since the last cut.
     first: Option<i32>,
-    /// Each input table as last published, by [`INPUTS`] place.
+    /// Each input table as last changed, by [`INPUTS`] place.
     held: Vec<Option<Held>>,
-    /// The ordinal of the last input publishing each input table.
-    refs: Vec<u32>,
+    /// The coverage runs started.
     published: u32,
+    /// [`renames`].
+    renames: u32,
     /// The next captured capitulation's date.
     next: Option<i32>,
     /// The relations last joined, in row order, with their counters' keys.
     relations: Vec<[KeyHandle; 4]>,
-    /// An input's bytes before its packet, and what a segment's first hour packs, kept from
-    /// input to input.
-    head: Vec<u8>,
+    /// What a segment's first hour packs, kept from hour to hour.
     scratch: Vec<u8>,
+    /// Each shared layer as last published.
+    available: Option<bool>,
+    roster: Option<Roster>,
+    state: Option<State>,
+    graph: Option<Vec<Relation>>,
+    capitulations: Option<Capitulations>,
+    /// Every historical name published, by raw country id.
+    named: HashSet<(u32, String)>,
+    /// Each viewpoint at war's published groups, as members' and labels' ordinals.
+    lists: HashMap<Identity, Vec<(u32, u32)>>,
+    members: Records<Members>,
+    labels: Records<Label>,
 }
 
 impl Default for Emit {
@@ -107,12 +319,20 @@ impl Emit {
             last: None,
             first: None,
             held: (0..INPUTS.len()).map(|_| None).collect(),
-            refs: vec![u32::MAX; INPUTS.len()],
             published: 0,
+            renames: renames(),
             next: None,
             relations: Vec::new(),
-            head: Vec::new(),
             scratch: Vec::new(),
+            available: None,
+            roster: None,
+            state: None,
+            graph: None,
+            capitulations: None,
+            named: HashSet::new(),
+            lists: HashMap::new(),
+            members: Records::new(),
+            labels: Records::new(),
         }
     }
 
@@ -121,12 +341,12 @@ impl Emit {
             .key(writer, place, (RunMode::Exact, 0), Some(DOMAIN))
     }
 
-    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<[KeyHandle; 4]> {
+    fn family(&mut self, writer: &mut Writer<'_>) -> io::Result<Keys> {
         if let Some(keys) = self.family {
             return Ok(keys);
         }
-        let mut keys = [0; 4];
-        for (key, measure) in keys.iter_mut().zip([INPUT, COVERAGE, WHOLES, DIFFS]) {
+        let mut keys = [0; 13];
+        for (key, measure) in keys.iter_mut().zip(Keys::MEASURES) {
             *key = self.key(
                 writer,
                 Place {
@@ -136,6 +356,7 @@ impl Emit {
                 },
             )?;
         }
+        let keys = Keys::from(keys);
         self.family = Some(keys);
         Ok(keys)
     }
@@ -183,6 +404,10 @@ impl Emit {
         })
     }
 
+    fn layer(writer: &mut Writer<'_>, key: KeyHandle, at: i32, bytes: &[u8]) -> io::Result<()> {
+        Self::event(writer, key, at, kind::LAYER, (bytes, &[]))
+    }
+
     /// Unpacks every held table not yet unpacked, each packet once.
     fn unpack_held(&mut self) -> io::Result<()> {
         for place in 0..INPUTS.len() {
@@ -228,13 +453,13 @@ impl Emit {
         };
         self.last = Some(at);
         self.first.get_or_insert(at);
-        let [input_key, coverage, wholes, diffs] = self.family(writer)?;
+        let keys = self.family(writer)?;
         let dated = self.next.is_some_and(|next| next <= at);
         let mut changed = 0_u32;
-        let mut packet: Option<Arc<Vec<u8>>> = None;
         let mut next = None;
         let mut relations = None;
         let mut parts = None;
+        let mut layered = None;
         if let Some(facts) = hour.facts {
             let facts::Facts {
                 whole,
@@ -243,10 +468,12 @@ impl Emit {
                 next: read,
                 relations: joined,
                 parts: packed_parts,
+                layers,
             } = *facts;
             next = read;
             relations = joined;
             parts = packed_parts;
+            layered = layers;
             match whole {
                 Some(views) => {
                     self.unpack_held()?;
@@ -271,7 +498,6 @@ impl Emit {
                                 view: Some(view),
                             });
                         }
-                        packet = Some(bytes);
                     }
                 }
                 None if moved != 0 => {
@@ -283,25 +509,25 @@ impl Emit {
                         });
                     }
                     changed = moved;
-                    packet = Some(bytes);
                 }
                 None => {}
             }
         }
+        if gap {
+            self.carry.value(writer, keys.walked, at, Some(1), true)?;
+        }
         if gap || changed != 0 || dated {
             let ordinal = self.published;
-            for place in inputs::places(changed) {
-                self.refs[place] = ordinal;
-            }
-            self.head.clear();
-            inputs::put_input(&mut self.head, ordinal, changed, &self.refs)?;
-            let tail = packet.as_deref().map_or(&[][..], Vec::as_slice);
-            Self::event(writer, input_key, at, kind::INPUT, (&self.head, tail))?;
+            let renamed = changed & self.renames != 0;
+            let value = (i128::from(ordinal) << 1) | i128::from(renamed);
             self.carry
-                .value(writer, coverage, at, Some(i128::from(ordinal)), gap)?;
+                .value(writer, keys.coverage, at, Some(value), gap)?;
             self.published = ordinal
                 .checked_add(1)
-                .ok_or_else(|| invalid("Too many wars change inputs"))?;
+                .ok_or_else(|| invalid("Too many wars coverage runs"))?;
+        }
+        if dated {
+            Self::layer(writer, keys.dated, at, &[0])?;
         }
         // The operator dates the next capitulation wherever this emit would: at a segment's
         // first hour, where the capitulations are read again, and where `dated`.
@@ -315,14 +541,17 @@ impl Emit {
                 .and_then(|held| held.view.as_ref())
                 .and_then(|view| inputs::next_capitulation(view, at));
         }
+        if let Some(layered) = layered {
+            self.layers(writer, keys, at, *layered)?;
+        }
         match relations {
             Some(Relations::Whole(list)) => {
-                let mut keys = Vec::with_capacity(list.len());
+                let mut held_keys = Vec::with_capacity(list.len());
                 for (relation, _) in &list {
-                    keys.push(self.relation(writer, relation, at)?);
+                    held_keys.push(self.relation(writer, relation, at)?);
                 }
                 let present: std::collections::HashSet<KeyHandle> =
-                    keys.iter().map(|keys| keys[0]).collect();
+                    held_keys.iter().map(|keys| keys[0]).collect();
                 for held in std::mem::take(&mut self.relations) {
                     if !present.contains(&held[0]) {
                         for key in held {
@@ -330,13 +559,13 @@ impl Emit {
                         }
                     }
                 }
-                for (held, (_, values)) in keys.iter().zip(&list) {
+                for (held, (_, values)) in held_keys.iter().zip(&list) {
                     for (&key, &value) in held.iter().zip(values) {
                         self.carry
                             .value(writer, key, at, Some(i128::from(value)), false)?;
                     }
                 }
-                self.relations = keys;
+                self.relations = held_keys;
             }
             Some(Relations::Values(values)) => {
                 for (place, values) in values {
@@ -353,8 +582,154 @@ impl Emit {
             None => {}
         }
         if let Some((packed, whole)) = parts {
-            let key = if whole { wholes } else { diffs };
+            let key = if whole { keys.wholes } else { keys.diffs };
             Self::event(writer, key, at, kind::PARTS, (&packed, &[] as &[u8]))?;
+        }
+        Ok(())
+    }
+
+    /// Publishes what `layered` changed of the layers at `at`.
+    fn layers(
+        &mut self,
+        writer: &mut Writer<'_>,
+        keys: Keys,
+        at: i32,
+        layered: Layered,
+    ) -> io::Result<()> {
+        let Layered {
+            roster,
+            state,
+            relations,
+            capitulations,
+            available,
+            names,
+            groups,
+        } = layered;
+        if let Some(available) = available
+            && self.available != Some(available)
+        {
+            Self::layer(writer, keys.available, at, &[u8::from(available)])?;
+            self.available = Some(available);
+        }
+        if let Some(roster) = roster
+            && self.roster.as_ref() != Some(&roster)
+        {
+            Self::layer(writer, keys.roster, at, &roster.encode()?)?;
+            self.roster = Some(roster);
+        }
+        if let Some(state) = state
+            && self.state.as_ref() != Some(&state)
+        {
+            Self::layer(writer, keys.state, at, &state.encode())?;
+            self.state = Some(state);
+        }
+        if let Some(relations) = relations
+            && self.graph.as_ref() != Some(&relations)
+        {
+            Self::layer(
+                writer,
+                keys.relations,
+                at,
+                &layers::encode_relations(&relations)?,
+            )?;
+            self.graph = Some(relations);
+        }
+        if let Some(capitulations) = capitulations
+            && self.capitulations.as_ref() != Some(&capitulations)
+        {
+            Self::layer(
+                writer,
+                keys.capitulations,
+                at,
+                &layers::encode_capitulations(&capitulations),
+            )?;
+            self.capitulations = Some(capitulations);
+        }
+        let names: Vec<_> = names
+            .into_iter()
+            .filter(|name| !self.named.contains(name))
+            .collect();
+        if !names.is_empty() {
+            Self::layer(writer, keys.names, at, &layers::encode_names(&names))?;
+            self.named.extend(names);
+        }
+        match groups {
+            Some(Groups::Whole(lists)) => {
+                let present: HashSet<Identity> =
+                    lists.iter().map(|(identity, _)| *identity).collect();
+                let mut gone: Vec<Identity> = self
+                    .lists
+                    .keys()
+                    .filter(|identity| !present.contains(*identity))
+                    .copied()
+                    .collect();
+                gone.sort_unstable();
+                for identity in gone {
+                    self.list(writer, keys, at, identity, &[])?;
+                }
+                for (identity, list) in lists {
+                    self.list(writer, keys, at, identity, &list)?;
+                }
+            }
+            Some(Groups::Changed(lists)) => {
+                for (identity, list) in lists {
+                    self.list(writer, keys, at, identity, &list)?;
+                }
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Publishes `identity`'s groups at `at` where they differ from those published.
+    fn list(
+        &mut self,
+        writer: &mut Writer<'_>,
+        keys: Keys,
+        at: i32,
+        identity: Identity,
+        groups: &[Group],
+    ) -> io::Result<()> {
+        let held = self.lists.get(&identity).map_or(&[][..], Vec::as_slice);
+        let same = held.len() == groups.len()
+            && held.iter().zip(groups).all(|(&(members, label), group)| {
+                self.members.get(&group.members) == Some(members)
+                    && self.labels.get(&group.label) == Some(label)
+            });
+        if same {
+            return Ok(());
+        }
+        let mut list = Vec::with_capacity(groups.len());
+        for group in groups {
+            let members = self.members.ordinal(&group.members, &mut |members| {
+                Self::layer(writer, keys.members, at, &members.encode())
+            })?;
+            let label = self.labels.ordinal(&group.label, &mut |label| {
+                Self::layer(writer, keys.labels, at, &label.encode())
+            })?;
+            list.push((members, label));
+        }
+        // Each list holds its records before the one it replaces lets go of them.
+        for &(members, label) in &list {
+            self.members.hold(members, true);
+            self.labels.hold(label, true);
+        }
+        for (members, label) in self.lists.remove(&identity).unwrap_or_default() {
+            self.members.hold(members, false);
+            self.labels.hold(label, false);
+        }
+        let actor = self.actors.actor(writer, &viewpoint_name(identity), at)?;
+        let key = self.key(
+            writer,
+            Place {
+                actor,
+                measure: GROUPS,
+                dimension: None,
+            },
+        )?;
+        Self::layer(writer, key, at, &layers::encode_list(&list))?;
+        if !list.is_empty() {
+            self.lists.insert(identity, list);
         }
         Ok(())
     }
@@ -381,8 +756,80 @@ impl Emit {
         Ok(())
     }
 
+    /// The layers as last published, and the records the published lists hold.
+    fn save_layers(&self) -> io::Result<Vec<u8>> {
+        let mut out = Out::default();
+        out.flag(self.available.is_some());
+        if let Some(available) = self.available {
+            out.flag(available);
+        }
+        let parts: [Option<Vec<u8>>; 4] = [
+            self.roster.as_ref().map(Roster::encode).transpose()?,
+            self.state.as_ref().map(State::encode),
+            self.graph
+                .as_deref()
+                .map(layers::encode_relations)
+                .transpose()?,
+            self.capitulations
+                .as_ref()
+                .map(layers::encode_capitulations),
+        ];
+        for part in &parts {
+            out.flag(part.is_some());
+            if let Some(part) = part {
+                out.bytes(part);
+            }
+        }
+        let mut named: Vec<_> = self.named.iter().cloned().collect();
+        named.sort_unstable();
+        out.bytes(&layers::encode_names(&named));
+        self.members.save(&mut out, Members::encode);
+        self.labels.save(&mut out, Label::encode);
+        let mut lists: Vec<_> = self.lists.iter().collect();
+        lists.sort_unstable_by_key(|(identity, _)| **identity);
+        out.var(lists.len() as u64);
+        for (&(slot, id), list) in lists {
+            out.word(slot);
+            out.word(id);
+            out.bytes(&layers::encode_list(list));
+        }
+        Ok(out.into_bytes())
+    }
+
+    /// The layers [`Self::save_layers`] saved.
+    fn load_layers(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let mut d = Decode::new(bytes);
+        let d = &mut d;
+        self.available = if d.flag()? { Some(d.flag()?) } else { None };
+        let mut parts: [Option<Vec<u8>>; 4] = Default::default();
+        for part in &mut parts {
+            if d.flag()? {
+                *part = Some(layers::bytes(d)?);
+            }
+        }
+        let [roster, state, graph, capitulations] = parts;
+        self.roster = roster.as_deref().map(Roster::decode).transpose()?;
+        self.state = state.as_deref().map(State::decode).transpose()?;
+        self.graph = graph.as_deref().map(layers::decode_relations).transpose()?;
+        self.capitulations = capitulations
+            .as_deref()
+            .map(layers::decode_capitulations)
+            .transpose()?;
+        self.named = layers::decode_names(&layers::bytes(d)?)?
+            .into_iter()
+            .collect();
+        self.members = Records::load(d, Members::decode)?;
+        self.labels = Records::load(d, Label::decode)?;
+        for _ in 0..d.var()? {
+            let identity = (layers::word(d)?, layers::word(d)?);
+            let list = layers::decode_list(&layers::bytes(d)?)?;
+            self.lists.insert(identity, list);
+        }
+        d.end().map_err(|_| saved_invalid())
+    }
+
     /// What the emit goes on with after a cut: its state, the packets holding its tables, each
-    /// once, then its carry.
+    /// once, its layers, then its carry.
     pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
         let mut packets: Vec<&Arc<Vec<u8>>> = Vec::new();
         let mut held = Vec::new();
@@ -404,7 +851,6 @@ impl Emit {
         }
         let saved = Saved {
             last: self.last,
-            refs: self.refs.clone(),
             published: self.published,
             next: self.next,
             relations: self.relations.clone(),
@@ -418,6 +864,9 @@ impl Emit {
             out.extend_from_slice(&(packet.len() as u64).to_le_bytes());
             out.extend_from_slice(packet);
         }
+        let layers = self.save_layers()?;
+        out.extend_from_slice(&(layers.len() as u64).to_le_bytes());
+        out.extend_from_slice(&layers);
         self.carry.save(out)
     }
 
@@ -425,13 +874,7 @@ impl Emit {
     pub fn load(directory: &Directory, bytes: &[u8]) -> io::Result<Self> {
         let mut emit = Self::new();
         emit.actors = Actors::resume(SCHEMA, directory)?;
-        let mut family = [0; 4];
-        for (key, measure) in family.iter_mut().zip([INPUT, COVERAGE, WHOLES, DIFFS]) {
-            *key = directory
-                .key(FAMILY, measure, None)
-                .ok_or_else(saved_invalid)?;
-        }
-        emit.family = Some(family);
+        emit.family = Some(Keys::of(directory)?);
         let mut d = Decode::new(bytes);
         let length = usize::try_from(d.u64()?).map_err(|_| saved_invalid())?;
         let saved: Saved = serde_json::from_slice(d.bytes(length)?)?;
@@ -441,13 +884,11 @@ impl Emit {
             let length = usize::try_from(d.u64()?).map_err(|_| saved_invalid())?;
             packets.push(Arc::new(d.bytes(length)?.to_vec()));
         }
+        let length = usize::try_from(d.u64()?).map_err(|_| saved_invalid())?;
+        emit.load_layers(d.bytes(length)?)?;
         let at = d.position();
         emit.carry = Carry::load(&bytes[at..])?;
-        if saved.refs.len() != INPUTS.len() {
-            return Err(saved_invalid());
-        }
         emit.last = saved.last;
-        emit.refs = saved.refs;
         emit.published = saved.published;
         emit.next = saved.next;
         emit.relations = saved.relations;
@@ -471,7 +912,6 @@ impl Emit {
 #[derive(Serialize, Deserialize)]
 struct Saved {
     last: Option<i32>,
-    refs: Vec<u32>,
     published: u32,
     next: Option<i32>,
     relations: Vec<[KeyHandle; 4]>,

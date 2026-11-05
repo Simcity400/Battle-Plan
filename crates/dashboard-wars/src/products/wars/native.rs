@@ -210,7 +210,7 @@ impl World {
         }
         out
     }
-    fn score(&self, country: u32) -> Result<(u8, i32), String> {
+    pub fn score(&self, country: u32) -> Result<(u8, i32), String> {
         let s = self.scores.get(&country).ok_or_else(|| {
             format!("Not recorded: war overview score for country slot {country}")
         })?;
@@ -222,8 +222,11 @@ impl World {
         Ok((s.major, s.divisions.wrapping_add(s.factories)))
     }
     pub fn representative(&self, blob: &Blob) -> Result<Pair, String> {
-        // Select the smallest signed
-        // start, then first occurrence in first-side/second-side order.
+        self.oldest(blob).and_then(|oldest| self.ranked(blob, oldest))
+    }
+    /// The relation the group was first named for: the smallest signed start, then first
+    /// occurrence in first-side/second-side order. Scores never move it.
+    pub fn oldest(&self, blob: &Blob) -> Result<Pair, String> {
         let first_rank: HashMap<_, _> = blob
             .first
             .iter()
@@ -250,7 +253,11 @@ impl World {
                 };
                 (r.start_hour, first_rank[&a], second_rank[&b])
             })
-            .ok_or("Not recorded: blob has no active representative")?;
+            .ok_or_else(|| "Not recorded: blob has no active representative".to_owned())?;
+        Ok(oldest)
+    }
+    /// The representative from `oldest`, by the members' scores.
+    pub fn ranked(&self, blob: &Blob, oldest: Pair) -> Result<Pair, String> {
         let original = &self.relations[&oldest];
         let major_first = self.score(original.first_country)?.0 != 0;
         let major_second = self.score(original.second_country)?.0 != 0;

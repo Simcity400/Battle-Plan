@@ -1,12 +1,10 @@
-//! What the wars publication holds of each hour's tables, as its operator, emit and queries
-//! read and write it.
+//! What the wars preparation holds of each hour's tables, as its operator and emit read them.
 //!
-//! A change input is published at an hour where a table the wars read changed in a field they
-//! compare ([`same_inputs`]), at the first hour after one not walked, and where a captured
-//! capitulation's date is reached: the views of the tables that changed, and, for every input
-//! table, the ordinal of the last input that published it, so the tables at any hour are those
-//! of a handful of inputs. War relations are published without their casualty counters, which
-//! are series of their own.
+//! The emit holds each input table as the packet of the hour it last changed in a field the wars
+//! compare ([`same_inputs`]), so a segment's first hour publishes only what changed since: an
+//! hour that changed one, the first hour after one not walked and an hour reaching a captured
+//! capitulation's date start a run of the coverage, and every hour of a run reads the same
+//! tables. War relations are held without their casualty counters, which are series of their own.
 //!
 //! The participation ledgers and lend-lease histories change every hour of a war: they are
 //! published as each hour's changed and deleted rows by key, whole at a segment's first hour and
@@ -25,7 +23,7 @@ use replay_data::{
 use replay_frame::frame::{SharedView, not_selected};
 use std::collections::BTreeMap;
 
-/// The tables a change input holds: every table the wars read but the clock, in this order.
+/// The tables the wars read but the clock, in this order.
 pub(crate) const INPUTS: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -330,85 +328,6 @@ pub(crate) fn unpack(packed: &[u8], branch: u64, hour: i32) -> io::Result<Decode
     })?;
     input.finish()?;
     Ok(frame)
-}
-
-/// A change input's event bytes before its packet: its ordinal, the tables of `changed` (bits
-/// by [`INPUTS`] place) and, for every input table, the ordinal of the last input publishing it.
-pub(crate) fn put_input(
-    out: &mut Vec<u8>,
-    ordinal: u32,
-    changed: u32,
-    refs: &[u32],
-) -> io::Result<()> {
-    if refs.len() != INPUTS.len() {
-        return Err(malformed());
-    }
-    out.extend_from_slice(&ordinal.to_le_bytes());
-    out.extend_from_slice(&(changed.count_ones() as u16).to_le_bytes());
-    for place in places(changed) {
-        out.extend_from_slice(&(INPUTS[place] as u16).to_le_bytes());
-    }
-    for &held in refs {
-        out.extend_from_slice(&held.to_le_bytes());
-    }
-    Ok(())
-}
-
-/// A change input as its event holds it: its ordinal, the tables it changed, for every input
-/// table the ordinal of the last input publishing it ([`u32::MAX`] for none), and its packed
-/// views (empty when it changed none).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Input {
-    pub ordinal: u32,
-    pub changed: Vec<TableId>,
-    pub refs: Vec<u32>,
-    pub packet: Vec<u8>,
-}
-
-impl Input {
-    /// The input [`put_input`] and its packet make.
-    pub(crate) fn decode(bytes: &[u8]) -> io::Result<Self> {
-        let (ordinal, rest) = bytes.split_first_chunk::<4>().ok_or_else(malformed)?;
-        let (count, mut rest) = rest.split_first_chunk::<2>().ok_or_else(malformed)?;
-        let mut changed = Vec::with_capacity(usize::from(u16::from_le_bytes(*count)));
-        for _ in 0..u16::from_le_bytes(*count) {
-            let (table, after) = rest.split_first_chunk::<2>().ok_or_else(malformed)?;
-            let table = u16::from_le_bytes(*table);
-            changed.push(
-                TableId::ALL
-                    .iter()
-                    .copied()
-                    .find(|&id| id as u16 == table && input(id).is_some())
-                    .ok_or_else(malformed)?,
-            );
-            rest = after;
-        }
-        let mut refs = Vec::with_capacity(INPUTS.len());
-        for _ in INPUTS {
-            let (held, after) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
-            refs.push(u32::from_le_bytes(*held));
-            rest = after;
-        }
-        Ok(Self {
-            ordinal: u32::from_le_bytes(*ordinal),
-            changed,
-            refs,
-            packet: rest.to_vec(),
-        })
-    }
-
-    /// Its packed views; a frame of no table when it changed none.
-    pub(crate) fn frame(&self, branch: u64, hour: i32) -> io::Result<DecodedFrame> {
-        if self.packet.is_empty() {
-            return Ok(DecodedFrame {
-                branch,
-                hour,
-                metrics: Default::default(),
-                tables: std::array::from_fn(|_| not_selected()),
-            });
-        }
-        unpack(&self.packet, branch, hour)
-    }
 }
 
 /// One participation table at an hour: its whole view, or the rows it changed and the keys it

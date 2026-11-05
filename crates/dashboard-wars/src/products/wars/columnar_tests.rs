@@ -1,7 +1,7 @@
 //! The family's columnar preparation held to the row walk ([`scan`]) on the same hours, written
 //! as the native recorder writes them: every viewpoint's wars, their casualties at every hour,
 //! and the groups and contributions at every hour ([`at_hour`]), across segment starts, gaps,
-//! cuts and a resume.
+//! cuts and a resume, read from the prepared layers alone.
 
 use super::test_fixtures::recorded;
 use super::{
@@ -10,7 +10,6 @@ use super::{
     query::{Walked, walk_snapshot},
     *,
 };
-use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_series::{
     Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
     family::Directory,
@@ -79,13 +78,17 @@ fn write_hour(walk: &mut Synthetic, frame: &DecodedFrame) {
     );
 }
 
-/// The projected hours of `frames`, a projector starting cold at each of `starts` and at each
-/// walk's first hour (after a gap the walk starts again).
-fn projected(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
+/// The projected hours of `frames`, named with `cat`, a projector starting cold at each of
+/// `starts` and at each walk's first hour (after a gap the walk starts again).
+fn projected(
+    frames: &[DecodedFrame],
+    starts: &[i32],
+    cat: Option<&Arc<Catalogue>>,
+) -> Vec<facts::Hour> {
     let mut out = Vec::new();
     let mut walk: Option<Synthetic> = None;
     let mut world = None;
-    let mut projector = Projector::new(FormatVersion::CURRENT).unwrap();
+    let mut projector = Projector::new(FormatVersion::CURRENT, cat.cloned()).unwrap();
     let needs = facts::needs().unwrap();
     let mut last: Option<i32> = None;
     for (ordinal, frame) in (0..).zip(frames) {
@@ -97,7 +100,7 @@ fn projected(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
         write_hour(walk, frame);
         let cold = starts.contains(&frame.hour);
         if cold {
-            projector = Projector::new(FormatVersion::CURRENT).unwrap();
+            projector = Projector::new(FormatVersion::CURRENT, cat.cloned()).unwrap();
         }
         walk.end(|state, manifest, _, first| {
             let starts = first || cold;
@@ -203,19 +206,6 @@ fn frames(replay: &Replay) -> Vec<DecodedFrame> {
     frames
 }
 
-fn source(replay: &Replay) -> Source {
-    Source::from_replay(
-        dashboard_base::source::SourceKey {
-            source_id: "wars-columnar".into(),
-            revision: "1".into(),
-        },
-        "memory.battleplan".into(),
-        Arc::new(Replay::open(replay.bytes().to_vec()).unwrap()),
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-}
-
 /// The publication of `replay`'s branch 1 holds what the row walk reads for each of `views`:
 /// their wars with every hour's casualties, and the groups and contributions at every hour, for
 /// segments starting at each of `starts`, cut at each of `cuts`, the emit saved and resumed at
@@ -233,21 +223,16 @@ fn assert_placed(
     cuts.retain(|&cut| cut < last);
     cuts.push(last);
     let budget = Budget::new(64 << 20);
-    let (pages, root) = build(projected(&frames, starts), &cuts, resume, &budget);
+    let (pages, root) = build(projected(&frames, starts, cat), &cuts, resume, &budget);
     let cache = Cache::new(&budget);
     let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
     let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
-    let source = source(replay);
-    let fixture = Fixture::new();
-    let store = &fixture.key;
     let start = replay.branches.iter().find(|start| start.id == 1).unwrap();
     let bounds = branch_bounds(replay, start);
     let hours: BTreeSet<i32> = frames.iter().map(|frame| frame.hour).collect();
     let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
     for &view in views {
         let walked = Walked {
-            source: &source,
-            store,
             branch: 1,
             bounds,
             view,
@@ -305,7 +290,7 @@ fn a_cut_past_the_last_walked_hour_is_refused_without_advancing_the_emit() {
     let mut writer = Writer::new(&budget, identity(), 100).unwrap();
     let mut emit = Emit::new();
     assert!(emit.cut(&mut writer, 100).is_err());
-    for hour in projected(&[recorded(100)], &[]) {
+    for hour in projected(&[recorded(100)], &[], None) {
         emit.hour(&mut writer, hour).unwrap();
     }
     let mut before = Vec::new();
@@ -416,8 +401,8 @@ fn native_wars_read_overlapping_groups_and_a_relation_leaving_and_rejoining() {
     assert_native_parity(&replay, None, &[None, Some("C1"), Some("C2"), Some("C6")]);
 }
 
-/// Hours whose casualties alone move publish no change input, and a segment's first hour that
-/// reads every table again publishes only what changed since the input before.
+/// Hours whose casualties alone start no coverage run, nor does a segment's first hour that reads
+/// every table again where nothing changed since the run before.
 #[test]
 fn counter_only_hours_and_segment_starts_publish_only_changed_inputs() {
     let frames: Vec<_> = (100..=111)
@@ -436,18 +421,19 @@ fn counter_only_hours_and_segment_starts_publish_only_changed_inputs() {
         .collect();
     let budget = Budget::new(64 << 20);
     for starts in [&[][..], &[104, 108][..]] {
-        let (pages, root) = build(projected(&frames, starts), &[111], None, &budget);
+        let (pages, root) = build(projected(&frames, starts, None), &[111], None, &budget);
         let cache = Cache::new(&budget);
         let mut snapshot = Snapshot::open(pages, &cache, root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
-        let input = directory
-            .key(super::emit::FAMILY, super::emit::INPUT, None)
+        let coverage = directory
+            .key(super::emit::FAMILY, super::emit::COVERAGE, None)
             .unwrap();
-        assert_eq!(
-            snapshot.event_count_through(input, 111, None).unwrap(),
-            1,
-            "starts {starts:?}: one change input"
-        );
+        let dashboard_series::Observation::Value { run, .. } =
+            snapshot.value_at(coverage, 111).unwrap()
+        else {
+            panic!("starts {starts:?}: the last hour is covered");
+        };
+        assert_eq!(run.span.first, 100, "starts {starts:?}: one coverage run");
     }
 }
 
@@ -468,7 +454,7 @@ fn an_hour_hands_the_emit_only_the_counters_that_moved() {
             frame
         })
         .collect();
-    let hours = projected(&frames, &[]);
+    let hours = projected(&frames, &[], None);
     assert!(hours[0].facts.as_ref().is_some_and(|facts| facts.whole.is_some()));
     match hours[2].facts.as_ref().and_then(|facts| facts.relations.as_ref()) {
         Some(facts::Relations::Values(values)) => assert_eq!(values.len(), 1),
@@ -499,7 +485,7 @@ fn overview_scores_alone_publish_without_joining_the_relations_again() {
             frame
         })
         .collect();
-    let hours = projected(&frames, &[]);
+    let hours = projected(&frames, &[], None);
     let place = super::inputs::input(TableId::WarOverviewCountries).unwrap();
     for hour in &hours[1..] {
         let facts = hour.facts.as_ref().expect("the scores moved");
