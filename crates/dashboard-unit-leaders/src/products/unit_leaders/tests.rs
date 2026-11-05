@@ -690,7 +690,7 @@ fn scan_joins_raw_owners_commands_and_counts_each_combat_once() {
 }
 
 #[test]
-fn missing_trait_reads_kinds_and_lightweight_choices_stay_honest() {
+fn missing_trait_reads_kinds_and_choices_stay_honest() {
     use replay_data::{rows::TableRows, rows::UnitLeaderTraitRow};
     use replay_frame::frame::TableView;
     let reference = (5_u64 << 32) | 4713;
@@ -802,20 +802,19 @@ fn missing_trait_reads_kinds_and_lightweight_choices_stay_honest() {
         );
         assert!(filtered.people.len() <= reply.people.len());
     }
-    let choices = scan(
-        &replay,
-        &UnitLeadersParams {
-            view: LeaderView::Choices,
-            ..params
-        },
-        None,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert!(choices.traits.is_empty());
-    assert!(choices.leaders.iter().all(|leader| leader.runs.len() == 1
-        && leader.runs[0].value.traits.is_none()
-        && leader.battle_starts.as_ref().is_some_and(Vec::is_empty)));
+    let choices = choices_from(&reply, &params, None);
+    assert_eq!(
+        choices
+            .iter()
+            .map(|choice| choice.reference.to_string())
+            .collect::<Vec<_>>(),
+        reply
+            .leaders
+            .iter()
+            .map(|leader| leader.reference.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(choices.iter().all(|choice| choice.last_hour == 102));
 }
 
 #[test]
@@ -2086,20 +2085,62 @@ fn projections_share_a_branch_scan_and_remap_selected_histories() {
             .iter()
             .all(|run| (run.value.person as usize) < selected.people.len() && run.value.role == 0)
     }));
-    let choices = project(
-        &full,
-        &UnitLeadersParams {
-            view: LeaderView::Choices,
-            ..all_params()
-        },
-        None,
-    );
-    assert_eq!(choices.leaders.len(), 4);
-    assert!(choices.traits.is_empty());
-    assert!(choices.leaders.iter().all(|leader| leader.runs.len() == 1
-        && leader.runs[0].first_hour == leader.runs[0].last_hour
-        && leader.battle_starts.is_none()
-        && leader.fought_hours.is_none()));
+    let choices = choices_from(&full, &all_params(), None);
+    assert_eq!(choices.len(), 4);
+    for choice in &choices {
+        let leader = full
+            .leaders
+            .iter()
+            .find(|leader| leader.reference == choice.reference.to_string())
+            .unwrap();
+        let run = leader.runs.last().unwrap();
+        assert_eq!(choice.last_hour, run.last_hour);
+        assert_eq!(choice.owner, full.roles[run.value.role as usize].owner);
+        assert_eq!(choice.name, full.people[run.value.person as usize].name);
+    }
+}
+
+#[test]
+fn choice_pages_follow_their_cursor_through_every_leader_within_the_budget() {
+    let choices: Vec<_> = (1..=50_u64)
+        .map(|id| LeaderChoice {
+            reference: (id << 32) | 4713,
+            name: Some(format!("Leader {id}")),
+            owner: Some("mod country".into()),
+            last_hour: 100,
+        })
+        .collect();
+    // Preparation's fields are part of each page's budget.
+    let mark = |data: &mut serde_json::Value| -> io::Result<()> {
+        data["pending"] = serde_json::json!([]);
+        Ok(())
+    };
+    let budget = 400;
+    let (mut cursor, mut seen, mut pages) = (None::<String>, Vec::new(), 0);
+    loop {
+        let page = choices_page(&choices, "1", cursor.as_deref(), budget, mark).unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() <= budget);
+        assert_eq!(page["pending"], serde_json::json!([]));
+        let rows = page["choices"].as_array().unwrap();
+        assert!(!rows.is_empty());
+        seen.extend(rows.iter().cloned());
+        pages += 1;
+        match page["cursor"].as_str() {
+            Some(next) => cursor = Some(next.into()),
+            None => {
+                assert!(page["cursor"].is_null());
+                break;
+            }
+        }
+    }
+    assert!(pages > 1);
+    let listed = serde_json::to_value(&choices).unwrap();
+    assert_eq!(serde_json::Value::Array(seen), listed);
+    let whole = choices_page(&choices, "1", None, MAX_REPLY_BYTES, mark).unwrap();
+    assert_eq!(whole["choices"], listed);
+    assert!(whole["cursor"].is_null());
+    // A budget no choice fits is refused, never answered empty.
+    assert!(choices_page(&choices, "1", None, 40, mark).is_err());
 }
 
 #[test]
@@ -2514,8 +2555,8 @@ fn repeated_outcome_keeps_first_supplying_read_and_conflicts_stay_unresolved() {
 
 #[test]
 fn every_scan_decodes_the_trigger_kit_its_visibility_reads() {
-    for (career, choices) in [(true, false), (false, false), (false, true)] {
-        let tables = scan_tables(career, choices);
+    for career in [true, false] {
+        let tables = scan_tables(career);
         for table in dashboard_text::triggers::RECORDED_TABLES {
             assert!(tables.contains(table), "{table:?} is not decoded");
         }

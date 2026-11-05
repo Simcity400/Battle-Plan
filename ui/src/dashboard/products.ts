@@ -105,6 +105,8 @@ function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
 
 function pagedKind(request: ProductRequest): string | null {
   if (request.product === 'resource-balance' || request.product === 'trade-flows') return request.product;
+  // Only leader choices are paged; every other unit-leaders view is one reply.
+  if (request.product === 'unit-leaders') return (request.params as { view?: unknown } | null)?.view === 'choices' ? 'unit-leaders-choices' : null;
   if (request.product !== 'series-summary') return null;
   const kind = (request.params as { family?: { kind?: unknown } } | null)?.family?.kind;
   return typeof kind === 'string' ? kind : null;

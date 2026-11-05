@@ -4,7 +4,7 @@ export const GROW_WITH_PLAYBACK_OPTION: OptionField = {
   key: 'growWithPlayback', section: 'time', label: 'Grow with playback', kind: 'toggle', default: false,
 };
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'leader', section: 'options', label: 'Leader', kind: 'content-choice', automatic: 'Top general', default: '',
+  { key: 'leader', section: 'options', label: 'Leader', kind: 'content-choice', automatic: 'Top general', default: '', catalogue: true,
     hint: 'Automatic: the top army leader of this widget’s countries, ranked as the Generals leaderboard ranks by default' },
   GROW_WITH_PLAYBACK_OPTION,
 ];

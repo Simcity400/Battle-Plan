@@ -30,8 +30,9 @@ export type OptionField = FieldBase & (
    * categories): the widget lists them at run time (`useOptionChoices`). The raw
    * scalar string is kept, so a choice survives a campaign that lacks it. The empty
    * default lets the widget pick, shown as `automatic`. `titleChoice: false`
-   * keeps the widget title when this choice changes. */
-  | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false }
+   * keeps the widget title when this choice changes; `catalogue` lists the
+   * choices searchably, with only the visible rows mounted. */
+  | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   /** Several things only the recording's content knows (such as its resources),
    * shown as chips, or a searchable virtual list with `catalogue`. Stored as their tokens
    * separated by spaces; the empty default lets the widget pick, shown as `automatic`. */

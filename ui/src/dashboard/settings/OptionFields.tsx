@@ -7,6 +7,7 @@ import ContentSetPicker from '../../components/ContentSetPicker';
 import { Segmented } from '../../components/Segmented';
 import { contentSet, storableToken, toggleContentSet, UNSTORABLE } from '../options';
 import type { OptionField, OptionValue } from '../options';
+import { listedChoices, unavailableChoices } from '../definitions';
 import type { OptionChoices } from '../definitions';
 import { contentTitleHint } from '../contentTitles';
 import { leaveNumber, numberText, receiveNumber, typeNumber } from './numberDraft';
@@ -39,7 +40,17 @@ function OptionRow({ field, value, choices, onChange }: {
         : <div className="setting-row">{caption}<Select label={field.label} value={String(value)} options={field.choices} onChange={onChange} /></div>;
     case 'content-choice': {
       // A saved choice this campaign lacks stays selectable, so opening the panel never changes it.
-      const listed = choices ?? [];
+      const listed = listedChoices(choices) ?? [];
+      if (field.catalogue) {
+        const chosen = typeof value === 'string' && value ? value : '';
+        const unavailable = unavailableChoices(choices);
+        const missing = !unavailable ? 'Saved choice unavailable' : 'loading' in unavailable ? 'Loading…' : 'Choices unavailable';
+        const shown = chosen ? listed.find(choice => choice.value === chosen)?.label ?? missing : field.automatic;
+        return <div className="setting-row setting-row-stacked">{caption}
+          <ContentSetPicker single label={field.label} automatic={field.automatic} selected={chosen ? [chosen] : []} trigger={<span>{shown}</span>}
+            choices={listed.map(({ detail, ...choice }) => detail ? { ...choice, hint: detail } : choice)} unavailable={unavailable}
+            onReset={() => onChange('')} onToggle={token => { if (token !== chosen) onChange(token); }} /></div>;
+      }
       const kept = typeof value === 'string' && value && !listed.some(choice => choice.value === value)
         ? [{ value, label: 'Saved choice unavailable', reason: contentTitleHint(value, 'Not in this campaign.') }] : [];
       return <div className="setting-row">{caption}
@@ -48,11 +59,11 @@ function OptionRow({ field, value, choices, onChange }: {
     case 'content-set': {
       const chosen = contentSet(value);
       if (field.catalogue) return <div className="setting-row setting-row-stacked">{caption}
-        <ContentSetPicker label={field.label} automatic={field.automatic} choices={choices ?? []} selected={chosen}
+        <ContentSetPicker label={field.label} automatic={field.automatic} choices={listedChoices(choices) ?? []} selected={chosen}
           onReset={() => onChange('')} onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next !== null) onChange(next); }} />
       </div>;
       // Saved tokens this campaign lacks stay listed, so opening the panel never changes them.
-      const listed = choices ?? [];
+      const listed = listedChoices(choices) ?? [];
       const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: 'Saved choice unavailable', hint: contentTitleHint(token, 'Not in this campaign.') }));
       const chips = [...listed, ...kept].map(chip => ({ ...chip, unavailable: storableToken(chip.value) ? undefined : UNSTORABLE }));
       return <div className="setting-row setting-row-stacked">

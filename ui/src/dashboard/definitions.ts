@@ -8,6 +8,7 @@ import type { MapViewsStore } from './geometry';
 import type { Alignment, BoundTrack, CountrySelection, DashboardTemplate, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import type { PlaybackController } from './playback';
 import type { OptionField, OptionValue } from './options';
+import type { Failure } from './queryError';
 
 /** What every widget receives from the dashboard. Widgets never open files or
  * start their own clock; they read products and follow the shared playback. */
@@ -119,7 +120,16 @@ export interface WidgetMeta {
 
 /** Run-time choices for a widget's content-choice and content-set fields, by field
  * key; a content set shows each choice's icon (an image URL) when it has one. */
-export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string; icon?: string | null; detail?: string }[]>>;
+export interface OptionChoice { value: string; label: string; icon?: string | null; detail?: string }
+/** Why a field lists no choices yet: they are still loading, or the failure that stopped them. */
+export type ChoicesUnavailable = { loading: true } | { error: Failure; retry: () => void };
+export type OptionChoices = Readonly<Record<string, readonly OptionChoice[] | ChoicesUnavailable>>;
+/** A field's choices, once they are listed. */
+export const listedChoices = (choices: OptionChoices[string] | undefined): readonly OptionChoice[] | undefined =>
+  choices === undefined || 'loading' in choices || 'error' in choices ? undefined : choices;
+/** Why a field's choices are not listed, while they are not. */
+export const unavailableChoices = (choices: OptionChoices[string] | undefined): ChoicesUnavailable | undefined =>
+  choices !== undefined && ('loading' in choices || 'error' in choices) ? choices : undefined;
 
 /** One catalogue entry for a view of the widget (`variants`) or derived from the campaign's content
  * (one idea category). It is its own card and stores the definition's kind with this title and these options. */

@@ -8,7 +8,7 @@ import { StyledIcon } from '../../shell/appearance/StyledIcon';
 import { WidgetIconsContext, settingsButtonOf } from '../../shell/appearance/WidgetIconMenu';
 import CampaignPicker from '../CampaignPicker';
 import { resolveWidgetCampaign } from '../campaigns';
-import { widgetDefinition } from '../definitions';
+import { listedChoices, widgetDefinition } from '../definitions';
 import type { OptionChoices, WidgetDefinition, WidgetRuntime } from '../definitions';
 import { WIDGET_CONTENT_SCALES } from '../model';
 import type { DashboardTemplate, WidgetSpec } from '../model';
@@ -54,7 +54,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
     const options = setOption(definition?.options, widget.options, key, value);
     if (!options) return;
     // A title that still names the previous content choice follows the new one.
-    const label = (choice: OptionValue) => choices?.[key]?.find(item => item.value === choice)?.label;
+    const label = (choice: OptionValue) => listedChoices(choices?.[key])?.find(item => item.value === choice)?.label;
     const field = definition?.options?.find(item => item.key === key);
     const named = field?.kind === 'content-choice' && field.titleChoice !== false && [definition?.title, label(values[key])].includes(widget.title);
     const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;

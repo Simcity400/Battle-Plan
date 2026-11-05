@@ -251,11 +251,23 @@ pub fn texts_at(value: &Value, path: &[&str]) -> Vec<String> {
 
 /// Asks `product` with `params`, then each next page its reply's `next`
 /// cursor names, as `cursor`, until none does or [`PAGES`] are read.
-pub fn pages(ask: &mut dyn Ask, product: &str, mut params: Value, next: &str) -> io::Result<()> {
+pub fn pages(ask: &mut dyn Ask, product: &str, params: Value, next: &str) -> io::Result<()> {
+    each_page(ask, product, params, next, |_| {})
+}
+
+/// [`pages`], giving each page's reply to `each`.
+pub fn each_page(
+    ask: &mut dyn Ask,
+    product: &str,
+    mut params: Value,
+    next: &str,
+    mut each: impl FnMut(&Value),
+) -> io::Result<()> {
     for _ in 0..PAGES {
         let Some(reply) = ask.ask(product, params.clone())? else {
             return Ok(());
         };
+        each(&reply);
         match reply.get(next).and_then(Value::as_str) {
             Some(cursor) => params["cursor"] = Value::from(cursor),
             None => return Ok(()),

@@ -36,10 +36,11 @@
 //! through the exact creation transition, not a date, province or sunk-ship
 //! heuristic. Transient unregistered combats never join.
 //!
-//! Requests name countries, one leader, or the recording's lightweight choice
-//! list. Careers keep each participation's dates and reads; leaderboards get
-//! only the hours their counts change, which give the same totals at every
-//! hour. Equal consecutive reads compress; missing hours, hidden leaders and
+//! Requests name countries or one leader. Choices list each leader's identity,
+//! name and owner at its last stored run, in pages within the transport
+//! budget, without reading a career. Careers keep each participation's dates
+//! and reads; leaderboards get only the hours their counts change, which give
+//! the same totals at every hour. Equal consecutive reads compress; missing hours, hidden leaders and
 //! incomplete inputs break runs. A gain after missing input says first observed,
 //! while holdings at branch start say held before. The counting JSON writer
 //! refuses beyond the shared transport reply budget before sending.
@@ -518,6 +519,64 @@ pub struct UnitLeadersReply {
     #[ts(as = "Option<Vec<String>>", optional)]
     pub preparing: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+/// A leader as the career picker lists it, at its last stored run.
+#[derive(Clone, Debug, PartialEq, Eq, TS)]
+#[ts(type = "[string, string | null, string | null, number]")]
+pub struct LeaderChoice {
+    pub reference: u64,
+    pub name: Option<String>,
+    pub owner: Option<String>,
+    pub last_hour: i32,
+}
+impl Serialize for LeaderChoice {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (
+            self.reference.to_string(),
+            &self.name,
+            &self.owner,
+            self.last_hour,
+        )
+            .serialize(serializer)
+    }
+}
+
+/// One page of the picker's leaders, in reference order; `cursor` names the page after it.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderChoicesReply {
+    pub branch_id: String,
+    pub choices: Vec<LeaderChoice>,
+    pub cursor: Option<String>,
+}
+
+/// The page of `choices` (sorted by reference) from `cursor`, as
+/// [`dashboard_base::prepared::series::paged`] pages a summary's lines: its reply, with what
+/// `mark` adds, holds at most `budget` bytes.
+pub fn choices_page(
+    choices: &[LeaderChoice],
+    branch_id: &str,
+    cursor: Option<&str>,
+    budget: usize,
+    mark: impl Fn(&mut serde_json::Value) -> io::Result<()>,
+) -> io::Result<serde_json::Value> {
+    dashboard_base::prepared::series::paged(cursor, budget, |page| {
+        let mut reply = LeaderChoicesReply {
+            branch_id: branch_id.into(),
+            choices: Vec::new(),
+            cursor: None,
+        };
+        for index in page.lines(choices.len()) {
+            if !page.admit(index, &choices[index])? {
+                break;
+            }
+            reply.choices.push(choices[index].clone());
+        }
+        let mut data = serde_json::to_value(reply)?;
+        mark(&mut data)?;
+        Ok(data)
+    })
 }
 
 /// The prepared leaderboard can ask for one hour beyond its history prefix.
@@ -1835,7 +1894,6 @@ fn append_stored_run(
     value: LeaderValues,
     hour: i32,
     start: i32,
-    choices: bool,
 ) {
     let previous = state.last_run.map(|i| &runs[i].run);
     let last_known = state
@@ -1850,14 +1908,6 @@ fn append_stored_run(
     );
     if let Some(i) = state.last_run {
         let last = &mut runs[i].run;
-        if choices {
-            *last = UnitLeaderRun {
-                first_hour: hour,
-                last_hour: hour,
-                value,
-            };
-            return;
-        }
         if last.last_hour.checked_add(1) == Some(hour) && last.value == value {
             last.last_hour = hour;
             return;
@@ -1920,7 +1970,7 @@ const COMMAND_TABLES: &[TableId] = &[
     TableId::Fleets,
 ];
 
-fn scan_tables(career: bool, choices: bool) -> Vec<TableId> {
+fn scan_tables(career: bool) -> Vec<TableId> {
     let mut selected = LEADER_TABLES.to_vec();
     selected.extend([
         TableId::Campaign,
@@ -1938,17 +1988,6 @@ fn scan_tables(career: bool, choices: bool) -> Vec<TableId> {
     ]);
     if career {
         selected.extend_from_slice(COMMAND_TABLES);
-    }
-    if choices {
-        selected.retain(|table| {
-            !matches!(
-                table,
-                TableId::CharacterPortraits
-                    | TableId::UnitLeaderTraits
-                    | TableId::LandCombatDetails
-                    | TableId::NavalCombatDetails
-            )
-        });
     }
     selected.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
     selected.sort_unstable();
@@ -3025,7 +3064,6 @@ impl Scan {
         let reusing = self.reuse_evaluations;
         let start = self.reply.first_hour;
         let career = params.view == LeaderView::Career;
-        let choices = params.view == LeaderView::Choices;
         let requested: Option<BTreeSet<&str>> = match &params.selection {
             LeaderSelection::Countries { tags } => Some(tags.iter().map(String::as_str).collect()),
             _ => None,
@@ -3117,11 +3155,7 @@ impl Scan {
         let _ = visits;
         // Failed table reads allocate errors: resolve each once, never per leader.
         let characters = decoded.complete::<tables::Characters>().ok();
-        let holders = if choices {
-            None
-        } else {
-            decoded.complete::<tables::CharacterPortraits>().ok()
-        };
+        let holders = decoded.complete::<tables::CharacterPortraits>().ok();
         let lexical = decoded.complete::<tables::LexicalTokens>().ok();
         let now_identity = [
             TableId::Characters,
@@ -3618,10 +3652,7 @@ impl Scan {
             } else {
                 owner_tags.get(row.owner).map(String::as_str)
             };
-            let raw_traits = (!choices)
-                .then_some(traits)
-                .flatten()
-                .map(|ts| trait_slice(ts, reference));
+            let raw_traits = traits.map(|ts| trait_slice(ts, reference));
             // Progress is a function of these fields, the leader's training
             // rows and the tokens naming them: equal to the last read's, it
             // is the last run's.
@@ -3946,7 +3977,7 @@ impl Scan {
                 traits: held,
             };
             let before = stored_runs.len();
-            append_stored_run(state, stored_runs, value, hour, start, choices);
+            append_stored_run(state, stored_runs, value, hour, start);
             *pending_bytes = pending_bytes
                 .saturating_add((stored_runs.len() - before) * std::mem::size_of::<StoredRun>());
             // A projected run's progress is written on its worker, for the publication to copy.
@@ -4157,40 +4188,38 @@ impl Scan {
             land_commands,
             naval_commands,
         );
-        if !choices {
-            if let Some(work) = projection {
-                work.battles(
-                    format,
-                    decoded,
-                    changes.expect("projected table changes"),
-                    leader_indices,
-                );
-            }
-            let visits = if projection.is_none() {
-                record_battles(
-                    format,
-                    decoded,
-                    land,
-                    navy,
-                    hour,
-                    leaders,
-                    leader_indices,
-                    naval_sources,
-                    battle_hours,
-                    battle_indices,
-                    previous_combats,
-                    pending_bytes,
-                )
-            } else {
-                0
-            };
-            #[cfg(test)]
-            {
-                work.row_visits += visits;
-            }
-            #[cfg(not(test))]
-            let _ = visits;
+        if let Some(work) = projection {
+            work.battles(
+                format,
+                decoded,
+                changes.expect("projected table changes"),
+                leader_indices,
+            );
         }
+        let visits = if projection.is_none() {
+            record_battles(
+                format,
+                decoded,
+                land,
+                navy,
+                hour,
+                leaders,
+                leader_indices,
+                naval_sources,
+                battle_hours,
+                battle_indices,
+                previous_combats,
+                pending_bytes,
+            )
+        } else {
+            0
+        };
+        #[cfg(test)]
+        {
+            work.row_visits += visits;
+        }
+        #[cfg(not(test))]
+        let _ = visits;
         *walked = true;
         Ok(true)
     }
@@ -4200,7 +4229,6 @@ impl Scan {
         content: Option<&Content>,
     ) -> io::Result<UnitLeadersReply> {
         self.seal();
-        let choices = params.view == LeaderView::Choices;
         let requested: Option<BTreeSet<&str>> = match &params.selection {
             LeaderSelection::Countries { tags } => Some(tags.iter().map(String::as_str).collect()),
             _ => None,
@@ -4350,9 +4378,6 @@ impl Scan {
                     .filter_map(|(i, token)| used_traits.contains(&(i as u32)).then_some(token))
                     .collect();
             }
-            if choices {
-                reply.observed.clear();
-            }
         }
         let prepared: BTreeMap<_, _> = std::mem::take(&mut reply.traits)
             .into_iter()
@@ -4372,8 +4397,7 @@ impl Scan {
             .warnings
             .extend(refusals.lines("Leader data withheld"));
         reply.withheld.retain(|row| {
-            !choices
-                && params.leaders.includes(row.kind)
+            params.leaders.includes(row.kind)
                 && match &params.selection {
                     LeaderSelection::All => true,
                     LeaderSelection::Leader { reference } => &row.reference == reference,
@@ -4421,10 +4445,7 @@ fn scan(
     cancelled: &AtomicBool,
 ) -> io::Result<UnitLeadersReply> {
     let branch = params.branch_id.parse::<u64>().expect("validated branch");
-    let selected = scan_tables(
-        params.view == LeaderView::Career,
-        params.view == LeaderView::Choices,
-    );
+    let selected = scan_tables(params.view == LeaderView::Career);
     let mut scan = Scan::new(replay, branch)?;
     scan.reply.branch_id.clone_from(&params.branch_id);
     dashboard_core::blocks::scan_blocks(
@@ -5054,6 +5075,74 @@ fn project(
     project_at(scanned, params, history, None, None)
 }
 
+/// The choices `params` lists, read from whole careers: the prepared choices' oracle.
+#[cfg(any(test, feature = "test-support"))]
+pub fn choices_from(
+    careers: &UnitLeadersReply,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+) -> Vec<LeaderChoice> {
+    let listed = project(
+        careers,
+        &UnitLeadersParams {
+            view: LeaderView::Leaderboard,
+            ..params.clone()
+        },
+        history,
+    );
+    let mut choices: Vec<_> = listed
+        .leaders
+        .iter()
+        .filter_map(|leader| {
+            let run = leader.runs.last()?;
+            let role = &listed.roles[run.value.role as usize];
+            LeaderKinds::All.includes(role.kind).then(|| LeaderChoice {
+                reference: leader.reference.parse().expect("leader reference"),
+                name: listed.people[run.value.person as usize].name.clone(),
+                owner: role.owner.clone(),
+                last_hour: run.last_hour,
+            })
+        })
+        .collect();
+    choices.sort_unstable_by_key(|choice| choice.reference);
+    choices
+}
+
+/// The first page of [`choices_from`] the whole scan, as [`Product::load`] reads it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn load_choices(
+    source: &Source,
+    params: &UnitLeadersParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let careers = UnitLeaders::load(
+        source,
+        &prepared::full_params(&params.branch_id),
+        context,
+        cancelled,
+    )?;
+    let history = if let LeaderSelection::Countries { .. } = &params.selection {
+        let branch = params.branch_id.parse::<u64>().expect("validated branch");
+        Some(dashboard_base::products::country_history::branch_histories(
+            source,
+            branch,
+            false,
+            &[],
+            cancelled,
+        )?)
+    } else {
+        None
+    };
+    choices_page(
+        &choices_from(&careers.history, params, history.as_deref()),
+        &params.branch_id,
+        None,
+        MAX_REPLY_BYTES,
+        |_| Ok(()),
+    )
+}
+
 /// [`project`], a leaderboard cut at `at` as [`leaderboard_at`] cuts it, copying only what the
 /// hour keeps of each career; its battles are counted from `visible`, each leader's
 /// [`visible_battles`] in `scanned`'s order, when given.
@@ -5100,7 +5189,6 @@ pub(crate) fn project_at(
                 .collect::<BTreeMap<_, _>>(),
         )
     });
-    let choices = params.view == LeaderView::Choices;
     let leaders: Vec<_> = scanned
         .leaders
         .iter()
@@ -5179,18 +5267,6 @@ pub(crate) fn project_at(
                     }),
                 });
             }
-            let runs = if choices {
-                let mut last = leader
-                    .runs
-                    .last()
-                    .expect("visible career has a run")
-                    .clone();
-                last.first_hour = last.last_hour;
-                last.value.traits = None;
-                vec![last]
-            } else {
-                leader.runs.clone()
-            };
             let career = params.view == LeaderView::Career;
             let [fought_hours, won_hours, lost_hours] = if params.view == LeaderView::Leaderboard {
                 visible_battle_hours(leader)
@@ -5199,12 +5275,8 @@ pub(crate) fn project_at(
             };
             Some(LeaderCareer {
                 reference: leader.reference.clone(),
-                runs,
-                trait_gains: if choices {
-                    Vec::new()
-                } else {
-                    leader.trait_gains.clone()
-                },
+                runs: leader.runs.clone(),
+                trait_gains: leader.trait_gains.clone(),
                 commands: if career {
                     leader.commands.clone()
                 } else {
@@ -5238,7 +5310,6 @@ pub(crate) fn project_at(
         roles: Vec::new(),
         traits: Vec::new(),
         observed: match at {
-            _ if choices => Vec::new(),
             Some(hour) => scanned
                 .observed
                 .iter()
@@ -5247,21 +5318,17 @@ pub(crate) fn project_at(
                 .collect(),
             None => scanned.observed.clone(),
         },
-        withheld: if choices {
-            Vec::new()
-        } else {
-            withheld_at(&scanned.withheld, at, |row| {
-                params.leaders.includes(row.kind)
-                    && match &params.selection {
-                        LeaderSelection::All => true,
-                        LeaderSelection::Leader { reference } => &row.reference == reference,
-                        LeaderSelection::Countries { .. } => row
-                            .owner
-                            .as_ref()
-                            .is_none_or(|owner| requested.contains(owner)),
-                    }
-            })
-        },
+        withheld: withheld_at(&scanned.withheld, at, |row| {
+            params.leaders.includes(row.kind)
+                && match &params.selection {
+                    LeaderSelection::All => true,
+                    LeaderSelection::Leader { reference } => &row.reference == reference,
+                    LeaderSelection::Countries { .. } => row
+                        .owner
+                        .as_ref()
+                        .is_none_or(|owner| requested.contains(owner)),
+                }
+        }),
         selection_tags: match &params.selection {
             LeaderSelection::Countries { .. } => Some(requested.into_iter().collect()),
             _ => None,
@@ -5495,6 +5562,8 @@ impl Product for UnitLeaders {
             LeaderObservation::decl(),
             LeaderWithheld::decl(),
             UnitLeadersReply::decl(),
+            LeaderChoice::decl(),
+            LeaderChoicesReply::decl(),
         ]
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -5504,6 +5573,12 @@ impl Product for UnitLeaders {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        if params.view == LeaderView::Choices {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Leader choices are answered only from preparation",
+            ));
+        }
         let cat = context
             .content()
             .and_then(|options| catalogue::catalogue(source, options));

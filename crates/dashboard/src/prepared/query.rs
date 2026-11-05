@@ -3723,7 +3723,7 @@ fn query_data(
             data
         }
         "unit-leaders" => {
-            use crate::products::unit_leaders::{UnitLeaders, UnitLeadersParams};
+            use crate::products::unit_leaders::{LeaderView, UnitLeaders, UnitLeadersParams};
             let mut selection = request.params.clone();
             let hour = selection
                 .as_object_mut()
@@ -3734,8 +3734,26 @@ fn query_data(
                         .ok_or_else(|| crate::invalid("Invalid leader hour"))
                 })
                 .transpose()?;
+            let cursor = selection
+                .as_object_mut()
+                .and_then(|params| params.remove("cursor"))
+                .map(|cursor| match cursor {
+                    Value::String(cursor) => Ok(cursor),
+                    _ => Err(crate::invalid("Invalid leader cursor")),
+                })
+                .transpose()?;
             let params: UnitLeadersParams = serde_json::from_value(selection)?;
             UnitLeaders::validate(&params).map_err(crate::invalid)?;
+            let choices = params.view == LeaderView::Choices;
+            if choices && hour.is_some() {
+                return Err(crate::invalid("Leader choices take no hour"));
+            }
+            if !choices && cursor.is_some() {
+                return Err(crate::invalid("Only leader choices take a cursor"));
+            }
+            if params.view == LeaderView::Leaderboard && hour.is_none() {
+                return Err(crate::invalid("A leaderboard is read at an hour"));
+            }
             let branch = branch(source, &params.branch_id)?;
             if let Some(hour) = hour {
                 let start = source
@@ -3765,7 +3783,7 @@ fn query_data(
             if countries && history.is_none() {
                 return Ok(Value::Null);
             }
-            if params.view != crate::products::unit_leaders::LeaderView::Career
+            if params.view != LeaderView::Career
                 && hour.is_some_and(|hour| {
                     prefix
                         .as_ref()
@@ -3791,7 +3809,7 @@ fn query_data(
             let Some(prefix) = prefix else {
                 return Ok(Value::Null);
             };
-            if params.view != crate::products::unit_leaders::LeaderView::Choices {
+            if !choices {
                 let published = pinned(&store, &key)?;
                 let careers = all_careers(
                     source,
@@ -3818,7 +3836,7 @@ fn query_data(
                 return Ok(data);
             }
             // A roster's choices are kept until the leaders or the countries' identities publish
-            // again.
+            // again; each page is cut from them.
             let published = pinned(&store, &key)?;
             let mut pages = super::pipeline::query_pages(&published, branch, "unit-leaders")?;
             pages.extend(super::pipeline::query_pages(
@@ -3830,9 +3848,9 @@ fn query_data(
                 gates::identities_section(branch),
                 published.identities(branch),
             ));
-            let careers = dashboard_base::prepared::query::observations::scope(
+            let listed = dashboard_base::prepared::query::observations::scope(
                 source,
-                "unit-leaders:careers",
+                "unit-leaders:choices",
                 Some(&key),
             )
             .get_entry(
@@ -3840,11 +3858,11 @@ fn query_data(
                 &params,
                 &pages,
                 cancelled,
-                |careers: &Option<crate::products::unit_leaders::UnitLeadersReply>| {
-                    dashboard_base::prepared::query::observations::serde_bytes(careers)
+                |listed: &Option<Vec<crate::products::unit_leaders::LeaderChoice>>| {
+                    dashboard_base::prepared::query::observations::serde_bytes(listed)
                 },
                 || {
-                    crate::products::unit_leaders::prepared::careers(
+                    crate::products::unit_leaders::prepared::choices(
                         &store,
                         &key,
                         &params,
@@ -3853,19 +3871,16 @@ fn query_data(
                     )
                 },
             )?;
-            let mut reply = careers
-                .as_ref()
-                .as_ref()
-                .map(|careers| {
-                    crate::products::unit_leaders::prepared::answer_at(careers, &params, hour)
-                })
-                .transpose()?;
-            if let Some(reply) = &mut reply {
-                crate::products::unit_leaders::present_traits(source, content, &mut reply.traits)?;
+            match &*listed {
+                Some(listed) => crate::products::unit_leaders::choices_page(
+                    listed,
+                    &params.branch_id,
+                    cursor.as_deref(),
+                    crate::products::unit_leaders::MAX_REPLY_BYTES,
+                    |data| prefix.mark(data),
+                )?,
+                None => Value::Null,
             }
-            let mut data = serde_json::to_value(reply)?;
-            prefix.mark(&mut data)?;
-            data
         }
         "faction-state" => {
             use crate::products::faction_state::{self, FactionState, FactionStateParams};

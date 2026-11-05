@@ -1,5 +1,5 @@
-//! Generals' and admirals' served replies, as the widgets ask them: the
-//! choices over the branch, the leaderboards at each hour, every country's
+//! Generals' and admirals' served replies, as the widgets ask them: every page of the choices
+//! over the branch and of every country's, the leaderboards at each hour, every country's
 //! leaders at the last hour, and some leaders' careers.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
@@ -28,13 +28,21 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
     for branch in ask.branches().to_vec() {
         let id = branch.name();
         let all = json!({ "kind": "all" });
-        let choices = ask.ask(
+        // A choice row is [reference, name, owner, last hour].
+        let mut references = Vec::new();
+        served::each_page(
+            ask,
             "unit-leaders",
             leaders(&id, all.clone(), "choices", "all", None),
+            "cursor",
+            |reply| {
+                references.extend(
+                    served::values_at(reply, &["choices", "*"])
+                        .into_iter()
+                        .filter_map(|row| row.get(0)?.as_str().map(str::to_owned)),
+                );
+            },
         )?;
-        let references = choices
-            .map(|reply| served::texts_at(&reply, &["leaders", "*", "reference"]))
-            .unwrap_or_default();
         for hour in branch.hours() {
             for kind in KINDS {
                 ask.ask(
@@ -48,7 +56,19 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             let selection = json!({ "kind": "countries", "tags": batch });
             ask.ask(
                 "unit-leaders",
-                leaders(&id, selection, "leaderboard", "all", Some(branch.last_hour)),
+                leaders(
+                    &id,
+                    selection.clone(),
+                    "leaderboard",
+                    "all",
+                    Some(branch.last_hour),
+                ),
+            )?;
+            served::pages(
+                ask,
+                "unit-leaders",
+                leaders(&id, selection, "choices", "all", None),
+                "cursor",
             )?;
         }
         for reference in served::some(&references) {

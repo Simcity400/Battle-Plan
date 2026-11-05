@@ -3182,7 +3182,6 @@ impl Hour {
                 run.value,
                 run.first_hour,
                 scan.reply.first_hour,
-                false,
             );
             scan.pending_bytes = scan.pending_bytes.saturating_add(
                 (scan.stored_runs.len() - before) * std::mem::size_of::<StoredRun>(),

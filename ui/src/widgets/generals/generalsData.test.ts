@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { LeaderRow, UnitLeadersData } from './generalsData';
 import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, topLeader, validateUnitLeadersReply, withheldLeadersAt } from './generalsData.ts';
-import { leaderChoices } from '../general-career/choicesData.ts';
+import { finalLeaderChoices, joinLeaderChoicePages, leaderChoices, validateLeaderChoicesReply } from '../general-career/choicesData.ts';
 import { subjectHandle, subjectToken } from '../../dashboard/chosen.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
+import type { DashboardClient, DashboardSource, ProductRequest } from '../../dashboard/client';
+import { loadProduct } from '../../dashboard/products.ts';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState.ts';
 import { playbackDomain } from '../../charts/view.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -295,19 +297,59 @@ test('trait dates retain honest held bounds and ordinary career spans omit suppl
   assert.equal(ordinary.label, 'Skill 3');
 });
 
-test('the picker uses the last owner date and sorts names', () => {
+test('a transferred leader leaves its earlier owner’s leaderboard', () => {
   const data = fixture(); const leader = data.leaders[0];
   leader.runs[0].lastHour = 102;
   leader.runs.push({ ...leader.runs[0], firstHour: 103, lastHour: 104 }, { ...leader.runs[0], firstHour: 105, lastHour: 106, value: { ...leader.runs[0].value, role: 1 } });
   data.roles.push({ ...data.roles[0], owner: 'transfer country' });
   assert.equal(leadersAt(data, 106, new Set(['country with spaces']), 'all').length, 0);
-  data.people.push({ ...data.people[0], name: 'Zed' });
-  data.leaders.unshift({ ...leader, reference: '8', runs: [{ ...leader.runs[0], value: { ...leader.runs[0].value, person: 1 } }] });
+});
+
+test('the picker names each leader’s owner at its last hour and sorts names', () => {
   const called: unknown[] = [];
-  const choices = leaderChoices(data, 'c0ffee', (hour, tag) => { called.push([hour, tag]); return { name: 'Named country' }; });
+  const choices = leaderChoices([['8', 'Zed', 'transfer country', 106], ['9', 'A modded commander', null, 104]], 'c0ffee',
+    (hour, tag) => { called.push([hour, tag]); return { name: 'Named country', nameDetail: 'Read failed' }; });
   assert.equal(subjectHandle('beef', choices[0].value), null, 'a choice is saved under its campaign');
-  assert.match(choices[0].label, /^A modded commander · Named country/);
-  assert.ok(called.some(c => JSON.stringify(c) === JSON.stringify([106, 'transfer country'])));
+  assert.deepEqual(choices.map(choice => choice.label), ['A modded commander · Owner not recorded', 'Zed · Named country']);
+  assert.equal(choices[1].detail, 'Read failed');
+  assert.deepEqual(called, [[106, 'transfer country']]);
+});
+
+test('leader choice pages are refused unless their rows are ordered and they name the next page', () => {
+  const page = { branchId: '1', choices: [['8', null, 'TAG', 100], ['9', 'Name', null, 101]], cursor: '2' };
+  assert.equal(validateLeaderChoicesReply(page), page);
+  assert.equal(validateLeaderChoicesReply({ branchId: '1', choices: [], cursor: null }).cursor, null);
+  for (const bad of [{ ...page, choices: [...page.choices].reverse() }, { branchId: '1', choices: [] }, { ...page, cursor: 2 }, { ...page, choices: [['8', null, 'TAG']] },
+    { ...page, choices: [['8', null, '', 100]] }, { ...page, branchId: 1 }]) assert.throws(() => validateLeaderChoicesReply(bad), /malformed/);
+});
+
+test('joined leader choice pages list every leader only once the last page is read and prepared', () => {
+  const coverage = { firstHour: 100, lastHour: 110, complete: true };
+  const first = { branchId: '1', choices: [['8', null, 'TAG', 100]], cursor: '1', coverage, pending: [] };
+  const last = { branchId: '1', choices: [['9', 'Name', null, 101]], cursor: null, coverage, pending: [] };
+  const joined = validateLeaderChoicesReply(joinLeaderChoicePages([first, last]));
+  assert.deepEqual(joined.choices, [...first.choices, ...last.choices]);
+  assert.equal(finalLeaderChoices(joined), joined.choices);
+  assert.equal(finalLeaderChoices(validateLeaderChoicesReply(first)), undefined, 'a page before the last is not every leader');
+  const preparing = validateLeaderChoicesReply(joinLeaderChoicePages([first, { ...last, coverage: { ...coverage, complete: false }, pending: [{ firstHour: 106, lastHour: 110 }] }]));
+  assert.equal(finalLeaderChoices(preparing), undefined, 'a last page still being prepared is not final');
+  assert.throws(() => validateLeaderChoicesReply(joinLeaderChoicePages([first, { ...last, choices: first.choices }])), /malformed/, 'a moved page boundary repeating a leader is refused');
+});
+
+test('only leader choices are read page after page', async () => {
+  const source = { id: 'leader-pages', revision: '1' } as DashboardSource;
+  const asked: unknown[] = [];
+  const client = { preparedQuery: async (_source: unknown, _product: string, params: { view: string; cursor?: string }) => {
+    asked.push(params);
+    return params.view !== 'choices' ? { cursor: '1' } : { branchId: '1', choices: [[params.cursor ?? '0', null, null, 100]], cursor: params.cursor ? null : '1' };
+  } } as unknown as DashboardClient;
+  const request = (view: string): ProductRequest => ({ sourceId: source.id, revision: source.revision, product: 'unit-leaders',
+    params: { branchId: '1', selection: { kind: 'all' }, view, leaders: 'all' } });
+  const joined = await loadProduct(client, request('choices'), new AbortController().signal, validateLeaderChoicesReply, source);
+  assert.deepEqual(joined.choices.map(choice => choice[0]), ['0', '1']);
+  assert.equal(joined.cursor, null);
+  assert.deepEqual(await loadProduct(client, request('career'), new AbortController().signal, undefined, source), { cursor: '1' });
+  assert.equal(asked.length, 3);
 });
 
 test('a departing row retains its trait identities when a new selection remaps the catalogue', () => {
@@ -437,7 +479,8 @@ test('a known empty leader name survives leaderboard, career tooltip and picker 
   const row = leaderAt(data, data.leaders[0], 101)!;
   assert.equal(leaderName(row), '');
   assert.equal(leaderTooltip(row, { name: 'Country' }).title, '');
-  assert.equal(leaderChoices(data, 'c0ffee', () => ({ name: 'Country' }))[0].label, ' · Country');
+  assert.equal(leaderChoices([['1', '', 'TAG', 101]], 'c0ffee', () => ({ name: 'Country' }))[0].label, ' · Country');
+  assert.equal(leaderChoices([['1', null, 'TAG', 101]], 'c0ffee', () => ({ name: 'Country' }))[0].label, 'Character name unavailable · Country');
   person.name = null; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = ''; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = null; assert.equal(leaderName(row), 'Character name unavailable');

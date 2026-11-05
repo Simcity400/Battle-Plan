@@ -853,6 +853,8 @@ export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: A
  * Owner/rank facts shared across runs and leaders; a transfer selects another role.
  */
 roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, withheld: Array<LeaderWithheld>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
+export type LeaderChoice = [string, string | null, string | null, number];
+export type LeaderChoicesReply = { branchId: string, choices: Array<LeaderChoice>, cursor: string | null, };
 export type UnitLeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type UnitLeaderPortrait = { reference: string, image: string | null, missing: string | null, };
 export type UnitLeaderPortraitsReply = { portraits: Array<UnitLeaderPortrait>, warnings: Array<string>, };

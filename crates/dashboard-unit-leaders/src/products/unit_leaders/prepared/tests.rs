@@ -57,10 +57,6 @@ fn assert_parity(fixture: &Fixture, replay: &Replay) {
             ..full_params("1")
         },
         UnitLeadersParams {
-            view: LeaderView::Choices,
-            ..full_params("1")
-        },
-        UnitLeadersParams {
             selection: LeaderSelection::Leader {
                 reference: reference(0).to_string(),
             },
@@ -71,19 +67,6 @@ fn assert_parity(fixture: &Fixture, replay: &Replay) {
                 tags: vec![String::from_utf8(dashboard_core::test_fixtures::scale_tag(0)).unwrap()],
             },
             view: LeaderView::Leaderboard,
-            ..full_params("1")
-        },
-        UnitLeadersParams {
-            selection: LeaderSelection::Countries {
-                tags: vec![String::from_utf8(dashboard_core::test_fixtures::scale_tag(0)).unwrap()],
-            },
-            view: LeaderView::Choices,
-            ..full_params("1")
-        },
-        UnitLeadersParams {
-            selection: LeaderSelection::All,
-            leaders: LeaderKinds::Land,
-            view: LeaderView::Choices,
             ..full_params("1")
         },
     ] {
@@ -101,6 +84,36 @@ fn assert_parity(fixture: &Fixture, replay: &Replay) {
             &project(&full, &params, Some(&history)),
         )
         .unwrap();
+    }
+    for params in [
+        UnitLeadersParams {
+            view: LeaderView::Choices,
+            ..full_params("1")
+        },
+        UnitLeadersParams {
+            selection: LeaderSelection::Countries {
+                tags: vec![String::from_utf8(dashboard_core::test_fixtures::scale_tag(0)).unwrap()],
+            },
+            view: LeaderView::Choices,
+            ..full_params("1")
+        },
+        UnitLeadersParams {
+            selection: LeaderSelection::All,
+            leaders: LeaderKinds::Land,
+            view: LeaderView::Choices,
+            ..full_params("1")
+        },
+    ] {
+        let actual = choices(
+            &fixture.store,
+            &fixture.key,
+            &params,
+            Some(&history),
+            &cancelled,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(actual, choices_from(&full, &params, Some(&history)));
     }
 }
 
@@ -547,7 +560,7 @@ fn prepared_leader_choices_keep_historical_kind_and_country_admission_without_ca
                 leaders,
                 ..full_params("1")
             };
-            let actual = query(
+            let actual = choices(
                 &fixture.store,
                 &fixture.key,
                 &params,
@@ -556,10 +569,7 @@ fn prepared_leader_choices_keep_historical_kind_and_country_admission_without_ca
             )
             .unwrap()
             .unwrap();
-            assert_eq!(
-                serde_json::to_value(actual).unwrap(),
-                serde_json::to_value(project(&full, &params, Some(&history))).unwrap()
-            );
+            assert_eq!(actual, choices_from(&full, &params, Some(&history)));
         }
     }
     let params = UnitLeadersParams {

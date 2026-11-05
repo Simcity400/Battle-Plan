@@ -5,16 +5,19 @@ import { Icon } from './Icons';
 import { COUNTRY_ROW_HEIGHT, moveIndex, revealRow } from './countryList';
 import { contentChoices, contentWindow, filterContent } from './contentList';
 import type { ContentChoice } from './contentList';
+import type { ChoicesUnavailable } from '../dashboard/definitions';
+import { failureText } from '../dashboard/queryError.ts';
 import './ContentSetPicker.css';
 
 const LIST_HEIGHT = 340;
 
 /** A complete multi-choice catalogue, with only the visible rows mounted. `single`
- * picks one choice and closes; `trigger` and `triggerClassName` dress its button. */
-export default function ContentSetPicker({ label, automatic, choices, selected, onToggle, onReset, single = false, trigger, triggerClassName }: {
+ * picks one choice and closes; `trigger` and `triggerClassName` dress its button. While
+ * `unavailable`, it says why instead of listing `choices`. */
+export default function ContentSetPicker({ label, automatic, choices, selected, onToggle, onReset, single = false, trigger, triggerClassName, unavailable }: {
   label: string; automatic: string; choices: readonly ContentChoice[]; selected: readonly string[];
   onToggle: (value: string) => void; onReset: () => void;
-  single?: boolean; trigger?: ReactNode; triggerClassName?: string;
+  single?: boolean; trigger?: ReactNode; triggerClassName?: string; unavailable?: ChoicesUnavailable;
 }) {
   const id = useId();
   const listId = `${id}-list`;
@@ -25,7 +28,8 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(-1);
   const [view, setView] = useState({ scrollTop: 0, height: LIST_HEIGHT });
-  const rows = useMemo(() => contentChoices(choices, selected), [choices, selected]);
+  // Saved choices are resolved against the final catalogue only, not one still loading.
+  const rows = useMemo(() => unavailable ? [] : contentChoices(choices, selected), [choices, selected, unavailable]);
   const chosen = useMemo(() => new Set(selected), [selected]);
   const filtered = useMemo(() => filterContent(rows, query), [rows, query]);
   const window = contentWindow(filtered, view.scrollTop, view.height);
@@ -57,7 +61,7 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
           placeholder={`Search ${label.toLowerCase()}`} aria-controls={listId} value={query}
           onChange={event => { setQuery(event.currentTarget.value); reset(); }}
           onKeyDown={event => { if (event.key === 'ArrowDown' && filtered.length) { event.preventDefault(); listbox.current?.focus({ preventScroll: true }); moveTo(0); } }} />
-          <span className="pill">{rows.length.toLocaleString()}</span></div>
+          {!unavailable && <span className="pill">{rows.length.toLocaleString()}</span>}</div>
         <button type="button" className="button small quiet" aria-pressed={!selected.length} onClick={() => { onReset(); if (single) menu.close(); }}>{automatic}</button>
         <div ref={list} className="content-picker-list" onScroll={event => setView({ scrollTop: event.currentTarget.scrollTop,
           height: event.currentTarget.clientHeight || LIST_HEIGHT })}>
@@ -79,7 +83,11 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
               </div>;
             })}
           </div>
-          {!filtered.length && <p className="content-picker-empty">{query ? 'No matching choices' : 'No recorded choices'}</p>}
+          {unavailable ? 'loading' in unavailable
+            ? <p className="content-picker-empty" role="status"><span className="spinner" />Loading choices…</p>
+            : <p className="content-picker-empty" role="alert" data-detail={unavailable.error.message}>{failureText(unavailable.error, 'Couldn’t load choices.')}{' '}
+              <button type="button" className="button small quiet" onClick={unavailable.retry}>Retry</button></p>
+            : !filtered.length && <p className="content-picker-empty">{query ? 'No matching choices' : 'No recorded choices'}</p>}
         </div>
       </>}
     </Popover>

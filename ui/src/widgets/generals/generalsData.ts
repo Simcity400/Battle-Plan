@@ -259,7 +259,7 @@ export function careerCountryFacts(reply: UnitLeadersData, leader: LeaderCareer,
   }
   return [...wanted.values()];
 }
-export const leaderName = (row: Pick<LeaderRow, 'person'>) => row.person.name ?? 'Character name unavailable';
+export const leaderName = (row: { person: Pick<LeaderPerson, 'name'> }) => row.person.name ?? 'Character name unavailable';
 export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
 /** The first hour the leader was seen, whether the reply carries its whole career or one hour of it. */
 export const firstSeenHour = (leader: LeaderCareer): number | undefined => leader.atHour?.firstSeenHour ?? leader.runs[0]?.firstHour;

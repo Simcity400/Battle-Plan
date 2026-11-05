@@ -684,7 +684,7 @@ pub fn at_hour(
         source,
         branch,
         hour,
-        &scan_tables(false, false),
+        &scan_tables(false),
         cancelled,
     )? {
         let changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
@@ -770,15 +770,6 @@ fn query_within(
         .transpose()
 }
 
-/// `careers` as `hour` asks for them: a leaderboard is cut at the hour, which no other view reads.
-pub fn answer_at(
-    careers: &UnitLeadersReply,
-    params: &UnitLeadersParams,
-    hour: Option<i32>,
-) -> io::Result<UnitLeadersReply> {
-    answer_within(careers, params, hour, MAX_REPLY_BYTES)
-}
-
 fn answer_within(
     careers: &UnitLeadersReply,
     params: &UnitLeadersParams,
@@ -833,7 +824,7 @@ impl Careers {
 }
 
 /// Every leader's whole career as the branch's prepared family last published them: what any
-/// selection but a roster's choices projects ([`careers`], [`answer_from`]).
+/// selection projects ([`careers`], [`Careers`]).
 pub fn all_careers(
     store: &store::Store,
     key: &store::SourceKey,
@@ -841,6 +832,106 @@ pub fn all_careers(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
     careers(store, key, &full_params(branch_id), None, cancelled)
+}
+
+/// The branch's prepared state as its family last published it.
+fn published_state(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+) -> io::Result<Option<Prepared>> {
+    let Some((keys, metadata)) =
+        series::read_catalogue::<Metadata>(store, key, "unit-leaders", branch)?
+    else {
+        return Ok(None);
+    };
+    let Some(file) = store.read(key, &format!("unit-leaders-{branch}"), 0)? else {
+        return Ok(None);
+    };
+    Prepared::read(io::BufReader::new(file), keys, metadata).map(Some)
+}
+
+/// The leaders `params` lists, each at its last stored run, in reference order. Admission
+/// is the native-holder/kind roster; no career is read.
+pub fn choices(
+    store: &store::Store,
+    key: &store::SourceKey,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<LeaderChoice>>> {
+    let branch = params.branch_id.parse().expect("validated leader branch");
+    let Some(mut state) = published_state(store, key, branch)? else {
+        return Ok(None);
+    };
+    let wanted: Option<BTreeSet<u64>> = match &params.selection {
+        LeaderSelection::All => None,
+        LeaderSelection::Leader { reference } => Some(
+            [reference.parse().expect("validated leader reference")]
+                .into_iter()
+                .collect(),
+        ),
+        LeaderSelection::Countries { tags } => {
+            let aliases = history.map_or_else(
+                || tags.clone(),
+                |history| {
+                    dashboard_base::products::country_history::selected_aliases(history, tags)
+                },
+            );
+            Some(match history {
+                Some(history) => {
+                    let identities = dashboard_base::products::country_history::selected_identities(
+                        history, tags,
+                    );
+                    aliases
+                        .iter()
+                        .filter_map(|tag| state.admissions.get(tag))
+                        .flatten()
+                        .filter(|(_, slot, country)| identities.contains(&(*slot, *country)))
+                        .map(|(leader, _, _)| *leader)
+                        .collect()
+                }
+                None => aliases
+                    .iter()
+                    .filter_map(|tag| state.countries.get(tag))
+                    .flatten()
+                    .copied()
+                    .collect(),
+            })
+        }
+    };
+    state.scan.seal();
+    let scan = &state.scan;
+    let mut choices = Vec::new();
+    for leader in &scan.leaders {
+        check_cancel(cancelled)?;
+        let Some(index) = leader.last_run else {
+            continue;
+        };
+        let listed = wanted
+            .as_ref()
+            .is_none_or(|wanted| wanted.contains(&leader.reference))
+            && state
+                .kinds
+                .get(&leader.reference)
+                .is_some_and(|kinds| kinds.iter().any(|kind| params.leaders.includes(*kind)));
+        if !listed {
+            continue;
+        }
+        let run = &scan.stored_runs[index].run;
+        let role = &scan.reply.roles[run.value.role as usize];
+        if !LeaderKinds::All.includes(role.kind) {
+            continue;
+        }
+        choices.push(LeaderChoice {
+            reference: leader.reference,
+            name: scan.reply.people[run.value.person as usize].name.clone(),
+            owner: role.owner.clone(),
+            last_hour: run.last_hour,
+        });
+    }
+    choices.sort_unstable_by_key(|choice| choice.reference);
+    Ok(Some(choices))
 }
 
 /// A selection's leaders as every hour asks for them, before a leaderboard is cut at its hour
@@ -853,91 +944,20 @@ pub fn careers(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
     // Every leader's career is the same whatever is selected; a selection only projects it.
-    if params.view != LeaderView::Choices && *params != full_params(&params.branch_id) {
+    if *params != full_params(&params.branch_id) {
         return Ok(all_careers(store, key, &params.branch_id, cancelled)?
             .map(|all| project(&all, params, history)));
     }
     let branch = params.branch_id.parse().expect("validated leader branch");
-    let Some((keys, metadata)) =
-        series::read_catalogue::<Metadata>(store, key, "unit-leaders", branch)?
-    else {
+    let Some(state) = published_state(store, key, branch)? else {
         return Ok(None);
     };
-    let Some(file) = store.read(key, &format!("unit-leaders-{branch}"), 0)? else {
-        return Ok(None);
-    };
-    let state = Prepared::read(io::BufReader::new(file), keys, metadata)?;
-    let mut wanted: BTreeSet<_> = match &params.selection {
-        LeaderSelection::All => state
-            .scan
-            .leaders
-            .iter()
-            .map(|leader| leader.reference)
-            .collect(),
-        LeaderSelection::Leader { reference } => {
-            [reference.parse().expect("validated leader reference")]
-                .into_iter()
-                .collect()
-        }
-        LeaderSelection::Countries { tags } => {
-            let aliases = history.map_or_else(
-                || tags.clone(),
-                |history| {
-                    dashboard_base::products::country_history::selected_aliases(history, tags)
-                },
-            );
-            aliases
-                .iter()
-                .filter_map(|tag| state.countries.get(tag))
-                .flatten()
-                .copied()
-                .collect()
-        }
-    };
-    let choices = params.view == LeaderView::Choices;
-    let mut choice_tags = None;
-    if choices {
-        if let LeaderSelection::Countries { tags } = &params.selection {
-            let aliases = history.map_or_else(
-                || tags.clone(),
-                |history| {
-                    dashboard_base::products::country_history::selected_aliases(history, tags)
-                },
-            );
-            if let Some(history) = history {
-                let identities =
-                    dashboard_base::products::country_history::selected_identities(history, tags);
-                wanted = aliases
-                    .iter()
-                    .filter_map(|tag| state.admissions.get(tag))
-                    .flatten()
-                    .filter(|(_, slot, country)| identities.contains(&(*slot, *country)))
-                    .map(|(leader, _, _)| *leader)
-                    .collect();
-            }
-            choice_tags = Some(
-                aliases
-                    .into_iter()
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>(),
-            );
-        }
-        wanted.retain(|leader| {
-            state
-                .kinds
-                .get(leader)
-                .is_some_and(|kinds| kinds.iter().any(|kind| params.leaders.includes(*kind)))
-        });
-    }
     let mut reader = Reader::new(store, key, section(branch), cancelled)?;
     let mut scan = state.scan;
     scan.reply.branch_id.clone_from(&params.branch_id);
     scan.reply.warnings.extend(state.content_warnings);
-    scan.leaders
-        .retain(|leader| wanted.contains(&leader.reference));
     let current_observed = std::mem::take(&mut scan.reply.observed);
-    if !choices && let Some(&shared) = state.keys.get("observed") {
+    if let Some(&shared) = state.keys.get("observed") {
         for event in events(&mut reader, shared, cancelled)? {
             match event {
                 Event::Observation(row) => scan.reply.observed.push(row),
@@ -946,24 +966,6 @@ pub fn careers(
         }
     }
     scan.reply.observed.extend(current_observed);
-    if choices {
-        // Current facts are the original full scan's last run. Admission is a
-        // native-holder/kind roster, independent of the length of the career.
-        let full = scan.finish(&full_params(&params.branch_id), None)?;
-        let choice_params = UnitLeadersParams {
-            selection: match &params.selection {
-                LeaderSelection::Leader { reference } => LeaderSelection::Leader {
-                    reference: reference.clone(),
-                },
-                _ => LeaderSelection::All,
-            },
-            leaders: LeaderKinds::All,
-            ..params.clone()
-        };
-        let mut reply = project(&full, &choice_params, None);
-        reply.selection_tags = choice_tags;
-        return Ok(Some(reply));
-    }
     let mut materialized = Vec::new();
     for leader in &mut scan.leaders {
         check_cancel(cancelled)?;

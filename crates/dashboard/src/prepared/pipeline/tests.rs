@@ -2182,18 +2182,19 @@ fn prepared_leaders_pipeline_resumes_appended_outcomes_under_the_current_key() {
                 &crate::prepared::query::query(&source, &request, None, &flag).unwrap(),
             )
             .unwrap();
-            let oracle = UnitLeaders::load(&source, &params, &context, &flag).unwrap();
+            let oracle = if view == LeaderView::Choices {
+                serde_json::to_value(load_choices(&source, &params, &context, &flag).unwrap())
+            } else {
+                serde_json::to_value(UnitLeaders::load(&source, &params, &context, &flag).unwrap())
+            }
+            .unwrap();
             let mut data = reply["data"].clone();
             assert_eq!(data["coverage"]["complete"], true);
             assert_eq!(data["pending"], serde_json::json!([]));
             for field in ["coverage", "pending"] {
                 data.as_object_mut().unwrap().remove(field);
             }
-            assert_eq!(
-                data,
-                serde_json::to_value(oracle).unwrap(),
-                "append={end} view={view:?}"
-            );
+            assert_eq!(data, oracle, "append={end} view={view:?}");
         }
     }
 }
