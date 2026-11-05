@@ -79,13 +79,7 @@ impl Census {
     }
 }
 
-/// Resolve every country's division counts once for the prepared frame.
-pub(super) fn memberships(decoded: &DecodedFrame) -> Option<BTreeMap<u32, Option<Membership>>> {
-    Some(count_memberships(
-        decoded.complete::<tables::DivisionCensus>().ok()?,
-        decoded.complete::<tables::CountryLinks>().ok()?,
-    ))
-}
+#[cfg(test)]
 fn count_memberships(
     rows: &[replay_data::rows::DivisionCensusRow],
     links: &[CountryLinkRow],

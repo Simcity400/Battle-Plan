@@ -830,6 +830,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["equipment-losses"],
         queries: &["equipment-losses"],
         sections: &["equipment-loss"],
+        // 2: its operators hand on compact reads, and its fold runs in shards by country.
+        version: 2,
         ..family("equipment_losses")
     },
     // Provinces' and states' names at hours: their name inputs as events on the segment driver.

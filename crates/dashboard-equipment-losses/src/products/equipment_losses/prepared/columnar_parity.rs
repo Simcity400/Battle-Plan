@@ -1,9 +1,6 @@
 use super::*;
 use crate::products::equipment_losses::columnar::{self, TABLES};
-use dashboard_base::prepared::{
-    frame_changes::FrameChangeTracker,
-    series::tests::{Fixture, assert_payloads_equal},
-};
+use dashboard_base::prepared::series::tests::{Fixture, assert_payloads_equal};
 use dashboard_core::test_fixtures::{CAMPAIGN, named_frame, records, scale_frame};
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
@@ -186,123 +183,164 @@ fn flush(prepared: &mut Prepared, fixture: &Fixture) {
     writer.commit().unwrap();
 }
 
-fn emit(hours: &mut Vec<columnar::Hour>, prepared: &mut Prepared, fixture: &Fixture) {
-    for hour in std::mem::take(hours) {
-        let at = hour.hour;
-        prepared.observe_projected(hour).unwrap();
-        if at % 3 == 0 {
-            flush(prepared, fixture);
-        }
+/// Frames walked as the recording's segments are, each projected by the segment's operator and
+/// kept in a branch's state: a gap starts a run, and [`Self::restart`] a segment.
+pub(super) struct Driver<'r> {
+    replay: &'r Replay,
+    projector: columnar::Projector,
+    walk: Synthetic,
+    world: Option<dashboard_world::World>,
+    last: Option<i32>,
+    ordinal: u32,
+    run: u32,
+    restart: bool,
+}
+
+impl<'r> Driver<'r> {
+    pub(super) fn new(replay: &'r Replay, first: i32) -> io::Result<Self> {
+        let mut projector = columnar::Projector::new(replay)?;
+        projector.start(Start::Run { continues: false }, 1, first)?;
+        Ok(Self {
+            replay,
+            projector,
+            walk: Synthetic::new(TABLES, 1, first)?,
+            world: None,
+            last: None,
+            ordinal: 0,
+            run: 0,
+            restart: false,
+        })
     }
-}
 
-/// Each path's state and published sections: the row path's, then the projected.
-type Outputs = [(Prepared, Fixture); 2];
+    /// The next frame starts a segment, as at a restart or a resumed branch.
+    pub(super) fn restart(&mut self) {
+        self.restart = true;
+    }
 
-fn parity(
-    label: &str,
-    inputs: &[DecodedFrame],
-    restart: Option<usize>,
-    carried: Option<(i32, TableId)>,
-) -> Outputs {
-    parity_in_blocks(label, inputs, &[], restart, carried)
-}
-
-/// Row blocks start at gaps and at `blocks`, independently of the segment `restart`.
-fn parity_in_blocks(
-    label: &str,
-    inputs: &[DecodedFrame],
-    blocks: &[usize],
-    restart: Option<usize>,
-    carried: Option<(i32, TableId)>,
-) -> Outputs {
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![inputs[0].clone()])]).unwrap();
-    let fixtures = [Fixture::new(), Fixture::new()];
-    let mut row = Prepared::new(&replay, 1, inputs[0].hour);
-    let mut projected = Prepared::new(&replay, 1, inputs[0].hour);
-    let mut tracker = FrameChangeTracker::new();
-    let mut projector = projected.projector(&replay).unwrap();
-    let mut hours: Vec<columnar::Hour> = Vec::new();
-    let mut walk = Synthetic::new(TABLES, 1, inputs[0].hour).unwrap();
-    let mut world_held: Option<dashboard_world::World> = None;
-    projector
-        .start(Start::Run { continues: false }, 1, inputs[0].hour)
-        .unwrap();
-    for (ordinal, input) in inputs.iter().enumerate() {
-        let run = ordinal > 0 && inputs[ordinal - 1].hour.checked_add(1) != Some(input.hour);
-        let opens = ordinal == 0 || restart == Some(ordinal) || run;
-        if ordinal > 0 && opens {
-            emit(&mut hours, &mut projected, &fixtures[1]);
-            projector = projected.projector(&replay).unwrap();
+    /// Projects `frame` with `carried` taken from the hour before, and keeps it in `prepared`.
+    pub(super) fn observe_carried(
+        &mut self,
+        prepared: &mut Prepared,
+        frame: &DecodedFrame,
+        carried: Option<TableId>,
+    ) -> io::Result<()> {
+        let run = self
+            .last
+            .is_some_and(|last| last.checked_add(1) != Some(frame.hour));
+        let opens = self.last.is_none() || run || self.restart;
+        if self.last.is_some() && opens {
+            self.projector = columnar::Projector::new(self.replay)?;
             let start = if run {
+                self.run += 1;
                 Start::Run { continues: true }
             } else {
-                Start::Restart(walk.state())
+                Start::Restart(self.walk.state())
             };
-            assert!(projector.starts_at(start));
-            projector.start(start, 1, input.hour).unwrap();
+            assert!(self.projector.starts_at(start));
+            self.projector.start(start, 1, frame.hour)?;
             if run {
-                walk = Synthetic::new(TABLES, 1, input.hour).unwrap();
+                self.walk = Synthetic::new(TABLES, 1, frame.hour)?;
             }
         }
-        if ordinal > 0 && (run || blocks.contains(&ordinal)) {
-            row.finish_block(inputs[ordinal - 1].hour);
-            tracker.invalidate();
-        }
-        write_hour(
-            &mut walk,
-            input,
-            carried
-                .filter(|(at, _)| *at == input.hour)
-                .map(|(_, table)| table),
+        self.restart = false;
+        write_hour(&mut self.walk, frame, carried);
+        let mut hours: Vec<columnar::Hour> = Vec::new();
+        let (projector, world_held, run, ordinal) = (
+            &mut self.projector,
+            &mut self.world,
+            self.run,
+            self.ordinal,
         );
-        walk.end(|state, manifest, frame, starts| {
+        self.walk.end(|state, manifest, frame, starts| -> io::Result<()> {
             let world = dashboard_world::World::at(
-                &mut world_held,
+                &mut *world_held,
                 starts,
-                &crate::products::equipment_losses::columnar::needs(),
+                &columnar::needs(),
                 (
                     replay_data::format::FormatVersion::CURRENT,
                     replay_data::scope::CaptureMode::Full,
                 ),
                 state,
                 manifest,
+            )?;
+            projector.hour(
+                &segments::Hour {
+                    branch: 1,
+                    hour: frame.hour,
+                    run,
+                    ordinal,
+                    starts,
+                    opens,
+                    state,
+                    manifest,
+                    world,
+                },
+                &mut hours,
             )
-            .unwrap();
-            row.observe_changes(
-                frame,
-                &replay,
-                &AtomicBool::new(false),
-                &tracker.observe(frame, replay.format),
-            )
-            .unwrap();
-            if frame.hour % 3 == 0 {
-                flush(&mut row, &fixtures[0]);
-            }
-            projector
-                .hour(
-                    &segments::Hour {
-                        branch: 1,
-                        hour: frame.hour,
-                        run: u32::from(run),
-                        ordinal: ordinal as u32,
-                        starts,
-                        opens,
-                        state,
-                        manifest,
-                        world,
-                    },
-                    &mut hours,
-                )
-                .unwrap();
-        })
-        .unwrap();
+        })??;
+        self.last = Some(frame.hour);
+        self.ordinal += 1;
+        for hour in hours {
+            prepared.observe_projected(hour)?;
+        }
+        Ok(())
     }
-    emit(&mut hours, &mut projected, &fixtures[1]);
-    flush(&mut row, &fixtures[0]);
-    flush(&mut projected, &fixtures[1]);
-    let expected = fixtures[0].payloads();
+
+    pub(super) fn observe(
+        &mut self,
+        prepared: &mut Prepared,
+        frame: &DecodedFrame,
+    ) -> io::Result<()> {
+        self.observe_carried(prepared, frame, None)
+    }
+}
+
+/// A run's state and published sections.
+type Output = (Prepared, Fixture);
+
+/// The walk's state and sections, publishing at every third hour, with a segment starting at
+/// the frame `restart`.
+fn projected(
+    inputs: &[DecodedFrame],
+    restart: Option<usize>,
+    carried: Option<(i32, TableId)>,
+) -> Output {
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![inputs[0].clone()])]).unwrap();
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::new(&replay, 1, inputs[0].hour);
+    let mut driver = Driver::new(&replay, inputs[0].hour).unwrap();
+    for (ordinal, input) in inputs.iter().enumerate() {
+        if restart == Some(ordinal) {
+            driver.restart();
+        }
+        driver
+            .observe_carried(
+                &mut prepared,
+                input,
+                carried
+                    .filter(|(at, _)| *at == input.hour)
+                    .map(|(_, table)| table),
+            )
+            .unwrap();
+        if input.hour % 3 == 0 {
+            flush(&mut prepared, &fixture);
+        }
+    }
+    flush(&mut prepared, &fixture);
+    (prepared, fixture)
+}
+
+/// The walk in its runs alone, then with a segment starting at `restart`: both publish the same.
+fn parity(
+    label: &str,
+    inputs: &[DecodedFrame],
+    restart: Option<usize>,
+    carried: Option<(i32, TableId)>,
+) -> [Output; 2] {
+    let whole = projected(inputs, None, carried);
+    let restarted = projected(inputs, restart, carried);
+    let expected = whole.1.payloads();
     for prefix in [
         "equipment-loss-1-catalogue",
         "equipment-loss-values-1",
@@ -314,23 +352,24 @@ fn parity_in_blocks(
             "{label}: {prefix}"
         );
     }
-    assert_payloads_equal(&fixtures[1].payloads(), &expected, label);
+    assert_payloads_equal(&restarted.1.payloads(), &expected, label);
     assert_eq!(
-        serde_json::to_value(&projected.absent).unwrap(),
-        serde_json::to_value(&row.absent).unwrap(),
+        serde_json::to_value(&restarted.0.absent).unwrap(),
+        serde_json::to_value(&whole.0.absent).unwrap(),
         "{label}: absent"
     );
-    let [row_sections, projected_sections] = fixtures;
-    [(row, row_sections), (projected, projected_sections)]
+    [whole, restarted]
 }
 
 /// A leaf's published total points, and its canonical runs and events.
 fn published(
-    (prepared, fixture): &(Prepared, Fixture),
+    (prepared, fixture): &Output,
     identity: Identity,
     leaf: LeafKey,
 ) -> (Vec<LossPoint>, u64, u64) {
-    let actor = prepared.countries[&identity].leaves[&leaf];
+    let country = &prepared.countries[&identity];
+    let local = country.leaves[&leaf];
+    let actor = country.names[local as usize];
     let flag = AtomicBool::new(false);
     let mut reader = Reader::new(
         &fixture.store,
@@ -346,7 +385,7 @@ fn published(
         .into_iter()
         .map(|row| serde_json::from_slice(&row.row).unwrap())
         .collect();
-    let state = prepared.values.state(actor).unwrap();
+    let state = country.values.state(local).unwrap();
     (points, state.runs, state.events)
 }
 
@@ -495,26 +534,16 @@ fn campaign_refusal_cannot_reuse_a_skipped_drain_owner_join() {
     let mut next = refused.clone();
     next.hour = 12;
     next.tables[TableId::Campaign.index()] = first.tables[TableId::Campaign.index()].clone();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
-    let mut prepared = Prepared::new(&replay, 1, 10);
-    let mut tracker = FrameChangeTracker::new();
-    for input in [&first, &refused, &next] {
-        prepared
-            .observe_changes(
-                input,
-                &replay,
-                &AtomicBool::new(false),
-                &tracker.observe(input, replay.format),
-            )
-            .unwrap();
-    }
     let leaf = (
         LossSource::Destruction(EquipmentDestructionCause::LandCombat),
         Some(17),
     );
-    assert_eq!(prepared.countries[&(0, 100_000)].totals[&leaf], 123_456);
-    assert_eq!(prepared.countries[&(1, 100_001)].totals[&leaf], 777);
-    parity("skipped owner join", &[first, refused, next], None, None);
+    for restart in [None, Some(1), Some(2)] {
+        let inputs = [first.clone(), refused.clone(), next.clone()];
+        let [(prepared, _), _] = parity("skipped owner join", &inputs, restart, None);
+        assert_eq!(prepared.countries[&(0, 100_000)].totals[&leaf], 123_456);
+        assert_eq!(prepared.countries[&(1, 100_001)].totals[&leaf], 777);
+    }
 }
 
 #[test]
@@ -575,7 +604,7 @@ fn aliases_keep_keyed_last_values_and_repeated_read_events() {
 }
 
 #[test]
-fn giver_aliases_sharing_a_key_publish_the_same_points_wherever_blocks_and_segments_start() {
+fn giver_aliases_sharing_a_key_publish_the_same_points_wherever_segments_start() {
     // Per supplying read from hour 10: the primary's and the alias's amount of one key.
     let amounts = [
         (100, 40),
@@ -610,17 +639,14 @@ fn giver_aliases_sharing_a_key_publish_the_same_points_wherever_blocks_and_segme
         hour,
         total_raw: total.into(),
     };
-    for block in every_restart(&inputs) {
-        for restart in every_restart(&inputs) {
-            let outputs =
-                parity_in_blocks("lend aliases", &inputs, block.as_slice(), restart, None);
-            for output in &outputs {
-                assert_eq!(
-                    published(output, (0, 100_000), (LossSource::LendLeaseSunk, Some(17))),
-                    (vec![point(10, "40"), point(13, "55")], 2, 2),
-                    "row block at {block:?}, segment restart at {restart:?}"
-                );
-            }
+    for restart in every_restart(&inputs) {
+        let outputs = parity("lend aliases", &inputs, restart, None);
+        for output in &outputs {
+            assert_eq!(
+                published(output, (0, 100_000), (LossSource::LendLeaseSunk, Some(17))),
+                (vec![point(10, "40"), point(13, "55")], 2, 2),
+                "segment restart at {restart:?}"
+            );
         }
     }
 }

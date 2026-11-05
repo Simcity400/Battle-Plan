@@ -1,3 +1,4 @@
+use super::columnar_parity::Driver;
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
@@ -13,10 +14,10 @@ fn prepared_loss_contract_names_land_coverage_separately_from_the_prefix() {
     assert!(!declaration.contains("LossesReply &"));
 }
 
-impl Prepared {
-    fn work(&self) -> dashboard_base::prepared::observer_tests::Work {
-        self.work
-    }
+/// The published key of `country`'s leaf.
+fn leaf_key(prepared: &Prepared, country: Identity, leaf: LeafKey) -> u64 {
+    let country = &prepared.countries[&country];
+    country.names[country.leaves[&leaf] as usize]
 }
 
 /// Content whose Combat Log retention deletes no entry that can still change.
@@ -33,91 +34,10 @@ fn empty_drain(frame: &mut DecodedFrame) {
 }
 
 #[test]
-fn unchanged_loss_frames_carry_existing_leaves_without_holder_or_key_visits() {
-    use dashboard_base::prepared::observer_tests::{assert_flat, scaled_work, unchanged_frames};
-    let measured = scaled_work(10, |hours| {
-        let seed = frame(10, 100, 100_001, false);
-        let mut first = seed.clone();
-        first.hour = 11;
-        empty_drain(&mut first);
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![seed.clone(), first.clone()])],
-        )?;
-        let flag = AtomicBool::new(false);
-        let mut prepared = Prepared::new(&replay, 1, 10);
-        prepared.observe(&seed, &replay, &flag)?;
-        prepared.observe(&first, &replay, &flag)?;
-        unchanged_frames(
-            prepared.work(),
-            &first,
-            hours as i32,
-            replay.format,
-            |frame, changes| {
-                prepared.observe_changes(frame, &replay, &flag, changes)?;
-                Ok(prepared.work())
-            },
-        )
-    })
-    .unwrap();
-    assert_flat(measured);
-    assert_eq!(measured[1].row_visits, 0);
-    assert_eq!(measured[1].history_visits, 0);
-    assert_eq!(measured[1].emitted, 0);
-}
-
-#[test]
-fn one_loss_row_visits_one_holder_independently_of_retained_holder_history() {
-    use dashboard_base::prepared::observer_tests::{Work, assert_flat, scaled_work};
-    let measured = scaled_work(10, |history| {
-        let seed = frame(10, history as u32, 100_001, false);
-        let mut first = frame(11, 1, 100_001, false);
-        empty_drain(&mut first);
-        let mut next = first.clone();
-        next.hour = 12;
-        next.tables[TableId::EquipmentDestruction.index()] =
-            seed.tables[TableId::EquipmentDestruction.index()].clone();
-        if let TableView::Complete(TableRows::EquipmentDestruction(rows)) =
-            &mut *next.tables[TableId::EquipmentDestruction.index()]
-        {
-            rows.truncate(1);
-        }
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![seed.clone(), first.clone(), next.clone()])],
-        )?;
-        let flag = AtomicBool::new(false);
-        let mut prepared = Prepared::new(&replay, 1, 10);
-        prepared.observe(&seed, &replay, &flag)?;
-        prepared.observe(&first, &replay, &flag)?;
-        let before = prepared.work();
-        prepared.observe(&next, &replay, &flag)?;
-        let after = prepared.work();
-        let work = Work {
-            row_visits: after.row_visits - before.row_visits,
-            history_visits: after.history_visits - before.history_visits,
-            emitted: after.emitted - before.emitted,
-            ..Default::default()
-        };
-        assert_eq!(work.history_visits, 1);
-        assert!(
-            work.row_visits <= 3,
-            "unrelated native rows were revisited: {work:?}"
-        );
-        assert_eq!(work.emitted, 1);
-        Ok(work)
-    })
-    .unwrap();
-    assert_flat(measured);
-}
-
-#[test]
-fn lend_lease_deletion_visits_only_current_owners_and_resume_rebuilds_the_join() {
-    use dashboard_base::prepared::observer_tests::{
-        Work, assert_flat, assert_reply_parity, scaled_work,
-    };
+fn lend_lease_deletion_ends_only_current_owners_exchanges_through_a_resume() -> io::Result<()> {
+    use dashboard_base::prepared::observer_tests::assert_reply_parity;
     use replay_data::rows::LendLeaseEquipmentRow;
-    let measured = scaled_work(10, |history| {
+    for history in [2_usize, 10] {
         let mut seed = frame(10, history as u32, 0, false);
         empty_drain(&mut seed);
         *seed.tables[TableId::LendLeaseEquipment.index()] =
@@ -156,32 +76,16 @@ fn lend_lease_deletion_visits_only_current_owners_and_resume_rebuilds_the_join()
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())])?;
         let flag = AtomicBool::new(false);
         let mut results = Vec::new();
-        let mut work = Vec::new();
         for resume in [false, true] {
             let mut prepared = Prepared::new(&replay, 1, 10);
+            let mut driver = Driver::new(&replay, 10)?;
             let mut fixture = Fixture::new();
             for (ordinal, chunk) in [&frames[..2], &frames[2..3], &frames[3..]]
                 .into_iter()
                 .enumerate()
             {
-                let before = prepared.work();
                 for frame in chunk {
-                    prepared.observe(frame, &replay, &flag)?;
-                }
-                if ordinal == 2 {
-                    let after = prepared.work();
-                    let changed = Work {
-                        row_visits: after.row_visits - before.row_visits,
-                        history_visits: after.history_visits - before.history_visits,
-                        emitted: after.emitted - before.emitted,
-                        ..Default::default()
-                    };
-                    assert_eq!(changed.history_visits, 1, "archived owners were visited");
-                    assert_eq!(changed.row_visits, 0);
-                    assert!(prepared.joins.lend_owners.is_empty());
-                    work.push(changed);
-                } else {
-                    assert_eq!(prepared.joins.lend_owners.len(), 1);
+                    driver.observe(&mut prepared, frame)?;
                 }
                 let mut writer = if ordinal == 2 {
                     fixture.append_writer()
@@ -192,7 +96,7 @@ fn lend_lease_deletion_visits_only_current_owners_and_resume_rebuilds_the_join()
                 writer.commit()?;
                 if resume && ordinal == 0 {
                     prepared = serde_json::from_slice(&serde_json::to_vec(&prepared)?)?;
-                    assert!(prepared.joins.lend_owners.is_empty());
+                    driver.restart();
                 }
             }
             assert_eq!(prepared.countries.len(), history);
@@ -239,66 +143,9 @@ fn lend_lease_deletion_visits_only_current_owners_and_resume_rebuilds_the_join()
             }
             results.push(replies);
         }
-        assert_eq!(work[0], work[1]);
         assert_reply_parity(&results[0], &results[1])?;
-        Ok(work[0])
-    })
-    .unwrap();
-    assert_flat(measured);
-}
-
-#[test]
-fn one_changed_loss_leaf_does_not_walk_the_countrys_retained_design_keys() {
-    use dashboard_base::prepared::observer_tests::{Work, assert_flat, scaled_work};
-    let measured = scaled_work(10, |history| {
-        let mut seed = frame(10, 1, 100_001, false);
-        if let TableView::Complete(TableRows::EquipmentDestruction(rows)) =
-            &mut *seed.tables[TableId::EquipmentDestruction.index()]
-        {
-            let first = rows[0].clone();
-            *rows = (0..history)
-                .map(|index| EquipmentDestructionRow {
-                    variant: (17 + index as u64) << 32 | u64::from(VARIANT_TYPE),
-                    ..first.clone()
-                })
-                .collect();
-        }
-        let mut first = seed.clone();
-        first.hour = 11;
-        empty_drain(&mut first);
-        let mut next = first.clone();
-        next.hour = 12;
-        next.tables[TableId::EquipmentDestruction.index()] =
-            seed.tables[TableId::EquipmentDestruction.index()].clone();
-        if let TableView::Complete(TableRows::EquipmentDestruction(rows)) =
-            &mut *next.tables[TableId::EquipmentDestruction.index()]
-        {
-            rows.truncate(1);
-        }
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![seed.clone(), first.clone(), next.clone()])],
-        )?;
-        let flag = AtomicBool::new(false);
-        let mut prepared = Prepared::new(&replay, 1, 10);
-        prepared.observe(&seed, &replay, &flag)?;
-        prepared.observe(&first, &replay, &flag)?;
-        assert_eq!(prepared.countries[&(0, 100_000)].leaves.len(), history);
-        let before = prepared.work();
-        prepared.observe(&next, &replay, &flag)?;
-        let after = prepared.work();
-        let work = Work {
-            row_visits: after.row_visits - before.row_visits,
-            history_visits: after.history_visits - before.history_visits,
-            emitted: after.emitted - before.emitted,
-            ..Default::default()
-        };
-        assert_eq!(work.history_visits, 1);
-        assert_eq!(work.emitted, 1);
-        Ok(work)
-    })
-    .unwrap();
-    assert_flat(measured);
+    }
+    Ok(())
 }
 
 #[test]
@@ -336,10 +183,11 @@ fn deferred_loss_values_and_exchange_read_dates_match_oracle_through_commits_res
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())])?;
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, 10);
+    let mut driver = Driver::new(&replay, 10)?;
     let mut fixture = Fixture::new();
     for (ordinal, chunk) in frames.chunks(8).enumerate() {
         for frame in chunk {
-            prepared.observe(frame, &replay, &flag)?;
+            driver.observe(&mut prepared, frame)?;
         }
         let mut writer = if ordinal > 1 {
             fixture.append_writer()
@@ -349,6 +197,7 @@ fn deferred_loss_values_and_exchange_read_dates_match_oracle_through_commits_res
         prepared.flush(&mut writer, 1, &flag)?;
         writer.commit()?;
         prepared = serde_json::from_slice(&serde_json::to_vec(&prepared)?)?;
+        driver.restart();
     }
     let tag = String::from_utf8(scale_tag(0)).unwrap();
     for land_source in [LandSource::Destruction, LandSource::CombatLog] {
@@ -382,10 +231,14 @@ fn deferred_loss_values_and_exchange_read_dates_match_oracle_through_commits_res
             &reply(&selection, &actual, retained(), Vec::new()),
             &reply(&selection, &reference, retained(), Vec::new()),
         )?;
-        let leaf = prepared.countries[&(0, 100_000)].leaves[&(
-            LossSource::Destruction(EquipmentDestructionCause::LandCombat),
-            Some(17),
-        )];
+        let leaf = leaf_key(
+            &prepared,
+            (0, 100_000),
+            (
+                LossSource::Destruction(EquipmentDestructionCause::LandCombat),
+                Some(17),
+            ),
+        );
         let mut reader = Reader::new(
             &fixture.store,
             &fixture.key,
@@ -426,18 +279,24 @@ fn changed_carried_variant_operands_wait_for_the_first_real_read_including_after
     )?;
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, hour);
+    let mut driver = Driver::new(&replay, hour)?;
     let mut oracle = VariantCatalogue::default();
     for frame in [&first, &carried] {
-        prepared.observe(frame, &replay, &flag)?;
+        driver.observe(&mut prepared, frame)?;
         oracle.observe(replay.format, frame);
     }
     assert_eq!(
         prepared.variants.current(20).unwrap().display_name,
         "mod old name"
     );
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    prepared.flush(&mut writer, 1, &flag)?;
+    writer.commit()?;
     let mut resumed: Prepared = serde_json::from_slice(&serde_json::to_vec(&prepared)?)?;
-    prepared.observe(&read, &replay, &flag)?;
-    resumed.observe(&read, &replay, &flag)?;
+    let mut going = Driver::new(&replay, read.hour)?;
+    driver.observe(&mut prepared, &read)?;
+    going.observe(&mut resumed, &read)?;
     oracle.observe(replay.format, &read);
     assert_eq!(
         prepared.variants.current(20).unwrap().display_name,
@@ -498,16 +357,17 @@ fn cancelling_log_deltas_keep_the_supplying_boundary_then_carry_through_publicat
     let flag = AtomicBool::new(false);
     let fixture = Fixture::new();
     let mut prepared = Prepared::new(&replay, 1, 10);
-    prepared.observe(&first, &replay, &flag)?;
+    let mut driver = Driver::new(&replay, 10)?;
+    driver.observe(&mut prepared, &first)?;
     let mut writer = fixture.writer();
     prepared.flush(&mut writer, 1, &flag)?;
     writer.commit()?;
-    prepared.observe(&changed, &replay, &flag)?;
-    prepared.observe(&carried, &replay, &flag)?;
+    driver.observe(&mut prepared, &changed)?;
+    driver.observe(&mut prepared, &carried)?;
     let mut writer = fixture.writer();
     prepared.flush(&mut writer, 1, &flag)?;
     writer.commit()?;
-    let actor = prepared.countries[&(0, 100_000)].leaves[&(LossSource::CombatLog(0), Some(17))];
+    let actor = leaf_key(&prepared, (0, 100_000), (LossSource::CombatLog(0), Some(17)));
     let mut reader = Reader::new(
         &fixture.store,
         &fixture.key,
@@ -539,8 +399,9 @@ fn a_known_holder_with_an_unresolved_new_link_keeps_unknown_ownership_not_absenc
     let flag = AtomicBool::new(false);
     let fixture = Fixture::new();
     let mut prepared = Prepared::new(&replay, 1, 10);
-    prepared.observe(&first, &replay, &flag)?;
-    prepared.observe(&next, &replay, &flag)?;
+    let mut driver = Driver::new(&replay, 10)?;
+    driver.observe(&mut prepared, &first)?;
+    driver.observe(&mut prepared, &next)?;
     let mut writer = fixture.writer();
     prepared.flush(&mut writer, 1, &flag)?;
     writer.commit()?;
@@ -634,9 +495,10 @@ fn prepared_loss_points_match_reference_after_commits_resume_append_and_backdate
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut prepared = Prepared::new(&replay, 1, 10);
+    let mut driver = Driver::new(&replay, 10).unwrap();
     for (ordinal, chunk) in frames.chunks(2).enumerate() {
         for frame in chunk {
-            prepared.observe(frame, &replay, &flag).unwrap();
+            driver.observe(&mut prepared, frame).unwrap();
         }
         prepared.finish_block(chunk.last().unwrap().hour);
         let mut writer = if ordinal == 2 {
@@ -653,6 +515,7 @@ fn prepared_loss_points_match_reference_after_commits_resume_append_and_backdate
                 .all(|country| country.scanned.events.is_empty())
         );
         prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        driver.restart();
     }
     let tag = String::from_utf8(scale_tag(0)).unwrap();
     for land_source in [LandSource::Destruction, LandSource::CombatLog] {
@@ -786,10 +649,11 @@ fn a_request_past_the_prepared_prefix_answers_at_its_last_hour_as_complete_pages
     };
     let fixture = Fixture::new();
     let mut prepared = Prepared::new(&replay, 1, 10);
+    let mut driver = Driver::new(&replay, 10).unwrap();
     let mut cold = None;
     for chunk in frames.chunks(2) {
         for frame in chunk {
-            prepared.observe(frame, &replay, &flag).unwrap();
+            driver.observe(&mut prepared, frame).unwrap();
         }
         prepared.finish_block(chunk.last().unwrap().hour);
         let mut writer = fixture.writer();
@@ -823,8 +687,9 @@ fn only_loss_designs_publish_naming_keys_and_names_resume_exactly() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, 10);
+    let mut driver = Driver::new(&replay, 10).unwrap();
     for frame in &frames {
-        prepared.observe(frame, &replay, &flag).unwrap();
+        driver.observe(&mut prepared, frame).unwrap();
     }
     for variant in [17_u32, 18] {
         let handle = u64::from(variant) << 32 | u64::from(VARIANT_TYPE);
@@ -942,8 +807,7 @@ fn equal_signed_total_keeps_its_latest_loss_date_across_a_gap() {
 #[test]
 fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_their_recovery()
 -> io::Result<()> {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use dashboard_base::prepared::observer_tests::{assert_reply_parity, assert_restore_continues};
+    use dashboard_base::prepared::observer_tests::assert_reply_parity;
     // Holder 1 leaves the census at hour 12. CountryLinks is unread at hour 14,
     // the first hour after a commit, and read again at hour 15, the first hour
     // after the next commit. Every hour has a nonempty destruction drain.
@@ -961,49 +825,21 @@ fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_the
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())])?;
     let flag = AtomicBool::new(false);
     let blocks = [&frames[..4], &frames[4..5], &frames[5..]];
-    assert_restore_continues(
-        replay.format,
-        &blocks,
-        || Prepared::new(&replay, 1, 10),
-        |prepared, frame, changes, _| {
-            prepared
-                .observe_changes(frame, &replay, &flag, changes)
-                .unwrap();
-        },
-        |prepared, writer, ordinal| {
-            prepared.finish_block(blocks[ordinal].last().unwrap().hour);
-            prepared.flush(writer, 1, &flag).unwrap();
-            let saved = serde_json::to_vec(&*prepared).unwrap();
-            writer
-                .write_at("equipment-loss-continuation-1", 0, saved.as_slice())
-                .unwrap();
-        },
-        |fixture| {
-            serde_json::from_reader(std::io::BufReader::new(
-                fixture
-                    .store
-                    .read(&fixture.key, "equipment-loss-continuation-1", 0)
-                    .unwrap()
-                    .unwrap(),
-            ))
-            .unwrap()
-        },
-    );
-    // The continued observer also publishes the oracle's unresolved hour, and
-    // its end at the recovery hour, for the departed and the current holder.
+    // The resumed run publishes the oracle's unresolved hour, and its end at the recovery
+    // hour, for the departed and the current holder.
     let fixture = Fixture::new();
     let mut prepared = Prepared::new(&replay, 1, 10);
-    let mut tracker = FrameChangeTracker::new();
+    let mut driver = Driver::new(&replay, 10)?;
     for block in blocks {
-        tracker.invalidate();
         for frame in block {
-            let changes = tracker.observe(frame, replay.format);
-            prepared.observe_changes(frame, &replay, &flag, &changes)?;
+            driver.observe(&mut prepared, frame)?;
         }
         prepared.finish_block(block.last().unwrap().hour);
         let mut writer = fixture.writer();
         prepared.flush(&mut writer, 1, &flag)?;
         writer.commit()?;
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared)?)?;
+        driver.restart();
     }
     for index in [0, 1] {
         for land_source in [LandSource::Destruction, LandSource::CombatLog] {
@@ -1046,276 +882,7 @@ fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_the
 }
 
 #[test]
-fn a_combat_read_selects_only_its_owner_after_other_owners_rows_are_pruned() -> io::Result<()> {
-    use dashboard_base::prepared::observer_tests::{Work, assert_flat, scaled_work};
-    use replay_data::{rows::CombatLogEquipmentRow, rows::SliceReadRow};
-    let measured = scaled_work(10, |history| {
-        let mut first = frame(10, 2, 0, false);
-        empty_drain(&mut first);
-        let mut log: Vec<_> = (0..history as u32)
-            .map(|group| CombatLogEquipmentRow {
-                country: 100_000,
-                group,
-                variant: 17,
-                amount_raw: 100,
-                ..Default::default()
-            })
-            .collect();
-        log.push(CombatLogEquipmentRow {
-            country: 100_001,
-            group: 1,
-            variant: 17,
-            amount_raw: 200,
-            ..Default::default()
-        });
-        *first.tables[TableId::CombatLogEquipment.index()] =
-            TableView::Complete(TableRows::CombatLogEquipment(log));
-        *first.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
-            (0..2)
-                .map(|index| SliceReadRow {
-                    table: TableId::CombatLogEquipment.index() as u32,
-                    owner: 100_000 + index,
-                    sample_hour: 10,
-                })
-                .collect(),
-        ));
-        let mut changed = first.clone();
-        changed.hour = 11;
-        if let TableView::Complete(TableRows::CombatLogEquipment(rows)) =
-            &mut *changed.tables[TableId::CombatLogEquipment.index()]
-        {
-            rows.remove(0);
-            rows.last_mut().unwrap().amount_raw = 250;
-        }
-        if let TableView::Complete(TableRows::SliceReads(rows)) =
-            &mut *changed.tables[TableId::SliceReads.index()]
-        {
-            rows[1].sample_hour = 11;
-        }
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![first.clone(), changed.clone()])],
-        )?;
-        let flag = AtomicBool::new(false);
-        let mut prepared = Prepared::new(&replay, 1, 10);
-        prepared.observe(&first, &replay, &flag)?;
-        let before = prepared.work();
-        prepared.observe(&changed, &replay, &flag)?;
-        let after = prepared.work();
-        let work = Work {
-            row_visits: after.row_visits - before.row_visits,
-            history_visits: after.history_visits - before.history_visits,
-            emitted: after.emitted - before.emitted,
-            ..Default::default()
-        };
-        assert_eq!(
-            work.row_visits, 3,
-            "two read dates and the supplying owner's one row"
-        );
-        assert_eq!(work.history_visits, 1);
-        assert_eq!(
-            prepared.countries[&(1, 100_001)].totals[&(LossSource::CombatLog(0), Some(17))],
-            250
-        );
-        let fixture = Fixture::new();
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag)?;
-        writer.commit()?;
-        let selection = LossesParams {
-            branch_id: "1".into(),
-            tag: String::from_utf8(scale_tag(1)).unwrap(),
-            land_source: LandSource::CombatLog,
-            country: Some(LossCountry {
-                slot: 1,
-                country_id: 100_001,
-                origin_hour: 10,
-            }),
-        };
-        let reference = scan(
-            &replay,
-            1,
-            &selection.tag,
-            selection.land_source,
-            selection.country,
-            &flag,
-        )?;
-        let actual = read_scanned(
-            &fixture.store,
-            &fixture.key,
-            1,
-            (1, 100_001),
-            (10.0, 11.0, 20),
-            &[10, 11],
-            replay.format,
-            &flag,
-        )?
-        .unwrap();
-        dashboard_base::prepared::observer_tests::assert_reply_parity(
-            &reply(&selection, &actual, retained(), Vec::new()),
-            &reply(&selection, &reference, retained(), Vec::new()),
-        )?;
-        Ok(work)
-    })?;
-    assert_flat(measured);
-    Ok(())
-}
-
-#[test]
-fn amount_only_drains_keep_their_owner_join_and_serialize_no_unchanged_read_key() -> io::Result<()>
-{
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use std::sync::Arc;
-    const COUNT: u32 = 48;
-    let first = frame(10, COUNT, 100, false);
-    let mut changed = frame(11, COUNT, -50, false);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *changed.tables[TableId::Countries.index()]
-    {
-        for row in rows {
-            row.political_power_raw = Some(123);
-        }
-    }
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, changed])])?;
-    let flag = AtomicBool::new(false);
-    let observe = |updates: bool| -> io::Result<_> {
-        let mut prepared = Prepared::new(&replay, 1, 10);
-        let mut tracker = FrameChangeTracker::new();
-        let mut previous = Default::default();
-        let mut serializations = 0;
-        replay.read_block_alone(
-            &replay.index[0],
-            &TableId::ALL,
-            |raw, frame| {
-                let changes = if updates {
-                    tracker.observe_updates(frame, Arc::new(raw), replay.format)
-                } else {
-                    tracker.observe(frame, replay.format)
-                };
-                let before = prepared.work();
-                let before_serializations = prepared.joins.read_serializations;
-                prepared.observe_changes(frame, &replay, &flag, &changes)?;
-                if frame.hour == 11 {
-                    previous = before;
-                    serializations = prepared.joins.read_serializations - before_serializations;
-                }
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        let work = prepared.work().row_visits - previous.row_visits;
-        assert_eq!(
-            serializations, 0,
-            "the read status did not change with the signed drain"
-        );
-        let fixture = Fixture::new();
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag)?;
-        writer.commit()?;
-        Ok((fixture.payloads(), serde_json::to_value(&prepared)?, work))
-    };
-    let (whole_pages, whole_state, whole_work) = observe(false)?;
-    let (pages, state, work) = observe(true)?;
-    assert_eq!(pages, whole_pages, "published pages");
-    assert_eq!(state, whole_state, "saved continuation");
-    assert_eq!(
-        work, COUNT as usize,
-        "only this hour's signed amounts are consumed"
-    );
-    assert!(
-        whole_work >= work * 3,
-        "whole-table joins visited {whole_work}, row updates {work}"
-    );
-    Ok(())
-}
-
-#[test]
-fn combat_read_date_deltas_keep_all_prepared_bytes_and_future_dates() -> io::Result<()> {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay_data::rows::SliceReadRow;
-    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
-    let mut first = frame(10, 24, 0, false);
-    empty_drain(&mut first);
-    let base: Vec<_> = (0..24)
-        .map(|index| SliceReadRow {
-            table: TableId::CombatLogEquipment as u32,
-            owner: 100_000 + index,
-            sample_hour: if index == 0 { 14 } else { 10 },
-        })
-        .collect();
-    let frames: Vec<_> = (10..=19)
-        .filter(|hour| *hour != 18)
-        .map(|hour| {
-            let mut input = first.clone();
-            input.hour = hour;
-            let mut reads = base.clone();
-            if hour >= 11 {
-                reads[1].sample_hour = 11;
-            }
-            if hour >= 13 {
-                reads.retain(|row| row.owner != 100_003);
-            }
-            *input.tables[TableId::SliceReads.index()] = if hour == 16 {
-                TableView::Unavailable {
-                    reason: "synthetic read-date refusal".into(),
-                }
-            } else {
-                TableView::Complete(TableRows::SliceReads(reads))
-            };
-            input.metrics.table_ns[TableId::SliceReads.index()] = 1;
-            input
-        })
-        .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())])?;
-    let flag = AtomicBool::new(false);
-    let fixtures = [Fixture::new(), Fixture::new()];
-    let mut states = [Prepared::new(&replay, 1, 10), Prepared::new(&replay, 1, 10)];
-    states[1].joins.whole_combat_reads = true;
-    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
-    let mut encoder = FrameEncoder::new();
-    let mut decoder = FrameDecoder::new();
-    for input in frames {
-        let wire = Arc::new(encoder.encode(input.clone(), input.hour == 10 || input.hour == 15)?);
-        let decoded = decoder.advance(&wire)?.clone();
-        let mut work = [0; 2];
-        for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
-            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), replay.format);
-            let before = state.work.row_visits;
-            state.observe_changes(&decoded, &replay, &flag, &changes)?;
-            work[index] = state.work.row_visits - before;
-        }
-        if input.hour == 11 {
-            assert!(work[0] + 20 <= work[1], "one changed read date: {work:?}");
-        }
-        if [14, 19].contains(&input.hour) {
-            for (state, fixture) in states.iter_mut().zip(&fixtures) {
-                let mut writer = fixture.writer();
-                state.flush(&mut writer, 1, &flag)?;
-                writer.commit()?;
-            }
-            dashboard_base::prepared::series::tests::assert_payloads_equal(
-                &fixtures[0].payloads(),
-                &fixtures[1].payloads(),
-                "combat read dates",
-            );
-            assert_eq!(
-                serde_json::to_vec(&states[0])?,
-                serde_json::to_vec(&states[1])?
-            );
-            if input.hour == 14 {
-                for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
-                    *state = serde_json::from_slice(&serde_json::to_vec(&*state)?)?;
-                    state.joins.whole_combat_reads = index == 1;
-                    tracker.invalidate();
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-#[test]
 fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Result<()> {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use replay_frame::frame::{FrameDecoder, FrameEncoder};
     let first = dashboard_core::test_fixtures::slot_hour(TableId::VariantDefinitions);
     let last = first + replay_data::cadence::STAGGER_PERIOD;
@@ -1334,12 +901,11 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
             },
         ]));
     let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
-    let flag = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, first);
+    let mut driver = Driver::new(&replay, first)?;
     let mut oracle = VariantCatalogue::default();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    let mut tracker = FrameChangeTracker::new();
     for hour in first..=last {
         input.hour = hour;
         input.metrics.table_ns.fill(0);
@@ -1356,8 +922,7 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
         }
         let wire = Arc::new(encoder.encode(input.clone(), hour == first)?);
         let frame = decoder.advance(&wire)?;
-        let changes = tracker.observe_updates(frame, wire.clone(), replay.format);
-        prepared.observe_changes(frame, &replay, &flag, &changes)?;
+        driver.observe(&mut prepared, frame)?;
         oracle.observe(replay.format, frame);
         assert_eq!(
             serde_json::to_vec(&prepared.variants)?,

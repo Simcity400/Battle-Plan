@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-# The frame-at-a-time observer, for the dashboard's pipeline tests.
+# dashboard-base's test support, for the crates whose tests build this one.
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]

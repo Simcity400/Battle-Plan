@@ -58,17 +58,72 @@ pub(super) struct Metadata {
     pub land: Arc<CoverageInputs>,
 }
 
-#[derive(Default)]
-pub(super) struct Records {
-    pub ships: Option<ShipCounts>,
-    pub convoys: Vec<SunkConvoyRow>,
-    pub lend: Vec<LendLeaseEquipmentRow>,
-    pub combat: Vec<CombatLogEquipmentRow>,
+/// What an `Arc`'s allocation adds to its value: the strong and weak counts.
+pub(super) const ARC: usize = 2 * size_of::<usize>();
+
+/// A conservative size of a `BTreeMap<K, V>` (or set) of `len` entries: whole nodes, each of up
+/// to 11 entries and 12 edges, at least half full.
+pub(super) fn btree_bytes<K, V>(len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (len.div_ceil(5) + 1) * (11 * size_of::<(K, V)>() + 14 * size_of::<usize>())
 }
 
-pub(super) struct Amounts {
-    pub events: Vec<(LeafKey, i128)>,
-    pub error: Option<String>,
+impl Metadata {
+    /// The bytes it owns, itself and its `Arc` included, apart from its drain and land inputs.
+    pub(super) fn heap(&self) -> usize {
+        ARC + size_of::<Self>()
+            + match &self.table {
+                TableView::Unavailable { reason } => reason.capacity(),
+                _ => 0,
+            }
+    }
+}
+
+/// One country's reads at an hour. Ships and convoys hand on only counts unlike those the
+/// segment last handed on since its last identity change, which every current country took;
+/// an equal count changes no country.
+#[derive(Default)]
+pub(super) struct Records {
+    pub ships: Option<Vec<ShipRead>>,
+    pub convoys: Vec<ConvoyRead>,
+    /// Every pool of the country's exchanges, a giver's aliases' last row standing for a key.
+    pub lend: Vec<LendRead>,
+    pub combat: Vec<LogRead>,
+}
+
+/// An hour's destruction drain, by country slot ascending: each country's amounts by cause and
+/// design, a pair repeating where its sum would overflow, or the error its rows hold.
+#[derive(Default)]
+pub(super) struct Drains {
+    /// Each country's slot and the end of its amounts.
+    pub slots: Vec<(u32, u32)>,
+    pub amounts: Vec<Drained>,
+    pub errors: Vec<(u32, String)>,
+}
+
+impl Drains {
+    /// What `slot` drained: none where it had no rows.
+    pub(super) fn of(&self, slot: u32) -> io::Result<&[Drained]> {
+        let Ok(at) = self.slots.binary_search_by_key(&slot, |item| item.0) else {
+            return Ok(&[]);
+        };
+        if let Ok(error) = self.errors.binary_search_by_key(&slot, |item| item.0) {
+            return Err(io::Error::other(self.errors[error].1.clone()));
+        }
+        let first = at.checked_sub(1).map_or(0, |before| self.slots[before].1);
+        Ok(&self.amounts[first as usize..self.slots[at].1 as usize])
+    }
+
+    /// The bytes it owns, itself and its `Arc` included.
+    pub(super) fn heap(&self) -> usize {
+        ARC + size_of::<Self>()
+            + self.slots.capacity() * size_of::<(u32, u32)>()
+            + self.amounts.capacity() * size_of::<Drained>()
+            + self.errors.capacity() * size_of::<(u32, String)>()
+            + self.errors.iter().map(|(_, error)| error.capacity()).sum::<usize>()
+    }
 }
 
 pub(super) struct Input {
@@ -78,7 +133,7 @@ pub(super) struct Input {
     pub membership_complete: bool,
     pub refresh: bool,
     pub metadata: Arc<Metadata>,
-    pub drains: Arc<Vec<(u32, Amounts)>>,
+    pub drains: Arc<Drains>,
     pub memberships: Vec<(u32, Option<census::Membership>)>,
     pub memberships_whole: bool,
     pub records: Vec<(u32, Records)>,
@@ -92,29 +147,16 @@ pub(super) struct Input {
     pub shared: usize,
 }
 
-/// The bytes `drain` owns, itself included.
-fn drain_heap(drain: &DestructionInputs) -> usize {
-    size_of::<DestructionInputs>()
+/// The bytes `drain` owns, itself and its `Arc` included.
+pub(super) fn drain_heap(drain: &DestructionInputs) -> usize {
+    ARC + size_of::<DestructionInputs>()
         + drain.supplemental.as_ref().map_or(0, String::capacity)
-        + drain.unresolved.len() * size_of::<u32>()
-        + drain
-            .by_slot
-            .values()
-            .map(|slots| size_of::<(u32, Vec<usize>)>() + slots.capacity() * size_of::<usize>())
-            .sum::<usize>()
+        + btree_bytes::<u32, ()>(drain.unresolved.len())
 }
 
-/// The bytes `drains` own, themselves included.
-fn drains_heap(drains: &Vec<(u32, Amounts)>) -> usize {
-    size_of::<Vec<(u32, Amounts)>>()
-        + drains.capacity() * size_of::<(u32, Amounts)>()
-        + drains
-            .iter()
-            .map(|(_, amounts)| {
-                amounts.events.capacity() * size_of::<(LeafKey, i128)>()
-                    + amounts.error.as_ref().map_or(0, String::capacity)
-            })
-            .sum::<usize>()
+/// The bytes `land` owns, itself and its `Arc` included.
+pub(super) fn land_heap(land: &CoverageInputs) -> usize {
+    ARC + size_of::<CoverageInputs>() + btree_bytes::<u32, ()>(land.players.len())
 }
 
 impl Item for Hour {
@@ -131,7 +173,7 @@ impl Item for Hour {
             let unresolved: usize = input
                 .unresolved
                 .iter()
-                .map(|slots| slots.len() * size_of::<u32>())
+                .map(|slots| btree_bytes::<u32, ()>(slots.len()))
                 .sum();
             let variants: usize = input
                 .variants
@@ -151,20 +193,15 @@ impl Item for Hour {
 }
 
 impl Records {
-    fn heap(&self) -> usize {
+    pub(super) fn heap(&self) -> usize {
         let ships = self.ships.as_ref().map_or(0, |ships| {
-            ships
-                .keys()
-                .map(|key| size_of::<(ShipKey, (usize, i32, u64))>() + key.0.capacity())
-                .sum()
+            ships.capacity() * size_of::<ShipRead>()
+                + ships.iter().map(|(key, _)| key.0.capacity()).sum::<usize>()
         });
         ships
-            + self.convoys.capacity() * size_of::<SunkConvoyRow>()
-            + self.convoys.iter().map(RowCodec::heap_bytes).sum::<usize>()
-            + self.lend.capacity() * size_of::<LendLeaseEquipmentRow>()
-            + self.lend.iter().map(RowCodec::heap_bytes).sum::<usize>()
-            + self.combat.capacity() * size_of::<CombatLogEquipmentRow>()
-            + self.combat.iter().map(RowCodec::heap_bytes).sum::<usize>()
+            + self.convoys.capacity() * size_of::<ConvoyRead>()
+            + self.lend.capacity() * size_of::<LendRead>()
+            + self.combat.capacity() * size_of::<LogRead>()
     }
 }
 
@@ -306,8 +343,12 @@ pub struct Projector {
     log_pending: slots::Index<u32>,
     collisions: slots::Index<u32>,
     pending: [bool; 3],
+    /// Each country's ship counts and convoy counts the segment last handed on, since the
+    /// last identity change.
+    ships_sent: HashMap<(u32, ShipKey), usize>,
+    convoys_sent: HashMap<(u32, (u32, i32, u32)), i32>,
     drain: Arc<DestructionInputs>,
-    drains: Arc<Vec<(u32, Amounts)>>,
+    drains: Arc<Drains>,
     land: Arc<CoverageInputs>,
     metadata: Option<Arc<Metadata>>,
     /// The bytes of the shared inputs made since an item last carried them.
@@ -332,6 +373,8 @@ impl Projector {
             log_pending: slots::Index::default(),
             collisions: slots::Index::default(),
             pending: [false; 3],
+            ships_sent: HashMap::new(),
+            convoys_sent: HashMap::new(),
             drain: Arc::default(),
             drains: Arc::default(),
             land: Arc::default(),
@@ -444,8 +487,7 @@ impl Projector {
     fn destruction(&mut self, state: &segments::State, roster: &Roster) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.drains", None);
         let mut inputs = DestructionInputs::default();
-        let mut countries: HashMap<u32, (Vec<(LeafKey, i128)>, Option<(u128, String)>)> =
-            HashMap::new();
+        let mut countries: HashMap<u32, (Vec<Drained>, Option<(u128, String)>)> = HashMap::new();
         if columns::complete(state, TableId::EquipmentDestruction) {
             let table = TableId::EquipmentDestruction;
             let held = columns::table(state, table)?;
@@ -489,13 +531,7 @@ impl Projector {
                         *error = Some((row.key(), message));
                     }
                 } else {
-                    events.push((
-                        (
-                            LossSource::Destruction(row.cause),
-                            Some((row.variant >> 32) as u32),
-                        ),
-                        i128::from(row.amount_raw),
-                    ));
+                    events.push((row.cause, (row.variant >> 32) as u32, row.amount_raw));
                 }
             }
             inputs.supplemental = if missing {
@@ -511,31 +547,34 @@ impl Projector {
                     .transpose()?
             };
         }
-        let mut drains: Vec<_> = countries
-            .into_iter()
-            .map(|(country, (mut events, error))| {
-                events.sort_unstable_by_key(|event| event.0);
-                let mut amounts: Vec<(LeafKey, i128)> = Vec::with_capacity(events.len());
-                for (leaf, amount) in events {
-                    if let Some(last) = amounts.last_mut().filter(|last| last.0 == leaf) {
-                        last.1 += amount;
-                    } else {
-                        amounts.push((leaf, amount));
-                    }
+        let mut countries: Vec<_> = countries.into_iter().collect();
+        countries.sort_unstable_by_key(|item| item.0);
+        let mut drains = Drains::default();
+        for (country, (mut events, error)) in countries {
+            events.sort_unstable_by_key(|event| (event.0, event.1));
+            let first = drains.amounts.len();
+            for (cause, variant, amount) in events {
+                let summed = drains.amounts[first..]
+                    .last_mut()
+                    .filter(|last| (last.0, last.1) == (cause, variant))
+                    .and_then(|last| {
+                        last.2 = last.2.checked_add(amount)?;
+                        Some(())
+                    });
+                if summed.is_none() {
+                    drains.amounts.push((cause, variant, amount));
                 }
-                (
-                    country,
-                    Amounts {
-                        events: amounts,
-                        error: error.map(|error| error.1),
-                    },
-                )
-            })
-            .collect();
-        drains.sort_unstable_by_key(|item| item.0);
+            }
+            let end = u32::try_from(drains.amounts.len())
+                .map_err(|_| io::Error::other("An hour's destruction drain is too long"))?;
+            drains.slots.push((country, end));
+            if let Some((_, error)) = error {
+                drains.errors.push((country, error));
+            }
+        }
         self.drain = Arc::new(inputs);
         self.drains = Arc::new(drains);
-        self.charged += drain_heap(&self.drain) + drains_heap(&self.drains);
+        self.charged += drain_heap(&self.drain) + self.drains.heap();
         Ok(())
     }
 
@@ -710,34 +749,35 @@ impl Projector {
                 self.log_reads += selected.len();
             }
             for slot in selected {
-                let row = if held.recorded(self.fields.log_amount, slot) {
+                let read = if held.recorded(self.fields.log_amount, slot) {
                     let key = held.key(slot).expect("supplying combat key");
-                    // Combat Log preparation consumes only the replay key and signed amount.
-                    CombatLogEquipmentRow {
-                        country: raw,
-                        group: (key >> 56) as u32,
-                        kind: (key >> 48) as u8,
-                        month: (key >> 32) as u16,
-                        variant: key as u32,
-                        amount_raw: amounts[slot as usize],
-                        ..Default::default()
-                    }
+                    (
+                        (
+                            (key >> 56) as u32,
+                            (key >> 48) as u8,
+                            (key >> 32) as u16,
+                            key as u32,
+                        ),
+                        amounts[slot as usize],
+                    )
                 } else {
-                    columns::row(
+                    let row: CombatLogEquipmentRow = columns::row(
                         state,
                         TableId::CombatLogEquipment,
                         slot,
                         self.format.version(),
-                    )?
+                    )?;
+                    ((row.group, row.kind, row.month, row.variant), row.amount_raw)
                 };
-                records.entry(country).or_default().combat.push(row);
+                records.entry(country).or_default().combat.push(read);
             }
         }
         Ok(())
     }
 
+    /// Hands on each country's ship keys whose count differs from the segment's read before.
     fn ships(
-        &self,
+        &mut self,
         state: &segments::State,
         roster: &Roster,
         records: &mut HashMap<u32, Records>,
@@ -747,13 +787,9 @@ impl Projector {
         let slot = single(state, TableId::SunkShips)?.expect("complete sinking read");
         let row: SunkShipsRow =
             columns::row(state, TableId::SunkShips, slot, self.format.version())?;
+        let mut counts: HashMap<(u32, ShipKey), (usize, i32, u64)> = HashMap::new();
         for entry in row.entries {
             if let Some(country) = roster.slot_of(entry.victim_country) {
-                let counts = records
-                    .entry(country)
-                    .or_default()
-                    .ships
-                    .get_or_insert_with(BTreeMap::new);
                 let key = (
                     entry.ship_name,
                     entry.sink_hour,
@@ -763,18 +799,38 @@ impl Projector {
                     entry.cause_record,
                 );
                 counts
-                    .entry(key)
+                    .entry((country, key))
                     .or_insert((0, entry.sink_hour, entry.victim_equipment_variant))
                     .0 += 1;
             } else {
                 unresolved.insert(entry.victim_country);
             }
         }
+        let mut sent = HashMap::with_capacity(counts.len());
+        for ((country, key), counted) in counts {
+            let ships = records
+                .entry(country)
+                .or_default()
+                .ships
+                .get_or_insert_with(Vec::new);
+            let key = (country, key);
+            if self.ships_sent.get(&key) != Some(&counted.0) {
+                ships.push((key.1.clone(), counted));
+            }
+            sent.insert(key, counted.0);
+        }
+        for own in records.values_mut() {
+            if let Some(ships) = &mut own.ships {
+                ships.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            }
+        }
+        self.ships_sent = sent;
         Ok(())
     }
 
+    /// Hands on each country's convoy counts that differ from the segment's read before.
     fn convoys(
-        &self,
+        &mut self,
         state: &segments::State,
         roster: &Roster,
         records: &mut HashMap<u32, Records>,
@@ -782,14 +838,21 @@ impl Projector {
     ) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.convoys", None);
         let table = TableId::SunkConvoys;
+        let mut sent = HashMap::new();
         for slot in columns::table(state, table)?.live().ones() {
             let row: SunkConvoyRow = columns::row(state, table, slot, self.format.version())?;
             if let Some(country) = roster.slot_of(row.owner_country) {
-                records.entry(country).or_default().convoys.push(row);
+                let key = (row.owner_country, row.month, row.killer_country);
+                let own = records.entry(country).or_default();
+                if self.convoys_sent.get(&(country, key)) != Some(&row.convoys) {
+                    own.convoys.push((key, row.convoys));
+                }
+                sent.insert((country, key), row.convoys);
             } else {
                 unresolved.insert(row.owner_country);
             }
         }
+        self.convoys_sent = sent;
         Ok(())
     }
 
@@ -802,17 +865,19 @@ impl Projector {
     ) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.lend", None);
         let table = TableId::LendLeaseEquipment;
+        let mut rows: HashMap<u32, Vec<LendLeaseEquipmentRow>> = HashMap::new();
         for slot in columns::table(state, table)?.live().ones() {
             let row: LendLeaseEquipmentRow =
                 columns::row(state, table, slot, self.format.version())?;
             if let Some(country) = roster.slot_of(row.giver) {
-                records.entry(country).or_default().lend.push(row);
+                rows.entry(country).or_default().push(row);
             } else {
                 unresolved.insert(row.giver);
             }
         }
-        for own in records.values_mut() {
-            own.lend.sort_unstable_by_key(RowCodec::key);
+        for (country, mut rows) in rows {
+            rows.sort_unstable_by_key(RowCodec::key);
+            records.entry(country).or_default().lend = lend_amounts(&rows);
         }
         Ok(())
     }
@@ -890,6 +955,10 @@ impl Operator<World> for Projector {
                 .map(|country| ((country.slot, country.id), country.resolved))
                 .collect()
         });
+        if mapping {
+            self.ships_sent.clear();
+            self.convoys_sent.clear();
+        }
         let complete = columns::complete(state, TableId::Countries)
             && columns::complete(state, TableId::CountryLinks);
         let memberships_whole = mapping || shaped[TableId::DivisionCensus.index()];
@@ -923,7 +992,7 @@ impl Operator<World> for Projector {
         if land_changed {
             let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.coverage", None);
             self.land = Arc::new(self.coverage(state, roster)?);
-            self.charged += size_of::<CoverageInputs>() + self.land.players.len() * size_of::<u32>();
+            self.charged += land_heap(&self.land);
         }
         if mapping || changed[TableId::EquipmentDestruction.index()] {
             self.destruction(state, roster)?;
@@ -953,18 +1022,14 @@ impl Operator<World> for Projector {
                 .as_ref()
                 .is_some_and(|old| Arc::ptr_eq(&old.drain, &self.drain))
         {
-            let table = self.status(state)?;
-            self.charged += size_of::<Metadata>()
-                + match &table {
-                    TableView::Unavailable { reason } => reason.capacity(),
-                    _ => 0,
-                };
-            Arc::new(Metadata {
-                table,
+            let metadata = Arc::new(Metadata {
+                table: self.status(state)?,
                 drain: Arc::clone(&self.drain),
                 reads,
                 land: Arc::clone(&self.land),
-            })
+            });
+            self.charged += metadata.heap();
+            metadata
         } else {
             Arc::clone(self.metadata.as_ref().expect("loss metadata"))
         };

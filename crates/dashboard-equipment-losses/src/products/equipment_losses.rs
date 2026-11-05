@@ -109,19 +109,18 @@ use dashboard_base::products::{CountryParams, Product};
 use dashboard_base::{catalogue, source::Source};
 use dashboard_core::config::LoadContext;
 #[cfg(test)]
-use dashboard_text::metadata::{slot_read, tagged_country};
-use dashboard_text::{
-    catalogue::View,
-    metadata::{TaggedCountry, branch_bounds, link_slot, mapped_slot, validate_campaign},
+use dashboard_text::metadata::{
+    TaggedCountry, link_slot, mapped_slot, slot_read, tagged_country, validate_campaign,
 };
+use dashboard_text::{catalogue::View, metadata::branch_bounds};
 use replay::container::Replay;
-use replay_data::{
-    rows::CountryLinkRow, rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON,
-    rows::EquipmentDestructionCause, rows::RowCodec, rows::TableId, rows::tables,
-};
-use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
-use replay_frame::frame::FrameDecoder;
+use replay_data::rows::{CountryLinkRow, RowCodec, tables};
+use replay_data::{
+    rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON, rows::EquipmentDestructionCause, rows::TableId,
+};
+#[cfg(test)]
+use replay_frame::frame::{DecodedFrame, FrameDecoder};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::{
@@ -530,6 +529,16 @@ pub struct Scanned {
 /// A (group, kind, month, variant) key of the Combat Log.
 type LogKey = (u32, u8, u16, u32);
 type ShipKey = (Vec<u8>, i32, u64, u64, u64, u8);
+/// A Combat Log entry as read: its key and amount.
+type LogRead = (LogKey, i64);
+/// A SunkConvoys entry as read: its (owner, month, killer) and count.
+type ConvoyRead = ((u32, i32, u32), i32);
+/// A lend-lease pool as read: its (exchange, kind, variant) and amount.
+type LendRead = ((u32, u8, u32), i64);
+/// A sunk-ship key as read: its count, sinking hour and design handle.
+type ShipRead = (ShipKey, (usize, i32, u64));
+/// A destruction drain's amount of one cause and design.
+type Drained = (EquipmentDestructionCause, u32, i64);
 
 #[derive(Default, Serialize, Deserialize)]
 struct State {
@@ -701,6 +710,7 @@ impl Scanned {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn country_metadata(
     scanned: &mut Scanned,
@@ -746,6 +756,7 @@ fn country_metadata(
     )
 }
 
+#[cfg(test)]
 fn destruction_table_rows<'a>(
     decoded: &'a DecodedFrame,
     state: &State,
@@ -767,6 +778,7 @@ enum Selection {
     Found(u32),
 }
 
+#[cfg(test)]
 impl Selection {
     fn from_country(country: TaggedCountry<'_>, linked: bool) -> Self {
         match country {
@@ -831,6 +843,7 @@ fn country_metadata_with(
     Ok(())
 }
 
+#[cfg(test)]
 fn ship_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
@@ -851,13 +864,13 @@ fn ship_rows<'a>(
             .or_insert((0, entry.sink_hour, entry.victim_equipment_variant))
             .0 += 1;
     }
-    ship_counts(scanned, state, &counts);
+    ship_counts(scanned, state, &counts.into_iter().collect::<Vec<_>>());
 }
 
-type ShipCounts = BTreeMap<ShipKey, (usize, i32, u64)>;
-
-fn ship_counts(scanned: &mut Scanned, state: &mut State, counts: &ShipCounts) {
-    for (key, &(count, sunk, variant)) in counts {
+/// A read's ship counts, ascending by key: each count past the last seen sank anew.
+fn ship_counts(scanned: &mut Scanned, state: &mut State, counts: &[ShipRead]) {
+    for (key, (count, sunk, variant)) in counts {
+        let (count, sunk, variant) = (*count, *sunk, *variant);
         let seen = state.ships.get(key).copied().unwrap_or_default();
         if count > seen {
             let added = (count - seen) as i64;
@@ -868,44 +881,39 @@ fn ship_counts(scanned: &mut Scanned, state: &mut State, counts: &ShipCounts) {
     }
 }
 
-fn convoy_rows<'a>(
-    scanned: &mut Scanned,
-    state: &mut State,
-    hour: i32,
-    rows: impl Iterator<Item = &'a replay_data::rows::SunkConvoyRow>,
-) {
-    for row in rows {
-        let last = state
-            .convoys
-            .entry((row.owner_country, row.month, row.killer_country))
-            .or_default();
-        let delta = if row.convoys < *last {
+fn convoy_rows(scanned: &mut Scanned, state: &mut State, hour: i32, rows: &[ConvoyRead]) {
+    for &(key, convoys) in rows {
+        let last = state.convoys.entry(key).or_default();
+        let delta = if convoys < *last {
             scanned.convoy_drops += 1;
-            i64::from(row.convoys)
+            i64::from(convoys)
         } else {
-            i64::from(row.convoys) - i64::from(*last)
+            i64::from(convoys) - i64::from(*last)
         };
-        *last = row.convoys;
+        *last = convoys;
         scanned.event((LossSource::SunkConvoys, None), hour, delta * AMOUNT_SCALE);
     }
 }
 
-fn lend_lease_rows<'a>(
-    scanned: &mut Scanned,
-    state: &mut State,
-    hour: i32,
-    rows: impl Iterator<Item = &'a replay_data::rows::LendLeaseEquipmentRow>,
-) {
-    // Giver aliases can repeat a key: its last row stands, and a read moves it once.
+/// A country's lend-lease pools from its rows in key order. Giver aliases can repeat a pool:
+/// its last row stands, and a read moves it once.
+fn lend_amounts<'a>(
+    rows: impl IntoIterator<Item = &'a replay_data::rows::LendLeaseEquipmentRow>,
+) -> Vec<LendRead> {
     let mut amounts = BTreeMap::new();
     for row in rows {
         amounts.insert((row.exchange, row.kind, row.variant), row.amount_raw);
     }
+    amounts.into_iter().collect()
+}
+
+/// A read of a country's lend-lease `amounts`, ascending by pool.
+fn lend_lease_rows(scanned: &mut Scanned, state: &mut State, hour: i32, amounts: &[LendRead]) {
     // The game deletes an ended exchange with its totals: an exchange
     // the last complete read showed and this one does not ended after
     // that read, and what it moved since is lost.
     let mut present: BTreeMap<u32, BTreeSet<(u8, u32)>> = BTreeMap::new();
-    for &(exchange, kind, variant) in amounts.keys() {
+    for &((exchange, kind, variant), _) in amounts {
         present.entry(exchange).or_default().insert((kind, variant));
     }
     let ended: Vec<u32> = state
@@ -928,7 +936,7 @@ fn lend_lease_rows<'a>(
     for (exchange, designs) in present {
         state.exchanges.insert(exchange, (hour, designs));
     }
-    for (key, amount) in amounts {
+    for &(key, amount) in amounts {
         let last = state.lend_lease.entry(key).or_default();
         let delta = i128::from(amount) - i128::from(*last);
         *last = amount;
@@ -952,13 +960,13 @@ const DESTRUCTION_TRUNCATED: &str = "Equipment destruction drain is truncated; b
 struct DestructionInputs {
     supplemental: Option<String>,
     unresolved: BTreeSet<u32>,
+    #[cfg(test)]
     by_slot: BTreeMap<u32, Vec<usize>>,
     nonempty: bool,
-    #[cfg(test)]
-    row_visits: usize,
 }
 
-/// The native drain's owner and availability operands, shared with the oracle.
+/// The native drain's owner and availability operands, for the oracle.
+#[cfg(test)]
 fn destruction_inputs(
     decoded: &DecodedFrame,
     links: Option<&[CountryLinkRow]>,
@@ -973,19 +981,12 @@ fn destruction_inputs(
                 replay_data::rows::EquipmentDestructionCoverage::SupplementalUnavailable,
             )
     });
-    #[cfg(test)]
-    let mut row_visits = 0;
     let supplemental = if format
         .field_gaps(TableId::EquipmentDestruction)
         .next()
         .is_some()
-        || rows.iter().any(|row| {
-            #[cfg(test)]
-            {
-                row_visits += 1;
-            }
-            row.not_recorded_fields() != 0
-        }) {
+        || rows.iter().any(|row| row.not_recorded_fields() != 0)
+    {
         Some("EquipmentDestruction supplemental coverage not recorded".to_owned())
     } else if let Some(marker) = marker {
         Some(
@@ -1004,19 +1005,11 @@ fn destruction_inputs(
         ..Default::default()
     };
     for (index, row) in rows.iter().enumerate().skip(usize::from(marker.is_some())) {
-        #[cfg(test)]
-        {
-            row_visits += 1;
-        }
         if let Some(slot) = links.and_then(|links| link_slot(links, row.country)) {
             inputs.by_slot.entry(slot).or_default().push(index);
         } else {
             inputs.unresolved.insert(row.country);
         }
-    }
-    #[cfg(test)]
-    {
-        inputs.row_visits = row_visits;
     }
     Ok(inputs)
 }
@@ -1171,6 +1164,7 @@ fn destruction_ready(
     Ok(true)
 }
 
+#[cfg(test)]
 fn destruction_amounts<'a>(
     scanned: &mut Scanned,
     state: &State,
@@ -1246,6 +1240,7 @@ impl CoverageInputs {
         }
     }
 }
+#[cfg(test)]
 fn coverage_inputs(decoded: &DecodedFrame, links: &[CountryLinkRow]) -> CoverageInputs {
     let Ok([state]) = decoded
         .complete::<tables::CombatLogState>()
@@ -1293,6 +1288,7 @@ fn coverage(
 
 /// Whether the Combat Log was read completely at this hour: its rows, and the
 /// slice reads that say which countries were read now.
+#[cfg(test)]
 fn land_read(decoded: &DecodedFrame) -> bool {
     decoded.complete::<tables::SliceReads>().is_ok()
         && matches!(
@@ -1306,24 +1302,39 @@ fn land_read(decoded: &DecodedFrame) -> bool {
 /// Equipment losses add signed pre-minus-post pool differences. A fall within
 /// the same monthly key is a correction; a new month is already a different
 /// key. Never count the falling value anew.
-fn combat_rows<'a>(
-    scanned: &mut Scanned,
-    state: &mut State,
-    hour: i32,
-    rows: impl Iterator<Item = &'a replay_data::rows::CombatLogEquipmentRow>,
-) {
-    for row in rows {
-        let key = (row.group, row.kind, row.month, row.variant);
+fn combat_rows(scanned: &mut Scanned, state: &mut State, hour: i32, rows: &[LogRead]) {
+    for &(key, amount) in rows {
         let last = state.log.entry(key).or_default();
-        let delta = i128::from(row.amount_raw) - i128::from(*last);
-        *last = row.amount_raw;
-        let source = if row.kind == engine_land_inputs::ncombat_log_cmanager::RECOVERED_KIND {
+        let delta = i128::from(amount) - i128::from(*last);
+        *last = amount;
+        let (_, kind, _, variant) = key;
+        let source = if kind == engine_land_inputs::ncombat_log_cmanager::RECOVERED_KIND {
             LossSource::Recovered
         } else {
-            LossSource::CombatLog(row.kind)
+            LossSource::CombatLog(kind)
         };
-        scanned.event((source, Some(row.variant)), hour, delta);
+        scanned.event((source, Some(variant)), hour, delta);
     }
+}
+
+/// A country's Combat Log rows as read, in their order.
+#[cfg(test)]
+fn log_reads<'a>(
+    rows: impl IntoIterator<Item = &'a replay_data::rows::CombatLogEquipmentRow>,
+) -> Vec<LogRead> {
+    rows.into_iter()
+        .map(|row| ((row.group, row.kind, row.month, row.variant), row.amount_raw))
+        .collect()
+}
+
+/// A country's SunkConvoys rows as read.
+#[cfg(test)]
+fn convoy_reads<'a>(
+    rows: impl IntoIterator<Item = &'a replay_data::rows::SunkConvoyRow>,
+) -> Vec<ConvoyRead> {
+    rows.into_iter()
+        .map(|row| ((row.owner_country, row.month, row.killer_country), row.convoys))
+        .collect()
 }
 
 /// Running totals from events: sorted by hour, one point per changed hour.

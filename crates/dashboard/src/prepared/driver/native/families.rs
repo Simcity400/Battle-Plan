@@ -94,7 +94,10 @@ use std::{
     collections::BTreeMap,
     io,
     marker::PhantomData,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 /// A member of a run, made of a family's backend bound to its stage.
@@ -1019,6 +1022,8 @@ impl Native for Diplomacy {
 struct Losses<'p> {
     replay: &'p Replay,
     extents: &'p Extents,
+    /// The most any branch's queued steps kept at once.
+    queued: AtomicU64,
 }
 
 fn losses<'p>(
@@ -1030,6 +1035,7 @@ fn losses<'p>(
     let native = Losses {
         replay: content.source.replay_ref(),
         extents: &content.extents,
+        queued: AtomicU64::new(0),
     };
     bound(id, native, stage, taken)
 }
@@ -1065,7 +1071,17 @@ impl Native for Losses<'_> {
         _: u64,
         hour: equipment_losses::columnar::Hour,
     ) -> io::Result<()> {
-        state.observe_projected(hour)
+        state.observe_projected(hour)?;
+        let peak = u64::try_from(state.queued_peak()).unwrap_or(u64::MAX);
+        self.queued.fetch_max(peak, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn counts(&self) -> Vec<(&'static str, u64)> {
+        vec![(
+            "bytes queued steps kept at most",
+            self.queued.load(Ordering::Relaxed),
+        )]
     }
 
     fn flush(

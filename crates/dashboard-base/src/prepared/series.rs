@@ -805,6 +805,78 @@ impl Accumulator {
         }
         Ok(())
     }
+    /// A keyless accumulator at this one's hours. A family keeping its keys apart in such
+    /// followers takes every follower through the same advances and gap ends as this one, and
+    /// publishes them with it ([`Self::flush_with`]), as one accumulator of all their keys would.
+    pub fn follower(&self) -> Self {
+        Self {
+            frontier: self.frontier,
+            previous: self.previous,
+            batch: Batch {
+                first: self.batch.first,
+                last: self.batch.last,
+                ..Batch::default()
+            },
+            ..Self::default()
+        }
+    }
+    /// Publishes `parts`, followers of this keyless accumulator ([`Self::follower`]) at its
+    /// hours, as one section: each part's own key `k` is published as key `names[k]`. The
+    /// section is the one a single accumulator of all their keys would publish.
+    pub fn flush_with<'a, W: super::pages::Pages + ?Sized>(
+        &mut self,
+        parts: impl Iterator<Item = (&'a mut Accumulator, &'a [u64])>,
+        writer: &mut W,
+        section: &str,
+        decimals: u8,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope("series flush", None);
+        self.seal();
+        let batch = std::mem::take(&mut self.batch);
+        let mut held = Vec::new();
+        for (part, names) in parts {
+            part.seal();
+            held.push((std::mem::take(&mut part.batch).keys, &mut part.states, names));
+        }
+        let Some(first) = batch.first else {
+            return Ok(());
+        };
+        let mut keys: Vec<KeyRows<'_>> = Vec::new();
+        for (rows, states, names) in &mut held {
+            let mut changed = rows.iter_mut().peekable();
+            for (&key, state) in states.iter_mut() {
+                let name = *names.get(key as usize).ok_or_else(|| {
+                    invalid("A series key has no published name")
+                })?;
+                let (runs, events) = match changed.next_if(|(changed, _)| **changed == key) {
+                    Some((_, Rows { runs, events, .. })) => {
+                        (runs.as_slice(), events.as_mut_slice())
+                    }
+                    None => (&[][..], Default::default()),
+                };
+                keys.push((name, runs, events, state));
+            }
+        }
+        keys.sort_unstable_by_key(|rows| rows.0);
+        if keys.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(invalid("Two series keys share a published name"));
+        }
+        self.idle.begin();
+        Batch::write_keys(
+            first,
+            batch.last,
+            keys.into_iter(),
+            writer,
+            section,
+            decimals,
+            cancelled,
+            Encoding {
+                shared: None,
+                idle: Some(&mut self.idle),
+            },
+        )
+    }
 }
 
 /// The accumulator calls a block's extract made after the block's first hour,

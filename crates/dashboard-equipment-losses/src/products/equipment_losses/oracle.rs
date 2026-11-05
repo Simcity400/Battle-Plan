@@ -240,12 +240,8 @@ fn observe_country(
     if slot_read(scanned.format, &decoded.metrics, TableId::SunkConvoys, hour)
         && let Ok(rows) = convoys
     {
-        convoy_rows(
-            scanned,
-            state,
-            hour,
-            rows.iter().filter(|row| ours(row.owner_country)),
-        );
+        let rows = convoy_reads(rows.iter().filter(|row| ours(row.owner_country)));
+        convoy_rows(scanned, state, hour, &rows);
     }
     let lend_lease = decoded.complete::<tables::LendLeaseEquipment>();
     if slot_read(
@@ -255,8 +251,8 @@ fn observe_country(
         hour,
     ) && let Ok(rows) = lend_lease
     {
-        let given: Vec<_> = rows.iter().filter(|row| ours(row.giver)).collect();
-        lend_lease_rows(scanned, state, hour, given.into_iter());
+        let given = lend_amounts(rows.iter().filter(|row| ours(row.giver)));
+        lend_lease_rows(scanned, state, hour, &given);
     }
     scanned.unresolved.extend(unresolved);
     Ok(())
@@ -314,7 +310,7 @@ fn combat_log(
     for country in countries {
         let first = rows.partition_point(|row| row.country < country);
         let last = rows.partition_point(|row| row.country <= country);
-        combat_rows(scanned, state, hour, rows[first..last].iter());
+        combat_rows(scanned, state, hour, &log_reads(&rows[first..last]));
     }
     Ok(())
 }
