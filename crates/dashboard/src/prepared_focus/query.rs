@@ -6,15 +6,16 @@ use super::{
     FocusEntry, Hour, PAGE_ROWS, Pages, StateSchema, TableRefusal, UnavailableHour,
     emit::{CHAIN, COMPLETIONS, FAMILY, GAIN, OBSERVED, ORDER, PROGRESS, REASONS, REFUSALS, UNAVAILABLE, kind},
 };
+use super::art::CompletionArt;
 use crate::products::national_focus::FocusCompletion;
 use dashboard_base::prepared::engine;
 use dashboard_series::{
-    Cell, Event, EventOrder, EventQuery, PageRead, Selection, Snapshot, Span,
+    Blob, Cell, Event, EventOrder, EventQuery, PageRead, Selection, Snapshot, Span,
     codec::Binary,
     family::{Directory, Scalar},
     query::EventView,
 };
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
 /// Rows an event page reads at once.
 const PAGE_BYTES: usize = 1 << 16;
@@ -27,8 +28,8 @@ fn malformed() -> io::Error {
     invalid("A prepared focus event is not valid")
 }
 
-/// A text cell's text; none for a null one.
-fn text<P: PageRead>(snapshot: &mut Snapshot<'_, P>, cell: Cell) -> io::Result<Option<String>> {
+/// A text cell's bytes; none for a null one.
+fn bytes<P: PageRead>(snapshot: &mut Snapshot<'_, P>, cell: Cell) -> io::Result<Option<Vec<u8>>> {
     match cell {
         Cell::Null => Ok(None),
         Cell::Text(blob) => {
@@ -37,10 +38,17 @@ fn text<P: PageRead>(snapshot: &mut Snapshot<'_, P>, cell: Cell) -> io::Result<O
             if length > 0 {
                 snapshot.cell_bytes(blob, 0, &mut bytes)?;
             }
-            String::from_utf8(bytes).map(Some).map_err(|_| malformed())
+            Ok(Some(bytes))
         }
         _ => Err(malformed()),
     }
+}
+
+/// A text cell's text; none for a null one.
+fn text<P: PageRead>(snapshot: &mut Snapshot<'_, P>, cell: Cell) -> io::Result<Option<String>> {
+    bytes(snapshot, cell)?
+        .map(|bytes| String::from_utf8(bytes).map_err(|_| malformed()))
+        .transpose()
 }
 
 fn unsigned<P: PageRead>(snapshot: &mut Snapshot<'_, P>, event: &Event, at: u64) -> io::Result<u64> {
@@ -370,12 +378,15 @@ pub fn completions<P: PageRead>(
     Ok(entries)
 }
 
-/// The event feed's view of the publication: every completion in the order it lists them,
+/// The event feed's view of the publication: every completion in the order it lists them, where
+/// each one's art is stored (read only for the completions a page shows, [`CompletionArts`]),
 /// whether any country was observed, and the countries and completions without an observation
 /// or a date, by reason.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Feed {
     pub completions: Vec<FocusCompletion>,
+    /// Each completion's stored art, none where it was prepared without the game's content.
+    pub art: Vec<Option<Blob>>,
     pub observed: bool,
     pub unavailable: BTreeMap<String, u64>,
 }
@@ -387,6 +398,7 @@ impl Feed {
             .iter()
             .map(|completion| 64 + completion.tag.capacity() + completion.token.capacity())
             .sum::<usize>()
+            + self.art.capacity() * std::mem::size_of::<Option<Blob>>()
             + self
                 .unavailable
                 .keys()
@@ -395,11 +407,72 @@ impl Feed {
     }
 }
 
+/// Where the event feed reads the art of the completions a page shows.
+pub(crate) trait CompletionArts {
+    /// The art kept with each of the feed's completions at `ordinals`, none where it was
+    /// prepared without the game's content.
+    fn art(&self, ordinals: &[u64], cancelled: &AtomicBool) -> io::Result<Vec<Option<CompletionArt>>>;
+}
+
+/// A feed, its completions' art read from the publication it was read from.
+pub(crate) struct Stored {
+    pub feed: std::sync::Arc<Feed>,
+    pub opened: dashboard_base::prepared::published::Opened,
+}
+
+impl CompletionArts for Stored {
+    fn art(&self, ordinals: &[u64], cancelled: &AtomicBool) -> io::Result<Vec<Option<CompletionArt>>> {
+        let stored = ordinals
+            .iter()
+            .map(|&ordinal| {
+                usize::try_from(ordinal)
+                    .ok()
+                    .and_then(|ordinal| self.feed.art.get(ordinal))
+                    .copied()
+                    .ok_or_else(|| invalid("A focus completion's art reference is missing"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if stored.iter().all(Option::is_none) {
+            return Ok(vec![None; stored.len()]);
+        }
+        self.opened.read(cancelled, |snapshot, _| {
+            stored
+                .into_iter()
+                .map(|blob| {
+                    blob.map(|blob| -> io::Result<CompletionArt> {
+                        let art = bytes(snapshot, Cell::Text(blob))?.ok_or_else(malformed)?;
+                        dashboard_base::prepared::codec::decode(&art)
+                    })
+                    .transpose()
+                })
+                .collect()
+        })
+    }
+}
+
+/// A test feed's completions' art, by ordinal.
+#[cfg(test)]
+impl CompletionArts for Vec<Option<CompletionArt>> {
+    fn art(&self, ordinals: &[u64], _: &AtomicBool) -> io::Result<Vec<Option<CompletionArt>>> {
+        ordinals
+            .iter()
+            .map(|&ordinal| {
+                usize::try_from(ordinal)
+                    .ok()
+                    .and_then(|ordinal| self.get(ordinal))
+                    .cloned()
+                    .ok_or_else(|| invalid("A focus completion's art reference is missing"))
+            })
+            .collect()
+    }
+}
+
 pub(crate) fn feed<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
 ) -> io::Result<Feed> {
     let mut completions = Vec::new();
+    let mut art = Vec::new();
     if let Some(key) = directory.key(FAMILY, COMPLETIONS, None) {
         let tag = |actor: u64| {
             directory
@@ -409,12 +482,18 @@ pub(crate) fn feed<P: PageRead>(
                 .ok_or_else(|| invalid("A prepared focus completion names an unknown country"))
         };
         events(snapshot, key, i32::MIN, 0, |snapshot, event| {
-            let event = family_event(Some(event), kind::COMPLETION, 2)?.ok_or_else(malformed)?;
+            let event = family_event(Some(event), kind::COMPLETION, 3)?.ok_or_else(malformed)?;
             let actor = unsigned(snapshot, &event, 0)?;
             let token = snapshot.field(event.fields, 1)?;
+            let token = text(snapshot, token)?.ok_or_else(malformed)?;
+            art.push(match snapshot.field(event.fields, 2)? {
+                Cell::Null => None,
+                Cell::Text(blob) => Some(blob),
+                _ => return Err(malformed()),
+            });
             completions.push(FocusCompletion {
                 tag: tag(actor)?,
-                token: text(snapshot, token)?.ok_or_else(malformed)?,
+                token,
                 hour: event.native_hour,
             });
             Ok(true)
@@ -436,6 +515,7 @@ pub(crate) fn feed<P: PageRead>(
         .ok_or_else(|| invalid("Prepared focus counts are not valid"))?;
     Ok(Feed {
         completions,
+        art,
         observed,
         unavailable,
     })

@@ -1,7 +1,7 @@
 //! Backward native-date pages composed from the owning families' event ranges.
 use super::*;
 use crate::prepared::series::{self, DatedRow, LateIndex, Reader};
-use crate::prepared_focus::query::Feed as FocusFeed;
+use crate::prepared_focus::query::{CompletionArts, Feed as FocusFeed};
 use crate::products::country_nukes::{
     NukeTypeInfo,
     query::{Feed, Increase},
@@ -109,6 +109,8 @@ pub(crate) struct Families<'a> {
     pub nukes: &'a Feed,
     pub subjects: &'a SubjectFeed,
     pub focus: &'a FocusFeed,
+    /// Where the art of the focus completions a page shows is read.
+    pub focus_art: &'a dyn CompletionArts,
     pub ideas: &'a Ideas,
     pub projects: &'a Projects,
 }
@@ -966,11 +968,11 @@ fn project(
         }
         SourceRow::Fact(mut fact) => {
             if fact.row.item.is_some() {
-                let item = fact
+                let mut item = fact
                     .item
                     .take()
                     .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?;
-                std::mem::take(&mut fact.shown).show(builder);
+                std::mem::take(&mut fact.shown).show(builder, catalogue, &mut item);
                 fact.row.item = Some(builder.item(item)?);
             }
             if let Some(info) = fact.nuke_type.and_then(|kind| {
@@ -1254,37 +1256,33 @@ pub(crate) fn query(
     } else {
         Ok(None)
     };
-    // Each completion's art at its own hour, evaluated now: preparation
-    // keeps completions as plain events.
-    let completions: Vec<(i32, &str, &str)> = rows
-        .values()
-        .filter_map(|row| match row {
-            SourceRow::Focus(change) => {
-                Some((change.hour, change.tag.as_str(), change.token.as_str()))
-            }
+    // Each completion's art as preparation chose it at its own hour, read for this page alone.
+    let (ordinals, hours): (Vec<u64>, Vec<i32>) = rows
+        .iter()
+        .filter_map(|(position, row)| match row {
+            SourceRow::Focus(change) => Some((position.ordinal, change.hour)),
             _ => None,
         })
-        .collect();
+        .unzip();
     drop(phase);
     let phase = replay_frame::cpu::scope_phase("ef-q:focus-art");
     let focus_art: Vec<Option<artwork::ResolvedArt>> = match context.content() {
-        Ok(content) => match crate::prepared_focus::art::event_art(
-            source,
-            content,
-            branch,
-            &completions,
-            cancelled,
-        )? {
-            Ok((art, warnings)) => {
-                builder.feed.warnings.extend(warnings);
-                art.into_iter().map(Some).collect()
+        Ok(content) => {
+            let stored = families.focus_art.art(&ordinals, cancelled)?;
+            let completions: Vec<(i32, Option<crate::prepared_focus::art::CompletionArt>)> =
+                hours.into_iter().zip(stored).collect();
+            match crate::prepared_focus::art::event_art(source, content, &completions)? {
+                Ok((art, warnings)) => {
+                    builder.feed.warnings.extend(warnings);
+                    art.into_iter().map(Some).collect()
+                }
+                Err(reason) => {
+                    builder.unavailable("focusPresentation", "Focus presentation", reason, Some(1));
+                    vec![None; completions.len()]
+                }
             }
-            Err(reason) => {
-                builder.unavailable("focusPresentation", "Focus presentation", reason, Some(1));
-                vec![None; completions.len()]
-            }
-        },
-        Err(_) => vec![None; completions.len()],
+        }
+        Err(_) => vec![None; ordinals.len()],
     };
     let mut focus_art = focus_art.into_iter();
     // Completed projects' icons, kept as their choice's operands, drawn as this request shows them.
@@ -1390,6 +1388,7 @@ fn diagnostics(
         focus,
         ideas,
         projects,
+        focus_art: _,
     } = *families;
     builder.feed.unavailable = metadata.facts.0.feed.unavailable.clone();
     builder.unavailable_keys = metadata.facts.0.unavailable_keys.clone();

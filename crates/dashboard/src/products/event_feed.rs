@@ -908,25 +908,40 @@ impl<'a> HourTexts<'a> {
     }
 }
 
-/// What presenting a fact's item gave besides the item: its notices, in order, and the text
-/// refusals the catalogue noted meanwhile. A query shows them with the item.
+/// What presenting a fact's item gave besides the item: its notices, in order, the text
+/// refusals the catalogue noted meanwhile, and its event picture's sprite with how many of the
+/// notices come before the picture's. A query shows them with the item, drawing the picture.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Shown {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     notices: Vec<Notice>,
     #[serde(default, skip_serializing_if = "catalogue::OwnRefusals::is_empty")]
     noted: catalogue::OwnRefusals,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    picture: Option<(String, usize)>,
 }
 
 impl Shown {
     pub(crate) fn is_empty(&self) -> bool {
-        self.notices.is_empty() && self.noted.is_empty()
+        self.notices.is_empty() && self.noted.is_empty() && self.picture.is_none()
     }
 
     /// Its notices merged into `builder` and its refusals credited to the reply's scope, as
-    /// presenting the item there would have left them.
-    fn show(self, builder: &mut Builder) {
-        for notice in self.notices {
+    /// presenting the item there would have left them, the item's picture drawn as `catalogue`,
+    /// the reply's, shows it; none drawn without one.
+    fn show(self, builder: &mut Builder, catalogue: Option<&Catalogue>, item: &mut EventFeedItem) {
+        let mut notices = self.notices.into_iter();
+        if let Some((picture, before)) = self.picture {
+            for notice in notices.by_ref().take(before) {
+                notice.apply(builder);
+            }
+            if let (Some(catalogue), Some(token)) = (catalogue, &item.token)
+                && let Some(icon) = draw_picture(builder, catalogue, token, &picture)
+            {
+                item.icon = Some(icon);
+            }
+        }
+        for notice in notices {
             notice.apply(builder);
         }
         catalogue::credit(&self.noted);
@@ -943,13 +958,15 @@ pub(crate) fn present(
 ) -> io::Result<Shown> {
     let mut builder = Builder::new(i32::MIN, i32::MAX);
     builder.captured = Some(Vec::new());
+    let mut picture = None;
     let (presented, noted) = catalogue::capture_isolated(|| {
-        script_presentation(&mut builder, catalogue, kind, item, inputs, texts)
+        script_presentation(&mut builder, catalogue, kind, item, inputs, texts, Some(&mut picture))
     });
     presented?;
     Ok(Shown {
         notices: builder.captured.take().unwrap_or_default(),
         noted,
+        picture,
     })
 }
 
@@ -988,8 +1005,46 @@ fn elide_scripted(text: &str) -> String {
     shown
 }
 
+/// An event's picture, the sprite `picture`, drawn as `catalogue` shows it, else the recording's
+/// own, named; none, with why, where neither draws it.
+fn draw_picture(
+    builder: &mut Builder,
+    catalogue: &Catalogue,
+    token: &str,
+    picture: &str,
+) -> Option<String> {
+    let image = catalogue::draw(
+        || format!("event {token} picture"),
+        catalogue,
+        |catalogue| {
+            let sprite = catalogue
+                .sprites
+                .find(picture)?
+                .ok_or_else(|| format!("Event {token}: picture {picture} is undeclared"))?;
+            let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+            catalogue::sprite_frame_png(
+                &catalogue.content.layers,
+                sprite,
+                decode,
+                0,
+                artwork::ICON_EDGE,
+            )
+            .map_err(|why| why.to_string())
+        },
+    );
+    match image.get() {
+        Ok(icon) => Some(icon.clone()),
+        Err(reason) => {
+            builder.unavailable("scriptEventPicture", "Event picture", reason.clone(), Some(1));
+            None
+        }
+    }
+}
+
 /// Event labels use the same recorded stack and event database lookup as
 /// effect descriptions. A plain sole title needs no runtime trigger capture.
+/// With `kept`, the event's picture is kept there, its sprite and how many notices precede its
+/// own, for the reply to draw; else it is drawn.
 fn script_presentation(
     builder: &mut Builder,
     catalogue: &Catalogue,
@@ -997,6 +1052,7 @@ fn script_presentation(
     item: &mut EventFeedItem,
     inputs: Option<&script_effects::Inputs>,
     texts: Option<(&HourTexts<'_>, i32)>,
+    kept: Option<&mut Option<(String, usize)>>,
 ) -> io::Result<()> {
     if !presents_event(kind) {
         if names_decision(kind) {
@@ -1108,35 +1164,17 @@ fn script_presentation(
             Some(1),
         );
     } else if let Ok(picture) = std::str::from_utf8(&event.picture) {
-        // The event's picture is the definition's; drawn as the selection shows it, else the
-        // recording's own, named.
-        let image = catalogue::draw(
-            || format!("event {token} picture"),
-            catalogue,
-            |catalogue| {
-                let sprite = catalogue
-                    .sprites
-                    .find(picture)?
-                    .ok_or_else(|| format!("Event {token}: picture {picture} is undeclared"))?;
-                let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-                catalogue::sprite_frame_png(
-                    &catalogue.content.layers,
-                    sprite,
-                    decode,
-                    0,
-                    artwork::ICON_EDGE,
-                )
-                .map_err(|why| why.to_string())
-            },
-        );
-        match image.get() {
-            Ok(icon) => item.icon = Some(icon.clone()),
-            Err(reason) => builder.unavailable(
-                "scriptEventPicture",
-                "Event picture",
-                reason.clone(),
-                Some(1),
-            ),
+        // The event's picture is the definition's, drawn as the reply's selection shows it.
+        match kept {
+            Some(kept) => {
+                let before = builder.captured.as_ref().map_or(0, Vec::len);
+                *kept = Some((picture.to_owned(), before));
+            }
+            None => {
+                if let Some(icon) = draw_picture(builder, catalogue, token, picture) {
+                    item.icon = Some(icon);
+                }
+            }
         }
     } else {
         builder.unavailable(
@@ -1610,7 +1648,15 @@ fn build(
         for (index, kind, id) in script_items {
             let mut item = builder.feed.items[index as usize].clone();
             let inputs = builder.script_inputs.get(&id).cloned();
-            script_presentation(&mut builder, catalogue, kind, &mut item, inputs.as_ref(), None)?;
+            script_presentation(
+                &mut builder,
+                catalogue,
+                kind,
+                &mut item,
+                inputs.as_ref(),
+                None,
+                None,
+            )?;
             builder.feed.items[index as usize] = item;
         }
         for (reason, count) in catalogue.refusal_entries() {

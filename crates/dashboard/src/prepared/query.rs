@@ -1504,14 +1504,15 @@ impl<T> Default for Kept<T> {
 }
 
 /// `read` of `family`'s publication on `branch`, its keys spelled under `schema`, read once per
-/// publication and kept; none before the family publishes the branch.
+/// publication and kept, with the publication it was read from; none before the family publishes
+/// the branch.
 fn kept_view<T: Send + Sync + 'static>(
     source: &Source,
     content: Option<&ContentOptions>,
     (family, schema): (&str, u64),
     branch: u64,
     read: impl FnOnce(&published::Opened) -> io::Result<T>,
-) -> io::Result<Option<Arc<T>>> {
+) -> io::Result<Option<(Arc<T>, published::Opened)>> {
     let Some(opened) = published::open(source, content, family, schema, branch)? else {
         return Ok(None);
     };
@@ -1523,7 +1524,7 @@ fn kept_view<T: Send + Sync + 'static>(
         .get(&branch)
         && *stamp == opened.stamp()
     {
-        return Ok(Some(Arc::clone(view)));
+        return Ok(Some((Arc::clone(view), opened)));
     }
     let view = Arc::new(read(&opened)?);
     state
@@ -1531,7 +1532,7 @@ fn kept_view<T: Send + Sync + 'static>(
         .unwrap_or_else(PoisonError::into_inner)
         .0
         .insert(branch, (opened.stamp(), Arc::clone(&view)));
-    Ok(Some(view))
+    Ok(Some((view, opened)))
 }
 
 /// The event feed's views of the families the segment driver prepares, each read once per
@@ -1539,7 +1540,8 @@ fn kept_view<T: Send + Sync + 'static>(
 struct FeedFamilies {
     nukes: Arc<crate::products::country_nukes::query::Feed>,
     subjects: Arc<crate::products::subjects::Feed>,
-    focus: Arc<crate::prepared_focus::query::Feed>,
+    /// The focus completions, their art read from their publication for the rows a page shows.
+    focus: crate::prepared_focus::query::Stored,
     ideas: Arc<crate::products::idea_history::Feed>,
     projects: Arc<crate::products::special_projects::query::Feed>,
 }
@@ -1553,7 +1555,7 @@ impl FeedFamilies {
         cancelled: &AtomicBool,
     ) -> io::Result<Option<Self>> {
         use crate::products::{country_nukes, ideas, special_projects, subjects};
-        let Some(nukes) = kept_view(
+        let Some((nukes, _)) = kept_view(
             source,
             content,
             ("nukes", country_nukes::emit::SCHEMA),
@@ -1567,7 +1569,7 @@ impl FeedFamilies {
         else {
             return Ok(None);
         };
-        let Some(subjects) = kept_view(
+        let Some((subjects, _)) = kept_view(
             source,
             content,
             ("subjects", subjects::emit::SCHEMA),
@@ -1581,7 +1583,7 @@ impl FeedFamilies {
         else {
             return Ok(None);
         };
-        let Some(focus) = kept_view(
+        let Some((feed, opened)) = kept_view(
             source,
             content,
             ("focus", crate::prepared_focus::emit::SCHEMA),
@@ -1595,7 +1597,7 @@ impl FeedFamilies {
         else {
             return Ok(None);
         };
-        let Some(ideas) = kept_view(
+        let Some((ideas, _)) = kept_view(
             source,
             content,
             (ideas::NAME, ideas::emit::SCHEMA),
@@ -1609,7 +1611,7 @@ impl FeedFamilies {
         else {
             return Ok(None);
         };
-        let Some(projects) = kept_view(
+        let Some((projects, _)) = kept_view(
             source,
             content,
             ("projects", special_projects::emit::SCHEMA),
@@ -1626,7 +1628,7 @@ impl FeedFamilies {
         Ok(Some(Self {
             nukes,
             subjects,
-            focus,
+            focus: crate::prepared_focus::query::Stored { feed, opened },
             ideas,
             projects,
         }))
@@ -1636,7 +1638,8 @@ impl FeedFamilies {
         crate::products::event_feed::prepared::query::Families {
             nukes: &self.nukes,
             subjects: &self.subjects,
-            focus: &self.focus,
+            focus: &self.focus.feed,
+            focus_art: &self.focus,
             ideas: &self.ideas,
             projects: &self.projects,
         }

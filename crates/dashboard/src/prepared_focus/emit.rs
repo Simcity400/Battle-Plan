@@ -1,7 +1,7 @@
 //! National focus' emit: each tag's presence and focus order on the family's series publication
 //! (presence runs with an event at each order change, its completion chain, its progress and
-//! daily gain), the four tables' refusals, the completions the event feed lists, and the
-//! countries and completions without an observation or a date, by reason.
+//! daily gain), the four tables' refusals, the completions the event feed lists with their art,
+//! and the countries and completions without an observation or a date, by reason.
 //!
 //! A tag is present while one country holds it at consecutive hours; another country, an hour
 //! unobserved or an hour not walked ends it. Its order is dated where it extends the order
@@ -9,7 +9,11 @@
 //! its focuses undated. Progress runs from each change of the raw progress; its daily gain is
 //! the rise since the hour before the run while the same focus is active.
 
-use super::{RESET, TableRefusal, UNDATED, facts};
+use super::{
+    RESET, TableRefusal, UNDATED,
+    art::{CompletionArt, Presenter},
+    facts,
+};
 use dashboard_series::{
     Cell, Event, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
     carry::Carry,
@@ -51,7 +55,8 @@ pub mod kind {
     pub const ORDER: u64 = 0;
     /// `[Unsigned ordinal, Text token, Integer completedByHour | Null]`, on a tag's CHAIN key.
     pub const ENTRY: u64 = 1;
-    /// `[Unsigned actor, Text token]`, on the family's COMPLETIONS key.
+    /// `[Unsigned actor, Text token, Text art | Null]`, on the family's COMPLETIONS key: its
+    /// art the MessagePack of a [`super::super::art::CompletionArt`], none without content.
     pub const COMPLETION: u64 = 2;
 }
 
@@ -126,6 +131,13 @@ struct Track {
 /// A completion the hour read: its tag, its place in the order and its token.
 type Completion = (u64, usize, String);
 
+/// What completions the walk did not present are presented from: the recording, and the content
+/// it names.
+pub struct Recorded<'s> {
+    pub source: &'s crate::Source,
+    pub catalogue: &'s Arc<crate::catalogue::Catalogue>,
+}
+
 /// The family's emit on one branch.
 pub struct Emit {
     actors: Actors,
@@ -150,6 +162,7 @@ pub struct Emit {
     last: Option<i32>,
     /// The first hour since the last cut.
     first: Option<i32>,
+    presenter: Presenter,
 }
 
 impl Default for Emit {
@@ -175,6 +188,7 @@ impl Emit {
             stale: true,
             last: None,
             first: None,
+            presenter: Presenter::default(),
         }
     }
 
@@ -229,10 +243,15 @@ impl Emit {
         Ok(actor)
     }
 
-    /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    /// Keeps one projected hour, its completions presented with `recorded`'s content.
+    pub fn hour(
+        &mut self,
+        writer: &mut Writer<'_>,
+        hour: facts::Hour,
+        recorded: Option<&Recorded<'_>>,
+    ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("focus.emit", None);
-        let at = hour.hour;
+        let (branch, at) = (hour.branch, hour.hour);
         let adjacent = match self.last {
             Some(last) if last.checked_add(1) == Some(at) => true,
             Some(last) if at <= last => {
@@ -251,6 +270,7 @@ impl Emit {
         self.first.get_or_insert(at);
         let [refusals, completions_key] = self.family(writer)?;
         let mut completions: Vec<Completion> = Vec::new();
+        let mut presented = Vec::new();
         let mut reasons_changed = false;
         match hour.facts {
             Some(facts) => {
@@ -259,7 +279,9 @@ impl Emit {
                     tally,
                     whole,
                     tags,
+                    art,
                 } = *facts;
+                presented = art;
                 if !adjacent && !whole {
                     return Err(dashboard_core::invalid(
                         "A focus hour after one not walked does not name every tag",
@@ -329,9 +351,19 @@ impl Emit {
                 .cmp(&labels[right.0 as usize])
                 .then(left.1.cmp(&right.1))
         });
-        for (actor, _, token) in completions {
+        let art = match recorded {
+            Some(recorded) => self.art(recorded, (branch, at), &completions, presented)?,
+            None => vec![None; completions.len()],
+        };
+        for ((actor, _, token), art) in completions.into_iter().zip(art) {
             let token = writer.text(&token)?;
-            let fields = writer.cells([Cell::Unsigned(actor), Cell::Text(token)])?;
+            let art = match art {
+                Some(art) => {
+                    Cell::Text(writer.bytes(&dashboard_base::prepared::codec::encode(&art)?)?)
+                }
+                None => Cell::Null,
+            };
+            let fields = writer.cells([Cell::Unsigned(actor), Cell::Text(token), art])?;
             let sequence = writer.sequence()?;
             writer.event(Event {
                 key: completions_key,
@@ -343,6 +375,56 @@ impl Emit {
             })?;
         }
         Ok(())
+    }
+
+    /// The art of `completions`, dated at `at` of `branch`: what the walk presented of each, the
+    /// others presented on the frame sought from the recording, as one batch.
+    fn art(
+        &mut self,
+        recorded: &Recorded<'_>,
+        (branch, at): (u64, i32),
+        completions: &[Completion],
+        mut presented: Vec<facts::Presented>,
+    ) -> io::Result<Vec<Option<CompletionArt>>> {
+        let mut art = Vec::with_capacity(completions.len());
+        let mut missing = Vec::new();
+        for (index, (actor, position, token)) in completions.iter().enumerate() {
+            let tag = &self.labels[*actor as usize];
+            let found = presented.iter().position(|held| {
+                held.position == *position
+                    && held.tag.as_bytes() == &tag[..]
+                    && held.token == *token
+            });
+            match found {
+                Some(found) => art.push(Some(presented.swap_remove(found).art)),
+                None => {
+                    art.push(None);
+                    missing.push(index);
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(art);
+        }
+        let tags: Vec<String> = missing
+            .iter()
+            .map(|&index| lossy(&self.labels[completions[index].0 as usize]))
+            .collect();
+        let asked: Vec<(&str, &str)> = missing
+            .iter()
+            .zip(&tags)
+            .map(|(&index, tag)| (completions[index].2.as_str(), tag.as_str()))
+            .collect();
+        let shown = self.presenter.present_sought(
+            recorded.source,
+            recorded.catalogue,
+            (branch, at),
+            &asked,
+        )?;
+        for (index, shown) in missing.into_iter().zip(shown) {
+            art[index] = Some(shown);
+        }
+        Ok(art)
     }
 
     /// The id of the refusal set `read`, catalogued when it is new.

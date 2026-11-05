@@ -376,6 +376,66 @@ fn focus_slot(frame: &replay_frame::frame::DecodedFrame, tag: &str) -> Result<Op
 /// Resolved artwork and, when refused, its feed-local reason.
 pub type ResolvedArt = (Artwork, Option<String>);
 
+/// An event's focus art at its hour, its icon not yet drawn: its text, the sprite its icon
+/// chose there or why it chose none, and why each piece of its text is refused, in order. A
+/// reply draws the icon as it shows it ([`Context::event_focus_icons`]) and names why the art is
+/// refused ([`refusal`]).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChosenArt {
+    pub art: Artwork,
+    pub icon: Result<String, String>,
+    pub text: Vec<String>,
+}
+
+/// Why a focus's art is refused: its icon's reason, then each of `text`'s not already named.
+pub fn refusal(icon: Option<String>, text: &[String]) -> Option<String> {
+    let mut refused = icon;
+    for reason in text {
+        match &mut refused {
+            Some(previous) => {
+                if !previous.contains(reason.as_str()) {
+                    previous.push_str("; ");
+                    previous.push_str(reason);
+                }
+            }
+            None => refused = Some(reason.clone()),
+        }
+    }
+    refused
+}
+
+/// A focus as a batch resolves it: its art, its icon (drawn, or the sprite chosen where the
+/// batch draws none) or why it has none, none where the projection asks for no icon, and why
+/// each piece of its text is refused, in order.
+struct FocusItem {
+    art: Artwork,
+    icon: Option<Result<String, String>>,
+    text: Vec<String>,
+}
+
+impl FocusItem {
+    fn resolved(self) -> ResolvedArt {
+        let Self { mut art, icon, text } = self;
+        let refused = match icon {
+            Some(Ok(icon)) => {
+                art.icon = Some(icon);
+                None
+            }
+            Some(Err(reason)) => Some(reason),
+            None => None,
+        };
+        (art, refusal(refused, &text))
+    }
+
+    fn chosen(self) -> ChosenArt {
+        ChosenArt {
+            art: self.art,
+            icon: self.icon.expect("an event's focus art asks for its icon"),
+            text: self.text,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FocusProjection {
     Full,
@@ -390,7 +450,11 @@ pub enum FocusProjection {
 pub struct FocusFrame<'a> {
     pub frame: &'a replay_frame::frame::DecodedFrame,
     catalogue: &'a Catalogue,
-    text: OnceLock<Result<crate::scripted_text::ScriptedText<'a>, String>>,
+    /// The hour's text context, with what building it noted.
+    text: OnceLock<(
+        Result<crate::scripted_text::ScriptedText<'a>, String>,
+        catalogue::OwnRefusals,
+    )>,
     /// Each recorded input reread this hour, read once however many
     /// countries' evaluations read it.
     rereads:
@@ -431,25 +495,31 @@ impl<'a> FocusFrame<'a> {
     }
 
     fn text(&self) -> Result<&crate::scripted_text::ScriptedText<'a>, String> {
-        let catalogue = self.catalogue;
+        let shown = self.catalogue;
         let frame = self.frame;
-        self.text
-            .get_or_init(|| {
-                #[cfg(any(test, feature = "test-support"))]
-                self.text_builds.set(self.text_builds.get() + 1);
-                catalogue.scripted_content().map(|content| {
+        let mut built = false;
+        let (text, noted) = self.text.get_or_init(|| {
+            built = true;
+            #[cfg(any(test, feature = "test-support"))]
+            self.text_builds.set(self.text_builds.get() + 1);
+            catalogue::capture(|| {
+                shown.scripted_content().map(|content| {
                     crate::triggers::inputs::unrecorded(|| {
                         crate::scripted_text::ScriptedText::new(
                             frame,
-                            &catalogue.localisation,
+                            &shown.localisation,
                             content,
                             0,
                         )
                     })
                 })
             })
-            .as_ref()
-            .map_err(Clone::clone)
+        });
+        // Each item using the shared context names what building it noted, as the first did.
+        if !built {
+            catalogue::credit(noted);
+        }
+        text.as_ref().map_err(Clone::clone)
     }
 }
 
@@ -1272,6 +1342,66 @@ impl Context {
         })
     }
 
+    /// [`Self::focuses_at`] without drawing: each icon's sprite chosen at the hour, drawn when a
+    /// reply shows it ([`Self::event_focus_icons`]); the caller admitting each lazy item.
+    pub fn event_focus_choices_at<T>(
+        &mut self,
+        requests: &[(&str, &str)],
+        frame: &replay_frame::frame::DecodedFrame,
+        collect: impl FnOnce(&mut dyn Iterator<Item = ChosenArt>) -> T,
+    ) -> T {
+        let catalogue = Arc::clone(&self.catalogue);
+        let inputs = FocusFrame::new(frame, &catalogue);
+        self.focus_items(requests, &inputs, false, FocusProjection::Full, false, |items| {
+            let mut chosen = items.map(FocusItem::chosen);
+            collect(&mut chosen)
+        })
+    }
+
+    /// Each event icon [`Self::event_focus_choices_at`] chose at one hour, of (token, choice),
+    /// drawn as this context's catalogue shows it, as one batch; the choice's refusal where it
+    /// chose none.
+    pub fn event_focus_icons(
+        &self,
+        chosen: &[(&str, &Result<String, String>)],
+    ) -> Vec<Result<String, String>> {
+        if chosen.len() <= 8 {
+            self.prefetch_requested(chosen.iter().map(|&(token, _)| (token, None)));
+        }
+        chosen
+            .iter()
+            .map(|&(token, choice)| -> Result<String, String> {
+                let name = choice.as_ref().map_err(Clone::clone)?;
+                self.draw_focus_icon(token, |_| Ok(name.clone()))
+            })
+            .collect()
+    }
+
+    /// `token`'s icon drawn as this context's catalogue shows it ([`catalogue::draw`]), the
+    /// sprite `choose` names for the drawing catalogue.
+    fn draw_focus_icon(
+        &self,
+        token: &str,
+        choose: impl Fn(&Catalogue) -> Result<String, String>,
+    ) -> Result<String, String> {
+        catalogue::draw(
+            || format!("focus {token} icon"),
+            &self.catalogue,
+            |drawing| {
+                let name = choose(drawing)?;
+                match self.cached_icon(drawing, &name) {
+                    Ok(Some(icon)) => Ok(icon),
+                    Ok(None) => Err(format!(
+                        "focus {token}: selected sprite {name} is undeclared or has no texture"
+                    )),
+                    Err(reason) => Err(format!("focus {token}: {reason}")),
+                }
+            },
+        )
+        .get()
+        .clone()
+    }
+
     /// The caller admits each lazy item while the batch shares its text context.
     pub fn focus_tree_at<T>(
         &mut self,
@@ -1343,49 +1473,75 @@ impl Context {
         projection: FocusProjection,
         collect: impl FnOnce(&mut dyn Iterator<Item = ResolvedArt>) -> T,
     ) -> T {
-        let frame = inputs.frame;
-        if projection.icons() && requests.len() <= 8 {
-            let sprites = requests
-                .iter()
-                .filter_map(|&(token, tag)| {
-                    let definition = self.focus(token).ok()??;
-                    let selected = if tree {
-                        let mut selected = None;
-                        for name in definition.button_sprite_overrides(token, Some(tag)) {
-                            match self.catalogue.sprites.find(&name) {
-                                Ok(Some(_)) => {
-                                    selected = Some(name);
-                                    break;
-                                }
-                                Ok(None) => {}
-                                Err(_) => return None,
+        self.focus_items(requests, inputs, tree, projection, true, |items| {
+            let mut resolved = items.map(FocusItem::resolved);
+            collect(&mut resolved)
+        })
+    }
+
+    /// Decodes together the icons of `requests` (token, and its tag where a tree's overrides are
+    /// probed) whose sprite reads no recorded state.
+    fn prefetch_requested<'r>(&self, requests: impl Iterator<Item = (&'r str, Option<&'r str>)>) {
+        let sprites = requests
+            .filter_map(|(token, tree)| {
+                let definition = self.focus(token).ok()??;
+                let selected = if let Some(tag) = tree {
+                    let mut selected = None;
+                    for name in definition.button_sprite_overrides(token, Some(tag)) {
+                        match self.catalogue.sprites.find(&name) {
+                            Ok(Some(_)) => {
+                                selected = Some(name);
+                                break;
                             }
+                            Ok(None) => {}
+                            Err(_) => return None,
                         }
-                        selected
-                    } else {
-                        None
-                    };
-                    let selected = selected.or_else(|| {
-                        definition
-                            .icon(None, |trigger| {
-                                if trigger.is_empty() {
-                                    Ok(true)
-                                } else {
-                                    Err("recorded context required".into())
-                                }
-                            })
-                            .ok()
-                            .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
-                    })?;
-                    self.catalogue
-                        .sprites
-                        .find(&selected)
+                    }
+                    selected
+                } else {
+                    None
+                };
+                let selected = selected.or_else(|| {
+                    definition
+                        .icon(None, |trigger| {
+                            if trigger.is_empty() {
+                                Ok(true)
+                            } else {
+                                Err("recorded context required".into())
+                            }
+                        })
                         .ok()
-                        .flatten()
-                        .filter(|sprite| sprite.texture.is_some())
-                })
-                .collect();
-            self.prefetch_icons(sprites);
+                        .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
+                })?;
+                self.catalogue
+                    .sprites
+                    .find(&selected)
+                    .ok()
+                    .flatten()
+                    .filter(|sprite| sprite.texture.is_some())
+            })
+            .collect();
+        self.prefetch_icons(sprites);
+    }
+
+    /// Each of `requests` as one batch resolves it, its icon drawn when `draw`, else its sprite
+    /// chosen; a batch that draws none is an event's, whose icon probes no tree override.
+    fn focus_items<T>(
+        &mut self,
+        requests: &[(&str, &str)],
+        inputs: &FocusFrame<'_>,
+        tree: bool,
+        projection: FocusProjection,
+        draw: bool,
+        collect: impl FnOnce(&mut dyn Iterator<Item = FocusItem>) -> T,
+    ) -> T {
+        let frame = inputs.frame;
+        if draw && projection.icons() && requests.len() <= 8 {
+            self.prefetch_requested(
+                requests
+                    .iter()
+                    .map(|&(token, tag)| (token, tree.then_some(tag))),
+            );
         }
         let catalogue = Arc::clone(&self.catalogue);
         let mut country_scopes = BTreeMap::new();
@@ -1400,104 +1556,81 @@ impl Context {
                 })
                 .clone();
             let context = || inputs.text();
-            let (icon, mut refusal) = if !projection.icons() {
-                (None, None)
-            } else {
-                match self.focus(token) {
-                    Err(gap) => (None, Some(format!("focus {token}: {gap}"))),
-                    Ok(None) => (
-                        None,
-                        Some(format!("focus {token}: definition absent from recorded content")),
-                    ),
-                    Ok(Some(definition)) => {
-                        // Focus-tree buttons probe authored country/id and id overrides before
-                        // the definition's icon. Events use the definition.
-                        let overrides = if tree {
-                            definition.button_sprite_overrides(token, Some(tag))
-                        } else {
-                            Vec::new()
-                        };
-                        // The definition's icon: recorded facts, its triggers evaluated at the
-                        // hour only when no override is declared.
-                        let evaluated = std::cell::OnceCell::new();
-                        let definition_icon = || {
-                            evaluated
-                                .get_or_init(|| {
-                                    definition
-                                        .icon(None, |trigger| {
-                                            if trigger.is_empty() {
-                                                return Ok(true);
-                                            }
-                                            let slot = country.clone()?.ok_or_else(|| {
-                                                format!("focus {token}: country scope was not recorded")
-                                            })?;
-                                            let graph = std::rc::Rc::new(std::cell::RefCell::new(
-                                                crate::scripted_text::EventScopes::new(vec![
-                                                    crate::scripted_text::EventScope::of(
-                                                        crate::scripted_text::EventObject::Country(slot),
-                                                    ),
-                                                ]),
-                                            ));
-                                            let evaluator = crate::triggers::Evaluator::new(
-                                                context()?.trigger_world()?,
-                                                None,
+            let icon = projection.icons().then(|| match self.focus(token) {
+                Err(gap) => Err(format!("focus {token}: {gap}")),
+                Ok(None) => Err(format!("focus {token}: definition absent from recorded content")),
+                Ok(Some(definition)) => {
+                    // Focus-tree buttons probe authored country/id and id overrides before
+                    // the definition's icon. Events use the definition.
+                    let overrides = if tree {
+                        definition.button_sprite_overrides(token, Some(tag))
+                    } else {
+                        Vec::new()
+                    };
+                    // The definition's icon: recorded facts, its triggers evaluated at the
+                    // hour only when no override is declared.
+                    let evaluated = std::cell::OnceCell::new();
+                    let definition_icon = || {
+                        evaluated
+                            .get_or_init(|| {
+                                definition
+                                    .icon(None, |trigger| {
+                                        if trigger.is_empty() {
+                                            return Ok(true);
+                                        }
+                                        let slot = country.clone()?.ok_or_else(|| {
+                                            format!("focus {token}: country scope was not recorded")
+                                        })?;
+                                        let graph = std::rc::Rc::new(std::cell::RefCell::new(
+                                            crate::scripted_text::EventScopes::new(vec![
+                                                crate::scripted_text::EventScope::of(
+                                                    crate::scripted_text::EventObject::Country(slot),
+                                                ),
+                                            ]),
+                                        ));
+                                        let evaluator = crate::triggers::Evaluator::new(
+                                            context()?.trigger_world()?,
+                                            None,
+                                        )
+                                        .with_event_scopes(graph);
+                                        evaluator
+                                            .evaluate(
+                                                trigger,
+                                                evaluator
+                                                    .event_scopes(0)
+                                                    .map_err(|why| why.to_string())?,
                                             )
-                                            .with_event_scopes(graph);
-                                            evaluator
-                                                .evaluate(
-                                                    trigger,
-                                                    evaluator
-                                                        .event_scopes(0)
-                                                        .map_err(|why| why.to_string())?,
-                                                )
-                                                .decided()
-                                        })
-                                        .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
-                                })
-                                .clone()
-                        };
-                        // Which override is drawn is the drawing catalogue's choice, made with
-                        // the draw as one operation.
-                        let drawn = catalogue::draw(
-                            || format!("focus {token} icon"),
-                            &catalogue,
-                            |drawing| {
-                                let mut chosen = None;
-                                for name in &overrides {
-                                    if drawing.sprites.find(name)?.is_some() {
-                                        chosen = Some(name.clone());
-                                        break;
-                                    }
-                                }
-                                let name = match chosen {
-                                    Some(name) => name,
-                                    None => definition_icon()?,
-                                };
-                                match self.cached_icon(drawing, &name) {
-                                    Ok(Some(icon)) => Ok(icon),
-                                    Ok(None) => Err(format!(
-                                        "focus {token}: selected sprite {name} is undeclared or has no texture"
-                                    )),
-                                    Err(reason) => Err(format!("focus {token}: {reason}")),
-                                }
-                            },
-                        );
-                        match drawn.get() {
-                            Ok(icon) => (Some(icon.clone()), None),
-                            Err(reason) => (None, Some(reason.clone())),
-                        }
+                                            .decided()
+                                    })
+                                    .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
+                            })
+                            .clone()
+                    };
+                    if !draw {
+                        return definition_icon();
                     }
+                    // Which override is drawn is the drawing catalogue's choice, made with
+                    // the draw as one operation.
+                    self.draw_focus_icon(token, |drawing| {
+                        for name in &overrides {
+                            if drawing.sprites.find(name)?.is_some() {
+                                return Ok(name.clone());
+                            }
+                        }
+                        definition_icon()
+                    })
                 }
-            };
+            });
+            let mut text = Vec::new();
             let mut art = Artwork {
                 token: token.into(),
                 name: None,
                 description: None,
                 base_duration_days: self.base_duration_days(token),
-                icon,
+                icon: None,
             };
             if matches!(projection, FocusProjection::Icons) {
-                return (art, refusal);
+                return FocusItem { art, icon, text };
             }
             let localise = |key: &str| -> Result<String, String> {
                 if !catalogue.has_presentation_key(key) {
@@ -1556,27 +1689,18 @@ impl Context {
                         Ok(value) => *target = Some(value),
                         Err(reason) => {
                             *target = None;
-                            let reason = format!("focus localisation {key}: {reason}");
-                            match &mut refusal {
-                                Some(previous) => {
-                                    if !previous.contains(&reason) {
-                                        previous.push_str("; ");
-                                        previous.push_str(&reason);
-                                    }
-                                }
-                                None => refusal = Some(reason),
-                            };
+                            text.push(format!("focus localisation {key}: {reason}"));
                         }
                     }
                 }
-            } else if refusal.is_none() {
+            } else if !matches!(icon, Some(Err(_))) {
                 // Text alone names the missing or unknown definition as an icon request does.
-                refusal = Some(match definition {
+                text.push(match definition {
                     Err(gap) => format!("focus {token}: {gap}"),
                     _ => format!("focus {token}: definition absent from recorded content"),
                 });
             }
-            (art, refusal)
+            FocusItem { art, icon, text }
         });
         collect(&mut items)
     }

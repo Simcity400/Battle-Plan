@@ -62,6 +62,7 @@ pub(crate) fn feed(
     completions.sort_by_key(|completion| completion.hour);
     let (observed, unavailable) = index.completion_metadata();
     Ok(super::query::Feed {
+        art: vec![None; completions.len()],
         completions,
         observed,
         unavailable: unavailable.clone(),

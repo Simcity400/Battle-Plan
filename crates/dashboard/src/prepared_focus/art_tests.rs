@@ -417,30 +417,51 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
         )
         .is_err()
     );
-    // The event feed's art at each completion's hour is the event
-    // presentation of that hour's frame.
-    let requests = [
-        (101, "GER", "t00"),
-        (102, "GER", "a_static"),
-        (101, "ENG", "a_static"),
-    ];
-    let before = reads();
-    art::EVENT_ART_FREE.with(|free| free.set(true));
-    let (art, _) = art::event_art(&source, &content, 1, &requests, &cancelled)
-        .unwrap()
-        .unwrap();
-    // Its frames are read with the art context free, so other requests present meanwhile.
-    assert!(reads() > before, "the dynamic completion reads its hour's frame");
-    assert!(art::EVENT_ART_FREE.with(std::cell::Cell::get));
+    // Preparation chooses each completion's art at its hour, which only a
+    // dynamic completion reads the frame for, and draws no icon; the reply
+    // draws it, giving the event presentation of that hour's frame.
+    let mut presenter = art::Presenter::default();
     let mut events = artwork::Context::load(Arc::clone(&catalogue), national).unwrap();
-    for ((hour, tag, token), actual) in requests.iter().zip(&art) {
+    for (hour, tag, token, dynamic) in [
+        (101, "GER", "t00", true),
+        (102, "GER", "a_static", false),
+        (101, "ENG", "a_static", false),
+    ] {
+        let before = reads();
+        let shown = presenter
+            .present_sought(&source, &catalogue, (1, hour), &[(token, tag)])
+            .unwrap();
+        assert_eq!(reads() > before, dynamic, "{token} at {hour}");
         let expected = events
-            .focuses_at(&[(*token, *tag)], &frames[(*hour - 100) as usize])
+            .focuses_at(&[(token, tag)], &frames[(hour - 100) as usize])
             .pop()
             .unwrap();
+        let [art::CompletionArt::Shown { art: chosen, .. }] = &shown[..] else {
+            panic!("{token} at {hour}: {shown:?}");
+        };
+        assert_eq!(chosen.art.icon, None, "{token} at {hour}: nothing drawn");
+        let (replied, _) = art::event_art(&source, &content, &[(hour, shown.into_iter().next())])
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(&replied[0]).unwrap(),
             serde_json::to_value(expected).unwrap()
+        );
+    }
+    // Completions sharing an hour's text context each name what building it
+    // noted, so a page showing either names it.
+    let shared = art::Presenter::default()
+        .present_sought(&source, &catalogue, (1, 101), &[("t00", "GER"), ("t00", "GER")])
+        .unwrap();
+    for shown in &shared {
+        let art::CompletionArt::Shown { noted, .. } = shown else {
+            panic!("{shown:?}");
+        };
+        assert!(
+            noted
+                .readers()
+                .contains(&dashboard_text::catalogue::Reader::Scripted),
+            "{shown:?}"
         );
     }
 }
@@ -599,13 +620,14 @@ fn focus_art_and_static_text_keep_each_database_apart() {
         assert_eq!(continuous.name, expected("Continuous title"));
         assert_eq!(continuous.description, expected("Continuous details"));
         // The event feed's completions are national focuses.
-        let (events, _) = art::event_art(&source, &content, 1, &[(100, "GER", "shared")], &cancelled)
-            .unwrap()
+        let catalogue = crate::catalogue::catalogue(&source, &content).unwrap();
+        let events = art::Presenter::default()
+            .present_sought(&source, &catalogue, (1, 100), &[("shared", "GER")])
             .unwrap();
-        assert_eq!(events[0].0.name.as_deref(), Some("National title"));
-        assert_eq!(
-            events[0].0.description.as_deref(),
-            Some("National details")
-        );
+        let [art::CompletionArt::Shown { art: event, .. }] = &events[..] else {
+            panic!("{events:?}");
+        };
+        assert_eq!(event.art.name.as_deref(), Some("National title"));
+        assert_eq!(event.art.description.as_deref(), Some("National details"));
     }
 }

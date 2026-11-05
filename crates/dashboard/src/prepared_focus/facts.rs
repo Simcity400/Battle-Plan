@@ -3,10 +3,16 @@
 //! where those counts change, and each tag's observation (its country, progress and order)
 //! where it changed. A tag held by several countries is observed as its highest country id that
 //! has one. An hour that changes nothing the observation reads carries nothing but its hour.
-//! What a tag held before the segment is the ordered emit's ([`super::emit`]).
+//! What a tag held before the segment is the ordered emit's ([`super::emit`]). With the game's
+//! content, the focuses an observation completed since the hour before in the segment are
+//! chosen as the event feed shows them (text and icon sprite), on the walk's frame.
 
-use super::{INCOMPLETE_ORDER, INCOMPLETE_TABLES, NO_FOCUS_ROW, NO_TAG, TableRefusal, UNRESOLVED};
-use dashboard_world::{Country, Needs, Roster, Tag, World};
+use super::{
+    INCOMPLETE_ORDER, INCOMPLETE_TABLES, NO_FOCUS_ROW, NO_TAG, TableRefusal, UNRESOLVED,
+    art::{self, CompletionArt, Presenter},
+};
+use crate::catalogue::Catalogue;
+use dashboard_world::{Country, Hold, Needs, Roster, Tag, World};
 use replay::{
     columns,
     segments::{self, Item, Operator, Sink, State},
@@ -17,10 +23,10 @@ use replay_data::{
     scope::CaptureMode,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     io,
     mem::size_of,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 /// The tables a projection reads, in the order their refusals are listed.
@@ -31,10 +37,29 @@ pub const TABLES: &[TableId] = &[
     TableId::CompletedFocuses,
 ];
 
-/// What a projection reads of its walk's world: the countries.
-pub fn needs() -> Needs {
+/// [`TABLES`] with those completion art reads of its hour's frame.
+pub fn art_tables() -> &'static [TableId] {
+    static WITH_ART: OnceLock<Vec<TableId>> = OnceLock::new();
+    WITH_ART.get_or_init(|| {
+        let tables: BTreeSet<TableId> = TABLES.iter().chain(art::tables()).copied().collect();
+        tables.into_iter().collect()
+    })
+}
+
+/// The tables completion art reads of the walk's frame, as an operator asks for them.
+fn art_holds() -> Vec<(TableId, Hold)> {
+    art::tables()
+        .iter()
+        .map(|&table| (table, Hold::Whole))
+        .collect()
+}
+
+/// What a projection reads of its walk's world: the countries, and the frame completion art
+/// reads when it presents it.
+pub fn needs(art: bool) -> Needs {
     Needs {
         countries: true,
+        frame: if art { art_holds() } else { Vec::new() },
         ..Needs::default()
     }
 }
@@ -62,6 +87,15 @@ pub struct Observation {
     pub order: Arc<Order>,
 }
 
+/// A focus the walk saw a tag's observation complete since the hour before: its place in the
+/// order, its token as replies show it, and its art.
+pub struct Presented {
+    pub tag: Arc<str>,
+    pub position: usize,
+    pub token: String,
+    pub art: CompletionArt,
+}
+
 /// What the ordered emit reads of an hour that changes what the observation reads.
 pub struct Facts {
     /// The four tables' refusals, at a segment's first hour and where they changed.
@@ -72,6 +106,8 @@ pub struct Facts {
     pub whole: bool,
     /// Each tag whose observation changed, none where it is no longer observed.
     pub tags: Vec<(Arc<str>, Option<Observation>)>,
+    /// What the hour completed, presented where the operator presents art.
+    pub art: Vec<Presented>,
 }
 
 /// One hour of a segment.
@@ -116,6 +152,77 @@ impl Item for Hour {
                         })
                 })
                 .sum::<usize>()
+            + facts.art.capacity() * size_of::<Presented>()
+            + facts
+                .art
+                .iter()
+                .map(|presented| presented.token.capacity() + presented.art.bytes())
+                .sum::<usize>()
+    }
+}
+
+/// A tag's observation that completed focuses since the hour before, from `from` in its order.
+struct Grown {
+    tag: Arc<str>,
+    from: usize,
+    order: Arc<Order>,
+}
+
+/// What an operator presents completion art with: the recorded content, the event feed's
+/// context over it, and the frame it reads of the walk.
+struct Art {
+    catalogue: Arc<Catalogue>,
+    presenter: Presenter,
+    holds: Vec<(TableId, Hold)>,
+}
+
+impl Art {
+    /// What `grown` completed at `hour`, as one batch in the order the emit lists them.
+    fn present(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        grown: &[Grown],
+    ) -> io::Result<Vec<Presented>> {
+        let mut completed: Vec<(Arc<str>, usize, String)> = grown
+            .iter()
+            .flat_map(|grown| {
+                (grown.from..grown.order.completed.len()).map(|position| {
+                    let token = &grown.order.completed[position];
+                    (
+                        Arc::clone(&grown.tag),
+                        position,
+                        String::from_utf8_lossy(token).into_owned(),
+                    )
+                })
+            })
+            .collect();
+        completed.sort_unstable_by(|left, right| {
+            left.0
+                .as_bytes()
+                .cmp(right.0.as_bytes())
+                .then(left.1.cmp(&right.1))
+        });
+        let asked: Vec<(&str, &str)> = completed
+            .iter()
+            .map(|(tag, _, token)| (token.as_str(), &**tag))
+            .collect();
+        let holds = &self.holds;
+        let shown = self.presenter.present(
+            &self.catalogue,
+            (hour.branch, hour.hour),
+            &asked,
+            || Ok(Ok(hour.world.frame_held(hour.state, holds)?)),
+        )?;
+        Ok(completed
+            .into_iter()
+            .zip(shown)
+            .map(|((tag, position, token), art)| Presented {
+                tag,
+                position,
+                token,
+                art,
+            })
+            .collect())
     }
 }
 
@@ -263,6 +370,7 @@ pub struct Projector {
     sent: HashMap<Tag, (Arc<str>, Observation)>,
     /// Canonical slots whose countries' observations may have changed.
     dirty: HashSet<u32>,
+    art: Option<Art>,
 }
 
 /// What [`Projector::save`] writes: nothing but that it restarts, since everything it holds is
@@ -297,7 +405,18 @@ impl Projector {
             sent_tally: None,
             sent: HashMap::new(),
             dirty: HashSet::new(),
+            art: None,
         })
+    }
+
+    /// It presents completions' art with `catalogue`'s content; none without content.
+    pub fn with_art(mut self, catalogue: Option<Arc<Catalogue>>) -> Self {
+        self.art = catalogue.map(|catalogue| Art {
+            catalogue,
+            presenter: Presenter::default(),
+            holds: art_holds(),
+        });
+        self
     }
 
     fn clear(&mut self) {
@@ -652,13 +771,15 @@ impl Projector {
     }
 
     /// The tags whose observation changed since last sent, of `tags` (every held tag when
-    /// `all`, the others no longer observed).
+    /// `all`, the others no longer observed), and into `grown` those whose country's order
+    /// extends the one sent with completions.
     fn changes(
         &mut self,
         roster: &Roster,
         tags: Vec<Tag>,
         all: bool,
         out: &mut Vec<(Arc<str>, Option<Observation>)>,
+        mut grown: Option<&mut Vec<Grown>>,
     ) {
         let mut seen = HashSet::new();
         for tag in tags {
@@ -670,7 +791,27 @@ impl Projector {
                     let same = self.sent.get(&tag).is_some_and(|(_, held)| *held == now);
                     if !same {
                         out.push((Arc::clone(&name), Some(now.clone())));
-                        self.sent.insert(tag, (name, now));
+                        let order = Arc::clone(&now.order);
+                        let identity = (now.slot, now.country_id);
+                        let held = self.sent.insert(tag, (Arc::clone(&name), now));
+                        // As the emit dates them: the same country's order, extended.
+                        if let Some(grown) = grown.as_deref_mut()
+                            && let Some((_, held)) = held
+                            && (held.slot, held.country_id) == identity
+                            && held.order.completed.len() < order.completed.len()
+                            && held
+                                .order
+                                .completed
+                                .iter()
+                                .zip(order.completed.iter())
+                                .all(|(before, now)| before == now)
+                        {
+                            grown.push(Grown {
+                                tag: name,
+                                from: held.order.completed.len(),
+                                order,
+                            });
+                        }
                     }
                 }
                 None => {
@@ -766,6 +907,8 @@ impl Operator<World> for Projector {
             self.statuses = statuses.map(Some);
         }
         let mut tags = Vec::new();
+        let mut grown = Vec::new();
+        let growing = self.art.is_some();
         let mut whole = false;
         let counts: [u64; 5] = if complete {
             if self.stale {
@@ -773,7 +916,7 @@ impl Operator<World> for Projector {
                 self.index(state, roster)?;
                 let held: Vec<Tag> = roster.held().collect();
                 whole = true;
-                self.changes(roster, held, true, &mut tags);
+                self.changes(roster, held, true, &mut tags, growing.then_some(&mut grown));
             } else {
                 if roster.rebuilt() || !roster.changed_links().is_empty() {
                     self.regroup(roster);
@@ -785,7 +928,7 @@ impl Operator<World> for Projector {
                     self.counts = [0; 4];
                     self.dirty.clear();
                     let held: Vec<Tag> = roster.held().collect();
-                    self.changes(roster, held, true, &mut tags);
+                    self.changes(roster, held, true, &mut tags, growing.then_some(&mut grown));
                 } else if !self.dirty.is_empty() {
                     let dirty: Vec<u32> = self.dirty.drain().collect();
                     let mut touched: Vec<Tag> = dirty
@@ -794,7 +937,8 @@ impl Operator<World> for Projector {
                         .collect();
                     touched.sort_unstable();
                     touched.dedup();
-                    self.changes(roster, touched, false, &mut tags);
+                    let grown = growing.then_some(&mut grown);
+                    self.changes(roster, touched, false, &mut tags, grown);
                 }
             }
             let [unresolved, missing, untagged, incomplete] = self.counts;
@@ -823,6 +967,10 @@ impl Operator<World> for Projector {
                 .collect()
         });
         whole |= opens;
+        let art = match &mut self.art {
+            Some(art) if !grown.is_empty() => art.present(hour, &grown)?,
+            _ => Vec::new(),
+        };
         let quiet = !whole && refusals.is_none() && tally.is_none() && tags.is_empty();
         out.push(Hour {
             branch: hour.branch,
@@ -833,6 +981,7 @@ impl Operator<World> for Projector {
                     tally,
                     whole,
                     tags,
+                    art,
                 })
             }),
         })
@@ -854,7 +1003,9 @@ impl Operator<World> for Projector {
                 "Not a saved focus projector",
             ));
         }
+        let art = self.art.take();
         *self = Self::new(self.format, self.mode)?;
+        self.art = art;
         Ok(())
     }
 }

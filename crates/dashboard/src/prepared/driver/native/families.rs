@@ -369,7 +369,7 @@ pub(crate) static REGISTERED: &[Registered] = &[
     },
     Registered {
         name: "focus",
-        load: free,
+        load: |content| content.factions().map(drop),
         bind: focus,
     },
     Registered {
@@ -708,7 +708,6 @@ emits!(
     resource_balance::emit::Emit => resource_balance::facts::Hour,
     trade_flows::emit::Emit => trade_flows::facts::Hour,
     country_factories::emit::Emit => country_factories::facts::Hour,
-    national_focus::emit::Emit => national_focus::facts::Hour,
     ideas::emit::Emit => ideas::facts::Hour,
     special_projects::emit::Emit => special_projects::facts::Hour,
     occupied_states::columnar::Emit => occupied_states::columnar::Hour,
@@ -716,6 +715,23 @@ emits!(
     military_air_ledger::emit::Emit => military_air_ledger::facts::Hour,
     navy::emit::Emit => navy::facts::Hour,
 );
+
+// Its hours are kept with the recording their completions are presented from ([`Focus`]).
+impl Emits for national_focus::emit::Emit {
+    type Hour = std::convert::Infallible;
+
+    fn hour(&mut self, _: &mut roots::Series, hour: Self::Hour) -> io::Result<()> {
+        match hour {}
+    }
+
+    fn cut(&mut self, series: &mut roots::Series, last: i32) -> io::Result<()> {
+        national_focus::emit::Emit::cut(self, series, last)
+    }
+
+    fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        national_focus::emit::Emit::save(self, out)
+    }
+}
 
 impl<E: Emits> Emits for Box<E> {
     type Hour = E::Hour;
@@ -4411,6 +4427,9 @@ impl Native for Factories<'_> {
 
 struct Focus<'p> {
     replay: &'p Replay,
+    source: &'p crate::Source,
+    /// The recorded content completions are presented with; none without the game's content.
+    catalogue: Option<Arc<Catalogue>>,
 }
 
 fn focus<'p>(
@@ -4419,8 +4438,12 @@ fn focus<'p>(
     stage: Stage<'p, 'p>,
     taken: Taken<'p>,
 ) -> Made<'p> {
-    let replay = content.source.replay_ref();
-    bound(id, Focus { replay }, stage, taken)
+    let native = Focus {
+        replay: content.source.replay_ref(),
+        source: content.source,
+        catalogue: content.factions()?.clone(),
+    };
+    bound(id, native, stage, taken)
 }
 
 impl Native for Focus<'_> {
@@ -4428,15 +4451,22 @@ impl Native for Focus<'_> {
     type Branch = Series<Box<national_focus::emit::Emit>>;
 
     fn tables(&self) -> &'static [TableId] {
-        national_focus::facts::TABLES
+        if self.catalogue.is_some() {
+            national_focus::facts::art_tables()
+        } else {
+            national_focus::facts::TABLES
+        }
     }
 
     fn needs(&self) -> io::Result<Needs> {
-        Ok(national_focus::facts::needs())
+        Ok(national_focus::facts::needs(self.catalogue.is_some()))
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        national_focus::facts::Projector::new(self.replay.format, self.replay.capture_mode)
+        Ok(
+            national_focus::facts::Projector::new(self.replay.format, self.replay.capture_mode)?
+                .with_art(self.catalogue.clone()),
+        )
     }
 
     fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
@@ -4450,7 +4480,18 @@ impl Native for Focus<'_> {
         branch: u64,
         hour: national_focus::facts::Hour,
     ) -> io::Result<()> {
-        state.observe(stage, branch, hour.hour, hour)
+        let at = hour.hour;
+        let recorded = self
+            .catalogue
+            .as_ref()
+            .map(|catalogue| national_focus::emit::Recorded {
+                source: self.source,
+                catalogue,
+            });
+        let series = stage.series(branch, state.first).map_err(backend::alone)?;
+        national_focus::emit::Emit::hour(&mut state.emit, series, hour, recorded.as_ref())?;
+        state.last = Some(at);
+        Ok(())
     }
 
     fn flush(

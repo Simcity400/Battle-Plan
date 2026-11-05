@@ -279,7 +279,7 @@ fn projected(frames: &[DecodedFrame], starts: &[i32]) -> Vec<facts::Hour> {
             let world = dashboard_world::World::at(
                 &mut world,
                 starts,
-                &facts::needs(),
+                &facts::needs(false),
                 (FormatVersion::CURRENT, CaptureMode::Full),
                 state,
                 manifest,
@@ -334,7 +334,7 @@ fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: Option<i32>, budget: &Bu
     let mut hours = hours.into_iter().peekable();
     for &cut in cuts {
         while let Some(hour) = hours.next_if(|hour| hour.hour <= cut) {
-            emit.hour(&mut writer, hour).unwrap();
+            emit.hour(&mut writer, hour, None).unwrap();
         }
         emit.cut(&mut writer, cut).unwrap();
         generation += 1;

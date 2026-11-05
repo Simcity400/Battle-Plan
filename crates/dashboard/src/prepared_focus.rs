@@ -2,8 +2,9 @@
 //! [`emit`]) and answered from its publication ([`query`]): each country's focus order (its
 //! completed focuses with their dates, the active focus and pause), its progress and daily gain
 //! at every hour it was observed, the four tables' refusals, and the completions the event feed
-//! lists. Focus titles, icons and descriptions are not prepared: [`art`] evaluates them at the
-//! hour a reply asks for.
+//! lists, each with its event text and icon choice made at its hour (the icon drawn as a reply
+//! shows it). The focus tree's titles, icons and descriptions are not prepared: [`art`]
+//! evaluates them at the hour a reply asks for.
 use crate::products::{ContentOptions, LoadContext, artwork};
 use crate::{Artwork, FocusEntry, Source, metadata::check_cancel};
 use replay_data::rows::TableId;

@@ -463,11 +463,11 @@ pub(crate) fn query(
     let present = |builder: &mut Builder, mut fact: Fact| -> io::Result<ScriptEdge> {
         let (option, lifecycle, days, costs) = edge(&fact);
         if fact.row.item.is_some() {
-            let item = fact
+            let mut item = fact
                 .item
                 .take()
                 .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?;
-            std::mem::take(&mut fact.shown).show(builder);
+            std::mem::take(&mut fact.shown).show(builder, catalogue.as_deref(), &mut item);
             fact.row.item = Some(builder.item(item)?);
         }
         Ok(ScriptEdge {

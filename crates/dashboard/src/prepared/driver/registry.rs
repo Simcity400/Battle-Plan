@@ -258,7 +258,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "focus-completions",
         ],
         // 2: orders, progress and completions on the segment driver, published as a series root.
-        version: 2,
+        // 3: each completion keeps its event text and icon choice, made at its hour.
+        version: 3,
         ..family("focus")
     },
     Descriptor {
@@ -588,7 +589,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         sections: &["event-feed"],
         // 2: facts presented in the walk, stored MessagePack behind their opener; recorder
         // observations removed.
-        version: 2,
+        // 3: a script event's picture is kept as its sprite key, drawn as the reply shows it.
+        version: 3,
         ..family("event_feed")
     },
     Descriptor {

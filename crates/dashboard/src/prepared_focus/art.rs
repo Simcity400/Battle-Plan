@@ -1,6 +1,8 @@
 //! Focus art at an hour, evaluated when a reply asks for it: titles, icons and
-//! descriptions as the focus tree shows them (`focus-art`), the content's
-//! static text (`focus-static-text`) and the event feed's completion art.
+//! descriptions as the focus tree shows them (`focus-art`) and the content's
+//! static text (`focus-static-text`); and the event feed's completion art,
+//! its text and icon choice made in preparation at each completion's hour,
+//! its icon drawn as the reply shows it.
 //! A request whose tokens read no recorded state reads no recording; one
 //! that does reads that hour's frame (shared with `focus-artwork`'s frames).
 //! Results that read no recorded state are kept per content binding, within
@@ -335,8 +337,6 @@ struct ArtState(Evaluator);
 #[cfg(test)]
 thread_local! {
     pub(super) static FRAME_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Whether the event feed's art context was free each time its walk read a frame.
-    pub(super) static EVENT_ART_FREE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 /// A frame of `hour` holding no table: what a request that reads no
@@ -490,16 +490,181 @@ pub fn standing_warnings(
     Ok(state.0.warnings.clone())
 }
 
-/// The event feed's completion art context, which names a definition's icon
-/// and full text as an event shows them.
+/// A completion's art as the event feed shows it, chosen in preparation at its hour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CompletionArt {
+    /// Its text and icon choice, and what choosing them noted, which a reply showing it names as
+    /// its own.
+    Shown {
+        art: artwork::ChosenArt,
+        noted: crate::catalogue::OwnRefusals,
+    },
+    /// Why the event feed's focus context did not load.
+    Refused(String),
+    /// Why the recording held no frame at its hour.
+    Gap(String),
+}
+
+impl CompletionArt {
+    /// The bytes it holds, for the cache keeping it.
+    pub(crate) fn bytes(&self) -> usize {
+        let text = |text: &Option<String>| text.as_ref().map_or(0, String::capacity);
+        64 + match self {
+            Self::Shown { art, .. } => {
+                let icon = match &art.icon {
+                    Ok(choice) | Err(choice) => choice.capacity(),
+                };
+                art.art.token.capacity()
+                    + text(&art.art.name)
+                    + text(&art.art.description)
+                    + icon
+                    + art.text.iter().map(String::capacity).sum::<usize>()
+            }
+            Self::Refused(reason) | Self::Gap(reason) => reason.capacity(),
+        }
+    }
+
+    fn gap(&self) -> Option<&String> {
+        match self {
+            Self::Gap(reason) => Some(reason),
+            _ => None,
+        }
+    }
+
+    fn refusal(&self) -> Option<&String> {
+        match self {
+            Self::Refused(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// The tables completion art reads of its hour's frame.
+pub(crate) fn tables() -> &'static [TableId] {
+    static TABLES: std::sync::OnceLock<Vec<TableId>> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut tables: BTreeSet<TableId> = crate::scripted_text::TABLES.iter().copied().collect();
+        tables.extend([
+            TableId::Campaign,
+            TableId::Clock,
+            TableId::Countries,
+            TableId::CountryLinks,
+        ]);
+        tables.into_iter().collect()
+    })
+}
+
+/// Never set: preparation seeks a frame whole.
+static WHOLE: AtomicBool = AtomicBool::new(false);
+
+/// The event feed's completion art context over the recorded content, as preparation holds it:
+/// the national focus context, which names a definition's icon and full text as an event shows
+/// them, loaded on first use.
+#[derive(Default)]
+pub struct Presenter(Option<artwork::Context>);
+
+impl Presenter {
+    /// Each of `asked` (token, tag), completed at `hour` of `branch`, as the event feed shows it,
+    /// chosen as one batch: on `frame`'s tables where any of them reads recorded state, on none
+    /// otherwise. `frame` names why the recording holds none.
+    pub(crate) fn present(
+        &mut self,
+        catalogue: &Arc<crate::catalogue::Catalogue>,
+        (branch, hour): (u64, i32),
+        asked: &[(&str, &str)],
+        frame: impl FnOnce() -> io::Result<Result<DecodedFrame, String>>,
+    ) -> io::Result<Vec<CompletionArt>> {
+        let every =
+            |art: CompletionArt| -> io::Result<Vec<CompletionArt>> { Ok(vec![art; asked.len()]) };
+        // Completions are of national focuses.
+        let national = artwork::Kind::Focus(FocusDatabase::National);
+        let context = match artwork::ensure_in(&mut self.0, Arc::clone(catalogue), national) {
+            Ok(context) => context,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => return every(CompletionArt::Refused(error.to_string())),
+        };
+        let tokens: Vec<String> = asked.iter().map(|(token, _)| (*token).to_owned()).collect();
+        let decoded = if context.requested_focus_needs_frame(&tokens) {
+            match frame()? {
+                Ok(frame) => frame,
+                Err(reason) => return every(CompletionArt::Gap(reason)),
+            }
+        } else {
+            unread_frame(branch, hour)
+        };
+        Ok(context.event_focus_choices_at(asked, &decoded, |items| {
+            std::iter::from_fn(|| {
+                let (item, noted) = crate::catalogue::capture(|| items.next());
+                item.map(|art| CompletionArt::Shown { art, noted })
+            })
+            .collect()
+        }))
+    }
+
+    /// [`Self::present`] on the frame sought from `source`'s recording at `hour`.
+    pub(crate) fn present_sought(
+        &mut self,
+        source: &Source,
+        catalogue: &Arc<crate::catalogue::Catalogue>,
+        (branch, hour): (u64, i32),
+        asked: &[(&str, &str)],
+    ) -> io::Result<Vec<CompletionArt>> {
+        self.present(catalogue, (branch, hour), asked, || {
+            #[cfg(test)]
+            FRAME_READS.with(|reads| reads.set(reads.get() + 1));
+            Ok(
+                match dashboard_base::prepared::query::frames::seek(
+                    source, branch, hour, tables(), &WHOLE,
+                )? {
+                    replay::container::SeekResult::Frame(frame) => Ok(*frame),
+                    replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+                },
+            )
+        })
+    }
+}
+
+/// `completions`' art as preparation presents what its walk did not: each hour's completions on
+/// the frame sought at that hour, with the recorded content `content` names; none without it.
+#[cfg(test)]
+pub(crate) fn present_completions(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    completions: &[crate::products::national_focus::FocusCompletion],
+) -> io::Result<Vec<Option<CompletionArt>>> {
+    let Some(catalogue) =
+        content.and_then(|content| crate::catalogue::catalogue(source, content).ok())
+    else {
+        return Ok(vec![None; completions.len()]);
+    };
+    let mut presenter = Presenter::default();
+    let mut art = Vec::with_capacity(completions.len());
+    for hour in completions.chunk_by(|left, right| left.hour == right.hour) {
+        let at = hour[0].hour;
+        let asked: Vec<(String, String)> = hour
+            .iter()
+            .map(|completion| (completion.token.clone(), completion.tag.clone()))
+            .collect();
+        let asked: Vec<(&str, &str)> = asked
+            .iter()
+            .map(|(token, tag)| (token.as_str(), tag.as_str()))
+            .collect();
+        let shown = presenter.present_sought(source, &catalogue, (branch, at), &asked)?;
+        art.extend(shown.into_iter().map(Some));
+    }
+    Ok(art)
+}
+
+/// The event feed's completion art context, held for the content's standing warnings.
 #[derive(Default)]
 struct EventArtState(Option<artwork::Context>);
 
 /// The art the event feed shows, with the content's standing warnings.
 type EventArtReply = (Vec<artwork::ResolvedArt>, Vec<String>);
 
-/// `work` on the event feed's completion art context over `catalogue`, held only while it
-/// runs; the content's refusal when it does not load.
+/// `work` on the completion art context over `catalogue`, held only while it runs; the content's
+/// refusal when it does not load.
 fn with_event_art<T>(
     state: &std::sync::Mutex<EventArtState>,
     catalogue: &Arc<crate::catalogue::Catalogue>,
@@ -515,114 +680,95 @@ fn with_event_art<T>(
     }
 }
 
-/// Each completion's art at its own hour, for `requests` of (hour, tag,
-/// token), as the event feed shows it, with the content's standing warnings;
-/// the content's refusal when it does not load.
+/// Why a completion holds no art while the content is chosen.
+const UNPREPARED: &str =
+    "Focus completion art was prepared without the game's content; prepare the recording again";
+
+/// The art of `completions` (each one's hour, and the art preparation kept with it) as the event
+/// feed shows it, with the content's standing warnings, crediting what choosing it noted: its
+/// text and icon choice as preparation made them at its hour, each hour's icons drawn as one
+/// batch as this request shows them. The content's refusal when its focus context does not
+/// load, or the earliest refusal preparation met. The earliest completion whose hour the
+/// recording held no frame for fails the reply.
 // I/O failure and content refusal are separate; successful art also carries standing warnings.
 #[allow(clippy::type_complexity)]
 pub(crate) fn event_art(
     source: &Source,
     content: &ContentOptions,
-    branch: u64,
-    requests: &[(i32, &str, &str)],
-    cancelled: &AtomicBool,
+    completions: &[(i32, Option<CompletionArt>)],
 ) -> io::Result<Result<EventArtReply, String>> {
-    check_cancel(cancelled)?;
-    // The context is held only to ask and present it: frames decode without it, so concurrent
-    // requests present while one decodes.
-    let state = source.state::<EventArtState>();
-    // One catalogue for every step, whatever the settings say meanwhile.
     let catalogue = match crate::catalogue::catalogue(source, content) {
         Ok(catalogue) => catalogue,
         Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
         Err(error) => return Ok(Err(error.to_string())),
     };
-    let mut by_hour: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
-    for (index, (hour, _, _)) in requests.iter().enumerate() {
-        by_hour.entry(*hour).or_default().push(index);
-    }
-    let mut results: Vec<Option<artwork::ResolvedArt>> = vec![None; requests.len()];
-    let dynamic = with_event_art(&state, &catalogue, |art| {
-        by_hour
-            .iter()
-            .filter_map(|(&hour, indices)| {
-                let tokens = indices
-                    .iter()
-                    .map(|&index| requests[index].2.to_owned())
-                    .collect::<Vec<_>>();
-                art.requested_focus_needs_frame(&tokens).then_some(hour)
-            })
-            .collect::<Vec<i32>>()
-    })?;
-    let dynamic = match dynamic {
-        Ok(dynamic) => dynamic,
+    let state = source.state::<EventArtState>();
+    let warnings = match with_event_art(&state, &catalogue, |art| art.standing_warnings())? {
+        Ok(warnings) => warnings,
         Err(reason) => return Ok(Err(reason)),
     };
-    // The content's refusal when its context no longer loads partway through.
-    let mut refused = None;
-    let mut present = |hour, frame: &DecodedFrame| -> io::Result<()> {
-        check_cancel(cancelled)?;
-        if refused.is_some() {
-            return Ok(());
-        }
-        let indices = &by_hour[&hour];
-        let asked: Vec<(&str, &str)> = indices
+    let earliest = |failed: fn(&CompletionArt) -> Option<&String>| {
+        completions
             .iter()
-            .map(|&index| (requests[index].2, requests[index].1))
-            .collect();
-        match with_event_art(&state, &catalogue, |art| art.focuses_at(&asked, frame))? {
-            Ok(items) => {
-                for (index, item) in indices.iter().zip(items) {
-                    results[*index] = Some(item);
-                }
-            }
-            Err(reason) => refused = Some(reason),
-        }
-        Ok(())
+            .filter_map(|(hour, art)| Some((*hour, failed(art.as_ref()?)?)))
+            .min_by_key(|(hour, _)| *hour)
+            .map(|(_, reason)| reason.clone())
     };
-    let mut remaining = by_hour.keys().copied().peekable();
-    let mut selected = crate::scripted_text::TABLES.to_vec();
-    selected.extend([
-        TableId::Campaign,
-        TableId::Clock,
-        TableId::Countries,
-        TableId::CountryLinks,
-    ]);
-    dashboard_base::prepared::query::frames::hours(
-        source,
-        branch,
-        &dynamic,
-        &selected,
-        cancelled,
-        |hour, result| {
-            while let Some(at) = remaining.next_if(|&at| at < hour) {
-                present(at, &unread_frame(branch, at))?;
-            }
-            let _ = remaining.next();
-            #[cfg(test)]
-            {
-                FRAME_READS.with(|reads| reads.set(reads.get() + 1));
-                let free = state.try_lock().is_ok();
-                EVENT_ART_FREE.with(|was| was.set(was.get() && free));
-            }
-            match result {
-                replay::container::SeekResult::Frame(frame) => present(hour, &frame),
-                replay::container::SeekResult::Gap { reason, .. } => Err(io::Error::other(reason)),
-            }
-        },
-    )?;
-    for hour in remaining {
-        present(hour, &unread_frame(branch, hour))?;
+    if let Some(reason) = earliest(CompletionArt::gap) {
+        return Err(io::Error::other(reason));
     }
-    if let Some(reason) = refused {
+    if let Some(reason) = earliest(CompletionArt::refusal) {
         return Ok(Err(reason));
     }
-    let art: Vec<artwork::ResolvedArt> = results
+    let mut chosen = Vec::with_capacity(completions.len());
+    let mut by_hour: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    for (hour, art) in completions {
+        let Some(CompletionArt::Shown { art, .. }) = art else {
+            return Ok(Err(UNPREPARED.to_owned()));
+        };
+        by_hour.entry(*hour).or_default().push(chosen.len());
+        chosen.push(art);
+    }
+    for (_, art) in completions {
+        if let Some(CompletionArt::Shown { noted, .. }) = art {
+            crate::catalogue::credit(noted);
+        }
+    }
+    let drawn = with_event_art(&state, &catalogue, |context| {
+        let mut drawn: Vec<Option<Result<String, String>>> = vec![None; chosen.len()];
+        for indices in by_hour.values() {
+            let asked: Vec<(&str, &Result<String, String>)> = indices
+                .iter()
+                .map(|&index| (chosen[index].art.token.as_str(), &chosen[index].icon))
+                .collect();
+            for (&index, icon) in indices.iter().zip(context.event_focus_icons(&asked)) {
+                drawn[index] = Some(icon);
+            }
+        }
+        drawn
+    })?;
+    let drawn = match drawn {
+        Ok(drawn) => drawn,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    let art = chosen
         .into_iter()
-        .map(|item| item.ok_or_else(|| io::Error::other("Focus completion art omitted a row")))
+        .zip(drawn)
+        .map(|(chosen, icon)| -> io::Result<artwork::ResolvedArt> {
+            let icon =
+                icon.ok_or_else(|| io::Error::other("Focus completion art omitted a row"))?;
+            let mut art = chosen.art.clone();
+            let refused = match icon {
+                Ok(icon) => {
+                    art.icon = Some(icon);
+                    None
+                }
+                Err(reason) => Some(reason),
+            };
+            Ok((art, artwork::refusal(refused, &chosen.text)))
+        })
         .collect::<io::Result<_>>()?;
-    Ok(with_event_art(&state, &catalogue, |art| art.standing_warnings())?
-        .map(|warnings| (art, warnings)))
+    Ok(Ok((art, warnings)))
 }
 
 /// `focus-art`: a country's focus art at one hour.

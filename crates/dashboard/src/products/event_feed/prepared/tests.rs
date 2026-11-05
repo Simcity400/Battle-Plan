@@ -125,6 +125,13 @@ fn query(
         let nukes = country_nukes::row::feed(&source.replay(), branch, cancelled)?;
         let subjects = subjects::row::feed(&source.replay(), branch, cancelled)?;
         let focus = crate::prepared_focus::row::feed(&source.replay(), branch, cancelled)?;
+        // Each completion's art as preparation presents it at its hour.
+        let focus_art = crate::prepared_focus::art::present_completions(
+            source,
+            context.content.as_ref(),
+            branch,
+            &focus.completions,
+        )?;
         let ideas = idea_history::row_feed(&source.replay(), branch, cancelled)?;
         let projects = match PROJECTS.with_borrow(Clone::clone) {
             Some(projects) => projects,
@@ -132,14 +139,15 @@ fn query(
                 source, branch, context, cancelled,
             )?),
         };
-        Ok((nukes, subjects, focus, ideas, projects))
+        Ok((nukes, subjects, focus, focus_art, ideas, projects))
     })();
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|held| *held = scanned);
-    let (nukes, subjects, focus, ideas, projects) = oracles?;
+    let (nukes, subjects, focus, focus_art, ideas, projects) = oracles?;
     let families = query::Families {
         nukes: &nukes,
         subjects: &subjects,
         focus: &focus,
+        focus_art: &focus_art,
         ideas: &ideas,
         projects: &projects,
     };
@@ -1882,6 +1890,7 @@ fn drafts_store_and_read_back_their_facts() {
             samples: Vec::new(),
         }],
         noted: Default::default(),
+        picture: Some((named.into(), 1)),
     };
     let fact = |[shown, occurrence, costs, item, nuke]: [bool; 5]| Fact {
         row: EventFeedRow {
