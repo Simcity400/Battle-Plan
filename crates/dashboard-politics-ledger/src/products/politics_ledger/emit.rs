@@ -1,18 +1,23 @@
 //! The ledger's emit: the accounting of each projected hour ([`facts::Hour`]), written as the
 //! family's series publication. A country's native rows are recorded once, as the read that first
-//! named their identity's tag saw them, as typed events; its capture and spending coverage,
-//! holds, income and spending parts as runs and events that change only when they do; the census
-//! and its presence as the branch's. An hour that changes nothing of a country appends nothing.
+//! named their identity's tag saw them, each as the reply shows it ([`super::records`]), and each
+//! item once, named at its first payment; its spending coverage, holds and spending parts as
+//! runs and events that change only when they do; the census as the branch's,
+//! and each tag's presence in it where that changes. An hour that changes nothing of a country
+//! appends nothing.
 //!
 //! The emit holds what only earlier hours know: tags by capture identity, which rows were
 //! recorded, the rows waiting for a tag, the native tables as the hour leaves them, each
 //! country's open coverage, holds and day parts, and warning rates. A reply reads everything
 //! else back from the publication ([`super::query`]).
 
-use super::facts::{self, CensusRow, Cost, DatedFacts, Government, Hour, Power};
+use super::facts::{self, CensusRow, Cost, Government, Hour, Power};
+use super::records::{self, CostRecord, DailyRecord, PowerRecord};
 use super::rows::Holder;
 use super::tally::{self, Contribution};
 use super::*;
+use super::{items, present};
+use dashboard_base::prepared::codec;
 use dashboard_base::products::politics_content::PoliticsContent;
 use dashboard_series::{
     Cell, Event, Evidence, Knownness, RunMode, Span, Writer,
@@ -27,64 +32,59 @@ use std::{collections::HashSet, hash::BuildHasherDefault};
 type FastSet<K> = HashSet<K, BuildHasherDefault<Words>>;
 
 /// The family's keys are spelled under it.
-pub const SCHEMA: u64 = 8;
+pub const SCHEMA: u64 = 10;
 
 /// Each country's measures: its power rows by currency, at their read; its governments, daily
-/// rows and costs, at their native hour; its capture coverage (the fact event's sequence) and
-/// those facts; whether its spending in each currency is recorded, with the reasons; its hold
-/// snapshots; its daily income by currency; its spending parts, by dimension; its interned item
-/// facts.
+/// rows and costs, at their native hour; whether its spending in each currency is recorded, with
+/// the reasons; its hold snapshots; its spending parts, by dimension.
 pub const POWER: [u64; 2] = [0, 1];
 pub const GOVERNMENTS: u64 = 2;
 pub const DAILY: u64 = 3;
 pub const COSTS: u64 = 4;
-pub const CAPTURE: u64 = 5;
-pub const CAPTURE_FACTS: u64 = 6;
 pub const COVERED: [u64; 2] = [7, 8];
 pub const COVER_REASONS: u64 = 9;
 pub const HOLDS: u64 = 10;
-pub const INCOME: [u64; 2] = [11, 12];
 pub const PARTS: u64 = 13;
-pub const DATED: u64 = 14;
 /// Each country's settled totals by item and period ([`super::tally`]), at the period's last
-/// hour; its payments read after their day settled, at their read; each item's first payment.
+/// hour; its payments read after their day settled, at their read; each item as replies show
+/// it ([`records::ItemRecord`]), at its first payment; whether the census lists it present and
+/// refused, where that changes.
 pub const ROLLUP: u64 = 15;
 pub const LATE: u64 = 16;
 pub const ITEMS: u64 = 17;
+pub const PRESENT: u64 = 18;
 /// The branch's measures, under the actor with the empty name: whether the census is complete,
-/// every prepared hour, and the present and refused tags at each change.
+/// and every prepared hour.
 pub const CENSUS: u64 = 20;
 pub const ACCEPTED: u64 = 21;
-pub const PRESENCE: u64 = 22;
 
 /// Event kinds.
 pub const POWER_KIND: u64 = 1;
 pub const GOVERNMENT_KIND: u64 = 2;
 pub const DAILY_KIND: u64 = 3;
 pub const COST_KIND: u64 = 4;
-pub const CAPTURE_KIND: u64 = 5;
 pub const COVER_KIND: u64 = 6;
 pub const HOLD_KIND: u64 = 7;
-pub const DATED_KIND: u64 = 8;
 pub const PRESENCE_KIND: u64 = 9;
 /// A rollup's kind is this plus its level.
 pub const ROLLUP_KIND: u64 = 10;
 
-/// What a power row or cost is to a reply's payments, as its last cells say.
+/// What a power row or cost is to a reply's payments ([`records`]).
 pub const PAYMENT: u64 = 0;
 pub const BALANCE: u64 = 1;
 pub const SKIPPED: u64 = 2;
 pub const UNMATCHED: u64 = 3;
 pub const CREDIT: u64 = 4;
-/// The cells every payment event ends with: its item's ordinal and first payment, its class,
-/// and whether it recurs and counts its days one entry each.
-pub const ITEM_CELLS: usize = 10;
 
 /// Family scalars: the first prepared hour; the native day from which days are still open; the
-/// branch's warnings; and by actor, each country's warnings and its categories' first hours.
+/// branch's warnings; the recorded content's power warnings, once an item reached them; the
+/// first hour the census listed its tags; and by actor, each country's warnings and its
+/// categories' first hours.
 pub const FIRST: u64 = 0;
 pub const SETTLED: u64 = 1;
 pub const WARNINGS: u64 = 2;
+pub const POWER_WARNINGS: u64 = 3;
+pub const PRESENCE_FIRST: u64 = 4;
 pub const TAG_WARNINGS: u64 = 1 << 24;
 pub const TAG_CATEGORIES: u64 = 2 << 24;
 /// Each category's spelling (`Currency:category`), by its part dimension.
@@ -120,43 +120,11 @@ fn invalid(what: &str) -> io::Error {
     dashboard_core::invalid(format!("Politics ledger emit: {what}"))
 }
 
-fn integer(value: Option<impl Into<i128>>) -> Cell {
-    value.map_or(Cell::Null, |value| Cell::Integer(value.into()))
-}
-
-fn unsigned(value: Option<impl Into<u64>>) -> Cell {
-    value.map_or(Cell::Null, |value| Cell::Unsigned(value.into()))
-}
-
 fn text(writer: &mut Writer<'_>, bytes: &[u8]) -> io::Result<Cell> {
     if bytes.is_empty() {
         return Ok(Cell::Text(dashboard_series::Blob::EMPTY));
     }
     Ok(Cell::Text(writer.bytes(bytes)?))
-}
-
-fn optional_text(writer: &mut Writer<'_>, bytes: Option<&[u8]>) -> io::Result<Cell> {
-    bytes.map_or(Ok(Cell::Null), |bytes| text(writer, bytes))
-}
-
-/// A recorded item identity as cells, in [`PowerIdentity`]'s field order.
-fn identity_cells(writer: &mut Writer<'_>, identity: &PowerIdentity) -> io::Result<Cell> {
-    let cells = [
-        Cell::Unsigned(identity.action as u64),
-        unsigned(identity.item_token),
-        text(writer, &identity.item_key)?,
-        text(writer, &identity.slot_key)?,
-        unsigned(identity.character),
-        Cell::Unsigned(identity.object_kind as u64),
-        unsigned(identity.object_reference),
-        unsigned(identity.target_country),
-        unsigned(identity.target_state),
-        unsigned(identity.target_region),
-        Cell::Unsigned(identity.origin_kind as u64),
-        unsigned(identity.origin_token),
-        text(writer, &identity.origin_key)?,
-    ];
-    Ok(Cell::List(writer.cells(cells)?))
 }
 
 /// The native day a power row closes: daily upkeep and gains only.
@@ -170,7 +138,6 @@ fn power_day(row: &CountryPowerChangeRow) -> Option<i32> {
 struct Coverage {
     country: Option<u32>,
     instance: Option<u32>,
-    read_hour: i32,
     since_hour: Option<i32>,
     through_hour: Option<i32>,
     epoch: Option<u64>,
@@ -195,12 +162,11 @@ impl Gap {
 }
 
 impl Coverage {
-    /// A capture as the coverage of read `read_hour` names it.
-    fn of(row: &PoliticsCaptureCoverageRow, read_hour: i32) -> Self {
+    /// A capture as a read's coverage names it.
+    fn of(row: &PoliticsCaptureCoverageRow) -> Self {
         Self {
             country: Some(row.country),
             instance: Some(row.instance),
-            read_hour,
             since_hour: Some(row.since_hour),
             through_hour: Some(row.through_hour),
             epoch: Some(row.epoch),
@@ -343,39 +309,7 @@ struct CostDay {
 struct Recorded {
     row: CountryPowerDailyCostRow,
     covered: bool,
-    dated: Option<(i32, u64)>,
     item: u32,
-}
-
-/// An item: its key, and its first payment (a cost, the country, epoch, sequence, day and
-/// ordinal).
-#[derive(Clone, Copy, Serialize, Deserialize)]
-struct ItemRef {
-    key: [u8; 32],
-    first: (bool, u32, u64, u64, i32, u32),
-}
-
-/// The cells [`ITEM_CELLS`] counts.
-fn item_cells(
-    ordinal: u32,
-    item: &ItemRef,
-    class: u64,
-    recurring: bool,
-    upkeep: bool,
-) -> [Cell; 10] {
-    let (cost, country, epoch, sequence, day, ordinal_of) = item.first;
-    [
-        Cell::Unsigned(u64::from(ordinal)),
-        Cell::Boolean(cost),
-        Cell::Unsigned(u64::from(country)),
-        Cell::Unsigned(epoch),
-        Cell::Unsigned(sequence),
-        Cell::Integer(i128::from(day)),
-        Cell::Unsigned(u64::from(ordinal_of)),
-        Cell::Unsigned(class),
-        Cell::Boolean(recurring),
-        Cell::Boolean(upkeep),
-    ]
 }
 
 /// A hold snapshot's operands: its total, holders and why its total is missing.
@@ -415,8 +349,6 @@ struct Country {
     slots: Vec<u32>,
     active: bool,
     coverage: Option<Coverage>,
-    /// The fact its capture run holds, and the coverage that fact was written for.
-    capture: Option<(u64, Coverage)>,
     spending: Option<LedgerSpendCoverage>,
     cover: Option<(bool, bool, Option<String>)>,
     identity: Option<(u32, u64)>,
@@ -430,11 +362,12 @@ struct Country {
     rated: Option<i32>,
     warnings: BTreeMap<String, u64>,
     warnings_changed: bool,
+    /// Whether the census last listed it present, and refused.
+    #[serde(default)]
+    presence: (bool, bool),
+    /// Its items' keys in the order first paid.
     #[serde(skip)]
-    dated: FastMap<[u8; 32], (i32, u64)>,
-    /// Its items in the order first paid.
-    #[serde(skip)]
-    items: Vec<ItemRef>,
+    items: Vec<[u8; 32]>,
     #[serde(skip)]
     item_index: FastMap<[u8; 32], u32>,
     /// Saved in the binary part with `items` ([`Emit::save`]).
@@ -576,7 +509,11 @@ struct Joined {
 pub struct Emit {
     actors: Actors,
     carry: Carry,
+    /// The recorded content items and holders are named with.
+    content: Option<Arc<PoliticsContent>>,
     content_failure: Option<String>,
+    /// Whether the content's power warnings were written since the emit began.
+    power_warned: bool,
     last: Option<i32>,
     /// The first hour of the accepted stretch not yet given its evidence.
     known_from: Option<i32>,
@@ -601,8 +538,6 @@ pub struct Emit {
     advanced_from: Option<(Arc<[u32]>, Vec<u32>)>,
     /// Tags whose last account read inputs of its hour alone: accounted again at the next.
     volatile: Tags,
-    /// Each held day by tag, day hour, raw country and epoch.
-    tag_days: BTreeSet<(u32, i32, u32, u64)>,
     identities: FastMap<(u32, u64), Vec<(i32, u32)>>,
     complete: u16,
     power: FastMap<u128, HeldPower>,
@@ -649,7 +584,9 @@ impl Emit {
         Self {
             actors: Actors::new(SCHEMA),
             carry: Carry::default(),
+            content: content.as_ref().ok().cloned().flatten(),
             content_failure: content.as_ref().err().cloned(),
+            power_warned: false,
             last: None,
             known_from: None,
             begun: false,
@@ -669,7 +606,6 @@ impl Emit {
             advanced: Vec::new(),
             advanced_from: None,
             volatile: Tags::default(),
-            tag_days: BTreeSet::new(),
             identities: FastMap::default(),
             complete: 0,
             power: FastMap::default(),
@@ -721,7 +657,7 @@ impl Emit {
         measure: u64,
         dimension: Option<u64>,
     ) -> io::Result<u64> {
-        let decimals = if measure == PARTS || INCOME.contains(&measure) {
+        let decimals = if measure == PARTS {
             DECIMALS
         } else {
             0
@@ -791,18 +727,6 @@ impl Emit {
             self.branch_keys[at] = Some(key);
         }
         Ok(key)
-    }
-
-    /// A payment's event: its own cells, then its item's ([`ITEM_CELLS`]).
-    fn payment<const N: usize>(
-        writer: &mut Writer<'_>,
-        key: u64,
-        hours: (i32, Option<i32>),
-        kind: u64,
-        (head, item): &([Cell; N], [Cell; ITEM_CELLS]),
-    ) -> io::Result<u64> {
-        let fields = writer.cells(head.iter().chain(item).copied())?;
-        Self::put(writer, key, hours, kind, fields)
     }
 
     fn event(
@@ -882,24 +806,42 @@ impl Emit {
             .copied()
     }
 
-    /// `dated`, an item's facts, interned for `tag`: the event holding them.
-    fn dated(
+    /// Item `ordinal` of `tag`, first paid by `row` (of `cause`, with `component`), as replies
+    /// show it: named from the facts its hour recorded, `dated`, and written to the catalogue.
+    #[allow(clippy::too_many_arguments)]
+    fn show(
         &mut self,
         writer: &mut Writer<'_>,
         tag: u32,
-        hour: i32,
-        dated: &DatedFacts,
-    ) -> io::Result<(i32, u64)> {
-        if let Some(&held) = self.countries[tag as usize].dated.get(&dated.digest) {
-            return Ok(held);
-        }
-        let key = self.tag_key(writer, tag, DATED, None)?;
-        let cell = text(writer, &dated.bytes)?;
-        let sequence = Self::event(writer, key, (hour, None), DATED_KIND, &[cell])?;
-        self.countries[tag as usize]
-            .dated
-            .insert(dated.digest, (hour, sequence));
-        Ok((hour, sequence))
+        ordinal: u32,
+        hours: (i32, i32),
+        first: String,
+        row: &PaidRow,
+        (identity, cause, component): (&PowerIdentity, PowerCause, Option<PowerDailyCostKind>),
+        dated: Option<&facts::DatedFacts>,
+    ) -> io::Result<()> {
+        let dated = dated
+            .map(|dated| codec::decode::<items::Dated>(&dated.bytes))
+            .transpose()?;
+        let shown = present::show(
+            &self.tags[tag as usize],
+            ordinal,
+            first,
+            row,
+            identity,
+            cause,
+            dated.as_ref(),
+            component,
+            self.content.as_deref(),
+        );
+        let key = self.tag_key(writer, tag, ITEMS, None)?;
+        let cells = [
+            Cell::Unsigned(u64::from(ordinal)),
+            records::cell(writer, &shown)?,
+        ];
+        let kind = if component.is_some() { COST_KIND } else { POWER_KIND };
+        Self::event(writer, key, (hours.0, Some(hours.1)), kind, &cells)?;
+        Ok(())
     }
 
     fn warn(&mut self, reason: String, count: u64) {
@@ -935,7 +877,6 @@ impl Emit {
                 country.materialize(last);
                 country.rated = None;
                 country.coverage = None;
-                country.capture = None;
                 country.spending = None;
                 country.cover = None;
                 country.identity = None;
@@ -1019,23 +960,16 @@ impl Emit {
         self.settle(writer, at)
     }
 
-    /// `tag`'s item of `key`, interned at its first payment `first`: its ordinal, the item, and
-    /// whether this payment is its first.
-    fn item(
-        &mut self,
-        tag: u32,
-        key: [u8; 32],
-        first: (bool, u32, u64, u64, i32, u32),
-    ) -> (u32, ItemRef, bool) {
+    /// `tag`'s item of `key`: its ordinal, and whether this payment is its first.
+    fn item(&mut self, tag: u32, key: [u8; 32]) -> (u32, bool) {
         let country = &mut self.countries[tag as usize];
         if let Some(&ordinal) = country.item_index.get(&key) {
-            return (ordinal, country.items[ordinal as usize], false);
+            return (ordinal, false);
         }
         let ordinal = country.items.len() as u32;
-        let item = ItemRef { key, first };
-        country.items.push(item);
+        country.items.push(key);
         country.item_index.insert(key, ordinal);
-        (ordinal, item, true)
+        (ordinal, true)
     }
 
     /// Writes each country's periods the settled frontier closed since it last moved.
@@ -1272,41 +1206,46 @@ impl Emit {
         tagged
     }
 
-    /// The branch's present and refused tags, at each change.
+    /// The branch's present and refused tags, at each change: each tag's where it changed, every
+    /// tag first absent from the first hour any is listed.
     fn presence(&mut self, writer: &mut Writer<'_>, hour: i32) -> io::Result<()> {
         if !self.census_complete {
             return Ok(());
         }
-        let mut present: Vec<Box<str>> = self
-            .slot_tags
-            .values()
-            .map(|&tag| self.tags[tag as usize].clone())
-            .collect();
-        present.sort_unstable();
-        present.dedup();
-        let mut refused: Vec<Box<str>> = self
-            .refused
-            .keys()
-            .filter_map(|slot| self.known.get(slot))
-            .map(|&tag| self.tags[tag as usize].clone())
-            .collect();
-        refused.sort_unstable();
-        refused.dedup();
-        let value = (present, refused);
+        let mut states = vec![(false, false); self.tags.len()];
+        for &tag in self.slot_tags.values() {
+            states[tag as usize].0 = true;
+        }
+        for &tag in self.refused.keys().filter_map(|slot| self.known.get(slot)) {
+            states[tag as usize].1 = true;
+        }
+        let spellings = |listed: &dyn Fn(&(bool, bool)) -> bool| -> Vec<Box<str>> {
+            let mut tags: Vec<Box<str>> = states
+                .iter()
+                .enumerate()
+                .filter(|(_, state)| listed(state))
+                .map(|(tag, _)| self.tags[tag].clone())
+                .collect();
+            tags.sort_unstable();
+            tags
+        };
+        let value = (spellings(&|state| state.0), spellings(&|state| state.1));
         if self.presence.as_ref() == Some(&value) {
             return Ok(());
         }
-        let key = self.branch_key(writer, PRESENCE, hour)?;
-        let mut lists = Vec::with_capacity(2);
-        for tags in [&value.0, &value.1] {
-            let mut cells = Vec::with_capacity(tags.len());
-            for tag in tags {
-                cells.push(text(writer, tag.as_bytes())?);
-            }
-            lists.push(Cell::List(writer.cells(cells)?));
+        if self.presence.is_none() {
+            writer.catalogue(PRESENCE_FIRST, Cell::Integer(i128::from(hour)))?;
         }
-        Self::event(writer, key, (hour, None), PRESENCE_KIND, &lists)?;
         self.presence = Some(value);
+        for (tag, state) in states.into_iter().enumerate() {
+            if self.countries[tag].presence == state {
+                continue;
+            }
+            self.countries[tag].presence = state;
+            let key = self.tag_key(writer, tag as u32, PRESENT, None)?;
+            let cells = [records::cell(writer, &state)?];
+            Self::event(writer, key, (hour, None), PRESENCE_KIND, &cells)?;
+        }
         Ok(())
     }
 
@@ -1579,13 +1518,8 @@ impl Emit {
             PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
         };
         let covered = self.covered(row.country, row.epoch, row.hour, bit, at);
-        let dated = match &power.dating.dated {
-            Some(dated) => Some(self.dated(writer, tag, at, dated)?),
-            None => None,
-        };
         let measure = POWER[usize::from(row.currency == PowerCurrency::Command)];
         let key = self.tag_key(writer, tag, measure, None)?;
-        let identity_cell = identity_cells(writer, &row.identity)?;
         let late = self.late(row.hour);
         let charge = rows::charge(row);
         let fixed = matches!(
@@ -1606,41 +1540,40 @@ impl Emit {
             Some(resolved) => resolved,
             None => power.resolve(),
         };
-        let (ordinal, item, new) = self.item(
-            tag,
-            resolved.item,
-            (false, row.country, row.epoch, row.sequence, 0, 0),
-        );
-        let cells = (
-            [
-                Cell::Unsigned(u64::from(row.country)),
-                Cell::Unsigned(u64::from(row.instance)),
-                Cell::Unsigned(row.epoch),
-                Cell::Unsigned(row.sequence),
-                Cell::Integer(i128::from(row.hour)),
-                Cell::Unsigned(row.currency as u64),
-                Cell::Unsigned(row.operation as u64),
-                Cell::Unsigned(row.cause as u64),
-                Cell::Unsigned(row.site as u64),
-                integer(row.requested_delta_raw),
-                Cell::Integer(i128::from(row.balance_before_raw)),
-                Cell::Integer(i128::from(row.balance_after_raw)),
-                Cell::Boolean(covered),
-                identity_cell,
-                integer(dated.map(|(hour, _)| hour)),
-                unsigned(dated.map(|(_, sequence)| sequence)),
-                Cell::Boolean(late),
-            ],
-            item_cells(ordinal, &item, class, recurring, upkeep),
-        );
-        let sequence = Self::payment(writer, key, (row.hour, Some(at)), POWER_KIND, &cells)?;
+        let (ordinal, new) = self.item(tag, resolved.item);
         if new {
-            let items = self.tag_key(writer, tag, ITEMS, None)?;
-            Self::payment(writer, items, (row.hour, Some(at)), POWER_KIND, &cells)?;
+            let first = rows::mutation_id(row.country, row.epoch, row.sequence);
+            self.show(
+                writer,
+                tag,
+                ordinal,
+                (row.hour, at),
+                first,
+                &rows::paid(row),
+                (&row.identity, row.cause, None),
+                power.dating.dated.as_ref(),
+            )?;
         }
+        let record = PowerRecord {
+            country: row.country,
+            epoch: row.epoch,
+            sequence: row.sequence,
+            hour: row.hour,
+            command: row.currency == PowerCurrency::Command,
+            realized: row.realized_delta_raw(),
+            covered,
+            item: ordinal,
+            class,
+            late,
+            recurring,
+            upkeep,
+            charge: charge.flatten(),
+        };
+        let cell = records::cell(writer, &record)?;
+        let sequence = Self::event(writer, key, (row.hour, Some(at)), POWER_KIND, &[cell])?;
         if late && class != SKIPPED {
             let held = self.tag_key(writer, tag, LATE, None)?;
-            Self::payment(writer, held, (row.hour, Some(at)), POWER_KIND, &cells)?;
+            Self::event(writer, held, (row.hour, Some(at)), POWER_KIND, &[cell])?;
         } else if class == BALANCE {
             self.countries[tag as usize].rollups.count(
                 Some((ordinal, row.country, row.epoch)),
@@ -1711,25 +1644,9 @@ impl Emit {
             at,
         );
         let key = self.tag_key(writer, tag, GOVERNMENTS, None)?;
-        let cells = vec![
-            Cell::Unsigned(u64::from(row.country)),
-            Cell::Unsigned(u64::from(row.instance)),
-            Cell::Unsigned(row.epoch),
-            Cell::Unsigned(row.sequence),
-            unsigned(row.before_party),
-            unsigned(row.after_party),
-            unsigned(row.before_ideology),
-            unsigned(row.after_ideology),
-            optional_text(writer, government.tokens.0.as_deref().map(str::as_bytes))?,
-            optional_text(writer, government.tokens.1.as_deref().map(str::as_bytes))?,
-            unsigned(row.actor_country),
-            Cell::Unsigned(row.cause as u64),
-            Cell::Unsigned(row.origin_kind as u64),
-            unsigned(row.origin_token),
-            text(writer, &row.origin_key)?,
-            Cell::Boolean(covered),
-        ];
-        Self::event(writer, key, (row.hour, Some(at)), GOVERNMENT_KIND, &cells)?;
+        let shown = rows::government(row, at, government.tokens.clone(), covered);
+        let cell = records::cell(writer, &shown)?;
+        Self::event(writer, key, (row.hour, Some(at)), GOVERNMENT_KIND, &[cell])?;
         joined.dirty.insert(tag);
         Ok(())
     }
@@ -1761,21 +1678,11 @@ impl Emit {
             }
         }
         let daily_key = self.tag_key(writer, tag, DAILY, None)?;
-        let cells = vec![
-            Cell::Unsigned(u64::from(row.country)),
-            Cell::Unsigned(u64::from(row.instance)),
-            Cell::Unsigned(row.epoch),
-            integer(row.pp_gross_gain_raw),
-            integer(row.pp_cost_raw),
-            integer(row.pp_net_gain_raw),
-            integer(row.pp_realized_delta_raw),
-            unsigned(row.pp_sequence),
-            integer(row.cp_gain_raw),
-            integer(row.cp_realized_delta_raw),
-            unsigned(row.cp_sequence),
-            integer(reads.0),
-            integer(reads.1),
-        ];
+        let record = DailyRecord {
+            epoch: row.epoch,
+            daily: rows::daily(&row, at, reads),
+        };
+        let cells = [records::cell(writer, &record)?];
         // A revision of a settled day is also kept apart: no rollup counts it.
         if self.late(row.day_hour) {
             let held = self.tag_key(writer, tag, LATE, None)?;
@@ -1811,15 +1718,12 @@ impl Emit {
             .collect();
         for key in earlier {
             if let Some(day) = self.days.remove(&key) {
-                self.tag_days.remove(&(day.tag, key.2, key.0, key.1));
                 joined.dirty.insert(day.tag);
             }
         }
         if let Some(old) = self.days.insert(key, Day { row, reads, tag }) {
-            self.tag_days.remove(&(old.tag, key.2, key.0, key.1));
             joined.dirty.insert(old.tag);
         }
-        self.tag_days.insert((tag, key.2, key.0, key.1));
         joined.dirty.insert(tag);
         Ok(())
     }
@@ -1868,20 +1772,12 @@ impl Emit {
             self.waiting.insert((1, row.key()), Waiting::Cost(cost));
             return Ok(());
         };
-        let (covered, dated, revision, held_item) = match self.recorded_costs.get(&key) {
+        let (covered, revision, held_item) = match self.recorded_costs.get(&key) {
             Some(old) if old.row == *row => return Ok(()),
             // A revision keeps what the first record read.
-            Some(old) => (old.covered, old.dated, true, Some(old.item)),
-            None => {
-                let dated = match &cost.dating.dated {
-                    Some(dated) => Some(self.dated(writer, tag, at, dated)?),
-                    None => None,
-                };
-                (day.covered, dated, false, None)
-            }
+            Some(old) => (old.covered, true, Some(old.item)),
+            None => (day.covered, false, None),
         };
-        let cost_key = self.tag_key(writer, tag, COSTS, None)?;
-        let identity = identity_cells(writer, &row.identity)?;
         let CostDay {
             late,
             matched,
@@ -1899,55 +1795,53 @@ impl Emit {
         };
         let category = cost.dating.category.as_deref().unwrap_or("");
         let (recurring, upkeep) = (rows::is_recurring(category), category == "upkeep");
-        let (ordinal, item, new) = match held_item {
-            Some(ordinal) => (
-                ordinal,
-                self.countries[tag as usize].items[ordinal as usize],
-                false,
-            ),
-            None => self.item(
-                tag,
-                cost.item.unwrap_or_else(|| cost.resolve()),
-                (true, row.country, row.epoch, 0, row.day_hour, row.ordinal),
-            ),
+        let (ordinal, new) = match held_item {
+            Some(ordinal) => (ordinal, false),
+            None => self.item(tag, cost.item.unwrap_or_else(|| cost.resolve())),
         };
-        let cells = (
-            [
-                Cell::Unsigned(u64::from(row.country)),
-                Cell::Unsigned(u64::from(row.instance)),
-                Cell::Unsigned(row.epoch),
-                Cell::Unsigned(u64::from(row.ordinal)),
-                Cell::Unsigned(row.pp_sequence),
-                Cell::Unsigned(row.component as u64),
-                Cell::Integer(i128::from(row.cost_raw)),
-                Cell::Unsigned(row.cause as u64),
-                Cell::Unsigned(row.site as u64),
-                identity,
-                Cell::Boolean(covered),
-                integer(dated.map(|(hour, _)| hour)),
-                unsigned(dated.map(|(_, sequence)| sequence)),
-                Cell::Boolean(revision),
-                Cell::Boolean(late),
-            ],
-            item_cells(ordinal, &item, class, recurring, upkeep),
-        );
-        let sequence = Self::payment(writer, cost_key, (row.day_hour, Some(at)), COST_KIND, &cells)?;
         if new {
-            let items = self.tag_key(writer, tag, ITEMS, None)?;
-            Self::payment(writer, items, (row.day_hour, Some(at)), COST_KIND, &cells)?;
+            let first = rows::cost_id(row.country, row.epoch, row.day_hour, row.ordinal);
+            self.show(
+                writer,
+                tag,
+                ordinal,
+                (row.day_hour, at),
+                first,
+                &rows::paid_cost(row),
+                (&row.identity, row.cause, Some(row.component)),
+                cost.dating.dated.as_ref(),
+            )?;
         }
-        let field = (ordinal, row.country, row.epoch);
-        if revision || class == SKIPPED {
-        } else if late {
-            let held = self.tag_key(writer, tag, LATE, None)?;
-            Self::payment(writer, held, (row.day_hour, Some(at)), COST_KIND, &cells)?;
-        } else if class == UNMATCHED || class == CREDIT {
-            let field = (class == CREDIT).then_some(field);
-            self.countries[tag as usize]
-                .rollups
-                .count(field, row.day_hour, true);
-        } else {
-            {
+        // Replies read only a cost's first record, and only one that charges.
+        if !revision && class != SKIPPED {
+            let record = CostRecord {
+                country: row.country,
+                epoch: row.epoch,
+                day_hour: row.day_hour,
+                ordinal: row.ordinal,
+                pp_sequence: row.pp_sequence,
+                covered,
+                cost_raw: row.cost_raw,
+                item: ordinal,
+                class,
+                late,
+                recurring,
+                upkeep,
+            };
+            let cell = records::cell(writer, &record)?;
+            let cost_key = self.tag_key(writer, tag, COSTS, None)?;
+            let sequence =
+                Self::event(writer, cost_key, (row.day_hour, Some(at)), COST_KIND, &[cell])?;
+            let field = (ordinal, row.country, row.epoch);
+            if late {
+                let held = self.tag_key(writer, tag, LATE, None)?;
+                Self::event(writer, held, (row.day_hour, Some(at)), COST_KIND, &[cell])?;
+            } else if class == UNMATCHED || class == CREDIT {
+                let field = (class == CREDIT).then_some(field);
+                self.countries[tag as usize]
+                    .rollups
+                    .count(field, row.day_hour, true);
+            } else {
                 self.countries[tag as usize].rollups.add(&Contribution {
                     field,
                     recurring,
@@ -1986,7 +1880,6 @@ impl Emit {
             Recorded {
                 row: cost.row,
                 covered,
-                dated,
                 item: ordinal,
             },
         );
@@ -2091,14 +1984,13 @@ impl Emit {
                 Coverage {
                     country: Some(country),
                     instance: None,
-                    read_hour: hour,
                     since_hour: Some(hour),
                     through_hour: Some(hour),
                     epoch: None,
                     streams: 0,
                     reason: Some(Gap::Unavailable),
                 },
-                |row| Coverage::of(row, hour),
+                Coverage::of,
             );
             if value.through_hour != Some(hour) {
                 value = Coverage {
@@ -2244,61 +2136,11 @@ impl Emit {
             .filter(|row| row.through_hour == Some(hour))
             .and_then(|row| row.identity());
         let starts = !adjacent || identity != self.countries[tag as usize].identity;
-        self.write_coverage(writer, tag, hour, starts, coverage)?;
+        self.countries[tag as usize].coverage = coverage;
         self.write_spending(writer, tag, hour, adjacent, starts, spending)?;
         self.write_holds(writer, tag, hour, adjacent, active, joined)?;
-        self.write_income(writer, tag, hour)?;
         self.write_parts(writer, tag, hour, previous, starts, identity, joined)?;
         self.countries[tag as usize].identity = identity;
-        Ok(())
-    }
-
-    /// `tag`'s capture coverage at `hour`: the open piece, its fact written when it changes.
-    fn write_coverage(
-        &mut self,
-        writer: &mut Writer<'_>,
-        tag: u32,
-        hour: i32,
-        starts: bool,
-        coverage: Option<Coverage>,
-    ) -> io::Result<()> {
-        let key = self.tag_key(writer, tag, CAPTURE, None)?;
-        let Some(merged) = coverage else {
-            let country = &mut self.countries[tag as usize];
-            country.coverage = None;
-            self.carry.value(writer, key, hour, None, false)?;
-            return Ok(());
-        };
-        let signature = Coverage {
-            through_hour: None,
-            ..merged
-        };
-        let held = self.countries[tag as usize]
-            .capture
-            .as_ref()
-            .filter(|(_, held)| *held == signature)
-            .map(|(sequence, _)| *sequence);
-        let fact = match held {
-            Some(sequence) => sequence,
-            None => {
-                let facts_key = self.tag_key(writer, tag, CAPTURE_FACTS, None)?;
-                let cells = vec![
-                    unsigned(merged.country),
-                    unsigned(merged.instance),
-                    Cell::Integer(i128::from(merged.read_hour)),
-                    integer(merged.since_hour),
-                    unsigned(merged.epoch),
-                    Cell::Unsigned(u64::from(merged.streams)),
-                    optional_text(writer, merged.reason.map(|gap| gap.text().as_bytes()))?,
-                ];
-                let sequence = Self::event(writer, facts_key, (hour, None), CAPTURE_KIND, &cells)?;
-                self.countries[tag as usize].capture = Some((sequence, signature));
-                sequence
-            }
-        };
-        self.carry
-            .value(writer, key, hour, Some(i128::from(fact)), starts)?;
-        self.countries[tag as usize].coverage = Some(merged);
         Ok(())
     }
 
@@ -2350,14 +2192,7 @@ impl Emit {
         if !held {
             let cover = (merged.political, merged.command, merged.reason.clone());
             let key = self.tag_key(writer, tag, COVER_REASONS, None)?;
-            let cells = vec![
-                Cell::Integer(i128::from(merged.read_hour)),
-                integer(merged.since_hour),
-                integer(merged.through_hour),
-                Cell::Boolean(merged.political),
-                Cell::Boolean(merged.command),
-                optional_text(writer, merged.reason.as_deref().map(str::as_bytes))?,
-            ];
+            let cells = [records::cell(writer, &merged)?];
             Self::event(writer, key, (hour, None), COVER_KIND, &cells)?;
             self.countries[tag as usize].cover = Some(cover);
         }
@@ -2446,53 +2281,19 @@ impl Emit {
         let snapshot = Snapshot::of(&holds.active, total, missing);
         holds.snapshot = Some(snapshot.clone());
         let key = self.tag_key(writer, tag, HOLDS, None)?;
-        let mut holders = Vec::with_capacity(snapshot.holders.len());
-        for (id, holder) in &snapshot.holders {
-            let (script, saved) = match &holder.character {
-                Some((script, saved)) => (script.as_deref(), Some(saved.as_str())),
-                None => (None, None),
-            };
-            let cells = vec![
-                text(writer, id.as_bytes())?,
-                text(writer, holder.kind.as_bytes())?,
-                Cell::Boolean(holder.ability),
-                optional_text(writer, holder.token.as_deref().map(str::as_bytes))?,
-                optional_text(writer, script.map(str::as_bytes))?,
-                optional_text(writer, saved.map(str::as_bytes))?,
-                Cell::Integer(holder.amount),
-            ];
-            holders.push(Cell::List(writer.cells(cells)?));
-        }
-        let cells = vec![
-            integer(snapshot.total),
-            Cell::List(writer.cells(holders)?),
-            optional_text(writer, snapshot.missing.as_deref().map(str::as_bytes))?,
-        ];
+        let shown = present::hold(
+            hour,
+            snapshot.total,
+            &snapshot.holders,
+            snapshot.missing.as_deref(),
+            self.content.as_deref(),
+        );
+        let cells = [records::cell(writer, &shown)?];
         Self::event(writer, key, (hour, None), HOLD_KIND, &cells)?;
         Ok(())
     }
 
     /// `tag`'s current daily income by currency: its latest recorded day the daily table holds.
-    fn write_income(&mut self, writer: &mut Writer<'_>, tag: u32, hour: i32) -> io::Result<()> {
-        let current = self
-            .tag_days
-            .range((tag, i32::MIN, 0, 0)..=(tag, i32::MAX, u32::MAX, u64::MAX))
-            .rev()
-            .find(|&&(_, _, country, _)| self.daily.contains_key(&country))
-            .and_then(|&(_, day_hour, country, epoch)| self.days.get(&(country, epoch, day_hour)))
-            .map(|day| (day.row.pp_net_gain_raw, day.row.cp_gain_raw));
-        let values = [
-            current.and_then(|(pp, _)| pp),
-            current.and_then(|(_, cp)| cp),
-        ];
-        for (measure, value) in INCOME.into_iter().zip(values) {
-            let key = self.tag_key(writer, tag, measure, None)?;
-            self.carry
-                .value(writer, key, hour, value.map(i128::from), false)?;
-        }
-        Ok(())
-    }
-
     /// The part dimension of `category` in `currency`, numbered and named when new.
     fn category(
         &mut self,
@@ -2704,6 +2505,19 @@ impl Emit {
             writer.catalogue(WARNINGS, cell)?;
             self.warnings_changed = false;
         }
+        // The content's power diagnostics are reachable once an item demanded its power content.
+        if !self.power_warned
+            && let Some(content) = self.content.as_deref()
+            && content.power_requested()
+        {
+            let mut cells = Vec::new();
+            for warning in content.power_warnings() {
+                cells.push(text(writer, warning.as_bytes())?);
+            }
+            let cell = Cell::List(writer.cells(cells)?);
+            writer.catalogue(POWER_WARNINGS, cell)?;
+            self.power_warned = true;
+        }
         for at in 0..self.countries.len() {
             if self.countries[at].warnings_changed {
                 let warnings = self.countries[at].warnings.clone();
@@ -2824,11 +2638,6 @@ impl Emit {
         for cost in self.recorded_costs.values() {
             put_cost(&mut put, &cost.row);
             put.flag(cost.covered);
-            put.flag(cost.dated.is_some());
-            if let Some((hour, sequence)) = cost.dated {
-                put.int(hour);
-                put.var(sequence);
-            }
             put.var(u64::from(cost.item));
         }
         // Each country's rollups and items, the bulk of a long campaign's state, as varints.
@@ -2837,15 +2646,8 @@ impl Emit {
         for country in &self.countries {
             country.rollups.save(&mut put);
             put.len(country.items.len());
-            for item in &country.items {
-                put.0.extend_from_slice(&item.key);
-                let (paid, ordinal, sequence, first, hour, read) = item.first;
-                put.flag(paid);
-                put.var(u64::from(ordinal));
-                put.var(sequence);
-                put.var(first);
-                put.int(hour);
-                put.var(u64::from(read));
+            for key in &country.items {
+                put.0.extend_from_slice(key);
             }
         }
         for part in [&json, &rows, &binary] {
@@ -2893,16 +2695,7 @@ impl Emit {
                 .try_reserve(count)
                 .map_err(|_| invalid("saved items exceed memory"))?;
             for _ in 0..count {
-                let key = binary.array::<32>()?;
-                let first = (
-                    binary.flag()?,
-                    tally::word(&mut binary)?,
-                    binary.var()?,
-                    binary.var()?,
-                    tally::int(&mut binary)?,
-                    tally::word(&mut binary)?,
-                );
-                country.items.push(ItemRef { key, first });
+                country.items.push(binary.array::<32>()?);
             }
         }
         binary.end()?;
@@ -2911,7 +2704,7 @@ impl Emit {
                 .items
                 .iter()
                 .enumerate()
-                .map(|(ordinal, item)| (item.key, ordinal as u32))
+                .map(|(ordinal, key)| (*key, ordinal as u32))
                 .collect();
         }
         if emit.countries.len() != emit.tags.len() {
@@ -2955,7 +2748,6 @@ impl Emit {
             let reads = (read_hour(&mut rows)?, read_hour(&mut rows)?);
             let tag = tally::word(&mut rows)?;
             let key = (row.country, row.epoch, row.day_hour);
-            emit.tag_days.insert((tag, key.2, key.0, key.1));
             emit.days.insert(key, Day { row, reads, tag });
         }
         for _ in 0..tally::len(&mut rows)? {
@@ -2975,20 +2767,10 @@ impl Emit {
         for _ in 0..tally::len(&mut rows)? {
             let row = read_cost(&mut rows)?;
             let covered = rows.flag()?;
-            let dated = if rows.flag()? {
-                Some((tally::int(&mut rows)?, rows.var()?))
-            } else {
-                None
-            };
             let item = tally::word(&mut rows)?;
             emit.recorded_costs.insert(
                 (row.country, row.epoch, row.day_hour, row.ordinal),
-                Recorded {
-                    row,
-                    covered,
-                    dated,
-                    item,
-                },
+                Recorded { row, covered, item },
             );
         }
         rows.end()?;

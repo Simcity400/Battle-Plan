@@ -23,7 +23,7 @@ const spend = (overrides: Partial<LedgerSpend> = {}): LedgerSpend => ({ id: 'cha
   chargeRaw: '123456789012345678901', realizedDeltaRaw: '-2500000', covered: true, occurrences: 1,
   changes: [{ readHour: 12, chargeRaw: '123456789012345678901', realizedDeltaRaw: '-2500000', occurrences: 1, covered: true }], ...overrides });
 const reply = (overrides: Partial<PoliticsLedgerReply> = {}): PoliticsLedgerReply => ({ branchId: 'branch', tag: 'mod country', decimals: 5,
-  mutations: [], governments: [], daily: [], dailyCosts: [], coverage: [], warnings: [], spending: [spend()], spendItems: [item()],
+  governments: [], daily: [], warnings: [], spending: [spend()], spendItems: [item()],
   spendCategories: [{ id: 'law/mod', name: 'Mod laws', identified: true }], ideaTooltips: null, commandHolds: [],
   spendingCoverage: [{ readHour: 0, sinceHour: 0, throughHour: 0, political: true, command: true, reason: null }], ...overrides });
 
@@ -238,7 +238,7 @@ test('the spending view needs no raw ledger tables and resolves repeated tooltip
   const full = reply({ spendItems: [{ ...item('first'), icon: null, tooltipToken: 'dated-law' }, { ...item('second'), icon: null, tooltipToken: 'dated-law' }],
     spending: [spend({ itemId: 'first' }), spend({ id: 'second-charge', itemId: 'second' })], ideaTooltips: { ideas: [info],
       artwork: [{ token: 'dated-law', name: 'Mod law', description: null, baseDurationDays: null, icon: ICON }], modifiers: [], texts: [] } });
-  const { mutations: _mutations, governments: _governments, daily: _daily, dailyCosts: _dailyCosts, coverage: _coverage, ...view } = full;
+  const { governments: _governments, daily: _daily, ...view } = full;
   const data = validatePoliticsSpending(view);
   assert.equal(data.ideaTooltips?.artwork.length, 1);
   assert.deepEqual(data.spendItems.map(item => item.icon), [null, null]);

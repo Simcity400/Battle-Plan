@@ -1,37 +1,32 @@
-//! The ledger's replies, read from its series publication ([`super::emit`]): a country's
-//! recorded rows of the asked hours alone, named and grouped when the reply is asked. A
-//! payment's item is the one the emit interned for it, named by its first payment and keying
-//! its tooltip; it is resolved from the facts its first payment's hour recorded and the
-//! recorded content, once for every reply. Totals read each settled period's rollup whole
-//! ([`super::tally`]) and only the hours no rollup holds row by row.
+//! The ledger's replies, read from its series publication ([`super::emit`]): a country's rows
+//! of the asked hours, as the emit stored them for replies ([`super::records`]), with the items
+//! they name, each resolved once by the emit at its first payment. A reply decodes, filters and
+//! groups them; it names, resolves and formats nothing. Totals read each settled period's rollup
+//! whole ([`super::tally`]) and only the hours no rollup holds row by row.
 
 use super::emit::{
-    self, CAPTURE, CAPTURE_FACTS, CATEGORY_NAMES, COSTS, COVER_REASONS, COVERED,
-    DAILY, DATED, GOVERNMENTS, HOLDS, INCOME, ITEMS, LATE, PARTS, POWER, PRESENCE, ROLLUP,
+    self, CATEGORY_NAMES, COSTS, COVER_REASONS, COVERED, DAILY, GOVERNMENTS, HOLDS, ITEMS, LATE,
+    PARTS, POWER, PRESENT, ROLLUP,
 };
-use super::items::{self, Dated, FrameTexts, Item};
-use super::present::{self, Resolved};
+use super::records::{CostRecord, DailyRecord, ItemRecord, PowerRecord};
 use super::tally::{self, Contribution, Field};
 use super::*;
+use dashboard_base::prepared::codec;
 use dashboard_base::prepared::engine;
 use dashboard_base::prepared::series::{self, MeasureKey, Navigation};
 use dashboard_base::prepared_chart::{MarkCluster, MarkSummary};
 use dashboard_base::prepared_measure::query::{MeasureDropReply, MeasureEvent};
 use dashboard_base::products::country_groups::HourSpan;
-use dashboard_base::products::idea_format;
-use dashboard_base::products::idea_history::{self, IdeaInfo};
-use dashboard_base::products::politics_content::PoliticsContent;
 use dashboard_base::products::{MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES, validate_tag};
 use dashboard_core::transport::json_len;
 use dashboard_series::{
-    Cell, Event, EventOrder, EventQuery, PageRead, Selection, Snapshot, Span,
-    query::EventView,
-    codec::Binary,
+    Cell, Event, EventOrder, codec::Binary as _, EventQuery, PageRead, Selection, Snapshot, Span,
     family::{Directory, Scalar},
+    query::EventView,
 };
+use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::collections::{HashMap, HashSet};
 
 /// Rows one engine page answers at most: replies stay bounded by the reply budget, not this.
 const BUDGET: usize = 1 << 24;
@@ -41,10 +36,9 @@ const BUDGET: usize = 1 << 24;
 struct Params {
     branch_id: String,
     tag: String,
-    #[serde(default)]
     view: LedgerView,
     from: Option<i32>,
-    hour: Option<i32>,
+    hour: i32,
     within: Option<Vec<HourSpan>>,
     navigation: Option<Navigation>,
     summary: Option<PartView>,
@@ -123,48 +117,20 @@ struct Reader<'r, 's, P> {
     first: i32,
     last: i32,
     settled: Option<i32>,
+    /// The buffer every record is read into.
+    scratch: Vec<u8>,
 }
 
 /// An event's cells.
 struct Cells(Vec<Cell>);
 
-impl Cells {
-    fn integer(&self, at: usize) -> Option<i128> {
-        match self.0.get(at)? {
-            Cell::Integer(value) => Some(*value),
-            Cell::Unsigned(value) => Some(i128::from(*value)),
-            _ => None,
-        }
-    }
+/// The hour an event was read at.
+fn read_of(event: &Event) -> i32 {
+    event.read_hour.unwrap_or(event.native_hour)
+}
 
-    fn unsigned(&self, at: usize) -> Option<u64> {
-        match self.0.get(at)? {
-            Cell::Unsigned(value) => Some(*value),
-            Cell::Integer(value) => u64::try_from(*value).ok(),
-            _ => None,
-        }
-    }
-
-    fn u32(&self, at: usize) -> Option<u32> {
-        self.unsigned(at)
-            .and_then(|value| u32::try_from(value).ok())
-    }
-
-    fn i32(&self, at: usize) -> Option<i32> {
-        self.integer(at).and_then(|value| i32::try_from(value).ok())
-    }
-
-    fn i64(&self, at: usize) -> Option<i64> {
-        self.integer(at).and_then(|value| i64::try_from(value).ok())
-    }
-
-    fn boolean(&self, at: usize) -> bool {
-        matches!(self.0.get(at), Some(Cell::Boolean(true)))
-    }
-
-    fn required<T>(value: Option<T>) -> io::Result<T> {
-        value.ok_or_else(|| invalid("A politics ledger event is malformed"))
-    }
+fn currency(command: bool) -> &'static str {
+    if command { "Command" } else { "Political" }
 }
 
 impl<'r, 's, P: PageRead> Reader<'r, 's, P> {
@@ -177,25 +143,23 @@ impl<'r, 's, P: PageRead> Reader<'r, 's, P> {
         Ok(Cells(cells))
     }
 
-    fn bytes(&mut self, cell: Option<&Cell>) -> io::Result<Option<Vec<u8>>> {
-        match cell {
-            Some(Cell::Text(blob)) => {
-                let length =
-                    usize::try_from(blob.len).map_err(|_| invalid("A ledger text is too long"))?;
-                let mut text = vec![0; length];
-                if length != 0 {
-                    self.snapshot.cell_bytes(*blob, 0, &mut text)?;
-                }
-                Ok(Some(text))
-            }
-            _ => Ok(None),
+    /// The record cell `at` of `fields` holds ([`super::records`]).
+    fn record<T: DeserializeOwned>(
+        &mut self,
+        fields: dashboard_series::Blob,
+        at: u64,
+    ) -> io::Result<T> {
+        let Cell::Text(blob) = self.snapshot.field(fields, at)? else {
+            return Err(invalid("A politics ledger record is malformed"));
+        };
+        let length =
+            usize::try_from(blob.len).map_err(|_| invalid("A politics ledger record is too long"))?;
+        self.scratch.clear();
+        self.scratch.resize(length, 0);
+        if length != 0 {
+            self.snapshot.cell_bytes(blob, 0, &mut self.scratch)?;
         }
-    }
-
-    fn text(&mut self, cell: Option<&Cell>) -> io::Result<Option<String>> {
-        Ok(self
-            .bytes(cell)?
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+        codec::decode(&self.scratch)
     }
 
     /// `key`'s events of native hours `first..=last`, in native order.
@@ -262,30 +226,6 @@ impl<'r, 's, P: PageRead> Reader<'r, 's, P> {
         }
     }
 
-    fn identity(&mut self, cell: Option<&Cell>) -> io::Result<PowerIdentity> {
-        let Some(Cell::List(blob)) = cell else {
-            return Err(invalid("A ledger item identity is malformed"));
-        };
-        let cells = self.cells(*blob)?;
-        let kind =
-            |value: Option<u64>| Cells::required(value.and_then(|value| u8::try_from(value).ok()));
-        Ok(PowerIdentity {
-            action: PowerAction::try_from(kind(cells.unsigned(0))?)?,
-            item_token: cells.u32(1),
-            item_key: self.bytes(cells.0.get(2))?.unwrap_or_default(),
-            slot_key: self.bytes(cells.0.get(3))?.unwrap_or_default(),
-            character: cells.u32(4),
-            object_kind: PowerObjectKind::try_from(kind(cells.unsigned(5))?)?,
-            object_reference: cells.unsigned(6),
-            target_country: cells.u32(7),
-            target_state: cells.u32(8),
-            target_region: cells.u32(9),
-            origin_kind: PowerOriginKind::try_from(kind(cells.unsigned(10))?)?,
-            origin_token: cells.u32(11),
-            origin_key: self.bytes(cells.0.get(12))?.unwrap_or_default(),
-        })
-    }
-
     fn scalar_reasons(&mut self, id: u64) -> BTreeMap<String, u64> {
         let mut reasons = BTreeMap::new();
         if let Some(scalar) = self.directory.scalar(id) {
@@ -302,224 +242,21 @@ impl<'r, 's, P: PageRead> Reader<'r, 's, P> {
         }
         reasons
     }
-}
 
-/// A recorded power row.
-#[derive(Clone)]
-struct PowerEvent {
-    read: i32,
-    sequence: u64,
-    row: CountryPowerChangeRow,
-    covered: bool,
-    dated: Option<(i32, u64)>,
-    late: bool,
-    classed: Classed,
-}
-
-/// What the emit made of a payment ([`emit::ITEM_CELLS`]): its item's ordinal and first
-/// payment's id, its class, and whether it recurs and counts its days one entry each.
-#[derive(Clone, Debug)]
-struct Classed {
-    ordinal: u32,
-    first: String,
-    class: u64,
-    recurring: bool,
-    upkeep: bool,
-}
-
-fn classed(cells: &Cells, at: usize) -> io::Result<Classed> {
-    let country = Cells::required(cells.u32(at + 2))?;
-    let epoch = Cells::required(cells.unsigned(at + 3))?;
-    let first = if cells.boolean(at + 1) {
-        rows::cost_id(
-            country,
-            epoch,
-            Cells::required(cells.i32(at + 5))?,
-            Cells::required(cells.u32(at + 6))?,
-        )
-    } else {
-        rows::mutation_id(country, epoch, Cells::required(cells.unsigned(at + 4))?)
-    };
-    Ok(Classed {
-        ordinal: Cells::required(cells.u32(at))?,
-        first,
-        class: Cells::required(cells.unsigned(at + 7))?,
-        recurring: cells.boolean(at + 8),
-        upkeep: cells.boolean(at + 9),
-    })
-}
-
-/// A recorded cost or its revision.
-#[derive(Clone)]
-struct CostEvent {
-    read: i32,
-    sequence: u64,
-    row: CountryPowerDailyCostRow,
-    covered: bool,
-    dated: Option<(i32, u64)>,
-    revision: bool,
-    late: bool,
-    classed: Classed,
-}
-
-/// A daily row's revision.
-#[derive(Clone)]
-struct DailyEvent {
-    read: i32,
-    row: CountryPowerDailyRow,
-    reads: (Option<i32>, Option<i32>),
-}
-
-fn decode_power<P: PageRead>(
-    reader: &mut Reader<'_, '_, P>,
-    event: &Event,
-) -> io::Result<PowerEvent> {
-    let cells = reader.cells(event.fields)?;
-    let identity = reader.identity(cells.0.get(13))?;
-    let kind8 = |at: usize| {
-        Cells::required(
-            cells
-                .unsigned(at)
-                .and_then(|value| u8::try_from(value).ok()),
-        )
-    };
-    let kind16 = |at: usize| {
-        Cells::required(
-            cells
-                .unsigned(at)
-                .and_then(|value| u16::try_from(value).ok()),
-        )
-    };
-    Ok(PowerEvent {
-        read: event.read_hour.unwrap_or(event.native_hour),
-        sequence: event.sequence,
-        row: CountryPowerChangeRow {
-            country: Cells::required(cells.u32(0))?,
-            instance: Cells::required(cells.u32(1))?,
-            epoch: Cells::required(cells.unsigned(2))?,
-            sequence: Cells::required(cells.unsigned(3))?,
-            hour: Cells::required(cells.i32(4))?,
-            currency: PowerCurrency::try_from(kind8(5)?)?,
-            operation: PowerOperation::try_from(kind8(6)?)?,
-            cause: PowerCause::try_from(kind16(7)?)?,
-            site: PowerSite::try_from(kind16(8)?)?,
-            requested_delta_raw: cells.i64(9),
-            balance_before_raw: Cells::required(cells.i64(10))?,
-            balance_after_raw: Cells::required(cells.i64(11))?,
-            identity,
-        },
-        covered: cells.boolean(12),
-        dated: cells.i32(14).zip(cells.unsigned(15)),
-        late: cells.boolean(16),
-        classed: classed(&cells, 17)?,
-    })
-}
-
-fn decode_cost<P: PageRead>(
-    reader: &mut Reader<'_, '_, P>,
-    event: &Event,
-) -> io::Result<CostEvent> {
-    let cells = reader.cells(event.fields)?;
-    let identity = reader.identity(cells.0.get(9))?;
-    let kind8 = |at: usize| {
-        Cells::required(
-            cells
-                .unsigned(at)
-                .and_then(|value| u8::try_from(value).ok()),
-        )
-    };
-    let kind16 = |at: usize| {
-        Cells::required(
-            cells
-                .unsigned(at)
-                .and_then(|value| u16::try_from(value).ok()),
-        )
-    };
-    Ok(CostEvent {
-        read: event.read_hour.unwrap_or(event.native_hour),
-        sequence: event.sequence,
-        row: CountryPowerDailyCostRow {
-            country: Cells::required(cells.u32(0))?,
-            instance: Cells::required(cells.u32(1))?,
-            epoch: Cells::required(cells.unsigned(2))?,
-            ordinal: Cells::required(cells.u32(3))?,
-            pp_sequence: Cells::required(cells.unsigned(4))?,
-            component: PowerDailyCostKind::try_from(kind8(5)?)?,
-            cost_raw: Cells::required(cells.i64(6))?,
-            cause: PowerCause::try_from(kind16(7)?)?,
-            site: PowerSite::try_from(kind16(8)?)?,
-            day_hour: event.native_hour,
-            identity,
-        },
-        covered: cells.boolean(10),
-        dated: cells.i32(11).zip(cells.unsigned(12)),
-        revision: cells.boolean(13),
-        late: cells.boolean(14),
-        classed: classed(&cells, 15)?,
-    })
-}
-
-fn decode_daily<P: PageRead>(
-    reader: &mut Reader<'_, '_, P>,
-    event: &Event,
-) -> io::Result<DailyEvent> {
-    let cells = reader.cells(event.fields)?;
-    Ok(DailyEvent {
-        read: event.read_hour.unwrap_or(event.native_hour),
-        row: CountryPowerDailyRow {
-            country: Cells::required(cells.u32(0))?,
-            instance: Cells::required(cells.u32(1))?,
-            epoch: Cells::required(cells.unsigned(2))?,
-            day_hour: event.native_hour,
-            pp_gross_gain_raw: cells.i64(3),
-            pp_cost_raw: cells.i64(4),
-            pp_net_gain_raw: cells.i64(5),
-            pp_realized_delta_raw: cells.i64(6),
-            pp_sequence: cells.unsigned(7),
-            cp_gain_raw: cells.i64(8),
-            cp_realized_delta_raw: cells.i64(9),
-            cp_sequence: cells.unsigned(10),
-        },
-        reads: (cells.i32(11), cells.i32(12)),
-    })
-}
-
-fn decode_government<P: PageRead>(
-    reader: &mut Reader<'_, '_, P>,
-    event: &Event,
-) -> io::Result<LedgerGovernment> {
-    let cells = reader.cells(event.fields)?;
-    let kind = |at: usize| {
-        Cells::required(
-            cells
-                .unsigned(at)
-                .and_then(|value| u8::try_from(value).ok()),
-        )
-    };
-    let row = GovernmentChangeRow {
-        country: Cells::required(cells.u32(0))?,
-        instance: Cells::required(cells.u32(1))?,
-        epoch: Cells::required(cells.unsigned(2))?,
-        sequence: Cells::required(cells.unsigned(3))?,
-        hour: event.native_hour,
-        before_party: cells.u32(4),
-        after_party: cells.u32(5),
-        before_ideology: cells.u32(6),
-        after_ideology: cells.u32(7),
-        cause: GovernmentCause::try_from(kind(11)?)?,
-        actor_country: cells.u32(10),
-        origin_kind: PowerOriginKind::try_from(kind(12)?)?,
-        origin_token: cells.u32(13),
-        origin_key: reader.bytes(cells.0.get(14))?.unwrap_or_default(),
-        site: PowerSite::default(),
-    };
-    let tokens = (reader.text(cells.0.get(8))?, reader.text(cells.0.get(9))?);
-    Ok(rows::government(
-        &row,
-        event.read_hour.unwrap_or(event.native_hour),
-        tokens,
-        cells.boolean(15),
-    ))
+    /// The recorded content's power warnings, once an item reached them.
+    fn power_warnings(&self) -> Vec<String> {
+        self.directory
+            .scalar(emit::POWER_WARNINGS)
+            .map(|scalar| {
+                scalar
+                    .list()
+                    .iter()
+                    .filter_map(|warning| warning.text())
+                    .map(|warning| String::from_utf8_lossy(warning).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// The keys of one country.
@@ -543,41 +280,105 @@ impl Keys {
     }
 }
 
-/// A payment, as preparation projected one and a reply groups them.
-#[derive(Clone)]
-struct Payment {
-    spend: LedgerSpend,
+/// An item as its payments show it: its item, category and tooltip.
+struct Paid {
     item: LedgerSpendItem,
     category: LedgerSpendCategory,
     ideas: Option<LedgerIdeaTooltips>,
+}
+
+/// An item of the country: as the emit stored it, and as its payments show it.
+struct Shown {
+    stored: ItemRecord,
+    paid: Arc<Paid>,
+}
+
+impl Shown {
+    fn of(stored: ItemRecord) -> Self {
+        let mut item = stored.item.clone();
+        let mut category = stored.category.clone();
+        if stored.ability_upkeep {
+            item.name = None;
+            item.icon = None;
+            item.icon_art = None;
+            item.tooltip_token = None;
+            item.character = None;
+            item.unknown = None;
+            item.action = "Ability upkeep".into();
+        }
+        if let Some(daily) = &stored.daily {
+            category = daily.clone();
+            item.action = format!(
+                "{}: {}",
+                category.1,
+                item.name.as_deref().unwrap_or("Not identified")
+            );
+        }
+        let ideas = stored
+            .ideas
+            .clone()
+            .filter(|_| item.tooltip_token.is_some());
+        if item.tooltip_token.is_some() {
+            item.icon = None;
+        }
+        Self {
+            paid: Arc::new(Paid {
+                item,
+                category: LedgerSpendCategory {
+                    identified: category.0 != "notIdentified",
+                    id: category.0,
+                    name: category.1,
+                },
+                ideas,
+            }),
+            stored,
+        }
+    }
+}
+
+/// A payment, as preparation recorded one and a reply groups them.
+#[derive(Clone)]
+struct Payment {
+    spend: LedgerSpend,
+    paid: Arc<Paid>,
     count: u32,
-    known_raw: String,
+    /// The sum of its recorded charges, and how many are recorded.
+    known: i128,
     known_count: u32,
-    identity: (u32, String),
+    /// Its capture identity: country and epoch.
+    identity: (u32, u64),
     ordinal: u32,
 }
 
 /// The item a payment groups under, of the capture identity that recorded it.
-fn item_field(payment: &Payment) -> io::Result<String> {
-    Ok(format!(
+fn item_field(payment: &Payment) -> String {
+    format!(
         "{}:{}:{}",
         payment.ordinal, payment.identity.0, payment.identity.1
-    ))
+    )
+}
+
+fn overflow() -> io::Error {
+    invalid("Politics subtotal overflow")
+}
+
+fn count_overflow() -> io::Error {
+    invalid("Politics payment count overflow")
 }
 
 fn add_raw(left: &mut Option<String>, right: Option<&str>) -> io::Result<()> {
     *left = match (rows::amount(left.as_deref())?, rows::amount(right)?) {
-        (Some(left), Some(right)) => Some(
-            left.checked_add(right)
-                .ok_or_else(|| invalid("Politics subtotal overflow"))?
-                .to_string(),
-        ),
+        (Some(left), Some(right)) => Some(left.checked_add(right).ok_or_else(overflow)?.to_string()),
         _ => None,
     };
     Ok(())
 }
 
-fn merge_payment(left: &mut Payment, right: Payment) -> io::Result<()> {
+/// `right` merged into `left`, one open subtotal keeping both sides' contributions.
+fn merge(left: &mut Payment, right: &Payment) -> io::Result<()> {
+    left.spend
+        .changes
+        .extend(right.spend.changes.iter().cloned());
     add_raw(
         &mut left.spend.charge_raw,
         right.spend.charge_raw.as_deref(),
@@ -590,39 +391,24 @@ fn merge_payment(left: &mut Payment, right: Payment) -> io::Result<()> {
         .spend
         .occurrences
         .checked_add(right.spend.occurrences)
-        .ok_or_else(|| invalid("Politics payment count overflow"))?;
+        .ok_or_else(count_overflow)?;
     left.spend.covered &= right.spend.covered;
     if left.spend.category != "upkeep" {
         left.count = left
             .count
             .checked_add(right.count)
-            .ok_or_else(|| invalid("Politics payment count overflow"))?;
+            .ok_or_else(count_overflow)?;
     }
     left.known_count = left
         .known_count
         .checked_add(right.known_count)
-        .ok_or_else(|| invalid("Politics payment count overflow"))?;
-    left.known_raw = rows::amount(Some(&left.known_raw))?
-        .unwrap_or(0)
-        .checked_add(rows::amount(Some(&right.known_raw))?.unwrap_or(0))
-        .ok_or_else(|| invalid("Politics subtotal overflow"))?
-        .to_string();
+        .ok_or_else(count_overflow)?;
+    left.known = left.known.checked_add(right.known).ok_or_else(overflow)?;
     left.spend.read_hour = left.spend.read_hour.max(right.spend.read_hour);
     if right.spend.hour < left.spend.hour {
         left.spend.hour = right.spend.hour;
         left.spend.country_name = None;
     }
-    // The open numeric subtotal has no completed-payment list.
-    left.spend.changes.clear();
-    Ok(())
-}
-
-/// [`merge_payment`], keeping both sides' contributions as changes.
-fn merge_keeping(left: &mut Payment, right: &Payment) -> io::Result<()> {
-    let mut changes = std::mem::take(&mut left.spend.changes);
-    changes.extend(right.spend.changes.iter().cloned());
-    merge_payment(left, right.clone())?;
-    left.spend.changes = changes;
     Ok(())
 }
 
@@ -688,34 +474,27 @@ fn month(hour: i32) -> (Option<i32>, i64) {
     )
 }
 
-/// The whole native days of `spans` by game month, undated days first, each its own window.
-fn month_spans(spans: &[HourSpan]) -> Vec<(Option<i32>, Vec<HourSpan>)> {
-    let mut result = BTreeMap::<_, Vec<_>>::new();
-    let mut undated = Vec::new();
+/// The first hour of the month window of `spans` that holds native day `day`: the month's first
+/// whole day the first span reaching into it holds; an undated day is its own window.
+fn month_window_start(spans: &[HourSpan], day: i32) -> i32 {
+    use engine_native::cdate::MONTH_LENGTHS;
+    let (month, next) = month(day);
+    let Some(month) = month else {
+        return day;
+    };
+    let length = i64::from(MONTH_LENGTHS[month.rem_euclid(12) as usize]);
+    let (start, end) = (next - length * 24, next - 24);
     for span in spans {
-        let mut day = first_day(span.first_hour);
-        let last = last_day(span.last_hour);
-        while day <= last {
-            let (month, next) = month(day as i32);
-            let end = last.min(next - 24);
-            let window = HourSpan {
-                first_hour: day as i32,
-                last_hour: end as i32,
-            };
-            if month.is_some() {
-                result.entry(month).or_default().push(window);
-            } else {
-                undated.push((None, vec![window]));
-            }
-            day = next;
+        let first = first_day(span.first_hour).max(start);
+        let last = last_day(span.last_hour).min(end);
+        if first <= last {
+            return first as i32;
         }
     }
-    undated.extend(result);
-    undated
+    day
 }
 
 /// A payment of the country, as its presentation made it, and what totals count of it.
-#[derive(Clone)]
 struct Presented {
     payment: Payment,
     contribution: Contribution,
@@ -723,62 +502,57 @@ struct Presented {
     late: bool,
 }
 
-/// The facts of one country's items, each read once.
-struct Facts {
-    held: HashMap<(i32, u64), Arc<Dated>>,
-    read: BTreeSet<i32>,
-}
-
 /// The presentation of the country's payments in the hours a reply reads.
 struct Presentation {
     payments: Vec<Presented>,
-    /// Each mutation's balance line, by (country, epoch, sequence).
-    balance: HashMap<(u32, u64, u64), (String, Option<String>)>,
     reasons: BTreeMap<String, u64>,
     formats: BTreeSet<String>,
+    /// The items whose formatting warnings `formats` holds.
+    formatted: HashSet<u32>,
+    /// Whether any power row shows a balance line of its item.
+    balanced: bool,
 }
 
-/// An item as every reply shows it: its resolution, its tooltip and the warnings formatting it
-/// gave.
-struct Shown {
-    resolved: Resolved,
-    ideas: Option<LedgerIdeaTooltips>,
-    formats: Vec<String>,
-    /// Its country's name at its first payment.
-    country_name: Option<String>,
-    /// The content it was named with, held so that no other content takes its address.
-    _content: Option<Arc<PoliticsContent>>,
+impl Presentation {
+    fn new() -> Self {
+        Self {
+            payments: Vec::new(),
+            reasons: BTreeMap::new(),
+            formats: BTreeSet::new(),
+            formatted: HashSet::new(),
+            balanced: false,
+        }
+    }
+
+    /// Item `ordinal` shown: the warnings formatting it gave.
+    fn show(&mut self, ordinal: u32, shown: &Shown) {
+        if self.formatted.insert(ordinal) {
+            self.formats.extend(shown.stored.formats.iter().cloned());
+        }
+    }
 }
 
-/// An item of a publication's country under one content: the publication's identity (source,
-/// content, branch, schema), the tag, the item's ordinal and the content's address.
-type ShownKey = ([u8; 32], [u8; 32], [u8; 32], u64, Box<str>, u32, usize);
+/// A recorded row read after its native day settled, as a totals reply reads it.
+enum Late {
+    Power((i32, u64, PowerRecord)),
+    Cost((i32, u64, CostRecord)),
+}
 
-/// Items shown, kept between replies: an item's ordinal names the same item for as long as
-/// its publication grows. Dropped whole past this many.
-const SHOWN_ITEMS: usize = 1 << 18;
-static SHOWN: LazyLock<Mutex<HashMap<ShownKey, Arc<Shown>>>> = LazyLock::new(Mutex::default);
-
-struct Country<'c> {
+struct Country {
     tag: String,
     keys: Keys,
-    content: Option<&'c Arc<PoliticsContent>>,
-    identity: ([u8; 32], [u8; 32], [u8; 32], u64),
-    facts: Facts,
-    shown: HashMap<u32, Arc<Shown>>,
-    power: Vec<PowerEvent>,
-    costs: Vec<CostEvent>,
-    daily: Vec<DailyEvent>,
-    /// Each day's political application read hours, by country and day: (read, its pp read).
-    applications: HashMap<(u32, i32), Vec<(i32, Option<i32>)>>,
+    /// Power rows and costs with their read hour and event sequence, in the order recorded.
+    power: Vec<(i32, u64, PowerRecord)>,
+    costs: Vec<(i32, u64, CostRecord)>,
+    daily: Vec<DailyRecord>,
+    items: HashMap<u32, Shown>,
 }
 
-impl<'c> Country<'c> {
-    /// The country's rows of native hours within `windows`.
+impl Country {
+    /// The country's rows of native hours within `windows`, and the items they show.
     fn read<P: PageRead>(
         reader: &mut Reader<'_, '_, P>,
         tag: &str,
-        content: Option<&'c Arc<PoliticsContent>>,
         windows: &[(i32, i32)],
     ) -> io::Result<Self> {
         let keys = Keys::of(reader.directory, tag);
@@ -787,350 +561,167 @@ impl<'c> Country<'c> {
             for measure in POWER {
                 let key = keys.key(reader.directory, measure);
                 for event in reader.events(key, first, last)? {
-                    power.push(decode_power(reader, &event)?);
+                    let record: PowerRecord = reader.record(event.fields, 0)?;
+                    power.push((read_of(&event), event.sequence, record));
                 }
             }
             for event in reader.events(keys.key(reader.directory, COSTS), first, last)? {
-                costs.push(decode_cost(reader, &event)?);
+                let record: CostRecord = reader.record(event.fields, 0)?;
+                costs.push((read_of(&event), event.sequence, record));
             }
             for event in reader.events(keys.key(reader.directory, DAILY), first, last)? {
-                daily.push(decode_daily(reader, &event)?);
+                daily.push(reader.record::<DailyRecord>(event.fields, 0)?);
             }
         }
-        power.sort_by_key(|event| (event.read, event.sequence));
-        costs.sort_by_key(|event| (event.read, event.sequence));
-        daily.sort_by_key(|event| (event.row.day_hour, event.read));
-        let mut applications = HashMap::<(u32, i32), Vec<(i32, Option<i32>)>>::new();
-        for day in &daily {
-            applications
-                .entry((day.row.country, day.row.day_hour))
-                .or_default()
-                .push((day.read, day.reads.0));
-        }
-        let identity = reader.snapshot.identity();
-        Ok(Self {
+        power.sort_by_key(|(read, sequence, _)| (*read, *sequence));
+        costs.sort_by_key(|(read, sequence, _)| (*read, *sequence));
+        daily.sort_by_key(|row| (row.daily.day_hour, row.daily.read_hour));
+        let mut country = Self {
             tag: tag.to_owned(),
             keys,
-            content,
-            identity: (
-                identity.source,
-                identity.content,
-                identity.branch,
-                identity.schema,
-            ),
-            facts: Facts {
-                held: HashMap::new(),
-                read: BTreeSet::new(),
-            },
-            shown: HashMap::new(),
             power,
             costs,
             daily,
-            applications,
-        })
-    }
-
-    fn content(&self) -> Option<&'c PoliticsContent> {
-        self.content.map(|content| &**content)
-    }
-
-    /// The facts interned at `at`.
-    fn dated<P: PageRead>(
-        &mut self,
-        reader: &mut Reader<'_, '_, P>,
-        at: Option<(i32, u64)>,
-    ) -> io::Result<Option<Arc<Dated>>> {
-        let Some((hour, sequence)) = at else {
-            return Ok(None);
+            items: HashMap::new(),
         };
-        if self.facts.read.insert(hour) {
-            let key = self.keys.key(reader.directory, DATED);
-            for event in reader.events(key, hour, hour)? {
-                let cells = reader.cells(event.fields)?;
-                let bytes = reader
-                    .bytes(cells.0.first())?
-                    .ok_or_else(|| invalid("Interned ledger facts are malformed"))?;
-                let dated: Dated = serde_json::from_slice(&bytes)?;
-                self.facts
-                    .held
-                    .insert((event.native_hour, event.sequence), Arc::new(dated));
-            }
-        }
-        Ok(self.facts.held.get(&(hour, sequence)).cloned())
-    }
-
-    /// Item `ordinal`, first paid by `row` (of `cause`, with `component`), as replies show it:
-    /// resolved once for every reply of its publication under this content.
-    #[allow(clippy::too_many_arguments)]
-    fn shown<P: PageRead>(
-        &mut self,
-        reader: &mut Reader<'_, '_, P>,
-        ordinal: u32,
-        row: &LedgerMutation,
-        identity: &PowerIdentity,
-        cause: PowerCause,
-        dated: Option<(i32, u64)>,
-        component: Option<PowerDailyCostKind>,
-    ) -> io::Result<Arc<Shown>> {
-        if let Some(found) = self.shown.get(&ordinal) {
-            return Ok(Arc::clone(found));
-        }
-        let key: ShownKey = (
-            self.identity.0,
-            self.identity.1,
-            self.identity.2,
-            self.identity.3,
-            Box::from(self.tag.as_str()),
-            ordinal,
-            self.content
-                .map_or(0, |content| Arc::as_ptr(content) as usize),
-        );
-        let kept = SHOWN
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-            .cloned();
-        let shown = match kept {
-            Some(shown) => shown,
-            None => {
-                let component_name = component.map(|component| format!("{component:?}"));
-                let recorded = self.dated(reader, dated)?;
-                let facts = match &recorded {
-                    Some(dated) => Arc::clone(dated),
-                    None => Arc::new(frameless(identity, cause, component, self.content())),
-                };
-                let (mut item, mut info, category) = present::resolve(
-                    &facts,
-                    row,
-                    cause,
-                    self.content(),
-                    String::new(),
-                    component_name.as_deref(),
-                );
-                // The item's ordinal keys its tooltip in every reply.
-                if item.tooltip_token.is_some() {
-                    let token = format!("idea:{}:{ordinal}", self.tag);
-                    item.tooltip_token = Some(token.clone());
-                    if let Some(info) = &mut info {
-                        info.token = token;
-                    }
-                }
-                let mut formats = BTreeSet::new();
-                let ideas = info
-                    .clone()
-                    .map(|info| self.tooltip(&item, info, recorded.as_deref(), &mut formats));
-                let shown = Arc::new(Shown {
-                    resolved: (item, info, category),
-                    ideas,
-                    formats: formats.into_iter().collect(),
-                    country_name: recorded
-                        .as_ref()
-                        .and_then(|dated| dated.own.as_ref())
-                        .and_then(|own| own.name.clone()),
-                    _content: self.content.cloned(),
-                });
-                let mut kept = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
-                if kept.len() >= SHOWN_ITEMS {
-                    kept.clear();
-                }
-                kept.insert(key, Arc::clone(&shown));
-                shown
-            }
-        };
-        self.shown.insert(ordinal, Arc::clone(&shown));
-        Ok(shown)
-    }
-
-    /// The modifiers a tooltip of `infos` formats, with the warnings formatting them gives.
-    fn formats(
-        &self,
-        infos: &[IdeaInfo],
-        recorded: &[(String, items::RecordedModifier)],
-        any_recorded: bool,
-    ) -> (Vec<idea_format::ModifierFormat>, Vec<String>) {
-        let Some(content) = self.content() else {
-            return (Vec::new(), Vec::new());
-        };
-        let (keys, _) = idea_history::effect_keys(infos);
-        let index: BTreeMap<String, ModifierDefinitionRow> = recorded
+        let wanted: BTreeSet<u32> = country
+            .power
             .iter()
-            .map(|(key, row)| (key.clone(), row.row()))
+            .filter(|(_, _, record)| record.class != emit::SKIPPED)
+            .map(|(_, _, record)| record.item)
+            .chain(
+                country
+                    .costs
+                    .iter()
+                    .filter(|(_, _, record)| shows_item(record))
+                    .map(|(_, _, record)| record.item),
+            )
             .collect();
-        idea_format::modifier_formats_from_recorded(any_recorded.then_some(&index), &keys, content)
+        country.load(reader, &wanted)?;
+        Ok(country)
     }
 
-    /// The idea tooltip an item shows: its idea, artwork and effect formats.
-    fn tooltip(
-        &self,
-        item: &LedgerSpendItem,
-        info: IdeaInfo,
-        dated: Option<&Dated>,
-        formats: &mut BTreeSet<String>,
-    ) -> LedgerIdeaTooltips {
-        let infos = [info];
-        let recorded = dated.and_then(|dated| dated.modifiers.as_deref());
-        let (modifiers, warnings) =
-            self.formats(&infos, recorded.unwrap_or_default(), recorded.is_some());
-        formats.extend(warnings);
-        let (_, text_keys) = idea_history::effect_keys(&infos);
-        let texts = self
-            .content()
-            .map(|content| idea_format::texts(content, &text_keys))
-            .unwrap_or_default();
-        let [info] = infos;
-        LedgerIdeaTooltips {
-            artwork: vec![dashboard_core::dto::Artwork {
-                token: info.token.clone(),
-                name: item.name.clone(),
-                description: dated
-                    .and_then(|dated| dated.facts.text.as_ref())
-                    .and_then(|text| text.description.clone()),
-                icon: None,
-                base_duration_days: None,
-            }],
-            ideas: vec![info],
-            modifiers,
-            texts,
-        }
-    }
-
-    /// The item and category a payment shows, with its tooltip: the item named by its first
-    /// payment's id, and the warnings showing it gives counted in `presentation`.
-    fn item_of(
-        shown: &Shown,
-        first: &str,
-        presentation: &mut Presentation,
-    ) -> (
-        LedgerSpendItem,
-        (String, String),
-        Option<LedgerIdeaTooltips>,
-    ) {
-        let (item, _, category) = &shown.resolved;
-        let mut item = item.clone();
-        item.id = first.to_owned();
-        presentation.formats.extend(shown.formats.iter().cloned());
-        (item, category.clone(), shown.ideas.clone())
-    }
-
-    /// A power row read in the reply's hours: its balance line, and its payment when it is one.
-    fn present_power<P: PageRead>(
+    /// Reads the items of `wanted` not yet read from the country's catalogue.
+    fn load<P: PageRead>(
         &mut self,
         reader: &mut Reader<'_, '_, P>,
-        event: &PowerEvent,
+        wanted: &BTreeSet<u32>,
+    ) -> io::Result<()> {
+        let missing: HashSet<u32> = wanted
+            .iter()
+            .copied()
+            .filter(|ordinal| !self.items.contains_key(ordinal))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let key = self.keys.key(reader.directory, ITEMS);
+        for event in reader.events(key, i32::MIN, i32::MAX)? {
+            let ordinal = match reader.snapshot.field(event.fields, 0)? {
+                Cell::Unsigned(ordinal) => u32::try_from(ordinal).ok(),
+                _ => None,
+            }
+            .ok_or_else(|| invalid("A politics ledger item is malformed"))?;
+            if !missing.contains(&ordinal) || self.items.contains_key(&ordinal) {
+                continue;
+            }
+            let stored: ItemRecord = reader.record(event.fields, 1)?;
+            self.items.insert(ordinal, Shown::of(stored));
+        }
+        if missing.iter().any(|ordinal| !self.items.contains_key(ordinal)) {
+            return Err(invalid(
+                "A politics payment's item is missing from its catalogue",
+            ));
+        }
+        Ok(())
+    }
+
+    fn item(&self, ordinal: u32) -> io::Result<&Shown> {
+        self.items
+            .get(&ordinal)
+            .ok_or_else(|| invalid("A politics payment's item is missing from its catalogue"))
+    }
+
+    /// A power row read in the reply's hours: its item shown, and its payment when it is one.
+    fn present_power(
+        &self,
+        (read, sequence, record): &(i32, u64, PowerRecord),
         presentation: &mut Presentation,
     ) -> io::Result<Option<Presented>> {
-        let row = &event.row;
-        let classed = &event.classed;
-        if classed.class == emit::SKIPPED {
+        if record.class == emit::SKIPPED {
             return Ok(None);
         }
-        let ledger = rows::mutation(row, event.read, event.covered);
-        let id = rows::mutation_id(row.country, row.epoch, row.sequence);
-        let shown = self.shown(
-            reader,
-            classed.ordinal,
-            &ledger,
-            &row.identity,
-            row.cause,
-            event.dated,
-            None,
-        )?;
-        let (mut item, category, ideas) = Self::item_of(&shown, &classed.first, presentation);
-        if let Some(reason) = &item.unknown {
+        let shown = self.item(record.item)?;
+        presentation.show(record.item, shown);
+        if let Some(reason) = &shown.stored.item.unknown {
             rows::count_reason(&mut presentation.reasons, reason.clone(), 1)?;
         }
-        presentation.balance.insert(
-            (row.country, row.epoch, row.sequence),
-            (item.action.clone(), item.unknown.clone()),
-        );
-        if classed.class != emit::PAYMENT {
+        presentation.balanced = true;
+        if record.class != emit::PAYMENT {
             return Ok(None);
         }
-        let charge = rows::charge(row).flatten();
-        if row.currency == PowerCurrency::Command && row.cause == PowerCause::AbilityUpkeep {
-            item.name = None;
-            item.icon = None;
-            item.icon_art = None;
-            item.tooltip_token = None;
-            item.character = None;
-            item.unknown = None;
-            item.action = "Ability upkeep".into();
-        }
-        let ideas = ideas.filter(|_| item.tooltip_token.is_some());
-        let country_name = shown.country_name.clone();
-        let change = LedgerSpendChange {
-            hour: Some(row.hour),
-            read_hour: event.read,
-            charge_raw: charge.map(|raw| raw.to_string()),
-            realized_delta_raw: Some(ledger.realized_delta_raw.clone()),
-            occurrences: 1,
-            covered: event.covered,
-        };
+        let charge = record.charge.map(|raw| raw.to_string());
+        let realized = Some(record.realized.to_string());
         let spend = LedgerSpend {
-            country_id: row.country,
-            id,
-            sequence: row.sequence.to_string(),
+            country_id: record.country,
+            id: rows::mutation_id(record.country, record.epoch, record.sequence),
+            sequence: record.sequence.to_string(),
             ordinal: 0,
-            hour: row.hour,
-            read_hour: event.read,
+            hour: record.hour,
+            read_hour: *read,
             country_tag: self.tag.clone(),
-            country_name,
-            currency: ledger.currency.clone(),
-            category: category.0.clone(),
-            item_id: classed.first.clone(),
-            charge_raw: charge.map(|raw| raw.to_string()),
-            realized_delta_raw: Some(ledger.realized_delta_raw.clone()),
-            covered: event.covered,
+            country_name: shown.stored.country_name.clone(),
+            currency: currency(record.command).into(),
+            category: shown.paid.category.id.clone(),
+            item_id: shown.stored.item.id.clone(),
+            charge_raw: charge.clone(),
+            realized_delta_raw: realized.clone(),
+            covered: record.covered,
             occurrences: 1,
-            changes: vec![change],
+            changes: vec![LedgerSpendChange {
+                hour: Some(record.hour),
+                read_hour: *read,
+                charge_raw: charge,
+                realized_delta_raw: realized,
+                occurrences: 1,
+                covered: record.covered,
+            }],
         };
         Ok(Some(Presented {
             contribution: Contribution {
-                field: (classed.ordinal, row.country, row.epoch),
-                recurring: classed.recurring,
-                upkeep: classed.upkeep,
-                hour: row.hour,
-                read: event.read,
-                order: (event.read, event.sequence),
-                sequence: row.sequence,
+                field: (record.item, record.country, record.epoch),
+                recurring: record.recurring,
+                upkeep: record.upkeep,
+                hour: record.hour,
+                read: *read,
+                order: (*read, *sequence),
+                sequence: record.sequence,
                 ordinal: 0,
-                charge,
-                covered: event.covered,
-                realized: rows::amount(Some(ledger.realized_delta_raw.as_str()))?,
+                charge: record.charge,
+                covered: record.covered,
+                realized: Some(record.realized),
             },
             payment: Payment {
-                known_raw: spend.charge_raw.clone().unwrap_or_else(|| "0".into()),
-                known_count: u32::from(spend.charge_raw.is_some()),
                 spend,
-                item,
-                category: LedgerSpendCategory {
-                    identified: category.0 != "notIdentified",
-                    id: category.0,
-                    name: category.1,
-                },
-                ideas,
+                paid: Arc::clone(&shown.paid),
                 count: 1,
-                identity: (row.country, row.epoch.to_string()),
-                ordinal: classed.ordinal,
+                known: record.charge.unwrap_or(0),
+                known_count: u32::from(record.charge.is_some()),
+                identity: (record.country, record.epoch),
+                ordinal: record.item,
             },
-            recurring: classed.recurring,
-            late: event.late,
+            recurring: record.recurring,
+            late: record.late,
         }))
     }
 
     /// A cost first recorded in the reply's hours, as the payment it is when it is one.
-    fn present_cost<P: PageRead>(
-        &mut self,
-        reader: &mut Reader<'_, '_, P>,
-        event: &CostEvent,
+    fn present_cost(
+        &self,
+        (read, sequence, record): &(i32, u64, CostRecord),
         presentation: &mut Presentation,
     ) -> io::Result<Option<Presented>> {
-        let row = &event.row;
-        let classed = &event.classed;
-        if event.revision || classed.class == emit::SKIPPED {
-            return Ok(None);
-        }
-        if classed.class == emit::UNMATCHED {
+        if record.class == emit::UNMATCHED {
             rows::count_reason(
                 &mut presentation.reasons,
                 "Daily political power cost: matched PP application is unavailable".into(),
@@ -1138,21 +729,10 @@ impl<'c> Country<'c> {
             )?;
             return Ok(None);
         }
-        let id = rows::cost_id(row.country, row.epoch, row.day_hour, row.ordinal);
-        let ledger = rows::cost(row, event.read, event.covered);
-        let mutation = rows::daily_mutation(&ledger);
-        let shown = self.shown(
-            reader,
-            classed.ordinal,
-            &mutation,
-            &row.identity,
-            row.cause,
-            event.dated,
-            Some(row.component),
-        )?;
-        let (mut item, mut category, ideas) = Self::item_of(&shown, &classed.first, presentation);
-        if classed.class == emit::CREDIT {
-            let name = item.name.as_deref().unwrap_or("Not identified");
+        let shown = self.item(record.item)?;
+        presentation.show(record.item, shown);
+        if record.class == emit::CREDIT {
+            let name = shown.stored.item.name.as_deref().unwrap_or("Not identified");
             rows::count_reason(
                 &mut presentation.reasons,
                 format!(
@@ -1162,212 +742,181 @@ impl<'c> Country<'c> {
             )?;
             return Ok(None);
         }
-        if row.cause == PowerCause::DailyGain {
-            category = match row.component {
-                PowerDailyCostKind::MioResearch | PowerDailyCostKind::MioProduction => {
-                    ("organisationUpkeep".into(), "Organisation upkeep".into())
-                }
-                _ => ("dailyCosts".into(), "Daily costs".into()),
-            };
-            item.action = format!(
-                "{}: {}",
-                category.1,
-                item.name.as_deref().unwrap_or("Not identified")
-            );
-        }
-        if let Some(reason) = &item.unknown {
+        if let Some(reason) = &shown.stored.item.unknown {
             rows::count_reason(&mut presentation.reasons, reason.clone(), 1)?;
         }
-        let country_name = shown.country_name.clone();
-        // The day's political application read by then dates the payment's read.
-        let read = self
-            .applications
-            .get(&(row.country, row.day_hour))
-            .into_iter()
-            .flatten()
-            .filter(|(read, _)| *read <= event.read)
-            .filter_map(|(_, pp)| *pp)
-            .max()
-            .map_or(event.read, |read| read.max(event.read));
-        let charge = Some(i128::from(row.cost_raw).to_string());
+        let charge = Some(i128::from(record.cost_raw).to_string());
         let spend = LedgerSpend {
-            country_id: row.country,
-            id,
-            sequence: row.pp_sequence.to_string(),
-            ordinal: row.ordinal,
-            hour: row.day_hour,
-            read_hour: read,
+            country_id: record.country,
+            id: rows::cost_id(record.country, record.epoch, record.day_hour, record.ordinal),
+            sequence: record.pp_sequence.to_string(),
+            ordinal: record.ordinal,
+            hour: record.day_hour,
+            read_hour: *read,
             country_tag: self.tag.clone(),
-            country_name,
+            country_name: shown.stored.country_name.clone(),
             currency: "Political".into(),
-            category: category.0.clone(),
-            item_id: classed.first.clone(),
+            category: shown.paid.category.id.clone(),
+            item_id: shown.stored.item.id.clone(),
             charge_raw: charge.clone(),
             realized_delta_raw: None,
-            covered: event.covered,
+            covered: record.covered,
             occurrences: 1,
             changes: vec![LedgerSpendChange {
-                hour: Some(row.day_hour),
-                read_hour: read,
+                hour: Some(record.day_hour),
+                read_hour: *read,
                 charge_raw: charge,
                 realized_delta_raw: None,
                 occurrences: 1,
-                covered: event.covered,
+                covered: record.covered,
             }],
         };
         Ok(Some(Presented {
             contribution: Contribution {
-                field: (classed.ordinal, row.country, row.epoch),
-                recurring: classed.recurring,
-                upkeep: classed.upkeep,
-                hour: row.day_hour,
-                read,
-                order: (event.read, event.sequence),
-                sequence: row.pp_sequence,
-                ordinal: row.ordinal,
-                charge: Some(i128::from(row.cost_raw)),
-                covered: event.covered,
+                field: (record.item, record.country, record.epoch),
+                recurring: record.recurring,
+                upkeep: record.upkeep,
+                hour: record.day_hour,
+                read: *read,
+                order: (*read, *sequence),
+                sequence: record.pp_sequence,
+                ordinal: record.ordinal,
+                charge: Some(i128::from(record.cost_raw)),
+                covered: record.covered,
                 realized: None,
             },
             payment: Payment {
-                known_raw: i128::from(row.cost_raw).to_string(),
-                known_count: 1,
                 spend,
-                item,
-                category: LedgerSpendCategory {
-                    identified: category.0 != "notIdentified",
-                    id: category.0,
-                    name: category.1,
-                },
-                ideas,
+                paid: Arc::clone(&shown.paid),
                 count: 1,
-                identity: (row.country, row.epoch.to_string()),
-                ordinal: classed.ordinal,
+                known: i128::from(record.cost_raw),
+                known_count: 1,
+                identity: (record.country, record.epoch),
+                ordinal: record.item,
             },
-            recurring: classed.recurring,
-            late: event.late,
+            recurring: record.recurring,
+            late: record.late,
         }))
     }
 
     /// The country's payments read, in the order they were recorded.
     fn present<P: PageRead>(
-        &mut self,
-        reader: &mut Reader<'_, '_, P>,
+        &self,
+        reader: &Reader<'_, '_, P>,
         cancelled: &AtomicBool,
     ) -> io::Result<Presentation> {
-        let mut presentation = Presentation {
-            payments: Vec::new(),
-            balance: HashMap::new(),
-            reasons: BTreeMap::new(),
-            formats: BTreeSet::new(),
-        };
-        let power = std::mem::take(&mut self.power);
-        for event in &power {
+        let mut presentation = Presentation::new();
+        for row in &self.power {
             cancelled_request(cancelled)?;
-            if let Some(presented) = self.present_power(reader, event, &mut presentation)? {
+            if let Some(presented) = self.present_power(row, &mut presentation)? {
                 presentation.payments.push(presented);
             }
         }
-        self.power = power;
-        let costs = std::mem::take(&mut self.costs);
-        for event in &costs {
+        for row in &self.costs {
             cancelled_request(cancelled)?;
-            if let Some(presented) = self.present_cost(reader, event, &mut presentation)? {
+            if let Some(presented) = self.present_cost(row, &mut presentation)? {
                 presentation.payments.push(presented);
             }
         }
-        self.costs = costs;
         presentation
             .payments
             .sort_by_key(|presented| presented.contribution.order);
-        if let Some(content) = self.content()
-            && !presentation.payments.is_empty() | !presentation.balance.is_empty()
-        {
-            presentation.formats.extend(content.power_warnings().iter().cloned());
+        if !presentation.payments.is_empty() || presentation.balanced {
+            presentation.formats.extend(reader.power_warnings());
         }
         Ok(presentation)
     }
+
+    /// A payment of item `field` no row of the reply's hours holds: named by its item, every
+    /// amount and date left to the subtotal made of it.
+    fn template(&self, field: Field) -> io::Result<Payment> {
+        let shown = self.item(field.0)?;
+        Ok(Payment {
+            spend: LedgerSpend {
+                country_id: field.1,
+                id: String::new(),
+                sequence: String::new(),
+                ordinal: 0,
+                hour: 0,
+                read_hour: 0,
+                country_tag: self.tag.clone(),
+                country_name: shown.stored.country_name.clone(),
+                currency: shown.stored.currency.clone(),
+                category: shown.paid.category.id.clone(),
+                item_id: shown.stored.item.id.clone(),
+                charge_raw: None,
+                realized_delta_raw: None,
+                covered: true,
+                occurrences: 0,
+                changes: Vec::new(),
+            },
+            paid: Arc::clone(&shown.paid),
+            count: 0,
+            known: 0,
+            known_count: 0,
+            identity: (field.1, field.2),
+            ordinal: field.0,
+        })
+    }
 }
 
-/// The facts of a row no frame of its hour was read for: its recorded key alone, and the text
-/// content gives without a frame.
-fn frameless(
-    identity: &PowerIdentity,
-    cause: PowerCause,
-    component: Option<PowerDailyCostKind>,
-    content: Option<&PoliticsContent>,
-) -> Dated {
-    let mut facts = items::event_facts(None, identity, cause, component);
-    if let Some(content) = content {
-        let texts = FrameTexts::default();
-        facts.text = items::item_text(
-            None,
-            &Item { cause, identity },
-            &facts,
-            content,
-            None,
-            &texts,
-        );
-    }
-    Dated {
-        facts,
-        own: None,
-        target: None,
-        modifiers: None,
-    }
+/// Whether a cost shows its item: one matched to its application.
+fn shows_item(record: &CostRecord) -> bool {
+    record.class != emit::UNMATCHED
 }
 
-/// `payment` in `reply`: its item and category once, its tooltips merged, as a spend or a
-/// recurring subtotal over `recurring` (first hour, last hour, days).
+/// The items a reply holds: each item, its category and its tooltip once.
+#[derive(Default)]
+struct Appended(HashSet<u32>);
+
+/// `payment` in `reply`, as a spend or a recurring subtotal over `recurring` (first hour, last
+/// hour, days); its item, category and tooltip the first time.
 fn append_payment(
     reply: &mut PoliticsLedgerReply,
-    mut payment: Payment,
+    appended: &mut Appended,
+    payment: Payment,
     recurring: Option<(i32, i32, u32)>,
 ) -> io::Result<()> {
-    if payment.item.tooltip_token.is_some() {
-        payment.item.icon = None;
-    }
-    if !reply
-        .spend_items
-        .iter()
-        .any(|item| item.id == payment.item.id)
-    {
-        reply.spend_items.push(payment.item);
-    }
-    if !reply
-        .spend_categories
-        .iter()
-        .any(|category| category.id == payment.category.id)
-    {
-        reply.spend_categories.push(payment.category);
-    }
-    if let Some(ideas) = payment.ideas {
-        let target = reply
-            .idea_tooltips
-            .get_or_insert_with(|| LedgerIdeaTooltips {
-                ideas: Vec::new(),
-                artwork: Vec::new(),
-                modifiers: Vec::new(),
-                texts: Vec::new(),
-            });
-        for info in ideas.ideas {
-            if !target.ideas.iter().any(|old| old.token == info.token) {
-                target.ideas.push(info);
-            }
+    if appended.0.insert(payment.ordinal) {
+        let paid = &*payment.paid;
+        if !reply.spend_items.iter().any(|item| item.id == paid.item.id) {
+            reply.spend_items.push(paid.item.clone());
         }
-        for art in ideas.artwork {
-            if !target.artwork.iter().any(|old| old.token == art.token) {
-                target.artwork.push(art);
-            }
+        if !reply
+            .spend_categories
+            .iter()
+            .any(|category| category.id == paid.category.id)
+        {
+            reply.spend_categories.push(paid.category.clone());
         }
-        for modifier in ideas.modifiers {
-            if !target.modifiers.iter().any(|old| old.key == modifier.key) {
-                target.modifiers.push(modifier);
+        if let Some(ideas) = &paid.ideas {
+            let target = reply
+                .idea_tooltips
+                .get_or_insert_with(|| LedgerIdeaTooltips {
+                    ideas: Vec::new(),
+                    artwork: Vec::new(),
+                    modifiers: Vec::new(),
+                    texts: Vec::new(),
+                });
+            for info in &ideas.ideas {
+                if !target.ideas.iter().any(|old| old.token == info.token) {
+                    target.ideas.push(info.clone());
+                }
             }
-        }
-        for text in ideas.texts {
-            if !target.texts.iter().any(|old| old.key == text.key) {
-                target.texts.push(text);
+            for art in &ideas.artwork {
+                if !target.artwork.iter().any(|old| old.token == art.token) {
+                    target.artwork.push(art.clone());
+                }
+            }
+            for modifier in &ideas.modifiers {
+                if !target.modifiers.iter().any(|old| old.key == modifier.key) {
+                    target.modifiers.push(modifier.clone());
+                }
+            }
+            for text in &ideas.texts {
+                if !target.texts.iter().any(|old| old.key == text.key) {
+                    target.texts.push(text.clone());
+                }
             }
         }
     }
@@ -1378,7 +927,7 @@ fn append_payment(
             last_hour,
             days,
             count: payment.count,
-            known_raw: payment.known_raw,
+            known_raw: payment.known.to_string(),
             known_count: payment.known_count,
         }),
         None => reply.spending.push(payment.spend),
@@ -1386,25 +935,98 @@ fn append_payment(
     Ok(())
 }
 
-/// One settled day of a recurring item: its merged payment, read at its latest contribution.
-struct Day {
-    payment: Payment,
-    lag: i32,
-    hour: i32,
-    sequence: u64,
-    ordinal: u32,
-    realized_unknown: bool,
-    realized: (i128, i128),
+/// `payment` shown on its own: one change, its whole subtotal.
+fn alone(mut payment: Payment) -> Payment {
+    payment.spend.changes = vec![LedgerSpendChange {
+        hour: Some(payment.spend.hour),
+        read_hour: payment.spend.read_hour,
+        charge_raw: payment.spend.charge_raw.clone(),
+        realized_delta_raw: payment.spend.realized_delta_raw.clone(),
+        occurrences: payment.spend.occurrences,
+        covered: payment.spend.covered,
+    }];
+    payment
 }
 
-/// A recurring item's settled days by native day, and the template of its latest registration.
-#[derive(Default)]
+/// One settled day of a recurring item: what its payments add up to, read at its latest
+/// contribution.
+struct Day {
+    hour: i32,
+    lag: i32,
+    /// Its first payment's.
+    sequence: u64,
+    ordinal: u32,
+    occurrences: u32,
+    count: u32,
+    known: i128,
+    known_count: u32,
+    covered: bool,
+    realized_unknown: bool,
+    realized: (i128, i128),
+    /// A command day's payments merged: a span cutting the day shows what it holds of them.
+    merged: Option<Payment>,
+}
+
+impl Day {
+    fn new(presented: &Presented, day: i32, command: bool) -> Self {
+        let payment = &presented.payment;
+        let realized = presented.contribution.realized;
+        Self {
+            hour: payment.spend.hour,
+            lag: payment.spend.read_hour - day,
+            sequence: presented.contribution.sequence,
+            ordinal: payment.spend.ordinal,
+            occurrences: payment.spend.occurrences,
+            count: payment.count,
+            known: payment.known,
+            known_count: payment.known_count,
+            covered: payment.spend.covered,
+            realized_unknown: realized.is_none(),
+            realized: realized.map_or((0, 0), |value| (value.max(0), value.min(0))),
+            merged: command.then(|| payment.clone()),
+        }
+    }
+
+    /// Another payment of the day.
+    fn add(&mut self, presented: &Presented, day: i32) -> io::Result<()> {
+        let payment = &presented.payment;
+        self.occurrences = self
+            .occurrences
+            .checked_add(payment.spend.occurrences)
+            .ok_or_else(count_overflow)?;
+        if payment.spend.category != "upkeep" {
+            self.count = self
+                .count
+                .checked_add(payment.count)
+                .ok_or_else(count_overflow)?;
+        }
+        self.known_count = self
+            .known_count
+            .checked_add(payment.known_count)
+            .ok_or_else(count_overflow)?;
+        self.known = self.known.checked_add(payment.known).ok_or_else(overflow)?;
+        self.covered &= payment.spend.covered;
+        self.lag = self.lag.max(payment.spend.read_hour - day);
+        match presented.contribution.realized {
+            Some(value) => {
+                self.realized.0 += value.max(0);
+                self.realized.1 += value.min(0);
+            }
+            None => self.realized_unknown = true,
+        }
+        self.hour = self.hour.min(payment.spend.hour);
+        if let Some(merged) = &mut self.merged {
+            merge(merged, payment)?;
+        }
+        Ok(())
+    }
+}
+
+/// A recurring item's settled days by native day, and the payment its subtotals are made of.
 struct Recurring {
+    field: String,
+    template: Payment,
     days: BTreeMap<i32, Day>,
-    /// Its contributions by read hour: the latest at a day's read names the subtotal.
-    registered: BTreeMap<(i32, u64), Payment>,
-    currency: String,
-    category: String,
 }
 
 /// `payment` with only its contributions read by `to` and dated within `spans`, totalled again.
@@ -1468,12 +1090,10 @@ fn clip_command_payment(
     let mut known = 0_i128;
     for change in &payment.spend.changes {
         if let Some(raw) = rows::amount(change.charge_raw.as_deref())? {
-            known = known
-                .checked_add(raw)
-                .ok_or_else(|| invalid("Politics subtotal overflow"))?;
+            known = known.checked_add(raw).ok_or_else(overflow)?;
         }
     }
-    payment.known_raw = known.to_string();
+    payment.known = known;
     payment.spend.covered = payment.spend.changes.iter().all(|change| change.covered);
     Ok(Some(payment))
 }
@@ -1483,7 +1103,8 @@ fn clip_command_payment(
 #[allow(clippy::too_many_arguments)]
 fn payments(
     reply: &mut PoliticsLedgerReply,
-    presentation: &Presentation,
+    appended: &mut Appended,
+    presented: Vec<Presented>,
     settled: Option<i32>,
     view: &LedgerView,
     from: i32,
@@ -1493,10 +1114,11 @@ fn payments(
 ) -> io::Result<()> {
     let boundary_days = boundary_days(spans);
     let settled_day = |day: i32| settled.is_some_and(|settled| day < settled);
-    let mut items = BTreeMap::<String, Recurring>::new();
+    let mut fields = HashMap::<Field, usize>::new();
+    let mut items = Vec::<Recurring>::new();
     let mut open = BTreeMap::<(i32, String), Payment>::new();
     let mut late = Vec::new();
-    for presented in &presentation.payments {
+    for presented in presented {
         cancelled_request(cancelled)?;
         let payment = &presented.payment;
         if !presented.recurring {
@@ -1504,99 +1126,82 @@ fn payments(
                 && payment.spend.read_hour <= to
                 && selected(spans, payment.spend.hour)
             {
-                append_payment(reply, payment.clone(), None)?;
+                append_payment(reply, appended, presented.payment, None)?;
             }
             continue;
         }
         let day = payment.spend.hour.div_euclid(24) * 24;
-        let field = item_field(payment)?;
         if presented.late {
             if payment.spend.read_hour <= to && selected(spans, payment.spend.hour) {
-                late.push(payment.clone());
+                late.push(presented.payment);
             }
             continue;
         }
         if !settled_day(day) {
-            match open.entry((day, field)) {
+            match open.entry((day, item_field(payment))) {
                 std::collections::btree_map::Entry::Occupied(mut held) => {
-                    merge_keeping(held.get_mut(), payment)?;
+                    merge(held.get_mut(), payment)?;
                 }
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(payment.clone());
+                    entry.insert(presented.payment);
                 }
             }
             continue;
         }
-        let recurring = items.entry(field).or_insert_with(|| Recurring {
-            currency: payment.spend.currency.clone(),
-            category: payment.spend.category.clone(),
-            ..Recurring::default()
+        let at = *fields.entry(presented.contribution.field).or_insert_with(|| {
+            items.push(Recurring {
+                field: item_field(payment),
+                template: payment.clone(),
+                days: BTreeMap::new(),
+            });
+            items.len() - 1
         });
-        recurring.registered.insert(
-            (payment.spend.read_hour, presented.contribution.order.1),
-            payment.clone(),
-        );
-        let realized = rows::amount(payment.spend.realized_delta_raw.as_deref())?;
-        match recurring.days.get_mut(&day) {
-            Some(held) => {
-                let realized_unknown = held.realized_unknown || realized.is_none();
-                merge_keeping(&mut held.payment, payment)?;
-                held.lag = held.lag.max(payment.spend.read_hour - day);
-                held.realized_unknown = realized_unknown;
-                if let Some(value) = realized {
-                    held.realized.0 += value.max(0);
-                    held.realized.1 += value.min(0);
-                }
-                if payment.spend.hour < held.hour {
-                    held.hour = payment.spend.hour;
-                }
+        let recurring = &mut items[at];
+        let command = recurring.template.spend.currency == "Command";
+        match recurring.days.entry(day) {
+            std::collections::btree_map::Entry::Occupied(mut held) => {
+                held.get_mut().add(&presented, day)?;
             }
-            None => {
-                let merged = payment.clone();
-                recurring.days.insert(
-                    day,
-                    Day {
-                        lag: payment.spend.read_hour - day,
-                        hour: payment.spend.hour,
-                        sequence: payment.spend.sequence.parse().unwrap_or(0),
-                        ordinal: payment.spend.ordinal,
-                        realized_unknown: realized.is_none(),
-                        realized: realized.map_or((0, 0), |value| (value.max(0), value.min(0))),
-                        payment: merged,
-                    },
-                );
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Day::new(&presented, day, command));
             }
         }
     }
+    items.sort_by(|left, right| left.field.cmp(&right.field));
     let mut category_days = BTreeMap::<(String, String), BTreeSet<i32>>::new();
     let mut cut = Vec::new();
-    for (field, recurring) in &items {
+    for recurring in &items {
         cancelled_request(cancelled)?;
+        let template = &recurring.template;
+        let command = template.spend.currency == "Command";
         // A settled day is read once its latest contribution is; Command days a span cuts are
         // shown on their own.
-        let mut visible: Vec<i32> = recurring
+        let visible: Vec<i32> = recurring
             .days
             .iter()
             .filter(|(day, held)| {
                 let day = **day;
                 selected(spans, day)
                     && i64::from(day) + i64::from(held.lag) <= i64::from(to)
-                    && !(recurring.currency == "Command" && boundary_days.contains(&day))
+                    && !(command && boundary_days.contains(&day))
             })
             .map(|(day, _)| *day)
             .collect();
-        visible.sort_unstable();
-        if recurring.currency == "Command" {
+        if command {
             for (day, held) in &recurring.days {
                 if boundary_days.contains(day)
-                    && let Some(clipped) = clip_command_payment(held.payment.clone(), spans, to)?
+                    && let Some(merged) = &held.merged
+                    && let Some(clipped) = clip_command_payment(merged.clone(), spans, to)?
                 {
                     cut.push(clipped);
                 }
             }
         }
         category_days
-            .entry((recurring.currency.clone(), recurring.category.clone()))
+            .entry((
+                template.spend.currency.clone(),
+                template.spend.category.clone(),
+            ))
             .or_default()
             .extend(visible.iter().copied());
         let windows: Vec<(Option<i32>, Vec<i32>)> = {
@@ -1618,57 +1223,45 @@ fn payments(
             let first_hour = month_window_start(spans, days[0]);
             let latest = &recurring.days[&native_hour];
             let read_hour = native_hour.saturating_add(latest.lag);
-            let template = recurring
-                .registered
-                .range(..=(read_hour, u64::MAX))
-                .next_back()
-                .map(|(_, payment)| payment)
-                .unwrap_or(&latest.payment);
             let mut payment = template.clone();
             let (mut count, mut entries, mut charge, mut unknown, mut uncovered) =
                 (0_u32, 0_u32, 0_i128, 0_u32, 0_u32);
             let (mut realized_unknown, mut realized) = (false, (0_i128, 0_i128));
             for day in &days {
                 let held = &recurring.days[day];
-                count += held.payment.spend.occurrences;
-                entries += held.payment.count;
-                charge = charge
-                    .checked_add(rows::amount(Some(&held.payment.known_raw))?.unwrap_or(0))
-                    .ok_or_else(|| invalid("Politics subtotal overflow"))?;
-                unknown += held.payment.spend.occurrences - held.payment.known_count;
-                uncovered += u32::from(!held.payment.spend.covered);
+                count += held.occurrences;
+                entries += held.count;
+                charge = charge.checked_add(held.known).ok_or_else(overflow)?;
+                unknown += held.occurrences - held.known_count;
+                uncovered += u32::from(!held.covered);
                 realized_unknown |= held.realized_unknown;
                 realized.0 += held.realized.0;
                 realized.1 += held.realized.1;
             }
-            payment.spend.id = format!("recurring:{}:{field}:{month:?}:{first_hour}", reply.tag);
+            payment.spend.id = format!(
+                "recurring:{}:{}:{month:?}:{first_hour}",
+                reply.tag, recurring.field
+            );
             payment.spend.hour = latest.hour;
             payment.spend.read_hour = read_hour;
             payment.spend.sequence = latest.sequence.to_string();
             payment.spend.ordinal = latest.ordinal;
             payment.spend.charge_raw = (unknown == 0).then(|| charge.to_string());
-            payment.known_raw = charge.to_string();
+            payment.known = charge;
             payment.known_count = count - unknown;
             payment.spend.realized_delta_raw = None;
-            if (matches!(view, LedgerView::Raw | LedgerView::Balance) || month.is_none())
+            if (*view == LedgerView::Balance || month.is_none())
                 && !realized_unknown
             {
                 payment.spend.realized_delta_raw = Some((realized.0 + realized.1).to_string());
             }
             payment.spend.occurrences = count;
             payment.spend.covered = uncovered == 0;
-            payment.spend.changes = vec![LedgerSpendChange {
-                hour: Some(payment.spend.hour),
-                read_hour: payment.spend.read_hour,
-                charge_raw: payment.spend.charge_raw.clone(),
-                realized_delta_raw: payment.spend.realized_delta_raw.clone(),
-                occurrences: payment.spend.occurrences,
-                covered: payment.spend.covered,
-            }];
             payment.count = entries;
             append_payment(
                 reply,
-                payment,
+                appended,
+                alone(payment),
                 Some((first_hour, native_hour, days.len() as u32)),
             )?;
         }
@@ -1676,28 +1269,21 @@ fn payments(
     late.extend(cut);
     // Open days: their payments as read by `to`, merged per day; Command days a span cuts keep
     // only what the span holds.
-    for ((day, _), payment) in &open {
-        let mut payment = payment.clone();
-        if payment.spend.currency == "Command" && boundary_days.contains(day) {
+    for ((day, _), payment) in open {
+        let payment = if payment.spend.currency == "Command" && boundary_days.contains(&day) {
             match clip_command_payment(payment, spans, to)? {
-                Some(clipped) => payment = clipped,
+                Some(clipped) => clipped,
                 None => continue,
             }
-        } else if !(payment.spend.read_hour <= to && selected(spans, payment.spend.hour)) {
+        } else if payment.spend.read_hour <= to && selected(spans, payment.spend.hour) {
+            payment
+        } else {
             continue;
-        }
+        };
         late.push(payment);
     }
-    for mut payment in late {
+    for payment in late {
         let day = payment.spend.hour.div_euclid(24) * 24;
-        payment.spend.changes = vec![LedgerSpendChange {
-            hour: Some(payment.spend.hour),
-            read_hour: payment.spend.read_hour,
-            charge_raw: payment.spend.charge_raw.clone(),
-            realized_delta_raw: payment.spend.realized_delta_raw.clone(),
-            occurrences: payment.spend.occurrences,
-            covered: payment.spend.covered,
-        }];
         category_days
             .entry((
                 payment.spend.currency.clone(),
@@ -1705,7 +1291,7 @@ fn payments(
             ))
             .or_default()
             .insert(day);
-        append_payment(reply, payment, Some((day, day, 1)))?;
+        append_payment(reply, appended, alone(payment), Some((day, day, 1)))?;
     }
     for ((currency, category), days) in category_days {
         let mut months = BTreeMap::<Option<i32>, u32>::new();
@@ -1721,36 +1307,20 @@ fn payments(
                 days,
             }));
     }
-    let _ = view;
     Ok(())
 }
 
-/// The first hour of the month window that holds `day` among `spans`.
-fn month_window_start(spans: &[HourSpan], day: i32) -> i32 {
-    for (_, windows) in month_spans(spans) {
-        if windows
-            .iter()
-            .any(|window| window.first_hour <= day && day <= window.last_hour)
-        {
-            return windows[0].first_hour;
-        }
-    }
-    day
-}
-
 /// The latest revision of each of `rows`' days within `spans` read by `to`.
-fn latest_daily(rows: &[DailyEvent], spans: &[HourSpan], to: i32) -> Vec<LedgerDaily> {
-    let mut latest = BTreeMap::<(u32, u64, i32), &DailyEvent>::new();
+fn latest_daily(rows: &[DailyRecord], spans: &[HourSpan], to: i32) -> Vec<LedgerDaily> {
+    let mut latest = BTreeMap::<(u32, u64, i32), &LedgerDaily>::new();
     for row in rows {
-        if row.read > to || !selected(spans, row.row.day_hour) {
+        let daily = &row.daily;
+        if daily.read_hour > to || !selected(spans, daily.day_hour) {
             continue;
         }
-        latest.insert((row.row.country, row.row.epoch, row.row.day_hour), row);
+        latest.insert((daily.country, row.epoch, daily.day_hour), daily);
     }
-    let mut daily: Vec<LedgerDaily> = latest
-        .values()
-        .map(|row| rows::daily(&row.row, row.read, row.reads))
-        .collect();
+    let mut daily: Vec<LedgerDaily> = latest.into_values().cloned().collect();
     daily.sort_by_key(|row| (row.day_hour, row.country, row.instance));
     daily
 }
@@ -1775,66 +1345,56 @@ fn gains(daily: &[LedgerDaily], mut held: [tally::Gain; 2]) -> io::Result<Vec<Le
         .collect())
 }
 
-/// A balance line's action for a mutation the item does not name.
-fn fixed_action(row: &CountryPowerChangeRow) -> Option<&'static str> {
-    Some(match row.cause {
-        PowerCause::DailyGain => {
-            if row.currency == PowerCurrency::Command
-                && row.requested_delta_raw.is_some_and(|raw| raw < 0)
-            {
-                "Daily deficit"
-            } else {
-                "Daily income applied"
-            }
-        }
-        PowerCause::CapCorrection => "Maximum correction",
-        PowerCause::ResetSetup => "Balance set/reset",
-        PowerCause::Console => "Console adjustment",
-        _ => return None,
-    })
+/// Whether the census listed the country present, and refused, over a reply's hours: by the
+/// hour each holds from, and the hours it changed at.
+struct Presence {
+    at: BTreeMap<i32, (bool, bool)>,
+    changes: Vec<i32>,
 }
 
-/// The capture coverage of the country over `from..=to`: each run of its capture fact.
-fn coverage<P: PageRead>(
+/// The country's [`Presence`] over `from..=to`. Every tag is listed absent from the census's
+/// first listing until it is listed otherwise.
+fn presence<P: PageRead>(
     reader: &mut Reader<'_, '_, P>,
     keys: &Keys,
     from: i32,
     to: i32,
-) -> io::Result<Vec<LedgerCoverage>> {
-    let directory = reader.directory;
-    let facts_key = keys.key(directory, CAPTURE_FACTS);
-    let mut facts = HashMap::new();
-    for event in reader.events(facts_key, i32::MIN, to)? {
-        let cells = reader.cells(event.fields)?;
-        let reason = reader.text(cells.0.get(6))?;
-        facts.insert(
-            event.sequence,
-            LedgerCoverage {
-                country: cells.u32(0),
-                instance: cells.u32(1),
-                read_hour: Cells::required(cells.i32(2))?,
-                since_hour: cells.i32(3),
-                through_hour: None,
-                epoch: cells.unsigned(4).map(|epoch| epoch.to_string()),
-                streams: cells
-                    .unsigned(5)
-                    .and_then(|streams| u8::try_from(streams).ok())
-                    .unwrap_or(0),
-                reason,
-            },
-        );
-    }
-    let mut rows = Vec::new();
-    for run in reader.runs(keys.key(directory, CAPTURE), from, to)? {
-        let Some(fact) = u64::try_from(run.value).ok().and_then(|id| facts.get(&id)) else {
-            continue;
+) -> io::Result<Presence> {
+    let mut presence = Presence {
+        at: BTreeMap::new(),
+        changes: Vec::new(),
+    };
+    let Some(listed) = reader
+        .directory
+        .scalar(emit::PRESENCE_FIRST)
+        .and_then(Scalar::integer)
+        .and_then(|hour| i32::try_from(hour).ok())
+        .filter(|&listed| listed <= to)
+    else {
+        return Ok(presence);
+    };
+    let key = keys.key(reader.directory, PRESENT);
+    if listed <= from {
+        let state = match reader.latest(key, from)? {
+            Some(event) => reader.record(event.fields, 0)?,
+            None => (false, false),
         };
-        let mut row = fact.clone();
-        row.since_hour = Some(row.since_hour.unwrap_or(run.span.first).max(from));
-        row.through_hour = Some(run.span.last);
-        rows.push(row);
+        presence.at.insert(from, state);
+    } else {
+        // The census's first listing opens a change.
+        presence.at.insert(listed, (false, false));
+        presence.changes.push(listed);
     }
-    Ok(rows)
+    if from < to {
+        for event in reader.events(key, from + 1, to)? {
+            let state: (bool, bool) = reader.record(event.fields, 0)?;
+            presence.at.insert(event.native_hour, state);
+            if presence.changes.last() != Some(&event.native_hour) {
+                presence.changes.push(event.native_hour);
+            }
+        }
+    }
+    Ok(presence)
 }
 
 /// The country's spending coverage over `from..=to`: where its census, presence and coverage runs
@@ -1842,7 +1402,7 @@ fn coverage<P: PageRead>(
 fn spending_coverage<P: PageRead>(
     reader: &mut Reader<'_, '_, P>,
     keys: &Keys,
-    tag: &str,
+    presence: &Presence,
     from: i32,
     to: i32,
 ) -> io::Result<Vec<LedgerSpendCoverage>> {
@@ -1850,42 +1410,12 @@ fn spending_coverage<P: PageRead>(
     let branch = directory.actor(emit::BRANCH);
     let branch_key = |measure| branch.and_then(|actor| directory.key(actor, measure, None));
     let census = reader.runs(branch_key(emit::CENSUS), from, to)?;
-    let mut presence = BTreeMap::<i32, (bool, bool)>::new();
-    let presence_key = branch_key(PRESENCE);
-    let mut presence_events = Vec::new();
-    if let Some(event) = reader.latest(presence_key, from)? {
-        presence_events.push(event);
-    }
-    if from < to {
-        presence_events.extend(reader.events(presence_key, from + 1, to)?);
-    }
-    for event in presence_events {
-        let cells = reader.cells(event.fields)?;
-        let mut lists = [false; 2];
-        for (index, list) in lists.iter_mut().enumerate() {
-            if let Some(Cell::List(blob)) = cells.0.get(index) {
-                let tags = reader.cells(*blob)?;
-                for cell in &tags.0 {
-                    if reader.bytes(Some(cell))?.as_deref() == Some(tag.as_bytes()) {
-                        *list = true;
-                    }
-                }
-            }
-        }
-        presence.insert(event.native_hour, (lists[0], lists[1]));
-    }
     let mut boundaries = BTreeSet::from([i64::from(from), i64::from(to) + 1]);
     let mut presence_boundaries: BTreeSet<i64> = census
         .iter()
         .flat_map(|run| [i64::from(run.span.first), i64::from(run.span.last) + 1])
         .collect();
-    let mut previous = None;
-    for (&hour, value) in &presence {
-        if previous != Some(*value) && hour >= from {
-            presence_boundaries.insert(i64::from(hour));
-        }
-        previous = Some(*value);
-    }
+    presence_boundaries.extend(presence.changes.iter().map(|&hour| i64::from(hour)));
     boundaries.extend(&presence_boundaries);
     let mut banks = Vec::new();
     for measure in COVERED {
@@ -1899,31 +1429,15 @@ fn spending_coverage<P: PageRead>(
         banks.push(runs);
     }
     let reasons_key = keys.key(directory, COVER_REASONS);
-    let mut reason_events = Vec::new();
+    let mut reasons = BTreeMap::<i32, LedgerSpendCoverage>::new();
     if let Some(event) = reader.latest(reasons_key, from)? {
-        reason_events.push(event);
+        reasons.insert(event.native_hour, reader.record(event.fields, 0)?);
     }
     if from < to {
         for event in reader.events(reasons_key, from.saturating_add(1), to)? {
             boundaries.insert(i64::from(event.native_hour));
-            reason_events.push(event);
+            reasons.insert(event.native_hour, reader.record(event.fields, 0)?);
         }
-    }
-    let mut reasons = BTreeMap::<i32, LedgerSpendCoverage>::new();
-    for event in reason_events {
-        let cells = reader.cells(event.fields)?;
-        let reason = reader.text(cells.0.get(5))?;
-        reasons.insert(
-            event.native_hour,
-            LedgerSpendCoverage {
-                read_hour: Cells::required(cells.i32(0))?,
-                since_hour: cells.i32(1),
-                through_hour: cells.i32(2),
-                political: cells.boolean(3),
-                command: cells.boolean(4),
-                reason,
-            },
-        );
     }
     let boundaries: Vec<_> = boundaries.into_iter().collect();
     let mut positions = [0_usize; 2];
@@ -1938,6 +1452,7 @@ fn spending_coverage<P: PageRead>(
             .iter()
             .any(|run| run.span.first <= first && first <= run.span.last);
         let at = presence
+            .at
             .range(..=first)
             .next_back()
             .map(|(_, value)| *value);
@@ -1989,8 +1504,7 @@ fn spending_coverage<P: PageRead>(
 fn holds<P: PageRead>(
     reader: &mut Reader<'_, '_, P>,
     keys: &Keys,
-    tag: &str,
-    content: Option<&PoliticsContent>,
+    presence: &Presence,
     from: i32,
     to: i32,
 ) -> io::Result<Vec<LedgerCommandHold>> {
@@ -2006,124 +1520,20 @@ fn holds<P: PageRead>(
     let branch = directory.actor(emit::BRANCH);
     let branch_key = |measure| branch.and_then(|actor| directory.key(actor, measure, None));
     let census = reader.runs(branch_key(emit::CENSUS), i32::MIN, to)?;
-    let presence_key = branch_key(PRESENCE);
-    let mut snapshots = Vec::new();
-    for event in events {
-        let cells = reader.cells(event.fields)?;
-        let total = cells.i64(0);
-        let missing = reader.text(cells.0.get(2))?;
-        let mut holders = Vec::new();
-        let mut reasons = BTreeMap::<String, usize>::new();
-        let mut attributed = 0_i128;
-        if let Some(Cell::List(blob)) = cells.0.get(1) {
-            let list = reader.cells(*blob)?;
-            for cell in &list.0 {
-                let Cell::List(blob) = cell else {
-                    continue;
-                };
-                let holder = reader.cells(*blob)?;
-                let id = reader.text(holder.0.first())?.unwrap_or_default();
-                let kind = reader.text(holder.0.get(1))?.unwrap_or_default();
-                let ability = holder.boolean(2);
-                let token = reader.text(holder.0.get(3))?;
-                let script = reader.text(holder.0.get(4))?;
-                let saved = reader.text(holder.0.get(5))?;
-                let amount = holder.integer(6).unwrap_or(0);
-                attributed += amount;
-                let name = match present::holder_name(
-                    ability,
-                    token.as_deref(),
-                    saved.as_deref().map(|saved| (script.as_deref(), saved)),
-                    &kind,
-                    content,
-                ) {
-                    Ok(name) => Some(name),
-                    Err(reason) => {
-                        *reasons.entry(reason).or_default() += 1;
-                        None
-                    }
-                };
-                holders.push(LedgerCommandHolder {
-                    id,
-                    kind,
-                    name,
-                    amount_raw: Some(amount.to_string()),
-                });
-            }
-        }
-        let row = match total {
-            None => LedgerCommandHold {
-                read_hour: event.native_hour,
-                through_hour: event.native_hour,
-                total_raw: None,
-                holders: Vec::new(),
-                reason: Some(missing.unwrap_or_else(|| "CountryCommandPower unavailable".into())),
-            },
-            Some(total) => {
-                let remainder = i128::from(total) - attributed;
-                if remainder != 0 {
-                    holders.push(LedgerCommandHolder {
-                        id: "notIdentified".into(),
-                        kind: "Not identified".into(),
-                        name: None,
-                        amount_raw: Some(remainder.to_string()),
-                    });
-                    *reasons
-                        .entry(
-                            "Command power holder identity is not recorded for part of the held amount"
-                                .into(),
-                        )
-                        .or_default() += 1;
-                }
-                LedgerCommandHold {
-                    read_hour: event.native_hour,
-                    through_hour: event.native_hour,
-                    total_raw: Some(total.to_string()),
-                    holders,
-                    reason: (!reasons.is_empty()).then(|| {
-                        reasons
-                            .iter()
-                            .map(|(reason, count)| format!("{reason} (count: {count})"))
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    }),
-                }
-            }
-        };
-        snapshots.push((event.native_hour, row));
-    }
-    // A snapshot of a present country runs to the reply's last hour; the next closes it.
-    let mut presence = BTreeMap::<i32, bool>::new();
-    let mut presence_events = Vec::new();
-    if let Some(event) = reader.latest(presence_key, from)? {
-        presence_events.push(event);
-    }
-    if from < to {
-        presence_events.extend(reader.events(presence_key, from + 1, to)?);
-    }
-    for event in presence_events {
-        let cells = reader.cells(event.fields)?;
-        let mut present = false;
-        if let Some(Cell::List(blob)) = cells.0.first() {
-            let tags = reader.cells(*blob)?;
-            for cell in &tags.0 {
-                if reader.bytes(Some(cell))?.as_deref() == Some(tag.as_bytes()) {
-                    present = true;
-                }
-            }
-        }
-        presence.insert(event.native_hour, present);
-    }
     let mut rows: Vec<LedgerCommandHold> = Vec::new();
-    for (hour, mut row) in snapshots {
+    for event in events {
+        let hour = event.native_hour;
+        let mut row: LedgerCommandHold = reader.record(event.fields, 0)?;
+        // A snapshot of a present country runs to the reply's last hour; the next closes it.
         let at = hour.max(from);
         let present = census
             .iter()
             .any(|run| run.span.first <= at && at <= run.span.last)
             && presence
+                .at
                 .range(..=at)
                 .next_back()
-                .is_some_and(|(_, present)| *present);
+                .is_some_and(|(_, (present, _))| *present);
         if present {
             row.through_hour = to;
         }
@@ -2194,7 +1604,7 @@ fn governments<P: PageRead>(
         if event.read_hour.is_some_and(|read| read > to) || !selected(spans, event.native_hour) {
             continue;
         }
-        rows.push(decode_government(reader, &event)?);
+        rows.push(reader.record::<LedgerGovernment>(event.fields, 0)?);
     }
     rows.sort_by_key(|row| (row.read_hour, row.country, row.sequence.parse::<u64>().ok()));
     Ok(rows)
@@ -2205,7 +1615,6 @@ pub fn query<P: PageRead>(
     params: &Value,
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
-    content: Option<&Arc<PoliticsContent>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     let params: Params = serde_json::from_value(params.clone())?;
@@ -2231,17 +1640,22 @@ pub fn query<P: PageRead>(
         first,
         last,
         settled,
+        scratch: Vec::new(),
     };
     let keys = Keys::of(directory, &params.tag);
     if let Some(navigation) = &params.navigation
         && params.view != LedgerView::Governments
     {
-        return navigate(&mut reader, &params, navigation);
+        let view = params
+            .summary
+            .as_ref()
+            .ok_or_else(|| invalid("Politics ledger navigation steps through a summary's parts"))?;
+        return navigate(&mut reader, &params, view, navigation);
     }
     if let Some(view) = &params.summary {
         return summaries(&mut reader, &params, view);
     }
-    let to = params.hour.unwrap_or(reader.last);
+    let to = params.hour;
     let from = params.from.unwrap_or(reader.first);
     if from > to {
         return Err(invalid("Politics ledger range is reversed"));
@@ -2288,12 +1702,13 @@ pub fn query<P: PageRead>(
             let end = spans.last().map_or(to, |span| span.last_hour);
             let key = keys.key(directory, GOVERNMENTS);
             for event in reader.events(key, i32::MIN, end)? {
-                let Some(read) = event.read_hour.filter(|read| *read >= from && *read <= end)
-                else {
+                if event
+                    .read_hour
+                    .is_none_or(|read| read < from || read > end)
+                {
                     continue;
-                };
-                let _ = read;
-                let row = decode_government(&mut reader, &event)?;
+                }
+                let row: LedgerGovernment = reader.record(event.fields, 0)?;
                 if !reply.governments.iter().any(|old| {
                     (old.country, &old.epoch, &old.sequence)
                         == (row.country, &row.epoch, &row.sequence)
@@ -2321,8 +1736,8 @@ pub fn query<P: PageRead>(
     } else {
         Plan::spans(&spans)
     };
-    let mut country = Country::read(&mut reader, &params.tag, content, &plan.raw)?;
-    let mut presentation = country.present(&mut reader, cancelled)?;
+    let mut country = Country::read(&mut reader, &params.tag, &plan.raw)?;
+    let mut presentation = country.present(&reader, cancelled)?;
     let mut reply = PoliticsLedgerReply {
         branch_id: params.branch_id.clone(),
         tag: params.tag.clone(),
@@ -2330,88 +1745,30 @@ pub fn query<P: PageRead>(
         ..Default::default()
     };
     let view = params.view.clone();
-    if matches!(view, LedgerView::Raw | LedgerView::Balance) {
-        for event in &country.power {
-            if event.read < from || event.read > to || !selected(&spans, event.row.hour) {
+    if view == LedgerView::Balance {
+        for (read, _, record) in &country.power {
+            if *read < from || *read > to || !selected(&spans, record.hour) {
                 continue;
             }
-            let row = &event.row;
-            let ledger = rows::mutation(row, event.read, event.covered);
-            let (action, reason) = match fixed_action(row) {
-                Some(action) => (action.to_owned(), None),
-                None => presentation
-                    .balance
-                    .get(&(row.country, row.epoch, row.sequence))
-                    .cloned()
-                    .unwrap_or_else(|| ("Not identified".into(), None)),
-            };
             reply.balance_changes.push(LedgerBalanceChange {
-                country_id: row.country,
-                hour: row.hour,
-                read_hour: event.read,
-                currency: ledger.currency.clone(),
-                amount_raw: ledger.amount_raw.clone(),
-                realized_delta_raw: ledger.realized_delta_raw.clone(),
-                action,
-                covered: event.covered,
-                reason,
+                country_id: record.country,
+                hour: record.hour,
+                read_hour: *read,
+                currency: currency(record.command).into(),
             });
-            if view == LedgerView::Raw {
-                reply.mutations.push(ledger);
-            }
         }
-    }
-    if view == LedgerView::Raw {
-        reply.governments = governments(&mut reader, &keys, from, to, &spans)?;
-        let mut costs = BTreeMap::<(u32, u64, i32, u32), &CostEvent>::new();
-        for event in &country.costs {
-            if event.read > to || !selected(&spans, event.row.day_hour) {
-                continue;
-            }
-            costs.insert(
-                (
-                    event.row.country,
-                    event.row.epoch,
-                    event.row.day_hour,
-                    event.row.ordinal,
-                ),
-                event,
-            );
-        }
-        // A revision keeps its first record's covered flag.
-        let mut first_covered = HashMap::new();
-        for event in country.costs.iter().filter(|event| !event.revision) {
-            first_covered.insert(
-                (
-                    event.row.country,
-                    event.row.epoch,
-                    event.row.day_hour,
-                    event.row.ordinal,
-                ),
-                event.covered,
-            );
-        }
-        reply.daily_costs = costs
-            .iter()
-            .map(|(key, event)| {
-                rows::cost(
-                    &event.row,
-                    event.read,
-                    first_covered.get(key).copied().unwrap_or(event.covered),
-                )
-            })
-            .collect();
-        reply.coverage = coverage(&mut reader, &keys, from, to)?;
     }
     let daily = latest_daily(&country.daily, &spans, to);
-    reply.spending_coverage = spending_coverage(&mut reader, &keys, &params.tag, from, to)?;
-    if matches!(view, LedgerView::Raw | LedgerView::Balance) {
-        let named = content.map(|content| &**content);
-        reply.command_holds = holds(&mut reader, &keys, &params.tag, named, from, to)?;
+    let listed = presence(&mut reader, &keys, from, to)?;
+    reply.spending_coverage = spending_coverage(&mut reader, &keys, &listed, from, to)?;
+    if view == LedgerView::Balance {
+        reply.command_holds = holds(&mut reader, &keys, &listed, from, to)?;
     }
+    let mut appended = Appended::default();
     let held = if rolled {
         totals(
             &mut reply,
+            &mut appended,
             &mut reader,
             &mut country,
             &mut presentation,
@@ -2422,9 +1779,11 @@ pub fn query<P: PageRead>(
             cancelled,
         )?
     } else {
+        let presented = std::mem::take(&mut presentation.payments);
         payments(
             &mut reply,
-            &presentation,
+            &mut appended,
+            presented,
             reader.settled,
             &view,
             from,
@@ -2436,7 +1795,7 @@ pub fn query<P: PageRead>(
     };
     reply.gains = gains(&daily, held)?;
     reply.warnings = warnings(&mut reader, &keys, Some(&presentation))?;
-    if matches!(view, LedgerView::Raw | LedgerView::Balance) {
+    if view == LedgerView::Balance {
         reply.daily = daily;
     }
     reply.spend_categories.sort_by(|a, b| a.id.cmp(&b.id));
@@ -2447,10 +1806,6 @@ pub fn query<P: PageRead>(
             row.ordinal,
             row.id.clone(),
         )
-    });
-    reply.daily_costs.sort_by(|a, b| {
-        (a.day_hour, a.country, &a.epoch, a.ordinal)
-            .cmp(&(b.day_hour, b.country, &b.epoch, b.ordinal))
     });
     if json_len(&reply, MAX_REPLY_BYTES).is_none() {
         return Err(invalid(
@@ -2609,8 +1964,9 @@ fn plan<P: PageRead>(
 #[allow(clippy::too_many_arguments)]
 fn totals<P: PageRead>(
     reply: &mut PoliticsLedgerReply,
+    appended: &mut Appended,
     reader: &mut Reader<'_, '_, P>,
-    country: &mut Country<'_>,
+    country: &mut Country,
     presentation: &mut Presentation,
     plan: &Plan,
     from: i32,
@@ -2623,7 +1979,7 @@ fn totals<P: PageRead>(
     let mut rolled: HashMap<Field, tally::Entry> = HashMap::new();
     let mut gains = [tally::Gain::default(); 2];
     let mut unmatched = 0_u64;
-    let mut extra = Vec::new();
+    let mut late_rows = Vec::new();
     let late = country.keys.key(reader.directory, LATE);
     let daily_key = country.keys.key(reader.directory, DAILY);
     for (first, last, held) in &plan.rollups {
@@ -2640,28 +1996,26 @@ fn totals<P: PageRead>(
             if event.read_hour.is_some_and(|read| read > to) {
                 continue;
             }
-            let presented = match event.kind {
-                emit::POWER_KIND => {
-                    let event = decode_power(reader, &event)?;
-                    country.present_power(reader, &event, presentation)?
-                }
-                emit::COST_KIND => {
-                    let event = decode_cost(reader, &event)?;
-                    country.present_cost(reader, &event, presentation)?
-                }
-                _ => {
-                    stale = true;
-                    None
-                }
-            };
-            extra.extend(presented);
+            match event.kind {
+                emit::POWER_KIND => late_rows.push(Late::Power((
+                    read_of(&event),
+                    event.sequence,
+                    reader.record(event.fields, 0)?,
+                ))),
+                emit::COST_KIND => late_rows.push(Late::Cost((
+                    read_of(&event),
+                    event.sequence,
+                    reader.record(event.fields, 0)?,
+                ))),
+                _ => stale = true,
+            }
         }
         if stale {
             let mut daily = Vec::new();
             for event in reader.events(daily_key, *first, *last)? {
-                daily.push(decode_daily(reader, &event)?);
+                daily.push(reader.record::<DailyRecord>(event.fields, 0)?);
             }
-            daily.sort_by_key(|event| (event.row.day_hour, event.read));
+            daily.sort_by_key(|row| (row.daily.day_hour, row.daily.read_hour));
             for row in latest_daily(&daily, spans, to) {
                 for (index, gain) in gains.iter_mut().enumerate() {
                     gain.add(rows::gain(&row, index == 1)?)?;
@@ -2673,12 +2027,29 @@ fn totals<P: PageRead>(
             }
         }
     }
+    let wanted: BTreeSet<u32> = late_rows
+        .iter()
+        .filter_map(|row| match row {
+            Late::Power((_, _, record)) => (record.class != emit::SKIPPED).then_some(record.item),
+            Late::Cost((_, _, record)) => shows_item(record).then_some(record.item),
+        })
+        .collect();
+    country.load(reader, &wanted)?;
+    let mut extra = Vec::new();
+    for row in &late_rows {
+        let presented = match row {
+            Late::Power(row) => country.present_power(row, presentation)?,
+            Late::Cost(row) => country.present_cost(row, presentation)?,
+        };
+        extra.extend(presented);
+    }
     let settled = reader.settled;
+    let main = std::mem::take(&mut presentation.payments);
     let mut templates: HashMap<Field, Payment> = HashMap::new();
-    let mut days: BTreeMap<(i32, Field), (tally::Day, Payment)> = BTreeMap::new();
+    let mut days: BTreeMap<(i32, Field), (tally::Day, Option<Payment>)> = BTreeMap::new();
     let mut open = BTreeMap::<(i32, String), Payment>::new();
     let mut individual = Vec::new();
-    for presented in presentation.payments.iter().chain(&extra) {
+    for presented in main.iter().chain(&extra) {
         cancelled_request(cancelled)?;
         let payment = &presented.payment;
         let contribution = &presented.contribution;
@@ -2704,9 +2075,9 @@ fn totals<P: PageRead>(
             continue;
         }
         if !settled.is_some_and(|settled| day < settled) {
-            match open.entry((day, item_field(payment)?)) {
+            match open.entry((day, item_field(payment))) {
                 std::collections::btree_map::Entry::Occupied(mut held) => {
-                    merge_keeping(held.get_mut(), payment)?;
+                    merge(held.get_mut(), payment)?;
                 }
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(payment.clone());
@@ -2717,19 +2088,24 @@ fn totals<P: PageRead>(
         match days.get_mut(&(day, contribution.field)) {
             Some((held, merged)) => {
                 held.add(contribution)?;
-                merge_keeping(merged, payment)?;
+                if let Some(merged) = merged {
+                    merge(merged, payment)?;
+                }
             }
             None => {
+                // Only a command day a span cuts is shown by its payments.
+                let merged = (payment.spend.currency == "Command").then(|| payment.clone());
                 days.insert(
                     (day, contribution.field),
-                    (tally::Day::new(contribution), payment.clone()),
+                    (tally::Day::new(contribution), merged),
                 );
             }
         }
     }
     for ((day, field), (held, merged)) in &days {
-        let command = merged.spend.currency == "Command";
-        if command && boundary.contains(day) {
+        if let Some(merged) = merged
+            && boundary.contains(day)
+        {
             if let Some(clipped) = clip_command_payment(merged.clone(), spans, to)? {
                 individual.push(clipped);
             }
@@ -2739,77 +2115,37 @@ fn totals<P: PageRead>(
             entries.entry(*field).or_default().add_day(held)?;
         }
     }
-    for ((day, _), payment) in &open {
-        let mut payment = payment.clone();
-        if payment.spend.currency == "Command" && boundary.contains(day) {
+    for ((day, _), payment) in open {
+        let payment = if payment.spend.currency == "Command" && boundary.contains(&day) {
             match clip_command_payment(payment, spans, to)? {
-                Some(clipped) => payment = clipped,
+                Some(clipped) => clipped,
                 None => continue,
             }
-        } else if !(payment.spend.read_hour <= to && selected(spans, payment.spend.hour)) {
+        } else if payment.spend.read_hour <= to && selected(spans, payment.spend.hour) {
+            payment
+        } else {
             continue;
-        }
+        };
         individual.push(payment);
     }
-    // Items only rollups hold are named by their first payment.
+    // Items only rollups hold are named by their catalogue.
     let missing: BTreeSet<u32> = entries
         .keys()
         .filter(|field| !templates.contains_key(*field))
         .map(|field| field.0)
         .collect();
-    let mut catalogue = HashMap::<u32, Payment>::new();
-    if !missing.is_empty() {
-        let key = country.keys.key(reader.directory, ITEMS);
-        let mut scratch = Presentation {
-            payments: Vec::new(),
-            balance: HashMap::new(),
-            reasons: BTreeMap::new(),
-            formats: BTreeSet::new(),
-        };
-        for event in reader.events(key, reader.first, to)? {
-            cancelled_request(cancelled)?;
-            let presented = match event.kind {
-                emit::POWER_KIND => {
-                    let mut event = decode_power(reader, &event)?;
-                    if !missing.contains(&event.classed.ordinal) {
-                        continue;
-                    }
-                    event.classed.class = emit::PAYMENT;
-                    country.present_power(reader, &event, &mut scratch)?
-                }
-                emit::COST_KIND => {
-                    let mut event = decode_cost(reader, &event)?;
-                    if !missing.contains(&event.classed.ordinal) {
-                        continue;
-                    }
-                    event.classed.class = emit::PAYMENT;
-                    event.revision = false;
-                    country.present_cost(reader, &event, &mut scratch)?
-                }
-                _ => None,
-            };
-            if let Some(presented) = presented {
-                catalogue
-                    .entry(presented.contribution.field.0)
-                    .or_insert(presented.payment);
-            }
-        }
-        presentation.formats.extend(scratch.formats);
+    country.load(reader, &missing)?;
+    for &ordinal in &missing {
+        presentation.show(ordinal, country.item(ordinal)?);
     }
     let mut fields: Vec<Field> = entries.keys().copied().collect();
     fields.sort_unstable();
+    let count = |value: u64| u32::try_from(value).map_err(|_| count_overflow());
     for field in fields {
         let entry = entries[&field];
         let template = match templates.get(&field) {
             Some(template) => template.clone(),
-            None => {
-                let mut template = catalogue.get(&field.0).cloned().ok_or_else(|| {
-                    invalid("A politics item's first payment is missing from its catalogue")
-                })?;
-                template.identity = (field.1, field.2.to_string());
-                template.spend.country_id = field.1;
-                template
-            }
+            None => country.template(field)?,
         };
         // What rollups count of a line a reply shows says why its item is not named.
         if let Some(rolled) = rolled.get(&field) {
@@ -2818,20 +2154,21 @@ fn totals<P: PageRead>(
                     .recurring
                     .map_or(0, |recurring| recurring.occurrences);
             let unknown = country
-                .shown
+                .items
                 .get(&field.0)
-                .and_then(|shown| shown.resolved.0.unknown.clone());
-            if let Some(reason) = &unknown
+                .and_then(|shown| shown.stored.item.unknown.clone());
+            if let Some(reason) = unknown
                 && paid + rolled.balances > 0
             {
-                rows::count_reason(
-                    &mut presentation.reasons,
-                    reason.clone(),
-                    paid + rolled.balances,
-                )?;
+                rows::count_reason(&mut presentation.reasons, reason, paid + rolled.balances)?;
             }
             if rolled.credits > 0 {
-                let name = template.item.name.as_deref().unwrap_or("Not identified");
+                let name = template
+                    .paid
+                    .item
+                    .name
+                    .as_deref()
+                    .unwrap_or("Not identified");
                 rows::count_reason(
                     &mut presentation.reasons,
                     format!(
@@ -2842,9 +2179,6 @@ fn totals<P: PageRead>(
             }
         }
         let name = format!("{}:{}:{}", field.0, field.1, field.2);
-        let count = |value: u64| {
-            u32::try_from(value).map_err(|_| invalid("Politics payment count overflow"))
-        };
         if let Some(one) = entry.one_off {
             let mut payment = template.clone();
             payment.spend.id = format!("total:{}:{name}", reply.tag);
@@ -2856,18 +2190,15 @@ fn totals<P: PageRead>(
             payment.spend.realized_delta_raw = None;
             payment.spend.occurrences = count(one.occurrences)?;
             payment.spend.covered = one.uncovered == 0;
-            payment.known_raw = one.known.to_string();
+            payment.known = one.known;
             payment.known_count = count(one.occurrences - one.unknown)?;
             payment.count = count(one.entries)?;
-            payment.spend.changes = vec![LedgerSpendChange {
-                hour: Some(payment.spend.hour),
-                read_hour: payment.spend.read_hour,
-                charge_raw: payment.spend.charge_raw.clone(),
-                realized_delta_raw: None,
-                occurrences: payment.spend.occurrences,
-                covered: payment.spend.covered,
-            }];
-            append_payment(reply, payment, Some((from, one.latest.0, 0)))?;
+            append_payment(
+                reply,
+                appended,
+                alone(payment),
+                Some((from, one.latest.0, 0)),
+            )?;
         }
         if let Some(recurring) = entry.recurring {
             let mut payment = template;
@@ -2880,39 +2211,24 @@ fn totals<P: PageRead>(
             payment.spend.ordinal = recurring.last.ordinal;
             payment.spend.charge_raw =
                 (recurring.unknown == 0).then(|| recurring.charge.to_string());
-            payment.known_raw = recurring.charge.to_string();
+            payment.known = recurring.charge;
             payment.known_count = count(recurring.occurrences - recurring.unknown)?;
             payment.spend.realized_delta_raw = (!recurring.realized_unknown)
                 .then(|| (recurring.realized.0 + recurring.realized.1).to_string());
             payment.spend.occurrences = count(recurring.occurrences)?;
             payment.spend.covered = recurring.uncovered == 0;
-            payment.spend.changes = vec![LedgerSpendChange {
-                hour: Some(payment.spend.hour),
-                read_hour: payment.spend.read_hour,
-                charge_raw: payment.spend.charge_raw.clone(),
-                realized_delta_raw: payment.spend.realized_delta_raw.clone(),
-                occurrences: payment.spend.occurrences,
-                covered: payment.spend.covered,
-            }];
             payment.count = count(recurring.entries)?;
             append_payment(
                 reply,
-                payment,
+                appended,
+                alone(payment),
                 Some((first_hour, native_hour, count(recurring.days)?)),
             )?;
         }
     }
-    for mut payment in individual {
+    for payment in individual {
         let day = payment.spend.hour.div_euclid(24) * 24;
-        payment.spend.changes = vec![LedgerSpendChange {
-            hour: Some(payment.spend.hour),
-            read_hour: payment.spend.read_hour,
-            charge_raw: payment.spend.charge_raw.clone(),
-            realized_delta_raw: payment.spend.realized_delta_raw.clone(),
-            occurrences: payment.spend.occurrences,
-            covered: payment.spend.covered,
-        }];
-        append_payment(reply, payment, Some((day, day, 1)))?;
+        append_payment(reply, appended, alone(payment), Some((day, day, 1)))?;
     }
     if unmatched > 0 {
         rows::count_reason(
@@ -2924,11 +2240,11 @@ fn totals<P: PageRead>(
     Ok(gains)
 }
 
-/// The keys a navigation request walks: the summary's parts, or the country's income, coverage,
-/// payments, governments and holds.
+/// The next or previous change of the summary's parts over the bound countries' spans.
 fn navigate<P: PageRead>(
     reader: &mut Reader<'_, '_, P>,
     params: &Params,
+    view: &PartView,
     navigation: &Navigation,
 ) -> io::Result<Value> {
     let directory = reader.directory;
@@ -2937,9 +2253,8 @@ fn navigate<P: PageRead>(
         .as_ref()
         .map(|bindings| bindings.keys().collect())
         .unwrap_or_else(|| vec![&params.tag]);
+    let currency = usize::from(view.currency == "Command");
     let mut selected = Vec::new();
-    let mut events = Vec::new();
-    let mut holds = Vec::new();
     for tag in tags {
         let keys = Keys::of(directory, tag);
         let within = match &params.bindings {
@@ -2947,169 +2262,29 @@ fn navigate<P: PageRead>(
             None => params.within.as_deref(),
         };
         let mut found = Vec::new();
-        if let Some(view) = &params.summary {
-            let currency = usize::from(view.currency == "Command");
-            if view.mode == "income" {
-                let dimensions: &[u64] = if currency == 0 {
-                    &[0, 1, 2, 3]
-                } else {
-                    &[4, 5]
-                };
-                found.extend(
-                    dimensions
-                        .iter()
-                        .filter_map(|&dimension| keys.part(directory, dimension)),
-                );
+        if view.mode == "income" {
+            let dimensions: &[u64] = if currency == 0 {
+                &[0, 1, 2, 3]
             } else {
-                found.extend(keys.part(directory, emit::TOTAL[currency]));
-                for (dimension, _) in categories(directory, &keys) {
-                    if category_currency(directory, dimension) == Some(currency) {
-                        found.extend(keys.part(directory, dimension));
-                    }
+                &[4, 5]
+            };
+            found.extend(
+                dimensions
+                    .iter()
+                    .filter_map(|&dimension| keys.part(directory, dimension)),
+            );
+        } else {
+            found.extend(keys.part(directory, emit::TOTAL[currency]));
+            for (dimension, _) in categories(directory, &keys) {
+                if category_currency(directory, dimension) == Some(currency) {
+                    found.extend(keys.part(directory, dimension));
                 }
             }
-        } else {
-            found.extend(
-                INCOME
-                    .iter()
-                    .filter_map(|&measure| keys.key(directory, measure)),
-            );
-            found.extend(
-                COVERED
-                    .iter()
-                    .filter_map(|&measure| keys.key(directory, measure)),
-            );
-            events.extend(
-                POWER
-                    .iter()
-                    .filter_map(|&measure| keys.key(directory, measure))
-                    .map(|key| (key, within)),
-            );
-            events.extend(keys.key(directory, GOVERNMENTS).map(|key| (key, within)));
-            holds.extend(keys.key(directory, HOLDS).map(|key| (key, within)));
         }
         selected.extend(found.into_iter().map(|key| (key, within)));
     }
-    if params.summary.is_some() {
-        let hour = engine::navigate(reader.snapshot, &selected, navigation)?;
-        return Ok(serde_json::json!({ "hour": hour }));
-    }
-    let origin = navigation.origin()?;
-    let forward = matches!(navigation.key, MeasureKey::ArrowRight | MeasureKey::Home);
-    let first = navigation.first_hour.ceil().max(f64::from(i32::MIN));
-    let last = navigation.last_hour.floor().min(f64::from(i32::MAX));
-    let mut hour: Option<f64> = None;
-    if first <= last {
-        let bounds = Span::new(first as i32, last as i32)?;
-        let mut include = |candidate: f64| {
-            hour = Some(hour.map_or(candidate, |previous| {
-                if forward {
-                    previous.min(candidate)
-                } else {
-                    previous.max(candidate)
-                }
-            }));
-        };
-        for (key, within) in selected {
-            let membership = within.map(engine::spans).transpose()?;
-            if let Some(candidate) = reader.snapshot.next_change(
-                Selection {
-                    key,
-                    membership: membership.as_deref(),
-                },
-                origin,
-                forward,
-                bounds,
-            )? {
-                include(f64::from(candidate));
-            }
-        }
-        let to = params.hour.unwrap_or(reader.last);
-        let bounds = Span {
-            last: bounds.last.min(to),
-            ..bounds
-        };
-        // Hold snapshots use their native hour as the read hour.
-        for (keys, as_of) in [(&events, Some(to)), (&holds, None)] {
-            if let Some(candidate) = navigation_event(reader, keys, bounds, origin, forward, as_of)?
-            {
-                include(f64::from(candidate));
-            }
-        }
-    }
-    let hour = hour.or_else(|| {
-        navigation
-            .from
-            .map(|hour| hour.clamp(navigation.first_hour, navigation.last_hour))
-    });
+    let hour = engine::navigate(reader.snapshot, &selected, navigation)?;
     Ok(serde_json::json!({ "hour": hour }))
-}
-
-fn navigation_event<P: PageRead>(
-    reader: &mut Reader<'_, '_, P>,
-    keys: &[series::NavigationKey<'_>],
-    bounds: Span,
-    origin: f64,
-    forward: bool,
-    as_of: Option<i32>,
-) -> io::Result<Option<i32>> {
-    let first = f64::from(bounds.first).max(if forward {
-        origin.floor() + 1.0
-    } else {
-        f64::from(bounds.first)
-    });
-    let last = f64::from(bounds.last).min(if forward {
-        f64::from(bounds.last)
-    } else {
-        origin.ceil() - 1.0
-    });
-    if first > last || keys.is_empty() {
-        return Ok(None);
-    }
-    let native = Span::new(first as i32, last as i32)?;
-    let memberships = keys
-        .iter()
-        .map(|(_, within)| within.map(engine::spans).transpose())
-        .collect::<io::Result<Vec<_>>>()?;
-    let selection: Vec<_> = keys
-        .iter()
-        .zip(&memberships)
-        .filter(|(_, membership)| membership.as_ref().is_none_or(|spans| !spans.is_empty()))
-        .map(|(&(key, _), membership)| Selection {
-            key,
-            membership: membership.as_deref(),
-        })
-        .collect();
-    let mut hour = None;
-    if forward {
-        reader.snapshot.event_page(
-            EventQuery {
-                selection: &selection,
-                native,
-                as_of,
-                order: EventOrder::Native,
-            },
-            None,
-            Event::SIZE + 1,
-            |event| {
-                hour = Some(event.native_hour());
-                Ok(())
-            },
-        )?;
-    } else {
-        reader
-            .snapshot
-            .latest_event_rows(&selection, native.last, as_of, |_, event| {
-                if let Some(candidate) = event
-                    .map(|event| event.native_hour())
-                    .filter(|hour| native.contains(*hour))
-                {
-                    hour = Some(hour.map_or(candidate, |previous: i32| previous.max(candidate)));
-                }
-                Ok(())
-            })?;
-    }
-    Ok(hour)
 }
 
 /// Each category part `keys`' country spent in, with its first hour.
@@ -3458,7 +2633,7 @@ fn government_page<P: PageRead>(
         .min(visible.len());
     let mut rows = Vec::new();
     for (ordinal, event) in visible.iter().enumerate().skip(start).take(size as usize) {
-        let row = decode_government(reader, event)?;
+        let row: LedgerGovernment = reader.record(event.fields, 0)?;
         rows.push(MeasureEvent {
             tag: tag.to_owned(),
             hour: row.hour,

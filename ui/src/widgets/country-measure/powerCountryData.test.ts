@@ -19,8 +19,7 @@ test('power aliases retain a native daily operand across a rename within its day
     hour, readHour: hour + 1, countryTag: 'X', countryName: null, currency: 'Political', category: 'costs', chargeRaw: '7',
     realizedDeltaRaw: '-7', covered: true, occurrences: 1, changes: [{ hour, readHour: hour + 1, chargeRaw: '7',
       realizedDeltaRaw: '-7', covered: true, occurrences: 1 }] });
-  const change = (countryId: number, hour: number) => ({ countryId, hour, readHour: hour + 1, currency: 'Political',
-    amountRaw: '9', realizedDeltaRaw: '9', action: 'Recorded adjustment', covered: true, reason: null });
+  const change = (countryId: number, hour: number) => ({ countryId, hour, readHour: hour + 1, currency: 'Political' });
   for (const [ledger, hour] of [[first, 98], [renamed, 100]] as const) {
     ledger.spending = [spend(10, hour), spend(20, hour)];
     ledger.balanceChanges = [change(10, hour), change(20, hour)];

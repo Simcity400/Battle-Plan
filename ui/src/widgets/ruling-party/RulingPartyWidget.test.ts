@@ -55,8 +55,7 @@ test('dense ruling-party combines census, native and tail marks and chooses the 
     partyNames: [], partyNameRuns: [], elections: [], unobserved: [], ruling: [{ token: 'mod_a', firstHour: 0, lastHour: 1000, startsSegment: true }],
     parties: ['mod_a', 'mod_b'].map((token, index) => ({ token, runs: [{ firstHour: 0, lastHour: 1000, valueRaw: index ? '3500000' : '4000000', startsSegment: true }] })) });
   const change: LedgerGovernment = { country: 1, instance: 1, epoch: '1', sequence: '1', hour: 60, readHour: 64,
-    beforeParty: 1, afterParty: 2, beforeIdeology: 1, afterIdeology: 2, beforeToken: 'mod_a', afterToken: 'mod_b',
-    actorCountry: null, originKind: 'OnAction', originToken: null, originKey: [], cause: 'CoupCompletion', covered: true };
+    beforeToken: 'mod_a', afterToken: 'mod_b', cause: 'CoupCompletion', covered: true };
   const tail = { ...change, sequence: '3', hour: 90, readHour: 96, cause: 'CivilWar' };
   let partyNext = 107, governmentNext = 102;
   let deferred: ((value: { hour: number }) => void) | undefined;

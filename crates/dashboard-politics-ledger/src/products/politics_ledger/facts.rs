@@ -121,13 +121,13 @@ pub struct Captures {
 /// A power or cost row and what its hour says of its item.
 #[derive(Clone, Debug)]
 pub struct Dating {
-    /// Its item's facts at its hour, serialized; None where no frame of its hour was read.
+    /// Its item's facts at its hour, encoded; None where no frame of its hour was read.
     pub dated: Option<DatedFacts>,
     /// The category its payment is spent in, for a payment.
     pub category: Option<Arc<str>>,
 }
 
-/// An item's facts at its hour, serialized, and their digest.
+/// An item's facts at its hour, MessagePack, and their digest.
 #[derive(Clone, Debug)]
 pub struct DatedFacts {
     pub bytes: Arc<[u8]>,
@@ -708,7 +708,9 @@ impl Projector {
                 target,
                 modifiers: modifier_rows,
             };
-            dating.dated = Some(DatedFacts::new(serde_json::to_vec(&value)?));
+            dating.dated = Some(DatedFacts::new(dashboard_base::prepared::codec::encode(
+                &value,
+            )?));
         }
         Ok(())
     }

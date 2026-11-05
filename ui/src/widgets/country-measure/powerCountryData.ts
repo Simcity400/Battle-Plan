@@ -30,7 +30,7 @@ export function powerCountryLedger(replies: readonly PoliticsLedgerReply[], span
       previous.throughHour = row.throughHour;
     } else spendingCoverage.push({ ...row });
   }
-  return { ...aliases[0], tag, mutations: [], governments: [], dailyCosts: [], coverage: [], ideaTooltips: null,
+  return { ...aliases[0], tag, ideaTooltips: null,
     daily: selected.flatMap(reply => reply.daily ?? []).sort((a, b) => a.dayHour - b.dayHour || a.readHour - b.readHour),
     balanceChanges: selected.flatMap(reply => reply.balanceChanges ?? []).sort((a, b) => a.hour - b.hour),
     spending: selected.flatMap(reply => reply.spending).sort((a, b) => a.hour - b.hour),

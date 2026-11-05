@@ -620,8 +620,8 @@ fn supply_next_change(
     })
 }
 
-/// The politics ledger from its family's publication, named through the recorded mod stack;
-/// pending before the family publishes the branch.
+/// The politics ledger from its family's publication, as its preparation named it through the
+/// recorded mod stack; pending before the family publishes the branch.
 fn ledger_reply(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -640,10 +640,8 @@ fn ledger_reply(
     else {
         return politics_ledger::query::unpublished(params);
     };
-    let recorded = politics_ledger::prepared_content(source, content);
-    let recorded = recorded.as_ref().ok().and_then(Option::as_ref);
     opened.read(cancelled, |snapshot, directory| {
-        politics_ledger::query::query(params, snapshot, directory, recorded, cancelled)
+        politics_ledger::query::query(params, snapshot, directory, cancelled)
     })
 }
 

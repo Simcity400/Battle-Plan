@@ -14,8 +14,7 @@ import { governmentBadges, governmentCause, governmentEventRows, governmentRows,
 import { partyBadges } from './partyData.ts';
 
 const transition: LedgerGovernment = { country: 1, instance: 1, epoch: '1', sequence: '1', hour: 24, readHour: 26,
-  beforeParty: 41, afterParty: 42, beforeIdeology: 91, afterIdeology: 92, beforeToken: 'mod_old', afterToken: 'mod_new',
-  actorCountry: null, originKind: 'OnAction', originToken: null, originKey: [], cause: 'CoupCompletion', covered: false };
+  beforeToken: 'mod_old', afterToken: 'mod_new', cause: 'CoupCompletion', covered: false };
 const parties: PartyHistoryReply = { branchId: '1', tag: 'mod country', decimals: 5, parties: [], leaders: [], people: [],
   ideologyTypes: [], ideologies: [], partyNames: [], partyNameRuns: [], unobserved: [], warnings: [], elections: [26],
   ruling: [{ token: 'mod_old', firstHour: 24, lastHour: 25, startsSegment: true },
@@ -59,9 +58,9 @@ test('government replies authenticate the requested actor and preserve exact nat
   }
 });
 
-test('registered ruling-party renderer requests causes conditionally, respects Pin and keeps parties on refusal', async () => {
+test('registered ruling-party renderer asks causes only through prepared reads and respects Pin', async () => {
   const host = globalThis as typeof globalThis & { __governmentParty?: PartyHistoryReply; __governmentLedger?: PoliticsLedgerReply;
-    __governmentError?: Error; __governmentRequests?: ProductRequest<Record<string, unknown>>[];
+    __governmentRequests?: ProductRequest<Record<string, unknown>>[];
     __governmentChart?: { badges?: EventBadge[]; markSummaries?: MarkSummary[]; tooltip: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent } };
   host.__governmentParty = { ...parties, parties: ['mod_old', 'mod_new'].map(token => ({ token,
     runs: [{ firstHour: 24, lastHour: 30, valueRaw: '5000000', startsSegment: true }] })),
@@ -80,7 +79,6 @@ test('registered ruling-party renderer requests causes conditionally, respects P
       if (!request || !active) return { retry() {} }; globalThis.__governmentRequests.push(request);
       if (request.product === 'country-people') return { data: validate({ ...request.params,
         readHour: null, manpower: [], politics: [], states: [], exiles: [], warnings: [] }), retry() {} };
-      if (request.product === 'politics-ledger' && globalThis.__governmentError) return { error: globalThis.__governmentError, retry() {} };
       const party = request.params.mode ? { coverage: { firstHour: 24, lastHour: 30, complete: true }, reply: globalThis.__governmentParty, summaries: [], marks: [], cursor: null, total: '0' } : globalThis.__governmentParty;
       return { data: validate(request.product === 'party-history' ? party : globalThis.__governmentLedger), retry() {} };
     };
@@ -107,30 +105,11 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     const render = () => renderToStaticMarkup(createElement(renderer.render, props));
     render();
     assert.deepEqual(requests.find(request => request.product === 'country-people')?.params, { branchId: '1', tag: parties.tag, hour: 25 });
-    assert.equal(requests.find(request => request.product === 'politics-ledger')?.params.view, 'governments');
-    assert.ok(host.__governmentChart?.badges?.every(badge => !badge.label.includes('Coup')));
+    assert.ok(requests.every(request => request.product !== 'politics-ledger'), 'only a prepared client asks government causes');
     hour = 26; assert.match(render(), /Native party name/);
-    assert.deepEqual(host.__governmentChart?.badges?.map(badge => badge.hour), [24, 26]);
-    const tooltip = host.__governmentChart?.tooltip(26, {} as PlotFrame, []);
-    assert.ok(tooltip?.rows.some(row => row.value === 'Coup'));
-    assert.ok(!tooltip?.rows.some(row => row.label === 'Read'));
-    assert.ok(tooltip?.rows.some(row => row.label === 'Some changes may be missing.'));
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 1, lastOffset: 1 } } }; hour = 30; render();
     assert.deepEqual(requests.filter(request => request.product === 'country-people').at(-1)?.params, { branchId: '1', tag: parties.tag, hour: 25 });
-    assert.ok(host.__governmentChart?.badges?.every(badge => !badge.label.includes('Coup')));
-    props.widget.time = { mode: 'follow' }; host.__governmentError = new Error('Synthetic government refusal');
-    const refused = render(); assert.match(refused, /Couldn’t load government changes/); assert.match(refused, /Native party name/);
-    assert.match(refused, />Retry</);
-    assert.doesNotMatch(refused.replace(/<[^>]*>/g, ' '), /Synthetic government refusal/);
-    props.widget.options = { changes: false }; requests.length = 0;
-    assert.doesNotMatch(render(), /Couldn’t load government changes/);
-    assert.ok(requests.every(request => request.product !== 'politics-ledger'));
-    props.widget.options = { changes: true }; delete host.__governmentError;
-    host.__governmentLedger = { ...ledger, governments: [{ ...transition, afterToken: 'mod_between' }] };
-    render();
-    assert.ok(host.__governmentChart?.badges?.some(badge => badge.label.includes('Named transient ideology took power from mod_old')));
-    assert.equal(host.__governmentChart?.tooltip(26, {} as PlotFrame, []).rows.find(row => row.label === 'Before / after')?.value,
-      'mod_old / Named transient ideology');
+    props.widget.time = { mode: 'follow' };
     props.runtime.client.preparedQuery = async () => { throw new Error('SSR must not execute requests'); };
     requests.length = 0; hour = 30;
     host.__governmentLedger = { ...ledger, governments: [], governmentMarks: { from: 24, to: 30, width: 1,
@@ -144,7 +123,7 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     assert.ok(marks.every(summary => summary.clusters.length <= Math.ceil(summary.width / 18)));
     assert.equal(marks.find(summary => summary.clusters[0]?.tag === 'native')?.clusters[0].firstHour, 24);
   } finally {
-    delete host.__governmentParty; delete host.__governmentLedger; delete host.__governmentError;
+    delete host.__governmentParty; delete host.__governmentLedger;
     delete host.__governmentRequests; delete host.__governmentChart; await vite.close();
   }
 });

@@ -2,7 +2,7 @@
 //! resolved when the reply is asked from the facts its hour recorded ([`super::items`]) and the
 //! recorded content; icons are drawn from their recipes as the request's selection shows them.
 
-use super::items::{Dated, NamedCountry, SpriteChoice};
+use super::items::{self, Dated, NamedCountry, SpriteChoice};
 use super::*;
 use dashboard_base::products::idea_history::{self, IdeaInfo};
 use dashboard_base::products::politics_content::{PoliticsContent, recorded_politics_content};
@@ -337,7 +337,7 @@ pub(super) fn category_of(
 /// The item `row` (a payment of `cause`, dated with `dated`) resolves to under `content`.
 pub(super) fn resolve(
     dated: &Dated,
-    row: &LedgerMutation,
+    row: &PaidRow,
     cause: PowerCause,
     content: Option<&PoliticsContent>,
     id: String,
@@ -488,12 +488,7 @@ pub(super) fn resolve(
                     std::str::from_utf8(&row.item.key).unwrap_or_default(),
                 )
                 .ok()
-            } else if row
-                .amount_raw
-                .as_deref()
-                .and_then(|raw| raw.parse::<i128>().ok())
-                .is_some_and(|raw| raw < 0)
-            {
+            } else if row.charged {
                 row.item
                     .token
                     .and_then(installed_content_core::diplomacy::charged_action_name_key)
@@ -713,6 +708,218 @@ pub(super) fn resolve(
     // Only what the art is drawn from is kept; it is drawn when a reply is served.
     item.icon = None;
     (item, info, category)
+}
+
+/// The facts of a row no frame of its hour was read for: its recorded key alone, and the text
+/// content gives without a frame.
+fn frameless(
+    identity: &PowerIdentity,
+    cause: PowerCause,
+    component: Option<PowerDailyCostKind>,
+    content: Option<&PoliticsContent>,
+) -> Dated {
+    let mut facts = items::event_facts(None, identity, cause, component);
+    if let Some(content) = content {
+        let texts = items::FrameTexts::default();
+        facts.text = items::item_text(
+            None,
+            &items::Item { cause, identity },
+            &facts,
+            content,
+            None,
+            &texts,
+        );
+    }
+    Dated {
+        facts,
+        own: None,
+        target: None,
+        modifiers: None,
+    }
+}
+
+/// The idea tooltip an item shows: its idea, artwork and effect formats, the warnings formatting
+/// them gives counted in `formats`.
+fn tooltip(
+    item: &LedgerSpendItem,
+    info: IdeaInfo,
+    dated: Option<&Dated>,
+    content: Option<&PoliticsContent>,
+    formats: &mut BTreeSet<String>,
+) -> LedgerIdeaTooltips {
+    let infos = [info];
+    let recorded = dated.and_then(|dated| dated.modifiers.as_deref());
+    let mut modifiers = Vec::new();
+    let mut texts = Vec::new();
+    if let Some(content) = content {
+        let (keys, text_keys) = idea_history::effect_keys(&infos);
+        let index: BTreeMap<String, ModifierDefinitionRow> = recorded
+            .unwrap_or_default()
+            .iter()
+            .map(|(key, row)| (key.clone(), row.row()))
+            .collect();
+        let (found, warnings) =
+            dashboard_base::products::idea_format::modifier_formats_from_recorded(
+                recorded.is_some().then_some(&index),
+                &keys,
+                content,
+            );
+        modifiers = found;
+        formats.extend(warnings);
+        texts = dashboard_base::products::idea_format::texts(content, &text_keys);
+    }
+    let [info] = infos;
+    LedgerIdeaTooltips {
+        artwork: vec![dashboard_core::dto::Artwork {
+            token: info.token.clone(),
+            name: item.name.clone(),
+            description: dated
+                .and_then(|dated| dated.facts.text.as_ref())
+                .and_then(|text| text.description.clone()),
+            icon: None,
+            base_duration_days: None,
+        }],
+        ideas: vec![info],
+        modifiers,
+        texts,
+    }
+}
+
+/// Item `ordinal` of `tag`, first paid by `first` (`row`, of `cause` and `component`), as every
+/// reply shows it: named from `dated`, the facts its hour recorded, under `content`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn show(
+    tag: &str,
+    ordinal: u32,
+    first: String,
+    row: &PaidRow,
+    identity: &PowerIdentity,
+    cause: PowerCause,
+    dated: Option<&Dated>,
+    component: Option<PowerDailyCostKind>,
+    content: Option<&PoliticsContent>,
+) -> super::records::ItemRecord {
+    let component_name = component.map(|component| format!("{component:?}"));
+    let unread;
+    let facts = match dated {
+        Some(dated) => dated,
+        None => {
+            unread = frameless(identity, cause, component, content);
+            &unread
+        }
+    };
+    let (mut item, mut info, category) = resolve(
+        facts,
+        row,
+        cause,
+        content,
+        first,
+        component_name.as_deref(),
+    );
+    // The item's ordinal keys its tooltip in every reply.
+    if item.tooltip_token.is_some() {
+        let token = format!("idea:{tag}:{ordinal}");
+        item.tooltip_token = Some(token.clone());
+        if let Some(info) = &mut info {
+            info.token = token;
+        }
+    }
+    let mut formats = BTreeSet::new();
+    let ideas = info.map(|info| tooltip(&item, info, dated, content, &mut formats));
+    let daily = (component.is_some() && cause == PowerCause::DailyGain).then(|| match component {
+        Some(PowerDailyCostKind::MioResearch | PowerDailyCostKind::MioProduction) => {
+            ("organisationUpkeep".to_owned(), "Organisation upkeep".to_owned())
+        }
+        _ => ("dailyCosts".to_owned(), "Daily costs".to_owned()),
+    });
+    super::records::ItemRecord {
+        ability_upkeep: component.is_none()
+            && row.currency == "Command"
+            && cause == PowerCause::AbilityUpkeep,
+        currency: row.currency.clone(),
+        country_name: dated
+            .and_then(|dated| dated.own.as_ref())
+            .and_then(|own| own.name.clone()),
+        item,
+        category,
+        ideas,
+        formats: formats.into_iter().collect(),
+        daily,
+    }
+}
+
+/// A command power hold snapshot of `hour` as replies show it: its holders named, the remainder
+/// its total leaves unattributed, why any is not named; a reply carries it to later hours.
+pub(super) fn hold(
+    hour: i32,
+    total: Option<i64>,
+    holders: &[(String, rows::Holder)],
+    missing: Option<&str>,
+    content: Option<&PoliticsContent>,
+) -> LedgerCommandHold {
+    let mut named = Vec::with_capacity(holders.len() + 1);
+    let mut reasons = BTreeMap::<String, usize>::new();
+    let mut attributed = 0_i128;
+    for (id, holder) in holders {
+        attributed += holder.amount;
+        let character = holder
+            .character
+            .as_ref()
+            .map(|(script, saved)| (script.as_deref(), saved.as_str()));
+        let name = match holder_name(
+            holder.ability,
+            holder.token.as_deref(),
+            character,
+            &holder.kind,
+            content,
+        ) {
+            Ok(name) => Some(name),
+            Err(reason) => {
+                *reasons.entry(reason).or_default() += 1;
+                None
+            }
+        };
+        named.push(LedgerCommandHolder {
+            id: id.clone(),
+            kind: holder.kind.clone(),
+            name,
+            amount_raw: Some(holder.amount.to_string()),
+        });
+    }
+    let Some(total) = total else {
+        return LedgerCommandHold {
+            read_hour: hour,
+            through_hour: hour,
+            total_raw: None,
+            holders: Vec::new(),
+            reason: Some(missing.unwrap_or("CountryCommandPower unavailable").to_owned()),
+        };
+    };
+    let remainder = i128::from(total) - attributed;
+    if remainder != 0 {
+        named.push(LedgerCommandHolder {
+            id: "notIdentified".into(),
+            kind: "Not identified".into(),
+            name: None,
+            amount_raw: Some(remainder.to_string()),
+        });
+        *reasons
+            .entry("Command power holder identity is not recorded for part of the held amount".into())
+            .or_default() += 1;
+    }
+    LedgerCommandHold {
+        read_hour: hour,
+        through_hour: hour,
+        total_raw: Some(total.to_string()),
+        holders: named,
+        reason: (!reasons.is_empty()).then(|| {
+            reasons
+                .iter()
+                .map(|(reason, count)| format!("{reason} (count: {count})"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        }),
+    }
 }
 
 /// The name of a command power holder its allocation recorded: an ability's localised name, or

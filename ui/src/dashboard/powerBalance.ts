@@ -1,4 +1,4 @@
-import type { BalanceDrop, LedgerBalanceChange, LedgerDaily, LedgerSpend, LedgerSpendCoverage, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
+import type { BalanceDrop, LedgerDaily, LedgerSpend, LedgerSpendCoverage, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
 import type { TooltipRow } from '../charts/tooltip';
 import { runAt } from '../charts/series.ts';
 import { categoryLabel, RECURRING_CATEGORIES, spendAt, spendLabel, validatePoliticsSpending } from './politicsSpending.ts';
@@ -23,9 +23,7 @@ export function validatePowerBalance(data: unknown): PoliticsLedgerReply {
     && [day.ppSequence, day.cpSequence].every(value => value === null || typeof value === 'string'))))
     || (reply.balanceChanges !== undefined && (!Array.isArray(reply.balanceChanges) || !reply.balanceChanges.every(change => object(change)
       && integer(change.hour) && integer(change.readHour) && change.readHour >= change.hour
-      && (change.currency === 'Political' || change.currency === 'Command') && optionalRaw(change.amountRaw)
-      && raw(change.realizedDeltaRaw) && typeof change.action === 'string' && typeof change.covered === 'boolean'
-      && (change.reason === null || typeof change.reason === 'string'))))) {
+      && (change.currency === 'Political' || change.currency === 'Command'))))) {
     throw new Error('The power balance details are malformed.');
   }
   return reply;
@@ -35,7 +33,6 @@ export interface PowerBalanceIndex {
   reply: PoliticsLedgerReply;
   currency: PowerCurrency;
   days: ReadonlyMap<number, readonly LedgerDaily[]>;
-  changes: ReadonlyMap<number, readonly LedgerBalanceChange[]>;
   spends: ReadonlyMap<number, readonly LedgerSpend[]>;
   items: ReadonlyMap<string, LedgerSpendItem>;
   categories: ReadonlyMap<string, { name: string; identified: boolean }>;
@@ -59,7 +56,6 @@ export function powerBalanceIndex(reply: PoliticsLedgerReply, currency: PowerCur
   let index = held.get(currency);
   if (!index) {
     index = { reply, currency, days: byDay(reply.daily ?? [], day => day.dayHour),
-      changes: byDay((reply.balanceChanges ?? []).filter(change => change.currency === currency), change => change.hour),
       spends: byDay([...reply.spending, ...(reply.recurring ?? []).map(row => row.spend)].filter(spend => spend.currency === currency && spend.category !== 'dailyDeficit'), spend => spend.hour),
       items: new Map(reply.spendItems.map(item => [item.id, item])),
       categories: new Map(reply.spendCategories.map(category => [category.id, category])),

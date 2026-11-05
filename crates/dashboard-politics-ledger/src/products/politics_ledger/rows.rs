@@ -4,49 +4,13 @@
 use super::*;
 use dashboard_base::products::validate_tag;
 
-pub(super) fn mutation(
-    row: &CountryPowerChangeRow,
-    read_hour: i32,
-    covered: bool,
-) -> LedgerMutation {
-    LedgerMutation {
-        country: row.country,
-        instance: row.instance,
-        sequence: row.sequence.to_string(),
-        epoch: row.epoch.to_string(),
-        hour: row.hour,
-        read_hour,
+/// A power row as its item's presentation reads it.
+pub(super) fn paid(row: &CountryPowerChangeRow) -> PaidRow {
+    PaidRow {
         currency: format!("{:?}", row.currency),
         cause: format!("{:?}", row.cause),
-        operation: format!("{:?}", row.operation),
-        site: format!("{:?}", row.site),
-        amount_raw: row.requested_delta_raw.map(|raw| raw.to_string()),
-        realized_delta_raw: row.realized_delta_raw().to_string(),
-        before_raw: row.balance_before_raw.to_string(),
-        after_raw: row.balance_after_raw.to_string(),
         item: (&row.identity).into(),
-        covered,
-    }
-}
-
-pub(super) fn cost(
-    row: &CountryPowerDailyCostRow,
-    read_hour: i32,
-    covered: bool,
-) -> LedgerDailyCost {
-    LedgerDailyCost {
-        country: row.country,
-        instance: row.instance,
-        epoch: row.epoch.to_string(),
-        day_hour: row.day_hour,
-        pp_sequence: row.pp_sequence.to_string(),
-        ordinal: row.ordinal,
-        read_hour,
-        covered,
-        component: format!("{:?}", row.component),
-        amount_raw: row.cost_raw.to_string(),
-        cause: format!("{:?}", row.cause),
-        item: (&row.identity).into(),
+        charged: row.requested_delta_raw.is_some_and(|raw| raw < 0),
     }
 }
 
@@ -193,16 +157,8 @@ pub(super) fn government(
         hour: row.hour,
         read_hour,
         cause: format!("{:?}", row.cause),
-        before_party: row.before_party,
-        after_party: row.after_party,
-        before_ideology: row.before_ideology,
-        after_ideology: row.after_ideology,
         before_token: tokens.0,
         after_token: tokens.1,
-        actor_country: row.actor_country,
-        origin_kind: format!("{:?}", row.origin_kind),
-        origin_token: row.origin_token,
-        origin_key: row.origin_key.clone(),
         covered,
     }
 }
@@ -374,7 +330,7 @@ pub(super) fn holder(row: &CountryPowerChangeRow, dated: Option<&[u8]>) -> Optio
         return None;
     }
     let facts = dated
-        .and_then(|bytes| serde_json::from_slice::<items::Dated>(bytes).ok())
+        .and_then(|bytes| dashboard_base::prepared::codec::decode::<items::Dated>(bytes).ok())
         .map(|dated| dated.facts)
         .unwrap_or_else(|| items::event_facts(None, &row.identity, row.cause, None));
     Some(Holder {
@@ -459,29 +415,13 @@ pub(super) fn cost_id(country: u32, epoch: u64, day: i32, ordinal: u32) -> Strin
 }
 
 /// A daily cost as the payment the presentation resolves it as.
-pub(super) fn daily_mutation(cost: &LedgerDailyCost) -> LedgerMutation {
-    LedgerMutation {
-        country: cost.country,
-        instance: cost.instance,
-        sequence: cost.pp_sequence.clone(),
-        epoch: cost.epoch.clone(),
-        hour: cost.day_hour,
-        read_hour: cost.read_hour,
+pub(super) fn paid_cost(row: &CountryPowerDailyCostRow) -> PaidRow {
+    PaidRow {
         currency: "Political".into(),
-        cause: cost.cause.clone(),
-        operation: "Subtract".into(),
-        site: format!("daily component:{}", cost.ordinal),
-        amount_raw: cost
-            .amount_raw
-            .parse::<i128>()
-            .ok()
-            .and_then(i128::checked_neg)
-            .map(|raw| raw.to_string()),
-        realized_delta_raw: String::new(),
-        before_raw: String::new(),
-        after_raw: String::new(),
-        item: cost.item.clone(),
-        covered: cost.covered,
+        cause: format!("{:?}", row.cause),
+        item: (&row.identity).into(),
+        // A daily cost is paid as its negation.
+        charged: row.cost_raw > 0,
     }
 }
 

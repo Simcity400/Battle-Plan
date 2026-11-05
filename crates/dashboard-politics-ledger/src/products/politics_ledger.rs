@@ -1,17 +1,18 @@
-//! Recorded per-country political and command power: every native mutation, government change,
-//! daily application and cost, as the capture recorded them, and the spending they make. Prices
+//! Recorded per-country political and command power: the spending, balance and government
+//! changes the capture recorded, as widgets ask for them. Prices
 //! are native evaluated operands, never reconstructed content prices or balance falls.
 //!
 //! A segment operator reads each hour's changed native rows and, at an item's own hour, what
 //! only that hour's frame says of it ([`facts`]); the emit accounts them into the family's series
-//! publication ([`emit`]); a reply reads them back and names them with the recorded content
-//! ([`query`], [`present`]).
+//! publication, each row and item as replies show it, named with the recorded content ([`emit`],
+//! [`present`], [`records`]); a reply reads them back ([`query`]).
 
 pub mod emit;
 pub mod facts;
 mod items;
 mod present;
 pub mod query;
+mod records;
 mod rows;
 pub mod served;
 mod tally;
@@ -57,11 +58,9 @@ pub fn prepared_content(
 
 pub struct PoliticsLedger;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum LedgerView {
-    #[default]
-    Raw,
     Spending,
     Balance,
     Governments,
@@ -72,8 +71,6 @@ pub enum LedgerView {
 pub struct PoliticsLedgerParams {
     pub branch_id: String,
     pub tag: String,
-    #[serde(default)]
-    #[ts(optional, as = "Option<_>")]
     pub view: LedgerView,
 }
 
@@ -86,7 +83,8 @@ impl PoliticsLedgerParams {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+/// A recorded item identity, as presentation and holders read it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerItem {
     pub action: String,
@@ -124,25 +122,14 @@ impl From<&PowerIdentity> for LedgerItem {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct LedgerMutation {
-    pub country: u32,
-    pub instance: u32,
-    pub sequence: String,
-    pub epoch: String,
-    pub hour: i32,
-    pub read_hour: i32,
+/// A payment as its item's presentation reads it.
+#[derive(Clone, Debug)]
+pub struct PaidRow {
     pub currency: String,
     pub cause: String,
-    pub operation: String,
-    pub site: String,
-    pub amount_raw: Option<String>,
-    pub realized_delta_raw: String,
-    pub before_raw: String,
-    pub after_raw: String,
     pub item: LedgerItem,
-    pub covered: bool,
+    /// The payment took power: a negative requested amount.
+    pub charged: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -155,10 +142,6 @@ pub struct LedgerGovernment {
     pub hour: i32,
     pub read_hour: i32,
     pub cause: String,
-    pub before_party: Option<u32>,
-    pub after_party: Option<u32>,
-    pub before_ideology: Option<u32>,
-    pub after_ideology: Option<u32>,
     /// Event-dated lexical group names; never borrowed from a later party census.
     #[serde(default)]
     #[ts(optional, as = "Option<_>")]
@@ -166,24 +149,7 @@ pub struct LedgerGovernment {
     #[serde(default)]
     #[ts(optional, as = "Option<_>")]
     pub after_token: Option<String>,
-    pub actor_country: Option<u32>,
-    pub origin_kind: String,
-    pub origin_token: Option<u32>,
-    pub origin_key: Vec<u8>,
     pub covered: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct LedgerCoverage {
-    pub country: Option<u32>,
-    pub instance: Option<u32>,
-    pub read_hour: i32,
-    pub since_hour: Option<i32>,
-    pub through_hour: Option<i32>,
-    pub epoch: Option<String>,
-    pub streams: u8,
-    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -211,24 +177,7 @@ pub struct LedgerDaily {
     pub cp_sequence: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct LedgerDailyCost {
-    pub country: u32,
-    pub instance: u32,
-    pub epoch: String,
-    pub day_hour: i32,
-    pub read_hour: i32,
-    pub covered: bool,
-    pub pp_sequence: String,
-    pub ordinal: u32,
-    pub component: String,
-    pub amount_raw: String,
-    pub cause: String,
-    pub item: LedgerItem,
-}
-
-/// A native application, distinct from its evaluated charge and daily rate.
+/// A native application: where keyboard hover stops.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerBalanceChange {
@@ -238,11 +187,6 @@ pub struct LedgerBalanceChange {
     pub hour: i32,
     pub read_hour: i32,
     pub currency: String,
-    pub amount_raw: Option<String>,
-    pub realized_delta_raw: String,
-    pub action: String,
-    pub covered: bool,
-    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
@@ -362,19 +306,10 @@ pub struct PoliticsLedgerReply {
     pub decimals: u8,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<_>")]
-    pub mutations: Vec<LedgerMutation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(optional, as = "Option<_>")]
     pub governments: Vec<LedgerGovernment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<_>")]
     pub daily: Vec<LedgerDaily>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(optional, as = "Option<_>")]
-    pub daily_costs: Vec<LedgerDailyCost>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(optional, as = "Option<_>")]
-    pub coverage: Vec<LedgerCoverage>,
     pub warnings: Vec<String>,
     pub spending: Vec<LedgerSpend>,
     pub spend_items: Vec<LedgerSpendItem>,
@@ -455,12 +390,8 @@ impl Product for PoliticsLedger {
         vec![
             PoliticsLedgerParams::decl(),
             LedgerView::decl(),
-            LedgerItem::decl(),
-            LedgerMutation::decl(),
             LedgerGovernment::decl(),
-            LedgerCoverage::decl(),
             LedgerDaily::decl(),
-            LedgerDailyCost::decl(),
             LedgerBalanceChange::decl(),
             LedgerSpend::decl(),
             LedgerSpendChange::decl(),

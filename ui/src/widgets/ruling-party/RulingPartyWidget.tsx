@@ -25,11 +25,11 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
-import type { PartyHistoryReply, PoliticsLedgerReply } from '../../generated/dashboard';
+import type { PartyHistoryReply } from '../../generated/dashboard';
 import { readTokens, subscribeTokens } from '../../charts/tokens';
 import { OPTIONS } from './definition';
 import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
-import { governmentBadges, governmentEventRows, governmentRows, validateGovernmentLedger, visibleGovernmentChanges } from './governmentData';
+import { governmentBadges, governmentEventRows, governmentRows, visibleGovernmentChanges } from './governmentData';
 import { drawApproximateSpans, summaryStack, summaryFits } from '../../charts/chartSummary';
 import { forEachCompactStackSegment } from '../../charts/stack';
 import PartyEventList from './PartyEventList';
@@ -53,10 +53,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'party-history',
     params: { branchId: track.branch.id, tag } } : null;
 
-  const governmentRequest = !runtime.client.preparedQuery && track && tag && options.changes ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'governments' } } : null;
-  const referenceGovernments = useProduct<PoliticsLedgerReply>(runtime.client, governmentRequest, active,
-    reply => validateGovernmentLedger(reply, governmentRequest?.params));
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
@@ -71,7 +67,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const parity = import.meta.env.MODE === 'parity' ? usePartyParity(runtime.client, track?.source, track?.branch.id, tag, extent, 'Party history values', legacy.data) : undefined;
   const detailsThrough = shownUntil(playhead, (options.playback as PlaybackMode) ?? 'draw-in', options.afterPlayhead === true) ?? extent[1];
   const governments = usePreparedGovernments(runtime.client, track?.source, track?.branch.id, options.changes ? tag : undefined, extent, detailsThrough, active);
-  const governmentReply = governments.enabled ? governments : referenceGovernments;
+  const governmentData = governments.enabled ? governments.data : undefined;
+  const governmentError = governments.enabled ? governments.error : undefined;
   const keyboardOwner = useMemo(() => ({ party: party.owner, governments: governments.owner }),
     [party.owner, governments.owner, governments.view.from, governments.view.to, governments.view.width, detailsThrough]);
   const navigation = useRef<AbortController | null>(null);
@@ -100,15 +97,15 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   }, [data, list]);
   const badges = useMemo(() => {
     if (!data) return [];
-    const native = visibleGovernmentChanges(governments.enabled && !governments.exact ? [] : governmentReply.data?.governments ?? [], detailsThrough);
+    const native = visibleGovernmentChanges(governments.enabled && !governments.exact ? [] : governmentData?.governments ?? [], detailsThrough);
     const source = party.enabled ? party.summary?.reply : data;
     // Fields the chart's mark summaries already show (`markSummaries`) are not badges too.
     const summarized = new Set(party.summary?.marks.filter(mark=>!mark.exact || governments.enabled && !governments.exact).map(mark=>mark.field));
     const all = source ? partyBadges(source, token => names.get(token) ?? 'Ideology name unavailable', options.leaders === true, native).filter(badge=>!party.enabled || !summarized.has(badge.glyph==='\u2713' ? 'election' : badge.glyph==='\u2654' ? 'leader' : 'ruling')) : [];
     return options.changes ? [...all, ...governmentBadges(native, token => names.get(token) ?? 'Ideology name unavailable', detailsThrough)].sort((a, b) => a.hour - b.hour)
       : all.filter(badge => badge.glyph === '♔');
-  }, [data, party.enabled, party.summary, names, options.changes, options.leaders, governmentReply.data, detailsThrough, governments.enabled, governments.exact]);
-  const native = visibleGovernmentChanges(governments.enabled && !governments.exact ? [] : governmentReply.data?.governments ?? [], detailsThrough);
+  }, [data, party.enabled, party.summary, names, options.changes, options.leaders, governmentData, detailsThrough, governments.enabled, governments.exact]);
+  const native = visibleGovernmentChanges(governments.enabled && !governments.exact ? [] : governmentData?.governments ?? [], detailsThrough);
   const censusBadges = party.summary ? partyBadges(party.summary.reply,token=>names.get(token) ?? 'Ideology name unavailable',options.leaders===true,native) : [];
   const pageBadges = party.events ? partyBadges(party.events.reply,token=>names.get(token) ?? 'Ideology name unavailable',options.leaders===true,native) : [];
   const reachedBadges = party.reached ? partyBadges(party.reached.reply,token=>names.get(token) ?? 'Ideology name unavailable',options.leaders===true,native) : [];
@@ -124,10 +121,10 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     summaries.push({ ...tail, clusters: tail.clusters.map(cluster => ({ ...cluster, tag: 'tail' })) });
     return summaries;
   }, [party.enabled, party.summary, censusBadges, governments.enabled, governments.exact, governments.data, governments.view.from, governments.view.to, governments.view.width, supplementalIndex]);
-  const exactCauses = governments.enabled ? governments.details?.governments ?? governments.data?.governments ?? [] : referenceGovernments.data?.governments ?? [];
-  const parityCauses = governments.enabled ? governments.parityRows?.governments ?? [] : referenceGovernments.data?.governments ?? [];
+  const exactCauses = governments.enabled ? governments.details?.governments ?? governments.data?.governments ?? [] : [];
+  const parityCauses = governments.enabled ? governments.parityRows?.governments ?? [] : [];
   useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Government execution causes', scope: 'displayed-hour', hour: head,
-    complete: !!data && (!options.changes || (governments.enabled ? !!governments.parityRows : !!referenceGovernments.data)), total: visibleGovernmentChanges(parityCauses, detailsThrough).length,
+    complete: !!data && (!options.changes || governments.enabled && !!governments.parityRows), total: visibleGovernmentChanges(parityCauses, detailsThrough).length,
     rows: visibleGovernmentChanges(parityCauses, detailsThrough).map(row => ({ hour: row.hour, readHour: row.readHour,
       country: row.country, instance: row.instance, epoch: row.epoch, sequence: row.sequence, cause: row.cause,
       before: row.beforeToken ?? null, after: row.afterToken ?? null, covered: row.covered })) }), {
@@ -136,11 +133,11 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const [peopleWarnings, setPeopleWarnings] = useState<string[]>([]);
   const menu = useContextMenu('Chart actions');
   useEffect(() => {
-    const warnings = [...peopleWarnings, ...(data?.warnings ?? []), ...(governmentReply.data?.warnings ?? []),
-      ...(governmentReply.error ? [`Government causes could not be loaded: ${governmentReply.error.message}`] : [])];
+    const warnings = [...peopleWarnings, ...(data?.warnings ?? []), ...(governmentData?.warnings ?? []),
+      ...(governmentError ? [`Government causes could not be loaded: ${governmentError.message}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, governmentReply.data, governmentReply.error, peopleWarnings, onDiagnostics]);
+  }, [data, governmentData, governmentError, peopleWarnings, onDiagnostics]);
 
   const layers = useMemo<ChartLayer[]>(() => data ? [{
     draw: (ctx, frame, tokens, state) => {
@@ -266,7 +263,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       <div className="chart-line-key"><button type="button" className="button small" disabled={!governments.previous} onClick={governments.previous}>Previous</button>
         <span>{governments.cluster.count} recorded changes</span><button type="button" className="button small" disabled={!governments.next} onClick={governments.next}>Next</button></div>
     </section>}
-    {governmentReply.error && <WidgetState kind="error" what="government changes" failure={governmentReply.error} onRetry={governmentReply.retry} />}
+    {governmentError && <WidgetState kind="error" what="government changes" failure={governmentError} onRetry={governments.retry} />}
     {menu.menu}
   </div>;
 }

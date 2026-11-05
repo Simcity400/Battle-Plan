@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import type { LedgerBalanceChange, LedgerCommandHold, LedgerDaily, LedgerSpend, PoliticsLedgerReply } from '../generated/dashboard';
 import { powerBalanceIndex, powerBalanceKeyHours, powerBalanceRows, powerCoverageAt, powerGain, powerSpendTicks, reserveMoves, validatePowerBalance } from './powerBalance.ts';
 
-const change = (overrides: Partial<LedgerBalanceChange> = {}): LedgerBalanceChange => ({ hour: 24, readHour: 26, currency: 'Political',
-  amountRaw: '-15012345', realizedDeltaRaw: '-10000000', action: 'Hired a recorded advisor', covered: true, reason: null, ...overrides });
+const change = (overrides: Partial<LedgerBalanceChange> = {}): LedgerBalanceChange => ({ hour: 24, readHour: 26, currency: 'Political', ...overrides });
 // Gain 2.66 before 1.17 of daily costs: a net change of 1.49 a day, as the game adds it.
 const daily = (overrides: Partial<LedgerDaily> = {}): LedgerDaily => ({ country: 1, instance: 1, epoch: '1', dayHour: 24, readHour: 26,
   ppGrossRaw: '266000', ppCostRaw: '117000', ppIncomeRaw: '149000', ppRealizedRaw: '149000', ppSequence: '1',
@@ -125,7 +124,7 @@ test('gain the cap took is named, and period gain counts the game’s daily gain
 
 test('malformed signed operands and future-dated application hours are refused', () => {
   for (const data of [reply({ daily: [daily({ ppGrossRaw: '1.2' })] }), reply({ daily: [daily({ readHour: 23 })] }),
-    reply({ balanceChanges: [change({ readHour: 23 })] }), reply({ balanceChanges: [change({ realizedDeltaRaw: (1n << 127n).toString() })] })]) {
+    reply({ balanceChanges: [change({ readHour: 23 })] }), reply({ balanceChanges: [change({ currency: 'Gold' })] })]) {
     assert.throws(() => validatePowerBalance(data));
   }
   assert.equal(validatePowerBalance(reply({ daily: [daily({ ppGrossRaw: '-9223372036854775808' })] })).daily![0].ppGrossRaw, '-9223372036854775808');
@@ -172,11 +171,4 @@ test('an absent command tuple supplies no application date, while a known applic
     assert.equal(value(powerBalanceRows(known, 26, 30, 0), 'Daily gain'), 'Not recorded');
     assert.deepEqual(powerBalanceKeyHours(known), [26]);
   }
-});
-
-test('recorded balance changes never become their own tooltip rows, named or not', () => {
-  const index = powerBalanceIndex(reply({ spending: [], balanceChanges: [change({ action: 'Assigned: Not identified', amountRaw: '0', realizedDeltaRaw: '0', reason: 'private' }),
-    change({ action: 'Allocation: Not identified', amountRaw: '2000000', realizedDeltaRaw: '2000000', covered: false, reason: 'private' })] }), 'Political');
-  const rows = powerBalanceRows(index, 26, 30, 0);
-  assert.equal(rows.some(row => /Assigned|Allocation|Not identified|missing|private/.test(row.label)), false);
 });

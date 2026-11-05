@@ -240,26 +240,10 @@ fn build_with(
 }
 
 fn ask(built: &Built, budget: &Budget, params: serde_json::Value) -> io::Result<serde_json::Value> {
-    ask_with(built, budget, params, None)
-}
-
-/// [`ask`] naming items through `content`.
-fn ask_with(
-    built: &Built,
-    budget: &Budget,
-    params: serde_json::Value,
-    content: Option<&Arc<PoliticsContent>>,
-) -> io::Result<serde_json::Value> {
     let cache = Cache::new(budget);
     let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity())?;
     let directory = Directory::read(&mut snapshot, emit::SCHEMA)?;
-    query::query(
-        &params,
-        &mut snapshot,
-        &directory,
-        content,
-        &AtomicBool::new(false),
-    )
+    query::query(&params, &mut snapshot, &directory, &AtomicBool::new(false))
 }
 
 fn reply(built: &Built, budget: &Budget, params: serde_json::Value) -> PoliticsLedgerReply {
@@ -295,17 +279,18 @@ fn campaign() -> Vec<Hour> {
 fn payments_come_back_as_their_reads_recorded_them() {
     let budget = Budget::new(64 << 20);
     let built = build(campaign(), &[110, 130], &[], &budget);
-    let raw = reply(&built, &budget, json!({ "branchId": "1", "tag": "GER" }));
-    assert_eq!(raw.mutations.len(), 3);
-    assert_eq!(
-        raw.mutations
-            .iter()
-            .map(|row| (row.hour, row.read_hour, row.covered))
-            .collect::<Vec<_>>(),
-        vec![(101, 101, true), (120, 120, true), (125, 125, true)]
+    let raw = reply(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 130 }),
     );
-    assert_eq!(raw.balance_changes.len(), 3);
-    assert_eq!(raw.balance_changes[1].action, "Daily income applied");
+    assert_eq!(
+        raw.balance_changes
+            .iter()
+            .map(|row| (row.hour, row.read_hour, row.currency.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(101, 101, "Political"), (120, 120, "Political"), (125, 125, "Political")]
+    );
     assert_eq!(
         raw.spending
             .iter()
@@ -320,13 +305,10 @@ fn payments_come_back_as_their_reads_recorded_them() {
     );
     // One item for both decisions: the first decision's id names it.
     assert_eq!(raw.spend_items.len(), 2);
-    assert_eq!(raw.daily_costs.len(), 1);
     assert_eq!(raw.daily.len(), 1);
     assert_eq!(raw.daily[0].pp_read_hour, Some(120));
     assert_eq!(raw.recurring.len(), 1);
     assert_eq!(raw.recurring[0].spend.charge_raw.as_deref(), Some("50000"));
-    assert_eq!(raw.coverage.len(), 1);
-    assert_eq!(raw.coverage[0].through_hour, Some(130));
     // Without content each payment says why its item is not named, once per payment.
     assert!(
         raw.warnings
@@ -343,28 +325,23 @@ fn payments_come_back_as_their_reads_recorded_them() {
     );
     assert_eq!(early.spending.len(), 1);
     assert!(early.recurring.is_empty());
-    assert!(early.mutations.is_empty());
-
-    let balance = reply(
-        &built,
-        &budget,
-        json!({ "branchId": "1", "tag": "GER", "view": "balance" }),
-    );
-    assert_eq!(balance.balance_changes.len(), 3);
-    assert!(balance.mutations.is_empty());
-    assert_eq!(balance.daily.len(), 1);
+    assert!(early.balance_changes.is_empty() && early.daily.is_empty());
 
     let governments = reply(
         &built,
         &budget,
-        json!({ "branchId": "1", "tag": "GER", "view": "governments" }),
+        json!({ "branchId": "1", "tag": "GER", "view": "governments", "hour": 130 }),
     );
     assert!(governments.governments.is_empty());
     assert!(governments.spending.is_empty());
 
     // A tag the branch never named answers empty, not refused.
-    let absent = reply(&built, &budget, json!({ "branchId": "1", "tag": "FRA" }));
-    assert!(absent.mutations.is_empty() && absent.spending.is_empty());
+    let absent = reply(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "FRA", "view": "balance", "hour": 130 }),
+    );
+    assert!(absent.balance_changes.is_empty() && absent.spending.is_empty());
 }
 
 /// Content that does not load is the branch's warning once, across a resume, and the ledger
@@ -375,8 +352,12 @@ fn a_content_refusal_warns_once_and_keeps_the_payments() {
     let reason = "NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU is missing".to_owned();
     let refused: PreparedContent = Err(reason.clone());
     let built = build_with(&refused, campaign(), &[110, 130], &[110], &budget);
-    let raw = reply(&built, &budget, json!({ "branchId": "1", "tag": "GER" }));
-    assert_eq!(raw.mutations.len(), 3);
+    let raw = reply(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 130 }),
+    );
+    assert_eq!(raw.balance_changes.len(), 3);
     assert_eq!(
         raw.warnings
             .iter()
@@ -410,7 +391,7 @@ fn accounting_goes_on_across_a_cut_and_resume() {
         ..steady(111, &countries)
     };
     let resumed = build(hours, &[110, 130], &[110], &budget);
-    for view in ["raw", "spending", "balance", "governments"] {
+    for view in ["spending", "balance", "governments"] {
         for hour in [105, 120, 130] {
             let params = json!({ "branchId": "1", "tag": "GER", "view": view, "hour": hour });
             assert_eq!(
@@ -429,7 +410,7 @@ fn a_reply_past_the_budget_is_refused_not_truncated() {
     let countries = [(1, "GER")];
     let mut hours = vec![opening(0, &countries)];
     let mut sequence = 0;
-    for at in 1..=400 {
+    for at in 1..=1000 {
         let mut hour = steady(at, &countries);
         for _ in 0..100 {
             sequence += 1;
@@ -443,8 +424,13 @@ fn a_reply_past_the_budget_is_refused_not_truncated() {
         }
         hours.push(hour);
     }
-    let built = build(hours, &[400], &[], &budget);
-    let error = ask(&built, &budget, json!({ "branchId": "1", "tag": "GER" })).unwrap_err();
+    let built = build(hours, &[1000], &[], &budget);
+    let error = ask(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 1000 }),
+    )
+    .unwrap_err();
     assert!(
         error.to_string().contains("complete-response budget"),
         "{error}"
@@ -487,7 +473,11 @@ fn fifteen_hundred_countries_append_only_what_changes() {
     // One actor per country and the branch's.
     assert_eq!(directory.actors.len(), 1501);
     for (id, tag) in countries.iter().step_by(137) {
-        let reply = reply(&built, &budget, json!({ "branchId": "1", "tag": tag }));
+        let reply = reply(
+            &built,
+            &budget,
+            json!({ "branchId": "1", "tag": tag, "view": "spending", "hour": 119 }),
+        );
         let paid = (1..120)
             .flat_map(|at: i32| {
                 (0..5).map(move |change| (at, (at as u32 * 37 + change * 11) % 1500 + 1))
@@ -495,8 +485,6 @@ fn fifteen_hundred_countries_append_only_what_changes() {
             .filter(|&(_, country)| country == *id)
             .count();
         assert_eq!(reply.spending.len(), paid, "{tag}");
-        assert_eq!(reply.coverage.len(), 1, "{tag}");
-        assert_eq!(reply.coverage[0].through_hour, Some(119), "{tag}");
         assert_eq!(reply.spending_coverage.len(), 1, "{tag}");
         assert!(reply.spending_coverage[0].political, "{tag}");
     }
@@ -519,7 +507,11 @@ fn a_hole_reads_unknown_never_zero() {
         hours.push(steady(at, &countries));
     }
     let built = build(hours, &[105, 115], &[], &budget);
-    let raw = reply(&built, &budget, json!({ "branchId": "1", "tag": "GER" }));
+    let raw = reply(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "GER", "view": "balance", "hour": 115 }),
+    );
     let gap = raw
         .spending_coverage
         .iter()
@@ -530,11 +522,42 @@ fn a_hole_reads_unknown_never_zero() {
     assert_eq!(gap.reason.as_deref(), Some("politics coverage unavailable"));
     assert!(raw.daily.is_empty());
     assert!(raw.gains.is_empty());
-    assert!(raw.coverage.iter().all(|row| {
-        row.since_hour
-            .zip(row.through_hour)
-            .is_some_and(|(first, last)| last < 106 || first > 109)
-    }));
+}
+
+/// A tag the census lists only later reads absent from the census's first listing, not unknown:
+/// none of its spending is recorded because it spends none.
+#[test]
+fn a_tag_listed_later_reads_absent_before_its_listing() {
+    let budget = Budget::new(64 << 20);
+    let (first, both) = ([(1, "GER")], [(1, "GER"), (2, "ITA")]);
+    let mut hours = vec![opening(100, &first)];
+    for at in 101..=109 {
+        hours.push(steady(at, &first));
+    }
+    hours.push(opening(110, &both));
+    for at in 111..=120 {
+        hours.push(steady(at, &both));
+    }
+    let built = build(hours, &[105, 120], &[105], &budget);
+    let raw = reply(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "ITA", "view": "spending", "hour": 120 }),
+    );
+    let before = &raw.spending_coverage[0];
+    assert_eq!(
+        (before.since_hour, before.through_hour),
+        (Some(100), Some(109))
+    );
+    assert!(before.political && before.command);
+    assert_eq!(before.reason, None);
+    assert!(
+        raw.spending_coverage
+            .iter()
+            .any(|row| row.since_hour == Some(110)),
+        "{:?}",
+        raw.spending_coverage
+    );
 }
 
 /// The projector on a synthetic walk: the first hour hands every row whole; later hours only
@@ -766,7 +789,10 @@ fn totals_from_rollups_are_the_totals_of_their_rows() {
         totals_reply(
             &built,
             &budget,
-            json!({ "branchId": "1", "tag": "GER", "view": "spending", "totals": true }),
+            json!({
+                "branchId": "1", "tag": "GER", "view": "spending", "totals": true,
+                "hour": day(170) - 1,
+            }),
             true,
         )
         .0,
@@ -917,125 +943,6 @@ fn part_summaries_join_their_pieces_exactly() {
     assert!(
         error.to_string().contains("hold some hours together"),
         "{error}"
-    );
-}
-
-/// Keyboard navigation steps from change to change of the country's recorded measures.
-#[test]
-fn navigation_steps_between_recorded_payments() {
-    let budget = Budget::new(64 << 20);
-    let countries = [(1, "GER"), (2, "ITA")];
-    let mut hours = vec![opening(100, &countries)];
-    for at in 101..=130 {
-        let mut hour = steady(at, &countries);
-        if at == 110 || at == 125 {
-            hour.power.push(decision(1, at as u64, at, 1_500_000));
-        }
-        hours.push(hour);
-    }
-    let built = build(hours, &[130], &[], &budget);
-    let step = |from: i32, key: &str| {
-        ask(
-            &built,
-            &budget,
-            json!({
-                "branchId": "1",
-                "tag": "GER",
-                "navigation": { "from": from, "firstHour": 100, "lastHour": 130, "key": key },
-            }),
-        )
-        .unwrap()["hour"]
-            .as_f64()
-    };
-    assert_eq!(step(111, "ArrowRight"), Some(125.0));
-    assert_eq!(step(124, "ArrowLeft"), Some(110.0));
-    assert_eq!(step(110, "ArrowRight"), Some(125.0));
-    assert_eq!(step(125, "ArrowLeft"), Some(110.0));
-    assert_eq!(step(111, "Home"), Some(100.0));
-    assert_eq!(step(111, "End"), Some(125.0));
-    assert_eq!(step(125, "ArrowRight"), Some(125.0));
-    assert_eq!(step(100, "ArrowLeft"), Some(100.0));
-    assert_eq!(step(140, "ArrowLeft"), Some(125.0));
-    assert_eq!(step(90, "ArrowRight"), Some(100.0));
-}
-
-#[test]
-fn navigation_merges_values_and_events_within_country_membership() {
-    let budget = Budget::new(1 << 30);
-    let tags: Vec<String> = (0..1500).map(|index| format!("C{index:03X}")).collect();
-    let countries: Vec<(u32, &str)> = tags
-        .iter()
-        .enumerate()
-        .map(|(index, tag)| (index as u32 + 1, tag.as_str()))
-        .collect();
-    let mut first = opening(100, &countries);
-    first.daily.push(daily_row(1, 100, 1, 50_000));
-    let mut hours = vec![first];
-    for at in 101..=130 {
-        let mut hour = steady(at, &countries);
-        if at == 110 || at == 125 {
-            hour.power.push(decision(1, at as u64, at, 1_500_000));
-        }
-        if at == 112 || at == 124 {
-            hour.power.push(decision(2, at as u64, at, 1_500_000));
-        }
-        if at == 118 {
-            hour.daily.push(daily_row(1, 100, 1, 60_000));
-        }
-        if at == 122 {
-            hour.governments.push(government(1, 122, at));
-        }
-        if at == 128 {
-            hour.power.push(decision(1, 128, 116, 1_500_000));
-        }
-        hours.push(hour);
-    }
-    let built = build(hours, &[115, 130], &[115], &budget);
-    let step = |from: f64, key: &str, mut params: serde_json::Value| {
-        params["branchId"] = json!("1");
-        params["tag"] = json!("C000");
-        params["navigation"] = json!({
-            "from": from, "firstHour": 100, "lastHour": 130, "key": key,
-        });
-        ask(&built, &budget, params).unwrap()["hour"].as_f64()
-    };
-    assert_eq!(step(111.0, "ArrowRight", json!({})), Some(116.0));
-    assert_eq!(step(117.0, "ArrowRight", json!({})), Some(118.0));
-    assert_eq!(step(119.0, "ArrowRight", json!({})), Some(122.0));
-    assert_eq!(step(124.0, "ArrowLeft", json!({})), Some(122.0));
-    assert_eq!(step(118.0, "ArrowLeft", json!({})), Some(116.0));
-    assert_eq!(
-        step(115.0, "ArrowRight", json!({ "hour": 120 })),
-        Some(118.0)
-    );
-    assert_eq!(
-        step(121.0, "ArrowRight", json!({ "hour": 120 })),
-        Some(121.0)
-    );
-    assert_eq!(step(111.0, "End", json!({ "hour": 120 })), Some(118.0));
-    assert_eq!(step(110.5, "ArrowLeft", json!({})), Some(110.0));
-    assert_eq!(step(124.5, "ArrowRight", json!({})), Some(125.0));
-    let within = json!({ "within": [{ "firstHour": 120, "lastHour": 130 }] });
-    assert_eq!(step(121.0, "ArrowRight", within.clone()), Some(122.0));
-    assert_eq!(step(122.0, "ArrowLeft", within), Some(120.0));
-    let bindings = json!({ "bindings": {
-        "C000": [{ "firstHour": 120, "lastHour": 130 }],
-        "C001": [{ "firstHour": 100, "lastHour": 115 }],
-    } });
-    assert_eq!(step(111.0, "ArrowRight", bindings.clone()), Some(112.0));
-    assert_eq!(step(116.0, "ArrowRight", bindings.clone()), Some(120.0));
-    assert_eq!(step(125.0, "ArrowLeft", bindings), Some(122.0));
-    assert_eq!(
-        step(111.0, "ArrowRight", json!({ "bindings": { "C000": [] } })),
-        Some(111.0)
-    );
-    let all: BTreeMap<_, _> = tags
-        .iter()
-        .map(|tag| (tag, json!([{ "firstHour": 100, "lastHour": 130 }])))
-        .collect();
-    assert_eq!(
-        step(111.0, "ArrowRight", json!({ "bindings": all })),
-        Some(112.0)
     );
 }
 
@@ -1215,17 +1122,13 @@ fn an_item_is_named_through_the_recorded_mod_stack() {
         }
         hours.push(hour);
     }
-    let built = build(hours, &[120], &[], &budget);
-    let reply: PoliticsLedgerReply = serde_json::from_value(
-        ask_with(
-            &built,
-            &budget,
-            json!({ "branchId": "1", "tag": "GER", "view": "spending" }),
-            Some(&content),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    // The emit names each item once, at its first payment, through the content it prepares with.
+    let built = build_with(&Ok(Some(content)), hours, &[120], &[], &budget);
+    let reply = reply(
+        &built,
+        &budget,
+        json!({ "branchId": "1", "tag": "GER", "view": "spending", "hour": 120 }),
+    );
     assert_eq!(reply.spending.len(), 2);
     assert_eq!(reply.spend_items.len(), 1);
     assert_eq!(reply.spend_items[0].name.as_deref(), Some("Mod ability"));

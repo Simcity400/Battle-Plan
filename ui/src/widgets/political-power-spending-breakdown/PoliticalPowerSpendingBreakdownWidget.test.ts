@@ -16,8 +16,8 @@ test('registered spending breakdown draws everything recorded, names unrecorded 
     changes: [{readHour, chargeRaw, realizedDeltaRaw: '-50000', covered: true, occurrences: 1}]});
   const info: IdeaInfo = {token: 'idea/mod', category: null, slot: null, law: true, designer: false, effects: [],
     targeted: [{target: 'other actor', instant: false, lines: [], tooltips: []}], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null};
-  const data: PoliticsLedgerReply = {branchId: 'branch', tag: 'synthetic actor', decimals: 5, mutations: [], governments: [], daily: [], dailyCosts: [],
-    coverage: [], warnings: [], spending: [payment('first', 10, 12, '150000'), payment('second', 20, 22, '100000')],
+  const data: PoliticsLedgerReply = {branchId: 'branch', tag: 'synthetic actor', decimals: 5, governments: [], daily: [],
+    warnings: [], spending: [payment('first', 10, 12, '150000'), payment('second', 20, 22, '100000')],
     spendItems: [{id: 'mod action', groupId: 'mod action', name: 'Recorded action', action: 'Recorded action', icon: null, tooltipToken: 'idea/mod',
       character: null, targetTag: null, targetName: null, unknown: null}], spendCategories: [{id: 'mod category', name: 'Recorded category', identified: true}],
     ideaTooltips: {ideas: [info], artwork: [{token: 'idea/mod', name: 'Recorded action', description: null, baseDurationDays: null, icon: null}],

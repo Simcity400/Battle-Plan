@@ -2899,23 +2899,19 @@ export type CivilWarsReply = { branchId: string, lastHour: number | null,
  * The hours the civil-war lists were read; others are unknown.
  */
 known: Array<HourSpan>, wars: Array<CivilWar>, warnings: Array<string>, };
-export type PoliticsLedgerParams = { branchId: string, tag: string, view?: LedgerView, };
-export type LedgerView = "raw" | "spending" | "balance" | "governments";
-export type LedgerItem = { action: string, token: number | null, key: Array<number>, slotKey: Array<number>, character: number | null, objectKind: string, objectReference: string | null, targetCountry: number | null, targetState: number | null, targetRegion: number | null, originKind: string, originToken: number | null, originKey: Array<number>, };
-export type LedgerMutation = { country: number, instance: number, sequence: string, epoch: string, hour: number, readHour: number, currency: string, cause: string, operation: string, site: string, amountRaw: string | null, realizedDeltaRaw: string, beforeRaw: string, afterRaw: string, item: LedgerItem, covered: boolean, };
-export type LedgerGovernment = { country: number, instance: number, sequence: string, epoch: string, hour: number, readHour: number, cause: string, beforeParty: number | null, afterParty: number | null, beforeIdeology: number | null, afterIdeology: number | null,
+export type PoliticsLedgerParams = { branchId: string, tag: string, view: LedgerView, };
+export type LedgerView = "spending" | "balance" | "governments";
+export type LedgerGovernment = { country: number, instance: number, sequence: string, epoch: string, hour: number, readHour: number, cause: string,
 /**
  * Event-dated lexical group names; never borrowed from a later party census.
  */
-beforeToken?: string | null, afterToken?: string | null, actorCountry: number | null, originKind: string, originToken: number | null, originKey: Array<number>, covered: boolean, };
-export type LedgerCoverage = { country: number | null, instance: number | null, readHour: number, sinceHour: number | null, throughHour: number | null, epoch: string | null, streams: number, reason: string | null, };
+beforeToken?: string | null, afterToken?: string | null, covered: boolean, };
 export type LedgerDaily = { country: number, instance: number, epoch: string, dayHour: number, readHour: number,
 /**
  * The native daily PP and CP tuples may reach different supplying reads.
  */
 ppReadHour?: number | null, cpReadHour?: number | null, ppGrossRaw: string | null, ppCostRaw: string | null, ppIncomeRaw: string | null, ppRealizedRaw: string | null, ppSequence: string | null, cpIncomeRaw: string | null, cpRealizedRaw: string | null, cpSequence: string | null, };
-export type LedgerDailyCost = { country: number, instance: number, epoch: string, dayHour: number, readHour: number, covered: boolean, ppSequence: string, ordinal: number, component: string, amountRaw: string, cause: string, item: LedgerItem, };
-export type LedgerBalanceChange = { countryId?: number, hour: number, readHour: number, currency: string, amountRaw: string | null, realizedDeltaRaw: string, action: string, covered: boolean, reason: string | null, };
+export type LedgerBalanceChange = { countryId?: number, hour: number, readHour: number, currency: string, };
 export type LedgerSpend = {
 /**
  * Recorded country link identity, also CountryRow.id.
@@ -2952,7 +2948,7 @@ export type LedgerCommandHolder = { id: string,
  * Recorded object domain, cause or writer site; never a guessed holder.
  */
 kind: string, name: string | null, amountRaw: string | null, };
-export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, mutations?: Array<LedgerMutation>, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, dailyCosts?: Array<LedgerDailyCost>, coverage?: Array<LedgerCoverage>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, recurring?: Array<LedgerRecurringSpend>, gains?: Array<LedgerGain>, recurringDays?: Array<LedgerMonthDays>, partSummaries?: Array<LedgerPartSummary>, governmentMarks?: MarkSummary, };
+export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, recurring?: Array<LedgerRecurringSpend>, gains?: Array<LedgerGain>, recurringDays?: Array<LedgerMonthDays>, partSummaries?: Array<LedgerPartSummary>, governmentMarks?: MarkSummary, };
 export type LedgerRecurringSpend = { spend: LedgerSpend, firstHour: number, lastHour: number, days: number, count: number, knownRaw: string, knownCount: number, };
 export type LedgerGain = { currency: string, gainedRaw: string, lostRaw: string, complete: boolean, };
 export type LedgerMonthDays = { currency: string, category: string, month: number | null, days: number, };

@@ -54,7 +54,7 @@ import { MEASURE_OPTIONS, POWER_BREAKDOWNS } from './options';
 import PowerDrill from './PowerDrill';
 import { powerCountrySegments } from './powerDrillData';
 import { choosePowerActor, pickPowerActor, powerActorDrillAction } from './powerActorPick';
-import { powerLedgerModelKey, powerMaximaModel } from './powerPickModel';
+import { powerMaximaModel } from './powerPickModel';
 import type { PowerActorPick } from './powerActorPick';
 import type { PowerBreakdown } from './powerDrillData';
 import { drawPreparedCoverage } from '../../charts/draw';
@@ -180,21 +180,18 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
     ? clockHour + (track?.axisOffset ?? 0) : localHour ?? window?.lastHour ?? lastHour
     : drillHour(drill, track ? Math.floor(clockHour) + track.axisOffset : null) ?? window?.lastHour ?? lastHour));
   const ledgerRequests = track ? requestedTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'politics-ledger', params: runtime.client.preparedQuery ? { branchId: track.branch.id, tag, view: 'balance',
-      from: Math.floor(ledgerAt / 24) * 24, hour: ledgerAt } : { branchId: track.branch.id, tag, view: 'balance' } })) : [];
+    product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'balance',
+      from: Math.floor(ledgerAt / 24) * 24, hour: ledgerAt } })) : [];
   const ledger = useFollowedProducts<PoliticsLedgerReply>(runtime.client, ledgerRequests, ['from', 'hour'], active && reachedDetails, validatePowerBalance);
   const currency = config.measure === 'politicalPower' ? 'Political' : 'Command';
   const details = useMemo(() => new Map((ledger.data ?? []).map(reply => [reply.tag, powerBalanceIndex(reply, currency)])), [ledger.data, currency]);
   // The day and hour the shown ledgers answer; a ledger kept while the next day loads answers only its own.
-  const ledgerAnswer = ledger.requests?.[0]?.params as { from?: number; hour?: number } | undefined;
-  const detailsAnswer = (hour: number) => ledgerAnswer?.from === undefined || ledgerAnswer.hour === undefined
+  const ledgerAnswer = ledger.requests?.[0]?.params as { from: number; hour: number } | undefined;
+  const detailsAnswer = (hour: number) => !ledgerAnswer
     || Math.floor(hour / 24) * 24 === ledgerAnswer.from && Math.floor(hour) <= ledgerAnswer.hour;
-  const ledgerModel = useMemo(() => ledger.data ? JSON.stringify(ledger.data.map(powerLedgerModelKey)) : undefined, [ledger.data]);
-  const heldDetails = useRef<{ owner: typeof captureOwner; model?: string; indexes: typeof details }>({ owner: captureOwner, indexes: details });
-  if (heldDetails.current.owner !== captureOwner) heldDetails.current = { owner: captureOwner, indexes: details };
-  if (ledger.data) heldDetails.current = { owner: captureOwner, model: ledgerModel, indexes: details };
+  const heldDetails = useRef<{ owner: typeof captureOwner; indexes: typeof details }>({ owner: captureOwner, indexes: details });
+  if (heldDetails.current.owner !== captureOwner || ledger.data) heldDetails.current = { owner: captureOwner, indexes: details };
   const numericDetails = heldDetails.current.indexes;
-  const numericLedgerModel = heldDetails.current.model;
   // Content refreshes retain recorded geometry while its labels load again.
   // The maximum comes from the recorded inputs; it never holds up the balance lines.
   const ceilingRequest = showCeiling && track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-stability',
@@ -216,9 +213,8 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const maximaKey = maxima?.key;
   const maximaByTag = useMemo(() => new Map((maxima?.series ?? []).map(item => [item.tag, item])), [maxima]);
   const balanceOwner = prepared.enabled ? prepared.owner : data;
-  const ledgerOwner = runtime.client.preparedQuery ? captureOwner : numericLedgerModel;
-  const pickOwner = useMemo(() => ({ owner: captureOwner, membership: membershipKey, balances: balanceOwner, maxima: maximaKey, ledger: ledgerOwner, showCeiling }),
-    [captureOwner, membershipKey, balanceOwner, maximaKey, ledgerOwner, showCeiling]);
+  const pickOwner = useMemo(() => ({ owner: captureOwner, membership: membershipKey, balances: balanceOwner, maxima: maximaKey, showCeiling }),
+    [captureOwner, membershipKey, balanceOwner, maximaKey, showCeiling]);
 
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';

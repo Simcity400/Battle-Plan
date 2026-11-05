@@ -45,11 +45,10 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   const from = widget.time.mode === 'range' ? window?.firstHour : undefined;
   const hour = choices ? track?.branch.lastHour : window?.lastHour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
-  const prepared = !!runtime.client.preparedQuery;
   const hours = totals && !choices && end !== hour ? [hour, end] : [hour];
   const requests = track && hour != null ? hours.flatMap(hour => tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'politics-ledger', params: prepared ? { branchId: track.branch.id, tag, view: 'spending', from, hour, totals,
-      within: selection.membership?.get(tag) } : { branchId: track.branch.id, tag, view: 'balance' } }))) : [];
+    product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'spending', from, hour, totals,
+      within: selection.membership?.get(tag) } }))) : [];
   // The last hour's ledgers stay shown while playback's newest hour is read.
   const ledger = useFollowedProducts<PoliticsLedgerReply>(runtime.client, requests, ['hour'], active, validatePowerBalance);
   // Stable while the replies are: row motion commits a new history for every new array.
@@ -59,7 +58,7 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   // The hour the shown ledgers answer, which ledgers kept while the next hour loads hold.
   const shownHour = (ledger.requests?.[0]?.params as { hour?: number } | undefined)?.hour ?? hour;
   return { track, tags, ...ledger, data, finalData, shownHour,
-    prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason, known: match.known,
+    selection, ready: match.ready, reason: resolved.reason ?? match.reason, known: match.known,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: ledger.error ?? (groups.data ? undefined : groups.error),
     groupError: groups.data ? groups.error : undefined,

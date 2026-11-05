@@ -699,7 +699,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["politics-ledger"],
         // 2: facts on the segment driver, published as a series root.
         // 3: stored names and icon choices: is_country_leader is now evaluated.
-        version: 3,
+        // 4: rows, items and holds stored as replies show them; presence by tag.
+        // 5: only what widget replies read is stored: no capture coverage, revisions or zero costs.
+        version: 5,
         ..family("politics_ledger")
     },
     Descriptor {

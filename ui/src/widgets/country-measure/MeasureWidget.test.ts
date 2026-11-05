@@ -204,6 +204,9 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     assert.equal(state.drillHost!.title, 'Daily income and costs', 'a closed breakdown keeps its neutral name even when group facts already identify its actor');
     assert.deepEqual(state.wanted, [{ tag: actor, hour: 21 }], 'a closed breakdown adds no displayed-day country demand beside the existing hover');
     assert.equal(state.portals.length, 0, 'one current balance stays in its chart/legend without a duplicate header pill');
+    // Details answer only the hovered day's ledger.
+    chart().tooltip!(100, undefined!, []);
+    await Promise.resolve(); render();
     const ownerA = chart().pickOwner;
     assert.ok(chart().keyHours!.includes(97));
     assert.equal(rows().find(row => row.label === daily)?.value, '+3.00');
