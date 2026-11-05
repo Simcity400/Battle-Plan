@@ -211,6 +211,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         recording,
         Some(&["identities"][..]),
         1,
+        false,
         &flag,
     )
     .unwrap();

@@ -95,6 +95,8 @@ pub struct Budget {
 #[derive(Default)]
 struct Queue {
     held: usize,
+    /// The most `held` reached.
+    peak: usize,
     walkers: usize,
     /// The tickets of the walkers waiting, oldest first.
     waiting: VecDeque<u64>,
@@ -105,6 +107,13 @@ struct Queue {
 pub(super) struct Permit {
     budget: Arc<Budget>,
     bytes: usize,
+}
+
+impl Queue {
+    fn hold(&mut self, held: usize) {
+        self.held = held;
+        self.peak = self.peak.max(held);
+    }
 }
 
 impl Budget {
@@ -118,6 +127,11 @@ impl Budget {
 
     fn lock(&self) -> MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The most its walkers held at once.
+    pub fn peak(&self) -> usize {
+        self.lock().peak
     }
 
     /// `bytes` of the budget, once every walker that asked before has its share and they
@@ -148,7 +162,8 @@ impl Budget {
                     .is_some_and(|held| held <= self.limit);
             if fits && queue.waiting.front() == Some(&ticket) {
                 queue.waiting.pop_front();
-                queue.held += bytes;
+                let held = queue.held + bytes;
+                queue.hold(held);
                 queue.walkers += 1;
                 self.changed.notify_all();
                 return Ok(Permit {
@@ -175,7 +190,8 @@ impl Budget {
         if !fits || !queue.waiting.is_empty() {
             return None;
         }
-        queue.held += bytes;
+        let held = queue.held + bytes;
+        queue.hold(held);
         queue.walkers += 1;
         Some(Permit {
             budget: self.clone(),
@@ -226,7 +242,7 @@ impl Permit {
         if !fits || !queue.waiting.is_empty() {
             return false;
         }
-        queue.held = others + bytes;
+        queue.hold(others + bytes);
         self.bytes = bytes;
         true
     }

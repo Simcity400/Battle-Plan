@@ -35,7 +35,7 @@ pub fn prepare(
     // The index first: the viewer serves the map from it while the families prepare. Native
     // recordings refused for it are the campaign map's refusal alone, named in its status, from
     // the first progress the families report on.
-    let refused = change_runs::prepare(source, cancelled)?;
+    let refused = change_runs::prepare(source, cancelled)?.refused;
     let mut forward = |done: &Accepted| match &refused {
         Some(reason) => {
             let mut done = done.clone();

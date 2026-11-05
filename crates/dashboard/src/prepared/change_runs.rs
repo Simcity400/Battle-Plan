@@ -10,7 +10,7 @@ use replay::{
     columnar_frames::{Limits, Recording},
     columnar_runs::{self, IndexFile, Layout},
     container::Replay,
-    segments::Settings,
+    segments::{self, Settings},
 };
 use replay_data::rows::TableId;
 use std::{
@@ -246,7 +246,7 @@ pub(crate) fn publish(
 /// recordings that do not hold its ended sessions' hours whole, none among them, are refused:
 /// any index there is removed, the reason is kept in its place until they change
 /// ([`outcome`]), and returned.
-pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Option<String>> {
+pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Prepared> {
     let (target, refused) = (path(source)?, refusal_path(source)?);
     fs::create_dir_all(folder(source)?)?;
     let mut whole = match natives(source)? {
@@ -258,7 +258,10 @@ pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Option<Str
                     Ok(file)
                 })?;
             }
-            return Ok(Some(reason));
+            return Ok(Prepared {
+                refused: Some(reason),
+                runs: Vec::new(),
+            });
         }
         Ok(whole) => whole,
     };
@@ -266,14 +269,15 @@ pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Option<Str
     if IndexFile::summary_of(&target)
         .is_ok_and(|summary| summary.indexes(&whole.recordings, &whole.pending, tables()))
     {
-        return Ok(None);
+        return Ok(Prepared::default());
     }
     for recording in &mut whole.recordings {
         recording.select(tables());
     }
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut runs = Vec::new();
     publish(&target, |file| {
-        let (out, _) = columnar_runs::prepare(
+        let (out, stats) = columnar_runs::prepare(
             &whole,
             tables(),
             Layout::RECORDING,
@@ -282,6 +286,7 @@ pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Option<Str
             cancelled,
             BufWriter::new(file),
         )?;
+        runs = stats;
         out.into_inner().map_err(io::IntoInnerError::into_error)
     })
     .map_err(|error| {
@@ -290,5 +295,17 @@ pub fn prepare(source: &Source, cancelled: &AtomicBool) -> io::Result<Option<Str
             format!("The change-run index could not be prepared: {error}"),
         )
     })?;
-    Ok(None)
+    Ok(Prepared {
+        refused: None,
+        runs,
+    })
+}
+
+/// What an index preparation did ([`prepare`]).
+#[derive(Debug, Default)]
+pub struct Prepared {
+    /// Why the native recordings were refused, when they were.
+    pub refused: Option<String>,
+    /// Each recording's run, when the index was prepared.
+    pub runs: Vec<segments::Stats>,
 }

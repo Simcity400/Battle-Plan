@@ -58,6 +58,9 @@ pub struct Run {
     pub derived: usize,
     pub measured: usize,
     pub rewalked: usize,
+    /// The walkers' buffers held at once, and the most one walk charged its tables.
+    pub walker_bytes_held: usize,
+    pub walk_table_bytes_held: usize,
 }
 
 impl From<replay::segments::Stats> for Run {
@@ -77,6 +80,8 @@ impl From<replay::segments::Stats> for Run {
             derived: stats.derived,
             measured: stats.measured,
             rewalked: stats.rewalked,
+            walker_bytes_held: stats.walker_bytes,
+            walk_table_bytes_held: stats.table_bytes,
         }
     }
 }
@@ -92,6 +97,8 @@ pub struct Ahead {
     pub walk_us_per_hour: f64,
     pub world_us_per_hour: f64,
     pub run: Run,
+    /// The most each segment's walks charged their tables, by segment.
+    pub walk_table_bytes: Vec<usize>,
 }
 
 /// A measured native preparation.
@@ -100,6 +107,9 @@ pub struct Measured {
     pub hours: u64,
     pub segments: usize,
     pub threads: usize,
+    /// Its runs walked for lanes doing no family's work: what they cost is the floor under
+    /// the families' ([`super::Floor`]).
+    pub walk_only: bool,
     /// What the measurement leaves out of the whole preparation.
     pub excludes: &'static [&'static str],
     /// The families' preparation: opening, content, the run and its commits.
@@ -113,18 +123,22 @@ pub struct Measured {
     pub run_wall_seconds: f64,
     pub run_cpu_us_per_hour: f64,
     /// The walks' decode and apply of the selected tables, shared by every lane: the run's CPU
-    /// less the families' and the worlds'.
+    /// less the families' and the worlds'. Below zero, those count more than the run spent.
     pub walk_us_per_hour: f64,
     pub world_us_per_hour: f64,
     pub families: BTreeMap<&'static str, Phases>,
     /// What families counted over the run, by family and name, for those that count.
     pub counts: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+    /// The most each family projected in one walk of a segment, as its run estimates it.
+    pub largest_output_bytes: BTreeMap<&'static str, usize>,
     /// The slowest family's serial lane.
     pub serial_us_per_hour: f64,
     pub peak_working_set_bytes: usize,
     pub peak_commit_bytes: usize,
     pub resident: Resident,
     pub run: Run,
+    /// The most each segment's walks charged their tables, by segment.
+    pub walk_table_bytes: Vec<usize>,
     /// Fifty years of the families' preparation at both runs' wall time per hour, less what it
     /// excludes ([`Self::excludes`]).
     pub fifty_years_seconds: f64,
@@ -141,8 +155,11 @@ pub struct Resident {
     /// Projected items at most, as the executor's credits count them, and parked operators.
     pub output_bytes: usize,
     pub carry_bytes: usize,
-    /// The walkers' buffers' budget, which their shares never pass.
+    /// The walkers' buffers' budget, which their shares never pass, and the most they held.
     pub walker_budget_bytes: usize,
+    pub walker_held_bytes: usize,
+    /// The most one walk charged its tables.
+    pub walk_table_bytes: usize,
     /// The working set as the run ended, its families' states still held, less at its start.
     pub run_end_bytes: usize,
 }
@@ -192,6 +209,7 @@ pub(crate) struct Narrow {
     pub lap: Lap,
     pub world: u64,
     pub stats: replay::segments::Stats,
+    pub tables: Vec<usize>,
     pub families: Vec<&'static str>,
 }
 
@@ -200,13 +218,16 @@ pub(crate) struct Counted<'a> {
     pub hours: u64,
     pub segments: usize,
     pub threads: usize,
+    pub walk_only: bool,
     pub whole: Lap,
     pub content: Lap,
     pub run: Lap,
     pub world: u64,
     pub families: &'a [(&'static str, Spent)],
     pub counts: &'a [(&'static str, Vec<(&'static str, u64)>)],
+    pub largest: &'a [(&'static str, Option<usize>)],
     pub stats: replay::segments::Stats,
+    pub tables: Vec<usize>,
     /// The working set as the preparation began, after content loaded, and as the run ended.
     pub working: [usize; 3],
     pub walker_budget: usize,
@@ -248,18 +269,31 @@ impl Measured {
             .ahead
             .as_ref()
             .map_or(0.0, |narrow| narrow.lap.seconds);
+        let narrow_stats = counted.ahead.as_ref().map(|narrow| narrow.stats);
+        let held = |of: fn(&replay::segments::Stats) -> usize| {
+            narrow_stats
+                .iter()
+                .chain([&counted.stats])
+                .map(of)
+                .max()
+                .unwrap_or(0)
+        };
+        let walker_held = held(|stats| stats.walker_bytes);
+        let table_held = held(|stats| stats.table_bytes);
         let narrow = counted.ahead.map(|narrow| Ahead {
             families: narrow.families,
             wall_seconds: narrow.lap.seconds,
             cpu_us_per_hour: cpu(narrow.lap),
-            walk_us_per_hour: (cpu(narrow.lap) - us(ahead) - us(narrow.world)).max(0.0),
+            walk_us_per_hour: cpu(narrow.lap) - us(ahead) - us(narrow.world),
             world_us_per_hour: us(narrow.world),
             run: narrow.stats.into(),
+            walk_table_bytes: narrow.tables,
         });
         Ok(Self {
             hours: counted.hours,
             segments: counted.segments,
             threads: counted.threads,
+            walk_only: counted.walk_only,
             excludes: &["the change-run index, prepared before the families"],
             wall_seconds: counted.whole.seconds,
             cpu_us_per_hour: cpu(counted.whole),
@@ -267,7 +301,7 @@ impl Measured {
             ahead: narrow,
             run_wall_seconds: counted.run.seconds,
             run_cpu_us_per_hour: cpu(counted.run),
-            walk_us_per_hour: (cpu(counted.run) - us(spent) - us(counted.world)).max(0.0),
+            walk_us_per_hour: cpu(counted.run) - us(spent) - us(counted.world),
             world_us_per_hour: us(counted.world),
             families,
             counts: counted
@@ -275,6 +309,11 @@ impl Measured {
                 .iter()
                 .filter(|(_, counts)| !counts.is_empty())
                 .map(|(name, counts)| (*name, counts.iter().copied().collect()))
+                .collect(),
+            largest_output_bytes: counted
+                .largest
+                .iter()
+                .filter_map(|&(name, largest)| Some((name, largest?)))
                 .collect(),
             serial_us_per_hour: serial,
             peak_working_set_bytes: working,
@@ -285,9 +324,12 @@ impl Measured {
                 output_bytes: counted.stats.output_bytes,
                 carry_bytes: counted.stats.carry_bytes,
                 walker_budget_bytes: counted.walker_budget,
+                walker_held_bytes: walker_held,
+                walk_table_bytes: table_held,
                 run_end_bytes: counted.working[2].saturating_sub(counted.working[0]),
             },
             run: counted.stats.into(),
+            walk_table_bytes: counted.tables,
             fifty_years_seconds: (counted.run.seconds + narrow_seconds) / hours * FIFTY_YEARS,
             goal: GOAL,
         })
@@ -341,7 +383,7 @@ pub(crate) fn cycles() -> u64 {
 }
 
 /// The process's peak working set and peak commit so far, in bytes.
-fn peaks() -> io::Result<(usize, usize)> {
+pub fn peaks() -> io::Result<(usize, usize)> {
     counters().map(|counters| (counters.peak_working, counters.peak_pagefile))
 }
 

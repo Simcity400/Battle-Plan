@@ -179,7 +179,7 @@ fn native_recordings_that_cannot_be_indexed_whole_are_refused_by_name() {
     let (source, root) = file_source(replay(CAMPAIGN));
     let stop = AtomicBool::new(false);
     let target = path(&source).unwrap();
-    assert_eq!(prepare(&source, &stop).unwrap(), None);
+    assert_eq!(prepare(&source, &stop).unwrap().refused, None);
     let summary = IndexFile::summary_of(&target).unwrap();
     assert!(summary.natives.is_empty() && summary.runs.is_empty());
     assert_eq!(summary.pending, [encoded(&source.replay().sessions[0])]);
@@ -189,7 +189,7 @@ fn native_recordings_that_cannot_be_indexed_whole_are_refused_by_name() {
     let native = columnar_file::campaign_folder(&root, CAMPAIGN).join("session-1.0.h4col");
     fs::create_dir_all(native.parent().unwrap()).unwrap();
     fs::write(&native, [0_u8; 4_096]).unwrap();
-    let reason = prepare(&source, &stop).unwrap().unwrap();
+    let reason = prepare(&source, &stop).unwrap().refused.unwrap();
     assert!(reason.contains("session-1.0.h4col"), "{reason}");
     assert!(!target.exists());
     assert_eq!(outcome(&source).unwrap(), Outcome::Refused(reason));
@@ -207,7 +207,7 @@ fn an_ended_session_with_no_native_recording_is_refused_by_name() {
     let target = path(&source).unwrap();
     fs::create_dir_all(target.parent().unwrap()).unwrap();
     fs::write(&target, b"an index of a native recording since gone").unwrap();
-    let reason = prepare(&source, &stop).unwrap().unwrap();
+    let reason = prepare(&source, &stop).unwrap().refused.unwrap();
     assert!(reason.contains("session 1"), "{reason}");
     assert!(!target.exists());
     let Err(refused) = natives(&source).unwrap() else {
@@ -225,7 +225,7 @@ fn an_ended_session_with_no_native_recording_is_refused_by_name() {
 fn clearing_a_preparation_removes_its_index_its_refusal_and_part_written_files() {
     let stop = AtomicBool::new(false);
     let (source, root) = file_source(replay(CAMPAIGN));
-    assert_eq!(prepare(&source, &stop).unwrap(), None);
+    assert_eq!(prepare(&source, &stop).unwrap().refused, None);
     let held = folder(&source).unwrap();
     assert!(path(&source).unwrap().exists());
     fs::write(held.join("index.h4runs.1-0.partial"), b"part written").unwrap();
@@ -233,7 +233,7 @@ fn clearing_a_preparation_removes_its_index_its_refusal_and_part_written_files()
     assert!(!held.exists());
     assert_eq!(outcome(&source).unwrap(), Outcome::Stale);
     let (ended, ended_root) = file_source(recorded(CAMPAIGN, true));
-    assert!(prepare(&ended, &stop).unwrap().is_some());
+    assert!(prepare(&ended, &stop).unwrap().refused.is_some());
     let held = folder(&ended).unwrap();
     assert!(held.join("refused.txt").exists());
     crate::prepared::clear(&ended, None, &stop).unwrap();
@@ -367,7 +367,7 @@ fn a_native_capture_holding_what_products_read_is_served_from_its_index() {
     recorded.record(&replay, &[(1, 0, 1)], &streams, write_left);
     let source = recorded.source("native");
     let stop = AtomicBool::new(false);
-    assert_eq!(prepare(&source, &stop).unwrap(), None);
+    assert_eq!(prepare(&source, &stop).unwrap().refused, None);
     assert_eq!(outcome(&source).unwrap(), Outcome::Indexed);
     let mut served = Vec::new();
     for key in ["faction-state", "minefields"] {

@@ -18,7 +18,7 @@ use dashboard_base::prepared::{
     priority::{JobPriority, Level},
     roots::{self, Published},
 };
-use dashboard_world::{Needs, World};
+use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::{Recording, Segment},
     segments::{
@@ -27,6 +27,7 @@ use replay::{
     },
 };
 use replay_data::rows::TableId;
+use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
     io,
@@ -169,18 +170,18 @@ impl segments::World for Walked<'_> {
         if !self.walking.measuring {
             return self.world.hour(state, manifest);
         }
-        let started = replay_frame::cpu::stamp();
+        let started = cycles();
         let advanced = self.world.hour(state, manifest);
-        self.walking.world.fetch_add(
-            replay_frame::cpu::stamp().wrapping_sub(started),
-            Ordering::Relaxed,
-        );
+        self.walking
+            .world
+            .fetch_add(cycles().saturating_sub(started), Ordering::Relaxed);
         advanced
     }
 }
 
 /// A family's operator in a run: it reads the walk's world, and while the run is measured its
-/// cycles count into `total`, less those its pushes into the run took.
+/// thread's cycles count into `total`, less those its pushes into the run took. The cycle
+/// counter's span would also count time its thread was preempted or paging.
 struct Timed<'a, O> {
     operator: O,
     spent: u64,
@@ -192,9 +193,9 @@ impl<O> Timed<'_, O> {
         if self.total.is_none() {
             return work(&mut self.operator);
         }
-        let started = replay_frame::cpu::stamp();
+        let started = cycles();
         let done = work(&mut self.operator);
-        self.spent += replay_frame::cpu::stamp().wrapping_sub(started);
+        self.spent += cycles().saturating_sub(started);
         done
     }
 }
@@ -215,9 +216,9 @@ struct Pushing<'s, S: ?Sized> {
 
 impl<T, S: Sink<T> + ?Sized> Sink<T> for Pushing<'_, S> {
     fn push(&mut self, item: T) -> io::Result<()> {
-        let started = replay_frame::cpu::stamp();
+        let started = cycles();
         let pushed = self.sink.push(item);
-        self.spent += replay_frame::cpu::stamp().wrapping_sub(started);
+        self.spent += cycles().saturating_sub(started);
         pushed
     }
 }
@@ -304,7 +305,7 @@ pub(crate) struct Spent {
 pub(crate) trait Member: Send {
     fn id(&self) -> FamilyId;
 
-    fn tables(&self) -> &'static [TableId];
+    fn tables(&self) -> &[TableId];
 
     fn needs(&self) -> io::Result<Needs>;
 
@@ -413,7 +414,7 @@ impl<'p, N: Native> Member for Bound<'p, '_, N> {
         self.id
     }
 
-    fn tables(&self) -> &'static [TableId] {
+    fn tables(&self) -> &[TableId] {
         self.native.tables()
     }
 
@@ -472,6 +473,128 @@ impl<'p, N: Native> Member for Bound<'p, '_, N> {
 
     fn counts(&self) -> Vec<(&'static str, u64)> {
         self.native.counts()
+    }
+}
+
+/// A lane in the place of families that does none of their work: it reads their tables and what
+/// they read of the world, so its run decodes, applies and advances what theirs would. It walks
+/// every branch, as they do in a store holding none of their publications.
+pub(crate) struct Floor {
+    id: FamilyId,
+    tables: Vec<TableId>,
+    needs: Needs,
+    idle: bool,
+}
+
+/// A floor's operator: it takes every frame hold its families declared each hour and gives it
+/// back, as their operators do. Unasked, the world's lazy views would note no edits.
+struct Nothing<'f> {
+    asks: &'f [(TableId, Hold)],
+    frame: DecodedFrame,
+}
+
+impl<'a> Operator<Walked<'a>> for Nothing<'_> {
+    type Output = ();
+
+    fn hour(&mut self, hour: &Hour<'_, Walked<'a>>, _: &mut dyn Sink<()>) -> io::Result<()> {
+        if self.asks.is_empty() {
+            return Ok(());
+        }
+        hour.world
+            .world
+            .frame_held_into(hour.state, self.asks, &mut self.frame)?;
+        dashboard_world::release(&mut self.frame, self.asks);
+        Ok(())
+    }
+}
+
+impl Floor {
+    /// The floors of `members`, of the first `ahead` and of the rest apart, each reading for
+    /// those of its members with something to do on `shape`, and named by its first.
+    pub(crate) fn over<'m>(
+        members: &[Box<dyn Member + '_>],
+        ahead: usize,
+        shape: &Shape,
+    ) -> io::Result<Vec<Box<dyn Member + 'm>>> {
+        let (narrow, union) = members.split_at(ahead);
+        let mut floors: Vec<Box<dyn Member + 'm>> = Vec::new();
+        for group in [narrow, union] {
+            let Some(first) = group.first() else {
+                continue;
+            };
+            let working: Vec<&dyn Member> = group
+                .iter()
+                .map(|member| &**member as &dyn Member)
+                .filter(|member| !member.idle(shape))
+                .collect();
+            let mut needs = Vec::with_capacity(working.len());
+            for member in &working {
+                needs.push(member.needs()?);
+            }
+            floors.push(Box::new(Floor {
+                id: first.id(),
+                tables: super::decoded(
+                    working
+                        .iter()
+                        .flat_map(|member| member.tables().iter().copied()),
+                ),
+                needs: Needs::union(&needs),
+                idle: working.is_empty(),
+            }));
+        }
+        Ok(floors)
+    }
+}
+
+impl Member for Floor {
+    fn id(&self) -> FamilyId {
+        self.id
+    }
+
+    fn tables(&self) -> &[TableId] {
+        &self.tables
+    }
+
+    fn needs(&self) -> io::Result<Needs> {
+        Ok(self.needs.clone())
+    }
+
+    fn idle(&self, _: &Shape) -> bool {
+        self.idle
+    }
+
+    fn lane<'a>(&'a mut self, walking: &'a Walking<'a>) -> Lane<'a, Walked<'a>> {
+        let this: &'a Floor = self;
+        let asks: &'a [(TableId, Hold)] = &this.needs.frame;
+        Lane::new(
+            "walk only",
+            move |_: &Segment| {
+                walking.job.clone().enter(Level::Normal);
+                Ok(Nothing {
+                    asks,
+                    frame: DecodedFrame {
+                        branch: 0,
+                        hour: 0,
+                        tables: std::array::from_fn(|_| not_selected()),
+                        metrics: Metrics::default(),
+                    },
+                })
+            },
+            |_: Chunk<'_, ()>| Ok(()),
+        )
+        .reads(&this.tables)
+    }
+
+    fn settle(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn spent(&self) -> Spent {
+        Spent::default()
+    }
+
+    fn counts(&self) -> Vec<(&'static str, u64)> {
+        Vec::new()
     }
 }
 

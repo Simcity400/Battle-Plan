@@ -59,7 +59,7 @@ fn prepared(later: &[u8]) -> (io::Result<()>, bool) {
     let replay = Replay::from_records(CAMPAIGN.to_vec(), &[records(1, frames)]).unwrap();
     let (source, root) = file_source(replay);
     let cancelled = AtomicBool::new(false);
-    let made = measure(&source, None, native(later), Some(&[][..]), 1, &cancelled).map(drop);
+    let made = measure(&source, None, native(later), Some(&[][..]), 1, false, &cancelled).map(drop);
     let (store, _) = crate::prepared::files(&source, None).unwrap();
     let published = status::held(&store).unwrap().is_some();
     let _ = store.clear();

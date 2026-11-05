@@ -341,6 +341,8 @@ pub struct Outcome {
     /// ended or it failed. Short of every segment only when the run was cancelled: the rest
     /// are pending.
     pub settled: usize,
+    /// The most it projected in one walk of a segment, as the run estimates its walks' need.
+    pub largest_output: Option<usize>,
 }
 
 /// What a run did, and what became of each family, in the order of their lanes.
@@ -348,6 +350,8 @@ pub struct Outcome {
 pub struct Ran {
     pub stats: Stats,
     pub outcomes: Vec<Outcome>,
+    /// The most each segment's walks charged their tables, by segment.
+    pub tables: Vec<usize>,
     /// Cancellation stopped it.
     pub cancelled: bool,
 }
@@ -622,6 +626,10 @@ pub struct Stats {
     pub measured: usize,
     /// Walks of a segment begun again for its other families after one panicked.
     pub rewalked: usize,
+    /// The walkers' buffers held at once.
+    pub walker_bytes: usize,
+    /// The most one walk's tables were charged at once.
+    pub table_bytes: usize,
 }
 
 /// Stops the runs it is handed, from any thread, waking each wait they are in.
@@ -1190,6 +1198,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     /// Measures what walking segment `at` reads, from the segment its walk begins at: of that
     /// one's restart, and of each segment's own pages from there, what is not measured yet.
     fn measure(&self, walker: &mut Walker<'_>, at: usize) -> io::Result<()> {
+        let _span = replay_frame::timeline::span("measure").at(at);
         let (from, restart, pages) = self.signal.lock().unmeasured(at)?;
         let restart = if restart {
             Some(walker.measure_restart(&self.segments[from])?)
@@ -1208,6 +1217,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
     /// Hands segment `at`'s items to `lane`'s emit, reading its spilled chunk back into
     /// `restore`: the emit's refusal ends its branch, its other failures end its family.
     fn emit(&self, lane: usize, at: usize, restore: Option<Taken<'_>>) -> io::Result<()> {
+        let _span = replay_frame::timeline::span("emit")
+            .at(at)
+            .lane(self.erased(lane).name());
         let emitted = self
             .erased(lane)
             .emit(at, &self.segments[at], &self.shared, restore);
@@ -1785,15 +1797,37 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         }
     }
 
-    /// Walks `job`'s segment through its families' operators, files what they projected,
-    /// with why a family's walk ended short, and hands on or parks the operators that cannot
-    /// start the segment after in their branch: the walk it goes on into, when that segment
-    /// may start now.
+    /// [`Self::walk_segment`], recording the most the walk charged its tables however it ends.
     fn segment<'c>(
         &'c self,
         walker: &mut Walker<'_>,
         state: &mut State,
         job: Job<'r, 'c, W>,
+    ) -> io::Result<Option<Job<'r, 'c, W>>> {
+        let at = job.at;
+        let mut span = replay_frame::timeline::span("walk").at(at);
+        // A cold walk begins by replacing the tables the walk before left.
+        if !job.hot {
+            state.forget_charge_peak();
+        }
+        let mut charged = 0;
+        let next = self.walk_segment(walker, state, job, &mut charged);
+        charged = charged.max(state.take_charge_peak());
+        span.bytes(charged);
+        self.signal.lock().charged(at, charged);
+        next
+    }
+
+    /// Walks `job`'s segment through its families' operators, files what they projected,
+    /// with why a family's walk ended short, and hands on or parks the operators that cannot
+    /// start the segment after in their branch: the walk it goes on into, when that segment
+    /// may start now. `charged` takes the peak of each state it rebuilds.
+    fn walk_segment<'c>(
+        &'c self,
+        walker: &mut Walker<'_>,
+        state: &mut State,
+        job: Job<'r, 'c, W>,
+        charged: &mut usize,
     ) -> io::Result<Option<Job<'r, 'c, W>>> {
         let Job {
             at,
@@ -2193,6 +2227,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     // What unwound with the panic is not used again: the walker starts afresh
                     // with the share it holds, and the tables are begun again.
                     walker.renew()?;
+                    *charged = (*charged).max(state.take_charge_peak());
                     *state = State::new(schema()?)?;
                     rewalks += 1;
                     match self.begin(walker, state, at, from) {
@@ -2707,12 +2742,13 @@ pub fn run_in<W: World>(
             scope.spawn(|| run.work());
         }
     });
-    let (outcomes, mut stats) = {
+    let (outcomes, mut stats, tables) = {
         let mut schedule = signal.lock();
         if let Some(error) = schedule.failure.take() {
             return Err(error);
         }
-        (schedule.outcomes(), schedule.stats)
+        let tables = std::mem::take(&mut schedule.tables);
+        (schedule.outcomes(), schedule.stats, tables)
     };
     let cancelled = signal.cancelled.load(Ordering::SeqCst);
     if !cancelled {
@@ -2724,11 +2760,13 @@ pub fn run_in<W: World>(
         );
     }
     stats.output_bytes = run.shared.credit.peak();
+    stats.walker_bytes = run.budget.peak();
     stats.chunks_spilled = run.shared.chunks_spilled.load(Ordering::SeqCst);
     run.store.count(&mut stats);
     Ok(Ran {
         stats,
         outcomes,
+        tables,
         cancelled,
     })
 }

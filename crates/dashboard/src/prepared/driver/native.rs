@@ -31,7 +31,7 @@ pub(super) mod status;
 #[cfg(test)]
 mod tests;
 
-pub use measure::{GOAL, Goal, Measured, Phases, Run};
+pub use measure::{GOAL, Goal, Measured, Phases, Run, peaks};
 
 use super::{
     plan,
@@ -43,7 +43,7 @@ use crate::{
     config::{ContentOptions, LoadContext},
     prepared::pipeline::Accepted,
 };
-use backend::{Going, Member, Taken, Walked, Walking};
+use backend::{Floor, Going, Member, Taken, Walked, Walking};
 use content::Content;
 use dashboard_base::prepared::{
     gates,
@@ -153,6 +153,8 @@ struct Options<'a> {
     /// The run's workers: the process's parallelism when None.
     threads: Option<usize>,
     measure: bool,
+    /// Each run walks for one lane doing no family's work ([`Floor`]).
+    walk_only: bool,
 }
 
 /// Prepares `source` from its native `recording`, reporting each commit to `accepted`. A recording
@@ -184,13 +186,15 @@ pub(crate) fn prepare(
 
 /// Prepares `source` from `recording`, its replay's native recording, as [`prepare`] does: of the
 /// families `families` names, or every one with a native backend, on `threads` workers, measured.
-/// A family that failed fails its status rows, which say why.
+/// A family that failed fails its status rows, which say why. `walk_only` walks the runs for
+/// their tables and worlds alone, preparing nothing ([`Floor`]).
 pub fn measure(
     source: &Source,
     content: Option<&ContentOptions>,
     recording: Recording,
     families: Option<&[&str]>,
     threads: usize,
+    walk_only: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<(Accepted, Measured)> {
     if !pairs(source, &recording)? {
@@ -203,6 +207,7 @@ pub fn measure(
         families,
         threads: Some(threads),
         measure: true,
+        walk_only,
     };
     let done = run(source, content, recording, &options, cancelled, &mut |_| {})?;
     let measured = done
@@ -383,11 +388,14 @@ fn run(
     let whole = Clock::start();
     let started_with = if options.measure { working_set()? } else { 0 };
     check_cancel(cancelled)?;
+    let span = replay_frame::timeline::span("campaign");
     campaign::check(&mut recording, source.replay_ref(), cancelled)?;
+    drop(span);
     // Families draw artwork on their ordered emits: the renderer is created apart, from the start.
     if content.is_some() {
         shader_pipeline::artwork::warm();
     }
+    let span = replay_frame::timeline::span("open");
     let plan = plan::native();
     let chosen = selected(options.families)?;
     let threads = options.threads.unwrap_or_else(parallelism).max(1);
@@ -399,6 +407,8 @@ fn run(
     let extents = dashboard_text::metadata::Extents::native(source.replay_ref(), &recording)?;
     let loading = Content::new(source, &context, extents);
     let caller = Caller::current();
+    drop(span);
+    let span = replay_frame::timeline::span("content");
     let started = Clock::start();
     let loaded = content::load_all(
         threads,
@@ -415,8 +425,10 @@ fn run(
             .collect(),
     );
     let content_lap = started.lap();
+    drop(span);
     let loaded_with = if options.measure { working_set()? } else { 0 };
     check_cancel(cancelled)?;
+    let span = replay_frame::timeline::span("publisher open");
     let held = status::held(&store)?;
     if held.is_none() && store.current()?.is_some() {
         // A publication no preparation marked: nothing of it is a family's.
@@ -439,6 +451,8 @@ fn run(
     if resume.replaced || held.as_deref() != Some(&mark[..]) {
         publisher.coordinate(|writer| status::coordinate(writer, plan, &shape, &mark))?;
     }
+    drop(span);
+    let span = replay_frame::timeline::span("bind");
     let mut failed = Failed::new();
     let mut staged = Vec::new();
     // Where each family goes on, for its lane to borrow.
@@ -493,7 +507,19 @@ fn run(
     // Those that failed before the run refuse at once: none of their queries waits on it. One
     // whose refusal could not be published yet is tried again after the run.
     refuse(&publisher, &shape, &recording, &mut failed)?;
-    let ahead = ahead_first(plan, &mut members);
+    let mut ahead = ahead_first(plan, &mut members);
+    let narrow: Vec<&'static str> = members[..ahead]
+        .iter()
+        .map(|member| member.id().name())
+        .collect();
+    // The families stay bound, publishing nothing, while their floors walk in their place.
+    let mut bound = Vec::new();
+    if options.walk_only {
+        let floors = Floor::over(&members, ahead, &shape)?;
+        ahead = usize::from(ahead > 0);
+        bound = std::mem::replace(&mut members, floors);
+    }
+    drop(span);
     let replay = source.replay_ref();
     let mut bytes = status::stored(&store)?;
     let report = |failed: &Failed, bytes: u64| {
@@ -550,20 +576,28 @@ fn run(
     };
     failed.append(&mut walked.failed);
     let ended_with = if options.measure { working_set()? } else { 0 };
-    let spent: Vec<(&'static str, backend::Spent)> = members
+    let worked = if options.walk_only { &[][..] } else { &members[..] };
+    let spent: Vec<(&'static str, backend::Spent)> = worked
         .iter()
         .map(|member| (member.id().name(), member.spent()))
         .collect();
-    let counts: Vec<(&'static str, Vec<(&'static str, u64)>)> = members
+    let counts: Vec<(&'static str, Vec<(&'static str, u64)>)> = worked
         .iter()
         .map(|member| (member.id().name(), member.counts()))
         .collect();
-    let narrow: Vec<&'static str> = members[..ahead]
+    let largest: Vec<(&'static str, Option<usize>)> = worked
         .iter()
-        .map(|member| member.id().name())
+        .zip(&walked.ran.outcomes)
+        .map(|(member, outcome)| {
+            let largest = outcome.as_ref().and_then(|outcome| outcome.largest_output);
+            (member.id().name(), largest)
+        })
         .collect();
     drop(members);
+    drop(bound);
+    let span = replay_frame::timeline::span("refuse");
     let unshown = refuse(&publisher, &shape, &recording, &mut failed)?;
+    drop(span);
     let done = report(&failed, status::stored(&store)?);
     let measured = options
         .measure
@@ -572,17 +606,21 @@ fn run(
                 hours: recording.hours(),
                 segments: shape.len(),
                 threads,
+                walk_only: options.walk_only,
                 whole: whole.lap(),
                 content: content_lap,
                 run: walked.lap,
                 world: walked.ran.world,
                 families: &spent,
                 counts: &counts,
+                largest: &largest,
                 stats: walked.ran.stats,
-                ahead: walked.ahead.map(|(stats, world, lap)| Narrow {
+                tables: walked.ran.tables,
+                ahead: walked.ahead.map(|(stats, world, lap, tables)| Narrow {
                     lap,
                     world,
                     stats,
+                    tables,
                     families: narrow,
                 }),
                 working: [started_with, loaded_with, ended_with],
@@ -757,6 +795,8 @@ pub(crate) struct Ran {
     pub outcomes: Vec<Option<Outcome>>,
     /// Cycles the walks' worlds took, when measured.
     pub world: u64,
+    /// The most each segment's walks charged their tables, by segment.
+    pub tables: Vec<usize>,
     pub cancelled: bool,
 }
 
@@ -780,8 +820,9 @@ pub(crate) struct Walks {
     pub ran: Ran,
     /// The union run's time.
     pub lap: Lap,
-    /// The narrow run's stats, world cycles and time, when it had something to do.
-    pub ahead: Option<(segments::Stats, u64, Lap)>,
+    /// The narrow run's stats, world cycles, time and tables by segment, when it had something
+    /// to do.
+    pub ahead: Option<(segments::Stats, u64, Lap, Vec<usize>)>,
     /// Each family that failed in its run, or committing its last batch, and why.
     pub failed: Failed,
 }
@@ -795,6 +836,7 @@ fn settle(
     failed: &mut Failed,
 ) -> io::Result<()> {
     for (member, outcome) in members.iter_mut().zip(outcomes) {
+        let _span = replay_frame::timeline::span("settle").lane(member.id().name());
         if let Some(failure) = outcome
             .as_ref()
             .and_then(|outcome| outcome.failure.as_ref())
@@ -871,6 +913,7 @@ pub(crate) fn walk_all(
     let mut first = None;
     if narrow.iter().any(|member| !member.idle(shape)) {
         select(recording, shape, narrow);
+        let span = replay_frame::timeline::span("ahead run");
         let clock = Clock::start();
         let alone = Walk {
             shape,
@@ -885,6 +928,7 @@ pub(crate) fn walk_all(
         };
         let mut ran = run_walk(recording, alone)?;
         let lap = clock.lap();
+        drop(span);
         outcomes = std::mem::take(&mut ran.outcomes);
         if ran.cancelled {
             outcomes.extend(union.iter().map(|_| None));
@@ -896,9 +940,10 @@ pub(crate) fn walk_all(
             });
         }
         settle(narrow, &outcomes, &mut failed)?;
-        first = Some((ran.stats, ran.world, lap));
+        first = Some((ran.stats, ran.world, lap, ran.tables));
     }
     select(recording, shape, union);
+    let span = replay_frame::timeline::span("union run");
     let clock = Clock::start();
     let together = Walk {
         shape,
@@ -913,6 +958,7 @@ pub(crate) fn walk_all(
     };
     let mut ran = run_walk(recording, together)?;
     let lap = clock.lap();
+    drop(span);
     if !ran.cancelled {
         settle(union, &ran.outcomes, &mut failed)?;
     }
@@ -948,6 +994,7 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
             stats: segments::Stats::default(),
             outcomes,
             world: 0,
+            tables: Vec::new(),
             cancelled: false,
         });
     }
@@ -1008,6 +1055,7 @@ pub(crate) fn run_walk(recording: &Recording, walk: Walk<'_, '_>) -> io::Result<
         stats: ran.stats,
         outcomes,
         world: walking.world.into_inner(),
+        tables: ran.tables,
         cancelled: ran.cancelled || cancellation.is_cancelled(),
     })
 }

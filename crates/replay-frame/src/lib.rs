@@ -6,6 +6,7 @@ pub mod envelope;
 pub mod frame;
 mod fuel_demand;
 pub mod rows;
+pub mod timeline;
 
 pub(crate) use replay_data::value;
 pub use replay_data::{

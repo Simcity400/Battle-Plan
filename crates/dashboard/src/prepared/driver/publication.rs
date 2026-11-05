@@ -595,7 +595,9 @@ impl<'s> Publisher<'s> {
         inner.committing = true;
         drop(inner);
         let mut leading = Leading(self, true);
+        let span = replay_frame::timeline::span("commit");
         let committed = write(&mut writer).and_then(|()| self.commit_writer(writer));
+        drop(span);
         leading.1 = false;
         let mut inner = self.lock();
         inner.committing = false;
@@ -745,6 +747,7 @@ impl<'s> Publisher<'s> {
     }
 
     fn commit_group(&self, mut writer: store::Writer, group: Vec<(u64, Batch)>) -> Done {
+        let _span = replay_frame::timeline::span("commit");
         let mut outcomes = Vec::new();
         let mut adopted = Vec::new();
         for (ticket, batch) in group {
@@ -1039,6 +1042,7 @@ impl<'s> Publisher<'s> {
     /// its coverage page; stages it, queues it for the next group commit and waits for that,
     /// leading it when no other does. A panic fails the job alone.
     fn seal(&self, job: Job) -> Finished {
+        let _span = replay_frame::timeline::span("seal").lane(job.family.id.name());
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.sealed(job))) {
             Ok(finished) => finished,
             Err(_) => Finished::failed(io::Error::other("A batch's seal panicked")),

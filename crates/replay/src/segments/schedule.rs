@@ -171,6 +171,8 @@ pub(super) struct Schedule {
     /// not; none before one has sealed.
     spills: Vec<bool>,
     estimate: Vec<Option<usize>>,
+    /// The most each segment's walks charged their tables.
+    pub(super) tables: Vec<usize>,
     /// Tasks handed out and not done.
     running: usize,
     /// Each family's failures, by segment, that what comes before them may yet overtake: the
@@ -211,6 +213,7 @@ impl Schedule {
             held: 0,
             spills,
             estimate: engine_allocation::filled(lanes, None)?,
+            tables: engine_allocation::filled(segments, 0)?,
             running: 0,
             pending: engine_allocation::collect_vec((0..lanes).map(|_| BTreeMap::new()))?,
             writing: BTreeSet::new(),
@@ -620,6 +623,12 @@ impl Schedule {
         }
     }
 
+    /// A walk of segment `at` charged its tables `bytes` at most.
+    pub(super) fn charged(&mut self, at: usize, bytes: usize) {
+        self.tables[at] = self.tables[at].max(bytes);
+        self.stats.table_bytes = self.stats.table_bytes.max(bytes);
+    }
+
     /// The families of `next` a walk of the segment before goes on into: those it hands on
     /// (`handed`) that wait or are untaken, and every other it may take, once `next` is
     /// measured and may start, `hold` takes its share of the walkers' budget, and going on
@@ -941,8 +950,11 @@ impl Schedule {
     /// What became of each family: the segments it went past, from the first, settled.
     pub(super) fn outcomes(&mut self) -> Vec<Outcome> {
         let mut outcomes = std::mem::take(&mut self.outcomes);
-        for (outcome, &next) in outcomes.iter_mut().zip(&self.next) {
+        for ((outcome, &next), &estimate) in
+            outcomes.iter_mut().zip(&self.next).zip(&self.estimate)
+        {
             outcome.settled = next;
+            outcome.largest_output = estimate;
         }
         outcomes
     }

@@ -1675,7 +1675,7 @@ fn a_family_prepared_ahead_serves_the_last_hour_before_the_union_run() {
     for outcome in walks.ran.outcomes.iter().flatten() {
         assert!(outcome.ended.is_empty() && outcome.failure.is_none());
     }
-    let (narrow, _, _) = walks.ahead.unwrap();
+    let (narrow, ..) = walks.ahead.unwrap();
     assert_eq!(
         (narrow.walks, walks.ran.stats.walks),
         (shape.len(), shape.len())

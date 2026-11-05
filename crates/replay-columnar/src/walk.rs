@@ -524,10 +524,28 @@ impl Allowance {
     }
 }
 
-/// Charges a table of `kinds` over `slots` slots to `allowance` in place of `charged`.
+/// What a state's tables are charged: each table's, their sum, and the most that sum reached
+/// since it was last taken ([`State::take_charge_peak`]).
+struct Charged {
+    tables: Vec<usize>,
+    total: usize,
+    peak: usize,
+}
+
+impl Charged {
+    fn set(&mut self, table: usize, bytes: usize) {
+        self.total = self.total - self.tables[table] + bytes;
+        self.tables[table] = bytes;
+        self.peak = self.peak.max(self.total);
+    }
+}
+
+/// Charges `table`, of `kinds`, over `slots` slots to `allowance` in place of what `charged`
+/// holds for it.
 fn charge_to(
     allowance: Option<&Allowance>,
-    charged: &mut usize,
+    charged: &mut Charged,
+    table: usize,
     kinds: &[Kind],
     slots: usize,
 ) -> io::Result<()> {
@@ -535,12 +553,13 @@ fn charge_to(
         return Ok(());
     };
     let bytes = Table::storage_bytes(kinds, slots)?;
-    if bytes > *charged {
-        allowance.charge(bytes - *charged)?;
+    let was = charged.tables[table];
+    if bytes > was {
+        allowance.charge(bytes - was)?;
     } else {
-        allowance.release(*charged - bytes);
+        allowance.release(was - bytes);
     }
-    *charged = bytes;
+    charged.set(table, bytes);
     Ok(())
 }
 
@@ -567,13 +586,13 @@ pub struct State {
     scratch: Scratch,
     /// What its tables' storage is charged to, and each table's charge.
     allowance: Option<Arc<Allowance>>,
-    charged: Vec<usize>,
+    charged: Charged,
 }
 
 impl Drop for State {
     fn drop(&mut self) {
         if let Some(allowance) = &self.allowance {
-            allowance.release(self.charged.iter().sum());
+            allowance.release(self.charged.total);
         }
     }
 }
@@ -605,7 +624,11 @@ impl State {
             named: Vec::new(),
             scratch: Scratch::default(),
             allowance: None,
-            charged: engine_allocation::filled(count, 0)?,
+            charged: Charged {
+                tables: engine_allocation::filled(count, 0)?,
+                total: 0,
+                peak: 0,
+            },
         })
     }
 
@@ -619,23 +642,38 @@ impl State {
             .sum::<io::Result<usize>>()?;
         allowance.charge(held)?;
         if let Some(previous) = self.allowance.replace(allowance) {
-            previous.release(self.charged.iter().sum());
+            previous.release(self.charged.total);
         }
         for (charged, (table, kinds)) in self
             .charged
+            .tables
             .iter_mut()
             .zip(self.tables.iter().zip(&self.kinds))
         {
             *charged = Table::storage_bytes(kinds, table.slots())?;
         }
+        self.charged.total = held;
+        self.charged.peak = self.charged.peak.max(held);
         Ok(())
+    }
+
+    /// The most its tables were charged at once since this was last taken, or it was made.
+    pub fn take_charge_peak(&mut self) -> usize {
+        std::mem::replace(&mut self.charged.peak, self.charged.total)
+    }
+
+    /// Counts none of what its tables are charged now in its peak, for tables about to be
+    /// replaced before more is charged.
+    pub fn forget_charge_peak(&mut self) {
+        self.charged.peak = 0;
     }
 
     /// Charges `table`'s storage over `slots` slots in place of what it was charged.
     fn charge(&mut self, table: usize, slots: usize) -> io::Result<()> {
         charge_to(
             self.allowance.as_deref(),
-            &mut self.charged[table],
+            &mut self.charged,
+            table,
             &self.kinds[table],
             slots,
         )
@@ -929,7 +967,7 @@ impl State {
             }
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
             let (allowance, kinds) = (self.allowance.as_deref(), &self.kinds[table]);
-            let charged = &mut self.charged[table];
+            let charged = &mut self.charged;
             // The slots its inserts add are charged before they are made.
             let applied = section::apply_admitted(
                 bytes,
@@ -938,9 +976,9 @@ impl State {
                 &mut self.tables[table],
                 &mut self.scratch,
                 &mut self.changes[table],
-                &mut |slots| charge_to(allowance, charged, kinds, slots),
+                &mut |slots| charge_to(allowance, charged, table, kinds, slots),
             );
-            let held = charge_to(allowance, charged, kinds, self.tables[table].slots());
+            let held = charge_to(allowance, charged, table, kinds, self.tables[table].slots());
             applied?;
             held?;
             if truncated {

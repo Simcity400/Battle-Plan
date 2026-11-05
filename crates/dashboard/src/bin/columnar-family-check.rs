@@ -6,13 +6,15 @@
 //! ordered emit and publication, the walks every lane shares, the slowest serial lane and the
 //! peak resident bytes, with every status row that failed. `served-check` checks the replies.
 //! `columnar-family-check --recording <r.battleplan> --columnar <c.h4col> --output <new folder>
-//!   [--family F[,F...]|ported] [--threads N] [--scopes]`
+//!   [--family F[,F...]|ported] [--threads N] [--scopes] [--walk-only]`
 //! Game content comes from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or none when neither is set.
-//! `--scopes` also reports the CPU each accounting scope charged.
+//! `--scopes` also reports the CPU each accounting scope charged. `--walk-only` walks the runs
+//! with one lane doing no family's work, for the floor decode, apply and the world cost.
+//! report.json also holds the timeline of every task and phase, from the process's start.
 
 use dashboard::{config::ContentOptions, prepared::driver::native};
 use replay::columnar_frames::{Limits, Recording};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -26,7 +28,7 @@ mod shader_compiler;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const USAGE: &str = "columnar-family-check --recording R --columnar C --output NEW \
-                     [--family F[,F...]|ported] [--threads N] [--scopes]";
+                     [--family F[,F...]|ported] [--threads N] [--scopes] [--walk-only]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
@@ -64,11 +66,15 @@ fn run() -> io::Result<()> {
     let (mut recording, mut columnar, mut output) = (None, None, None);
     let mut families: Option<String> = None;
     let mut threads = std::thread::available_parallelism().map_or(1, usize::from);
-    let mut scopes = false;
+    let (mut scopes, mut walk_only) = (false, false);
     let mut args = std::env::args_os().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--scopes" {
             scopes = true;
+            continue;
+        }
+        if flag == "--walk-only" {
+            walk_only = true;
             continue;
         }
         let value = args.next().ok_or_else(|| invalid(USAGE))?;
@@ -103,7 +109,10 @@ fn run() -> io::Result<()> {
     if scopes {
         replay_frame::cpu::enable();
     }
+    let span = replay_frame::timeline::span("game content");
     let content = content(&output)?;
+    drop(span);
+    let span = replay_frame::timeline::span("source open");
     let source = dashboard::Source::open(
         dashboard::SourceKey {
             source_id: "columnar-family-check".into(),
@@ -112,44 +121,106 @@ fn run() -> io::Result<()> {
         recording.clone(),
         &AtomicBool::new(false),
     )?;
+    drop(span);
     // The change-run index first, as production prepares it: native readers serve from it.
+    let span = replay_frame::timeline::span("index");
     let started = std::time::Instant::now();
-    let index_refused = dashboard::prepared::change_runs::prepare(&source, &AtomicBool::new(false))?;
+    let cpu_before = replay_frame::cpu::process_cpu_ns();
+    let index = dashboard::prepared::change_runs::prepare(&source, &AtomicBool::new(false))?;
     let index_seconds = started.elapsed().as_secs_f64();
+    let index_cpu = cpu_before
+        .zip(replay_frame::cpu::process_cpu_ns())
+        .map(|(before, after)| after.saturating_sub(before) as f64 / 1e9);
+    // The process's peaks so far: the index is its first heavy work.
+    let (index_working, index_commit) = native::peaks()?;
+    drop(span);
+    let span = replay_frame::timeline::span("recording open");
     let file = Recording::open_path(&columnar, Limits::default())?;
     let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
+    drop(span);
+    let span = replay_frame::timeline::span("families");
     let (accepted, measured) = native::measure(
         &source,
         content.as_ref(),
         file,
         named.as_deref(),
         threads,
+        walk_only,
         &AtomicBool::new(false),
     )?;
+    drop(span);
     let failed: Vec<_> = accepted
         .sections
         .iter()
         .filter(|section| section.error.is_some())
         .collect();
-    let report = json!({
+    let runs: Vec<native::Run> = index.runs.into_iter().map(native::Run::from).collect();
+    let mut report = json!({
         "shaderCompiler": shader_compiler,
         "recording": recording,
         "columnar": columnar,
         "damage": damage,
         "measured": measured,
-        "index": { "seconds": index_seconds, "refused": index_refused },
+        "index": {
+            "seconds": index_seconds,
+            "refused": index.refused,
+            "cpu_seconds": index_cpu,
+            "peak_working_set_bytes": index_working,
+            "peak_commit_bytes": index_commit,
+            "runs": runs,
+        },
         "failed": failed,
         "scopes": scopes.then(replay_frame::cpu::snapshot),
     });
-    std::fs::write(
-        output.join("report.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let mut shown = String::new();
+    render(&report, 0, &mut shown);
+    println!("{shown}");
+    // Printed without it: it holds a span for every task.
+    report["timeline"] = replay_frame::timeline::snapshot();
+    let mut written = String::new();
+    render(&report, 0, &mut written);
+    std::fs::write(output.join("report.json"), written)?;
     Ok(())
 }
 
+/// `value` as indented JSON, but each array of scalars on one line: a timeline's spans, one to
+/// a line.
+fn render(value: &Value, indent: usize, out: &mut String) {
+    let scalar = |value: &Value| !matches!(value, Value::Array(_) | Value::Object(_));
+    let open = |out: &mut String, at: usize| {
+        out.push_str(if at == 0 { "\n" } else { ",\n" });
+        out.extend(std::iter::repeat_n(' ', indent + 2));
+    };
+    let close = |out: &mut String, end: char| {
+        out.push('\n');
+        out.extend(std::iter::repeat_n(' ', indent));
+        out.push(end);
+    };
+    match value {
+        Value::Object(fields) if !fields.is_empty() => {
+            out.push('{');
+            for (at, (name, field)) in fields.iter().enumerate() {
+                open(out, at);
+                out.push_str(&Value::from(name.as_str()).to_string());
+                out.push_str(": ");
+                render(field, indent + 2, out);
+            }
+            close(out, '}');
+        }
+        Value::Array(items) if !items.iter().all(scalar) => {
+            out.push('[');
+            for (at, item) in items.iter().enumerate() {
+                open(out, at);
+                render(item, indent + 2, out);
+            }
+            close(out, ']');
+        }
+        _ => out.push_str(&value.to_string()),
+    }
+}
+
 fn main() {
+    replay_frame::timeline::enable();
     // Measured with the memory settings the data service runs with.
     dashboard::allocator::return_freed_memory_promptly();
     if let Err(error) = run() {
