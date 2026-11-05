@@ -14,7 +14,7 @@ use std::{
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -546,25 +546,93 @@ pub fn check_ignoring(
         }
         let exchange: Exchange = serde_json::from_str(&line)?;
         let candidate = serve(&exchange.product, &exchange.params);
-        let compared = compare(exchange, candidate, &report.patterns);
+        let compared = compare(exchange, &candidate, &report.patterns);
         report.count(index, compared);
     }
     Ok(report)
 }
 
+/// A request as transcripts key it: its product and its parameters' text.
+fn request_key(product: &str, params: &Value) -> String {
+    format!("{product}\n{params}")
+}
+
+/// The requests asked more than once across `transcripts`, each after its header, with how many
+/// times: a check serves each of them once.
+pub fn shared_requests(
+    transcripts: impl IntoIterator<Item = io::Result<Box<dyn BufRead>>>,
+) -> io::Result<HashMap<String, usize>> {
+    #[derive(Deserialize)]
+    struct Request {
+        product: String,
+        params: Value,
+    }
+    let mut counts = HashMap::<String, usize>::new();
+    let mut line = String::new();
+    for transcript in transcripts {
+        let mut transcript = transcript?;
+        loop {
+            line.clear();
+            if transcript.read_line(&mut line)? == 0 {
+                break;
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            let request: Request = serde_json::from_str(&line)?;
+            *counts
+                .entry(request_key(&request.product, &request.params))
+                .or_default() += 1;
+        }
+    }
+    counts.retain(|_, count| *count > 1);
+    Ok(counts)
+}
+
 /// [`check_ignoring`] of several transcripts at once, each after its header, their requests asked
-/// `threads` at a time: each transcript's report, and the seconds its requests were served for.
+/// `threads` at a time, each of the `shared` ones ([`shared_requests`]) once: each transcript's
+/// report, and the seconds its requests were served for.
 pub fn check_parallel(
     transcripts: Vec<Box<dyn BufRead + Send + '_>>,
     serve: &(dyn Fn(&str, &Value) -> Reply + Sync),
+    shared: HashMap<String, usize>,
     ignored: &[Vec<String>],
     threads: NonZeroUsize,
 ) -> io::Result<Vec<(Report, f64)>> {
+    // A shared request's reply, served by its first asker, kept until its last.
+    type Shared = (Arc<std::sync::OnceLock<Arc<Reply>>>, usize);
+    let shared: Mutex<HashMap<String, Shared>> = Mutex::new(
+        shared
+            .into_iter()
+            .map(|(key, count)| (key, (Default::default(), count)))
+            .collect(),
+    );
+    let serve_once = |product: &str, params: &Value| -> Arc<Reply> {
+        let key = request_key(product, params);
+        let cell = shared
+            .lock()
+            .unwrap()
+            .get(&key)
+            .map(|(cell, _)| Arc::clone(cell));
+        let Some(cell) = cell else {
+            return Arc::new(serve(product, params));
+        };
+        let reply = Arc::clone(cell.get_or_init(|| Arc::new(serve(product, params))));
+        let mut shared = shared.lock().unwrap();
+        if let Some((_, left)) = shared.get_mut(&key) {
+            *left -= 1;
+            if *left == 0 {
+                shared.remove(&key);
+            }
+        }
+        reply
+    };
     let count = transcripts.len();
     let reports: Vec<Mutex<(Report, f64)>> = (0..count)
         .map(|_| Mutex::new((Report::ignoring(ignored), 0.0)))
         .collect();
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, usize, String)>(threads.get() * 4);
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<(usize, usize, String)>(threads.get() * 4);
     let receiver = Mutex::new(receiver);
     let failed: Mutex<Option<io::Error>> = Mutex::new(None);
     let stop = AtomicBool::new(false);
@@ -594,9 +662,9 @@ pub fn check_parallel(
                                 || -> io::Result<()> {
                                     let exchange: Exchange = serde_json::from_str(&line)?;
                                     let started = std::time::Instant::now();
-                                    let candidate = serve(&exchange.product, &exchange.params);
+                                    let candidate = serve_once(&exchange.product, &exchange.params);
                                     let seconds = started.elapsed().as_secs_f64();
-                                    let compared = compare(exchange, candidate, ignored);
+                                    let compared = compare(exchange, &candidate, ignored);
                                     let mut held = reports[transcript]
                                         .lock()
                                         .unwrap_or_else(|error| error.into_inner());
@@ -659,14 +727,16 @@ struct Compared {
     mismatch: Option<Mismatch>,
 }
 
-fn compare(mut exchange: Exchange, mut candidate: Reply, patterns: &[Vec<String>]) -> Compared {
+fn compare(mut exchange: Exchange, candidate: &Reply, patterns: &[Vec<String>]) -> Compared {
+    let formed;
+    let mut candidate = candidate;
     if let Some(form) = compared_as(&exchange.product) {
         exchange.reply = in_form(form, &exchange.reply);
-        candidate = in_form(form, &candidate);
+        formed = in_form(form, candidate);
+        candidate = &formed;
     }
     let reference = exchange.reply.data().map(|data| !data.is_null());
-    let difference =
-        difference_ignoring(&exchange.reply, &candidate, &exchange.unordered, patterns);
+    let difference = difference_ignoring(&exchange.reply, candidate, &exchange.unordered, patterns);
     Compared {
         label: label(&exchange.product, &exchange.params),
         reference,

@@ -432,7 +432,9 @@ fn check(
                 .filter(|family| {
                     !transcripts
                         .iter()
-                        .any(|(_, path, _): &(u64, PathBuf, PathBuf)| path.file_stem().is_some_and(|stem| stem == family.as_str()))
+                        .any(|(_, path, _): &(u64, PathBuf, PathBuf)| {
+                            path.file_stem().is_some_and(|stem| stem == family.as_str())
+                        })
                 })
                 .map(String::as_str)
                 .collect();
@@ -441,7 +443,10 @@ fn check(
             }
         }
         if transcripts.is_empty() {
-            return Err(invalid(format!("{} holds no transcript", reference.display())));
+            return Err(invalid(format!(
+                "{} holds no transcript",
+                reference.display()
+            )));
         }
         // The largest first, so the last requests asked are short ones.
         transcripts.sort_by_key(|(bytes, ..)| std::cmp::Reverse(*bytes));
@@ -479,14 +484,17 @@ fn check(
         {
             Some("The transcript's branches are not the recording's".to_owned())
         } else {
-            served.require_family(&header.family).err().map(|error| error.to_string())
+            served
+                .require_family(&header.family)
+                .err()
+                .map(|error| error.to_string())
         };
         if let Some(refused) = refused {
             println!("{}: not checked: {refused}", header.family);
             success = false;
             continue;
         }
-        families.push((header.family, report));
+        families.push((header.family, report, path));
         readers.push(Box::new(transcript));
     }
     let threads = options
@@ -497,14 +505,28 @@ fn check(
         replay_frame::cpu::enable();
     }
     let started = Instant::now();
+    // One transcript never repeats a request: only several need counting.
+    let shared = if families.len() > 1 {
+        served_check::shared_requests(families.iter().map(
+            |(_, _, path)| -> io::Result<Box<dyn io::BufRead>> {
+                let mut transcript =
+                    BufReader::new(zstd::stream::read::Decoder::new(File::open(path)?)?);
+                served_check::read_header(&mut transcript)?;
+                Ok(Box::new(transcript))
+            },
+        ))?
+    } else {
+        Default::default()
+    };
     let reports = served_check::check_parallel(
         readers,
         &|product: &str, params: &Value| served.serve(product, params),
+        shared,
         &options.ignore,
         threads,
     )?;
     let mut differing = 0;
-    for ((family, path), (report, seconds)) in families.iter().zip(&reports) {
+    for ((family, path, _), (report, seconds)) in families.iter().zip(&reports) {
         std::fs::write(
             path,
             serde_json::to_vec_pretty(&json!({
@@ -559,7 +581,14 @@ fn run() -> io::Result<bool> {
     std::fs::create_dir_all(work)?;
     let content = options.content(work)?;
     match mode.to_str() {
-        Some("record") => record(&options, recording, folder, content, started, shader_compiler),
+        Some("record") => record(
+            &options,
+            recording,
+            folder,
+            content,
+            started,
+            shader_compiler,
+        ),
         Some("check") => check(&options, recording, folder, content, shader_compiler),
         _ => Err(invalid(USAGE)),
     }
