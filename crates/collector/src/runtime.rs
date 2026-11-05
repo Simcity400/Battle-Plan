@@ -4613,7 +4613,6 @@ fn grow_combat_hints(
 /// Only the sizing side leases idle frames; the spool returns only its own frame.
 fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut BufferCapacities) {
     let live = unsafe { LiveMemory::new() };
-    crate::tick_gate::wait_live();
     let _ = capacities
         .extended
         .combat_progress
@@ -4838,11 +4837,7 @@ fn spool_loop(
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        let span = {
-            // The clock's campaign-id length is a live read.
-            let _live = crate::tick_gate::live_reads();
-            phases.span(Phase::Observers)
-        };
+        let span = phases.span(Phase::Observers);
         shared
             .prepare_clock_capture(&live)
             .map_err(|_| "clock preparation allocation failed")?;
@@ -5429,7 +5424,6 @@ impl SizingShared {
     fn recycle_frame(&self, shared: &Shared, index: usize, work: &mut WorkerWork) {
         let mut proposal = *work.recycle_capacities(self, shared.frequency);
         let live = unsafe { LiveMemory::new() };
-        crate::tick_gate::wait_live();
         let _ = proposal
             .extended
             .combat_progress
@@ -5671,8 +5665,6 @@ fn sizing_pass(
     phases: &'static crate::spool_phases::Totals,
     background: bool,
 ) -> Result<(), &'static str> {
-    // Every sizing observation reads live game memory: its spans wait out open ticks too.
-    let _live_reads = crate::tick_gate::live_reads();
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
