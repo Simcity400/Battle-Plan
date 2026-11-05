@@ -407,10 +407,10 @@ fn the_id_map_is_bottom_up_and_names_the_four_blend_neighbours() {
     // World z = 0 is bitmap row 1: 4, 5, 6. World z = 1 is row 0: 1, 2, 3.
     // At (x = 0, z = 0): base 4, right 5, up 1, up-right 2.
     assert_eq!(texel(0, 0), [1, 5, 4, 2]);
-    // x wraps: the right neighbour of column 2 is column 0.
-    assert_eq!(texel(2, 0), [3, 4, 6, 1]);
+    assert_eq!(texel(2, 0), [3, 6, 6, 3]);
     // z clamps at the top row, so up and up-right repeat the row itself.
     assert_eq!(texel(0, 1), [1, 2, 1, 2]);
+    assert_eq!(texel(2, 1), [3, 3, 103, 3]);
 }
 
 #[test]
@@ -427,12 +427,8 @@ fn a_uniform_neighbourhood_sets_the_all_same_flag() {
     assert_eq!(raw - all_same * 100.0, 7.0);
 }
 
-/// `common/terrain`'s `lakes` entry carries `texture = 255` whatever the
-/// map does with palette index 14, so the warning has to be about the
-/// bitmap: raised when the index is painted somewhere and silent when it is
-/// not, which is the shipped map's case.
 #[test]
-fn the_atlas_warnings_are_raised_only_for_indices_the_bitmap_paints() {
+fn declared_atlas_indices_keep_native_bytes_and_only_unmapped_indices_warn() {
     use installed_content_core::terrain::TerrainType;
 
     let kind = |atlas_index| TerrainType {
@@ -445,6 +441,7 @@ fn the_atlas_warnings_are_raised_only_for_indices_the_bitmap_paints() {
     let mut definitions = TerrainDefinitions::default();
     definitions.palette.insert(1, kind(4));
     definitions.palette.insert(14, kind(255));
+    definitions.palette.insert(2, kind(529));
     let image = |indices: &[u8]| IndexedImage {
         width: indices.len() as u32,
         height: 1,
@@ -458,19 +455,17 @@ fn the_atlas_warnings_are_raised_only_for_indices_the_bitmap_paints() {
     assert!(quiet.is_empty(), "{quiet:?}");
 
     let mut loud = Vec::new();
-    let lookup = atlas_lookup(&definitions, &image(&[1, 14, 9, 9]), &mut loud);
-    // Both fall back to tile 0, and each warning sizes itself in pixels.
-    assert_eq!(lookup[14], 0);
+    let lookup = atlas_lookup(&definitions, &image(&[1, 14, 9, 9, 2]), &mut loud);
+    assert_eq!(lookup[14], 255);
+    assert_eq!(lookup[2], 17);
     assert_eq!(lookup[9], 0);
-    assert_eq!(loud.len(), 2);
+    assert_eq!(loud.len(), 1);
     assert!(loud[0].contains("9 on 2 pixels"), "{}", loud[0]);
     assert!(
-        loud[0].contains("over 2 of the bitmap's 4 pixels"),
+        loud[0].contains("over 2 of the bitmap's 5 pixels"),
         "{}",
         loud[0]
     );
-    assert!(loud[1].contains("index 14 texture 255"), "{}", loud[1]);
-    assert!(loud[1].contains("its 1 pixels"), "{}", loud[1]);
 }
 
 #[test]
@@ -480,19 +475,20 @@ fn a_mismatched_bitmap_is_refused() {
 }
 
 #[test]
-fn the_largest_tile_index_survives_the_all_same_encoding() {
+fn all_texture_bytes_keep_native_uniform_encoding_and_mixed_neighbours() {
     let mut lookup = [0u8; 256];
-    lookup[1] = (ATLAS_TILES - 1) as u8;
-    let flagged = terrain_id_map(2, 2, &[1, 1, 1, 1], &lookup).unwrap();
-    for texel in flagged.chunks_exact(4) {
-        assert_eq!(u32::from(texel[2]), ATLAS_TILES - 1 + 100);
-        let raw = f32::from(texel[2]);
-        let all_same = (raw - 98.0).clamp(0.0, 1.0);
-        assert_eq!(raw - all_same * 100.0, f32::from(texel[0]));
+    for value in 0..=255u8 {
+        lookup[1] = value;
+        let flagged = terrain_id_map(2, 2, &[1, 1, 1, 1], &lookup).unwrap();
+        for texel in flagged.chunks_exact(4) {
+            let packed = ((u16::from(value) + 100) % 256) as u8;
+            assert_eq!(texel, [value, value, packed, value]);
+        }
+        if value != 0 {
+            let mixed = terrain_id_map(2, 2, &[1, 0, 1, 1], &lookup).unwrap();
+            assert_eq!(&mixed[..4], [value, value, value, 0]);
+        }
     }
-    // An unflagged index must stay clear of the shader's 99 threshold.
-    let mixed = terrain_id_map(2, 2, &[1, 0, 1, 1], &lookup).unwrap();
-    assert!(mixed.chunks_exact(4).all(|texel| texel[2] < 99));
 }
 
 /// A 16-bit texture keeps the engine's normalisation on the device: every channel goes up

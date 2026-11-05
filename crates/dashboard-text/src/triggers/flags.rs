@@ -4,6 +4,11 @@
 use crate::triggers::{Failure, refusal::refused};
 
 use installed_content_core::parser::{Item, Operator};
+use std::borrow::Cow;
+
+use super::{Evaluator, Scope, Scopes, world::NULL_STATE};
+use crate::scripted_text::EventObject;
+use installed_content_core::scope::Keyword;
 
 /// A flag trigger's operand: a scalar flag name, or a block of `flag`
 /// (lexical `none` when absent), `value`, `date` and `days`.
@@ -18,9 +23,7 @@ pub(super) struct FlagTest<'i> {
 }
 
 impl<'i> FlagTest<'i> {
-    /// Read the operand of `trigger`. A repeated or unknown field takes the
-    /// reader's paths that are not reproduced, and a name built through a
-    /// country or state (`flag@…`) is not reproduced: each is refused.
+    /// Read the operand, refusing repeated and unknown fields.
     pub fn read(item: &'i Item, trigger: &str) -> Result<Self, Failure> {
         let mut test = Self {
             name: b"none",
@@ -59,12 +62,6 @@ impl<'i> FlagTest<'i> {
                 }
             }
         }
-        if test.name.contains(&b'@') {
-            return Err(refused(format!(
-                "{trigger} {} names its flag through a country or state, which is not reproduced",
-                String::from_utf8_lossy(test.name)
-            )));
-        }
         Ok(test)
     }
 
@@ -97,6 +94,154 @@ impl<'i> FlagTest<'i> {
             };
         }
         holds
+    }
+}
+
+impl Evaluator<'_, '_> {
+    pub(super) fn flag_name<'n>(
+        &self,
+        name: &'n [u8],
+        scopes: Scopes,
+    ) -> Result<Cow<'n, [u8]>, Failure> {
+        let mut parts = name.split(|byte| *byte == b'@');
+        let prefix = parts.next().unwrap();
+        let Some(selector) = parts.next().filter(|_| !prefix.is_empty()) else {
+            return Ok(Cow::Borrowed(name));
+        };
+        if parts.next().is_some() {
+            return Ok(Cow::Borrowed(name));
+        }
+        let (country, state) = match selector.to_ascii_lowercase().as_slice() {
+            b"this" | b"root" | b"prev" | b"from" => {
+                let keyword = Keyword::named(selector).unwrap();
+                let object = self.flag_scope(keyword, scopes)?;
+                (self.flag_country(object)?, flag_members(object).1)
+            }
+            b"owner" | b"controller" | b"occupied" | b"capital" => {
+                let here = self.flag_scope(Keyword::This, scopes)?;
+                let (_, state) = flag_members(here);
+                if selector.eq_ignore_ascii_case(b"capital") {
+                    let owner = if state == NULL_STATE {
+                        here
+                    } else {
+                        Some(EventObject::State(state))
+                    };
+                    let capital = match self.flag_country(owner)? {
+                        Some(raw) => {
+                            let country = self
+                                .world()
+                                .slot(raw)
+                                .ok_or("dynamic flag capital owner has no CountryLinks row")?;
+                            match self.enter_flat(
+                                &installed_content_core::scope::Scope::Keyword(Keyword::CapitalScope),
+                                Scopes::of(Scope::Country(country)),
+                            )? {
+                                Some(Scope::State(state)) => state,
+                                None => NULL_STATE,
+                                _ => {
+                                    return Err(
+                                        "dynamic flag capital did not resolve to a state".into()
+                                    );
+                                }
+                            }
+                        }
+                        None => NULL_STATE,
+                    };
+                    (None, capital)
+                } else if state == NULL_STATE {
+                    (None, NULL_STATE)
+                } else if selector.eq_ignore_ascii_case(b"occupied") {
+                    return Err(refused(
+                        "dynamic flag occupied needs the state's unrecorded occupier",
+                    ));
+                } else {
+                    let (owner, controller) = self
+                        .world()
+                        .state_row(state)
+                        .ok_or("dynamic flag selector has no States row")?;
+                    let raw = if selector.eq_ignore_ascii_case(b"owner") {
+                        owner
+                    } else {
+                        controller
+                    };
+                    (((raw as i32) > 0).then_some(raw), NULL_STATE)
+                }
+            }
+            b"random" => (None, NULL_STATE),
+            _ => {
+                let Some(target) = selector.strip_prefix(b"event_target:") else {
+                    return Ok(Cow::Borrowed(name));
+                };
+                self.saved_flag_scope(target, scopes)?
+            }
+        };
+        let mut resolved = prefix.to_vec();
+        if let Some(raw) = country {
+            let slot = self
+                .world()
+                .slot(raw)
+                .ok_or("dynamic flag country has no CountryLinks row")?;
+            // Canonical aliases do not carry the raw registry's tag spelling.
+            if self.world().raw_country(slot) != Some(raw) {
+                return Err(refused(format!(
+                    "dynamic flag raw country {raw} has no recorded tag spelling"
+                )));
+            }
+            resolved.extend_from_slice(
+                self.world()
+                    .tag(slot)
+                    .ok_or("dynamic flag country has no recorded tag")?,
+            );
+        } else if state != NULL_STATE {
+            resolved.extend_from_slice((state as i32).to_string().as_bytes());
+        } else {
+            return Ok(Cow::Borrowed(b"none"));
+        }
+        Ok(Cow::Owned(resolved))
+    }
+
+    pub(super) fn flag_raw_members(
+        &self,
+        object: Option<EventObject>,
+    ) -> Result<(Option<u32>, u32), Failure> {
+        if matches!(object, Some(EventObject::Province(_))) {
+            return Err(refused("dynamic flag province scope is not reproduced"));
+        }
+        let (country, state) = flag_members(object);
+        let raw = country
+            .map(|slot| {
+                self.world()
+                    .raw_country(slot)
+                    .ok_or_else(|| Failure::from("dynamic flag country has no Countries row"))
+            })
+            .transpose()?;
+        Ok((raw.filter(|raw| (*raw as i32) > 0), state))
+    }
+
+    fn flag_country(&self, object: Option<EventObject>) -> Result<Option<u32>, Failure> {
+        let (country, state) = self.flag_raw_members(object)?;
+        if country.is_some() {
+            return Ok(country);
+        }
+        if state == NULL_STATE {
+            return Ok(None);
+        }
+        let (owner, _) = self
+            .world()
+            .state_row(state)
+            .ok_or("dynamic flag scope has no States row")?;
+        Ok(((owner as i32) > 0).then_some(owner))
+    }
+}
+
+fn flag_members(object: Option<EventObject>) -> (Option<u32>, u32) {
+    match object {
+        Some(EventObject::Country(country) | EventObject::CountryUnitLeader { country, .. }) => {
+            (Some(country), NULL_STATE)
+        }
+        Some(EventObject::CountryState { country, state }) => (Some(country), state),
+        Some(EventObject::State(state)) => (None, state),
+        _ => (None, NULL_STATE),
     }
 }
 
@@ -147,13 +292,20 @@ fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
             return None;
         }
         let value: i64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
-        Some(if digits.len() < part.len() { -value } else { value })
+        Some(if digits.len() < part.len() {
+            -value
+        } else {
+            value
+        })
     };
     let (Some(year), Some(month), Some(day)) = (number(year), number(month), number(day)) else {
         return Err(unported());
     };
     let lengths = engine_native::cdate::MONTH_LENGTHS;
-    let Some(&length) = usize::try_from(month - 1).ok().and_then(|at| lengths.get(at)) else {
+    let Some(&length) = usize::try_from(month - 1)
+        .ok()
+        .and_then(|at| lengths.get(at))
+    else {
         return Err(unported());
     };
     if day < 1 || day > i64::from(length) {
@@ -163,9 +315,8 @@ fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
         .iter()
         .map(|&days| i64::from(days))
         .sum();
-    let hour = i64::from(engine_native::cdate::HOUR_EPOCH)
-        + year * 365 * 24
-        + (before + day - 1) * 24;
+    let hour =
+        i64::from(engine_native::cdate::HOUR_EPOCH) + year * 365 * 24 + (before + day - 1) * 24;
     i32::try_from(hour).map_err(|_| unported())
 }
 

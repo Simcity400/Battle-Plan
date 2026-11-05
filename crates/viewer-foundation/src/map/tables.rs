@@ -299,7 +299,7 @@ impl Limitations {
             String::new()
         };
         self.push(format!(
-            "Fog of war: {fogged} intel texels are fogged, rebuilt for the viewing country from recorded simulation. FoWTime follows the global presentation clock, whose epoch is unrecorded; windows use their frame clock and dumps use zero. FOWFadeFactor is enabled for controller/owner political views. The unrecorded map-panel fog-display toggle is treated as on.{between}",
+            "Fog of war: {fogged} map cells use the viewing country's recorded visibility.{between}",
         ));
     }
 
@@ -338,9 +338,6 @@ pub struct Perspective {
 /// names it as a frame error instead.
 pub fn limitations(frame: &DecodedFrame) -> Limitations {
     let mut out = Limitations::default();
-    if rows::<tables::Provinces>(frame).is_ok_and(|v| !v.rows().is_empty()) {
-        out.note_field("Water animation", "The water presentation clock is not recorded. Windows use replay presentation time; dumps start at zero. Water time is separate from global/FOW time and cannot be recovered from the simulation hour.");
-    }
     // borders: the demilitarised-zone bucket bank
     out.note::<tables::StateFlags>(
         frame,

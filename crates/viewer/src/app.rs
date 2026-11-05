@@ -60,9 +60,12 @@ use std::{
 use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
 use viewer_world::map::scene::SceneInput;
 use {
-    viewer_counters::map::counters::CounterReport, viewer_foundation::map::name_draw::Placements,
-    viewer_foundation::map::sprites::Batch, viewer_world::map::labels::LabelReport,
-    viewer_world::map::name_pass::LayerFade, viewer_world::map::scene::Overlay,
+    viewer_counters::map::counters::CounterReport,
+    viewer_foundation::map::name_draw::Placements,
+    viewer_foundation::map::sprites::Batch,
+    viewer_world::map::labels::LabelReport,
+    viewer_world::map::name_pass::{LayerFade, StrategicNames},
+    viewer_world::map::scene::Overlay,
     viewer_world::map::scene::Request,
 };
 
@@ -4369,7 +4372,11 @@ impl Viewer {
             )
         );
         let show_all_names = document.content.game_strategic_names || !strategic_names;
-        let strategic_hover = (!show_all_names).then_some(hovered_name_province).flatten();
+        let strategic_names = if show_all_names {
+            StrategicNames::All
+        } else {
+            StrategicNames::Hover(hovered_name_province)
+        };
         let name_fade = fade.strategic_hover(
             show_all_names,
             hovered_name_region,
@@ -5349,7 +5356,7 @@ impl Viewer {
                     overlay: Overlay {
                         names: self.placements.as_deref(),
                         layer_alpha: name_fade.0,
-                        strategic_hover,
+                        strategic_names,
                         sprites: interface.then_some(label_batch),
                         ui_scale,
                         interface,

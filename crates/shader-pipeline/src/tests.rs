@@ -94,6 +94,7 @@ fn compiler_output_reads_the_same_on_every_run() {
 
 mod arena;
 mod dimensions;
+mod numeric;
 mod samplers;
 
 #[test]

@@ -251,7 +251,7 @@ impl Evaluator<'_, '_> {
                         .any(|category| category.eq_ignore_ascii_case(wanted)),
                 )
             }
-            "has_mio_flag" => self.organisation_flag(item, reference)?,
+            "has_mio_flag" => self.organisation_flag(item, reference, scopes)?,
             // `available`, then `visible` only if it holds.
             "is_mio_available" | "is_mio_visible" => {
                 let (template, catalog) = self.organisation_definition(reference)?;
@@ -513,10 +513,16 @@ impl Evaluator<'_, '_> {
 
     /// `has_mio_flag`: the shared flag test ([`FlagTest`]) on the
     /// organisation's own flags.
-    fn organisation_flag(&self, item: &Item, reference: u64) -> Result<Eval, Failure> {
+    fn organisation_flag(
+        &self,
+        item: &Item,
+        reference: u64,
+        scopes: Scopes,
+    ) -> Result<Eval, Failure> {
         let test = FlagTest::read(item, "has_mio_flag")?;
+        let name = self.flag_name(test.name, scopes)?;
         let world = self.world();
-        let Some(token) = world.token_of(test.name)? else {
+        let Some(token) = world.token_of(&name)? else {
             return Ok(Eval::False);
         };
         let flags = world.organisation_flags(reference)?;

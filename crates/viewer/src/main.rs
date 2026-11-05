@@ -64,7 +64,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use {
-    viewer_world::map::name_pass::LayerFade, viewer_world::map::scene::Overlay,
+    viewer_world::map::name_pass::{LayerFade, StrategicNames},
+    viewer_world::map::scene::Overlay,
     viewer_world::map::scene::Request,
 };
 
@@ -1226,6 +1227,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // The GUI textures load with the document, for the device the dump renders on.
         render::probe_dump_device()?;
+        let graphics = dashboard::map_settings::read_game(&config.user_dir)?.graphics;
         let mut document = document::Document::load(
             options.replay.as_ref().unwrap(),
             &config.resolve_options()?,
@@ -1236,7 +1238,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 hour_fraction: options.hour_fraction,
             },
             None,
-            0,
+            graphics.texture_quality,
         )?;
         if let Some(path) = &options.change_runs {
             let index = replay::columnar_runs::IndexFile::open(path)?;
@@ -1521,6 +1523,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // political fill + borders
             render::MapLayers {
                 content: &document.content,
+                graphics,
                 at: (document.frame()?.branch, document.frame()?.hour),
                 map_text: &map_text,
                 omitted,
@@ -1572,7 +1575,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Request {
                 size: options.size,
                 camera,
-                day_night: DayNight::at_hour(hour).with_cycle(options.day_night.unwrap_or(true)),
+                day_night: DayNight::at_hour(hour)
+                    .with_cycle(options.day_night.unwrap_or(graphics.day_night)),
                 // `vGlobalTime`: zero unless `--presentation-time` names one, so
                 // a headless dump is deterministic either way.
                 animation_time: options.presentation_time,
@@ -1587,9 +1591,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 overlay: Overlay {
                     names: (!omitted.labels).then_some(&placements),
                     layer_alpha: fade.0,
-                    strategic_hover: (!document.content.game_strategic_names)
-                        .then_some(options.province_hover)
-                        .flatten(),
+                    strategic_names: if document.content.game_strategic_names {
+                        StrategicNames::All
+                    } else {
+                        StrategicNames::Hover(options.province_hover)
+                    },
                     sprites: None,
                     ui_scale,
                     interface,

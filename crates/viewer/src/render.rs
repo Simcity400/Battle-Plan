@@ -45,6 +45,7 @@ use {
 /// Everything a headless render needs beyond the terrain and water assets.
 pub struct MapLayers<'a> {
     pub content: &'a crate::document::Content,
+    pub graphics: dashboard::protocol::MapGraphics,
     /// The hour drawn, and its map events for the viewing country.
     pub at: (replay_data::BranchId, i32),
     pub map_text: &'a viewer_world::map::animated_map_text::events::Prepared,
@@ -318,10 +319,7 @@ pub fn dump_png(
             assets,
             &icons.images,
             &icons.lazy,
-            dashboard::protocol::MapGraphics {
-                full_resolution: layers.content.game_full_resolution,
-                ..Default::default()
-            },
+            layers.graphics,
         )?;
         // political fill + borders
         if !layers.omitted.gradient {

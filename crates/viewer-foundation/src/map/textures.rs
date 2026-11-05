@@ -5,10 +5,10 @@
 //! data textures keep distinct GPU views. Generated textures retain their
 //! logical dimensions and row/channel layout.
 //!
-//! Terrain palette definitions select atlas tiles. Undeclared or unreachable
-//! atlas indices use tile zero with named, counted warnings only when bitmap
-//! pixels reach them. The terrain-id payload holds four neighbour tiles and an
-//! all-equal flag. Snow/mud and fog use independent four- and six-pixel blocks.
+//! Terrain definitions supply byte-valued atlas indices. Undeclared palette
+//! indices use tile zero with named, counted warnings when bitmap pixels reach
+//! them. The terrain-id payload holds four neighbour tiles and an all-equal flag.
+//! Snow/mud and fog use independent four- and six-pixel blocks.
 //!
 //! The upload helpers preserve native texture precision, sampling and loaded
 //! mips. Point-light, gradient-border, tree-mask and shadow producers own their
@@ -35,8 +35,6 @@ pub use intel_cells::{IntelCells, IntelCellsCache};
 
 /// Atlas tiles per axis.
 pub const MAP_NUM_TILES: u32 = 4;
-/// Tiles an atlas can address, and therefore the valid `texture = N` range.
-pub const ATLAS_TILES: u32 = MAP_NUM_TILES * MAP_NUM_TILES;
 // weather
 /// Map pixels one SnowMudData texel covers on each axis. Generated snow/mud
 /// textures remain unpadded; shader globals follow the client's texture-decode
@@ -724,8 +722,7 @@ pub fn terrain_flag_mask(
 
 /// Maps declared terrain palette indices to atlas tiles.
 ///
-/// Reached undeclared indices and reached tiles outside the atlas use tile zero
-/// and report their index and pixel counts. Unused invalid entries do not warn.
+/// The native upload retains each declared texture index's low byte.
 pub fn atlas_lookup(
     definitions: &TerrainDefinitions,
     terrain: &IndexedImage,
@@ -736,13 +733,8 @@ pub fn atlas_lookup(
         counts[index as usize] += 1;
     }
     let mut lookup = [0u8; 256];
-    let mut out_of_range = Vec::new();
     for (&index, kind) in &definitions.palette {
-        if kind.atlas_index < ATLAS_TILES {
-            lookup[index as usize] = kind.atlas_index as u8;
-        } else if counts[index as usize] > 0 {
-            out_of_range.push((index, kind.atlas_index, counts[index as usize]));
-        }
+        lookup[index as usize] = kind.atlas_index as u8;
     }
     let unmapped: Vec<u8> = (0..=255u8)
         .filter(|index| counts[*index as usize] > 0 && !definitions.palette.contains_key(index))
@@ -760,18 +752,13 @@ pub fn atlas_lookup(
             terrain.indices.len()
         ));
     }
-    for (index, atlas, drawn) in out_of_range {
-        warnings.push(format!(
-            "common/terrain gives palette index {index} texture {atlas}, which is outside the {ATLAS_TILES}-tile atlas; its {drawn} pixels of map/terrain.bmp are drawn with atlas tile 0."
-        ));
-    }
     lookup
 }
 
 /// Builds the four-channel TerrainIDMap payload. Channels hold the upper, right,
 /// base and upper-right atlas tiles in that order. The base channel adds 100
-/// when all four agree. Rows run bottom-up; horizontal neighbours wrap and
-/// vertical neighbours clamp at the pole.
+/// when all four agree, wrapping at a byte. Rows run bottom-up; neighbours clamp
+/// at the image edges.
 pub fn terrain_id_map(
     width: u32,
     height: u32,
@@ -788,7 +775,7 @@ pub fn terrain_id_map(
     let mut out = vec![0u8; w * h * 4];
     let at = |x: usize, z: usize| -> u8 {
         let row = h - 1 - z.min(h - 1);
-        atlas_of_palette[indices[row * w + x % w] as usize]
+        atlas_of_palette[indices[row * w + x.min(w - 1)] as usize]
     };
     for z in 0..h {
         for x in 0..w {
@@ -801,7 +788,7 @@ pub fn terrain_id_map(
             texel[0] = up;
             texel[1] = right;
             // `calculate_map_tex_index` subtracts 100 back off the z channel.
-            texel[2] = if same { base + 100 } else { base };
+            texel[2] = if same { base.wrapping_add(100) } else { base };
             texel[3] = up_right;
         }
     }

@@ -415,8 +415,7 @@ fn equipment_types_and_research_categories() {
 
 /// A flag is its first record: with no `value`, its value must be above zero; `value`
 /// compares by its operator; `date` compares the setting hour strictly; `days` compares day
-/// starts strictly; `date =` and `days =` add no test; a flag named through a country or
-/// state is refused.
+/// starts strictly; `date =` and `days =` add no test.
 #[test]
 fn flags_compare_value_date_and_days() {
     with_organisations(&organisations(), |world| {
@@ -442,7 +441,7 @@ fn flags_compare_value_date_and_days() {
                 (MIO, "has_mio_flag = { flag = mio_flag days < 4 }", Some(true)),
                 (MIO, "has_mio_flag = { flag = mio_flag days = 100 }", Some(true)),
                 (MIO, "has_mio_flag = { flag = mio_flag date = 2.13.1 }", None),
-                (MIO, "has_mio_flag = { flag = mio_flag@ROOT }", None),
+                (MIO, "has_mio_flag = { flag = mio_flag@ROOT }", Some(false)),
             ],
         );
     });

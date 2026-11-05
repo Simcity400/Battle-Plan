@@ -278,9 +278,13 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
     assert!(loaded.skipped[0].contains("reads as 0"));
     assert_eq!(loaded.palette[&0].name, "a");
     assert_eq!(loaded.palette[&3].name, "a");
-    // A negative index or texture the game would use out of range skips
-    // the entry.
-    for fields in ["color = { -1 }", "color = { 0 } texture = -1"] {
+    for slot in [-1, -257, i32::MIN, i32::MAX] {
+        let loaded = entry(&format!("color = {{ 0 }} texture = {slot}"));
+        assert_eq!(loaded.palette[&0].atlas_index, slot as u32);
+        assert_eq!(loaded.palette[&0].atlas_index as u8, slot as u8);
+    }
+    // A negative palette index takes the native out-of-range write path.
+    for fields in ["color = { -1 }"] {
         let loaded = entry(fields);
         assert!(
             loaded.skipped[0].contains("skipped"),

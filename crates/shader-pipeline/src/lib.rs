@@ -21,6 +21,7 @@ pub mod cache;
 pub mod clock;
 pub mod gpu;
 pub mod library;
+mod numeric;
 mod reads;
 mod sampling;
 mod source;
@@ -415,14 +416,26 @@ fn translate(
         adjust_coordinate_space: false,
         ..Default::default()
     };
-    let module = naga::front::spv::parse_u8_slice(bytes, &options)
-        .map_err(|e| format!("{stage:?} SPIR-V: {e}"))?;
-    let info = naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::all(),
-    )
-    .validate(&module)
-    .map_err(|e| format!("{stage:?} validation: {e:?}"))?;
+    let parse = |bytes: &[u8]| -> Result<_, String> {
+        let module = naga::front::spv::parse_u8_slice(bytes, &options)
+            .map_err(|e| format!("{stage:?} SPIR-V: {e}"))?;
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .map_err(|e| format!("{stage:?} validation: {e:?}"))?;
+        Ok((module, info))
+    };
+    let (module, info) = parse(bytes)?;
+    // Settlement analysis needs the authored intrinsics before numeric lowering.
+    let clock = clock::analyse(&module, &info);
+    let numeric = numeric::d3d_intrinsics(bytes)?;
+    let (module, info) = if numeric == bytes {
+        (module, info)
+    } else {
+        parse(&numeric)?
+    };
     let wgsl = naga::back::wgsl::write_string(
         &module,
         &info,
@@ -436,7 +449,7 @@ fn translate(
         samplers: Vec::new(),
         sampling_pairs: Vec::new(),
         inputs: Vec::new(),
-        clock: clock::analyse(&module, &info),
+        clock,
     };
     let mut read_ranges = reads::reflect(&module, &info);
     for (_, variable) in module.global_variables.iter() {

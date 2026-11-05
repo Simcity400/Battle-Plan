@@ -386,9 +386,7 @@ pub struct Overlay<'a> {
     pub names: Option<&'a Placements>,
     /// The integrated country-name fade.
     pub layer_alpha: f32,
-    /// Province under the viewer pointer when strategic names are hover-only.
-    /// None keeps the native whole layer (show-all preference or no picked province).
-    pub strategic_hover: Option<u32>,
+    pub strategic_names: super::name_pass::StrategicNames,
     /// Screen-space icon quads, in the order the caller pushed them, in
     /// interface pixels.
     pub sprites: Option<&'a Batch>,
@@ -412,7 +410,7 @@ impl Default for Overlay<'_> {
         Self {
             names: None,
             layer_alpha: 0.0,
-            strategic_hover: None,
+            strategic_names: super::name_pass::StrategicNames::All,
             sprites: None,
             ui_scale: 1.0,
             interface: true,
@@ -2363,9 +2361,9 @@ impl Scene {
         // Rebuild glyph buffers when placements change, then admit this frame's names. The near
         // names cross-fade with the far ones.
         let names = overlay.names.unwrap_or(&self.empty_placements);
-        self.name_pass.set_strategic_hover(overlay.strategic_hover);
+        self.name_pass.set_strategic_names(overlay.strategic_names);
         self.near_name_pass
-            .set_strategic_hover(overlay.strategic_hover);
+            .set_strategic_names(overlay.strategic_names);
         self.name_pass
             .upload(device, names, camera, size, overlay.layer_alpha, &offsets);
         self.near_name_pass.upload(

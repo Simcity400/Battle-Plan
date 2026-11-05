@@ -154,6 +154,71 @@ impl Drop for EventGraphGuard<'_, '_, '_> {
 }
 
 impl<'e, 'a> Evaluator<'e, 'a> {
+    pub(super) fn flag_scope(
+        &self,
+        keyword: Keyword,
+        scopes: Scopes,
+    ) -> Result<Option<EventObject>, Failure> {
+        let Some(at) = scopes.cursor else {
+            let scope = if keyword == Keyword::This {
+                Some(scopes.this)
+            } else {
+                scopes.link(keyword)?
+            };
+            return scope.map(event_object).transpose();
+        };
+        let binding = self.event_graph.borrow();
+        let graph = binding
+            .as_ref()
+            .ok_or("dynamic flag scope graph is missing")?
+            .borrow();
+        let here = graph
+            .scopes
+            .get(at)
+            .ok_or("dynamic flag scope is missing")?;
+        let link = match keyword {
+            Keyword::This => Link::Itself,
+            Keyword::Root => here.root,
+            Keyword::Prev => here.prev,
+            Keyword::From => here.from,
+            _ => unreachable!(),
+        };
+        Ok(Some(graph.scopes[linked(&graph, at, link)?].this))
+    }
+
+    pub(super) fn saved_flag_scope(
+        &self,
+        name: &[u8],
+        scopes: Scopes,
+    ) -> Result<(Option<u32>, u32), Failure> {
+        if let Some(at) = scopes.cursor {
+            let binding = self.event_graph.borrow();
+            let graph = binding
+                .as_ref()
+                .ok_or("dynamic flag scope graph is missing")?
+                .borrow();
+            let owner = terminal(&graph, at, false)?;
+            if let Some(target) = graph
+                .saved_targets
+                .get(&owner)
+                .and_then(|rows| lookup(rows, name))
+            {
+                return self.flag_raw_members(Some(target));
+            }
+        }
+        let recorded = self.world().recorded();
+        let Some(target) = recorded
+            .saved_target(name)?
+            .filter(|target| crate::scope::valid_saved_target(target))
+        else {
+            return Ok((None, super::NULL_STATE));
+        };
+        Ok((
+            (target.country > 0).then_some(target.country as u32),
+            target.state as u32,
+        ))
+    }
+
     pub fn with_event_scopes(self, graph: Rc<RefCell<EventScopes>>) -> Self {
         self.event_graph.replace(Some(graph));
         self

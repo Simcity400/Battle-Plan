@@ -112,8 +112,7 @@ pub struct TerrainType {
     /// Position in [`TerrainDefinitions::categories`] of the category `type`
     /// resolved to when the entry was read; `None` is the null terrain.
     pub category: Option<usize>,
-    /// `texture = N`, the slot inside `atlas0..2.dds`; zero when absent.
-    /// `255` means none.
+    /// Signed `texture` bits; upload uses the low byte, where 255 means none.
     pub atlas_index: u32,
     /// Permanent-snow flag.
     pub perm_snow: bool,
@@ -388,8 +387,7 @@ impl TerrainDefinitions {
     /// A failed field conversion is reported without changing the field;
     /// the entry and its other fields remain, and the note goes to `errors`.
     /// Colour elements start at zero before scanning, so a failed scan keeps
-    /// zero. Negative colour or texture indices would be stored and used
-    /// out of range by the game; they refuse and skip the entry.
+    /// zero. Negative palette indices would be used out of range and refuse the entry.
     fn graphics(
         &mut self,
         name: String,
@@ -438,8 +436,7 @@ impl TerrainDefinitions {
                 }
                 Some(b"texture") => match integer(field) {
                     Scanned::Stored(slot) => {
-                        entry.atlas_index = u32::try_from(slot)
-                            .map_err(|_| invalid(format!("texture {slot} is negative")))?;
+                        entry.atlas_index = slot as u32;
                     }
                     Scanned::End => {}
                     Scanned::NoMatch => errors.push("texture is not an i32".into()),

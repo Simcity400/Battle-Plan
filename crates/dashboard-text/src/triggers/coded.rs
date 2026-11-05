@@ -104,7 +104,7 @@ impl Evaluator<'_, '_> {
                 return Err(world.unlinked("Countries", raw));
             }
             return Ok(Some(match name {
-                "has_country_flag" => self.flag_trigger(item, 1, Some(raw))?,
+                "has_country_flag" => self.flag_trigger(item, 1, Some(raw), scopes)?,
                 // Test the recorded completed-focus set.
                 "has_completed_focus" => Eval::from_bool(
                     world.has_focus(
@@ -481,7 +481,7 @@ impl Evaluator<'_, '_> {
                 }
                 is(coastal)
             }
-            "has_state_flag" => Some(self.flag_trigger(item, 2, Some(state))?),
+            "has_state_flag" => Some(self.flag_trigger(item, 2, Some(state), scopes)?),
             "has_dynamic_modifier" => {
                 let (name, target) = self.modifier_operand(item, scopes)?;
                 Some(Eval::from_bool(
@@ -555,15 +555,15 @@ impl Evaluator<'_, '_> {
         item: &Item,
         kind: u8,
         id: Option<u32>,
+        scopes: Scopes,
     ) -> Result<Eval, Failure> {
         let test = FlagTest::read(item, &key_text(item))?;
+        let name = self.flag_name(test.name, scopes)?;
         let id = id.ok_or("the flag's scope has no recorded id")?;
         let world = self.world();
-        Ok(Eval::from_bool(
-            world
-                .flag(kind, id, test.name)?
-                .is_some_and(|(value, set_hour)| test.holds(value, set_hour, || world.clock())),
-        ))
+        Ok(Eval::from_bool(world.flag(kind, id, &name)?.is_some_and(
+            |(value, set_hour)| test.holds(value, set_hour, || world.clock()),
+        )))
     }
 
     /// A state operand as scoped-variable state-id evaluation reads

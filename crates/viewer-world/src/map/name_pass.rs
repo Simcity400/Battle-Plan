@@ -862,7 +862,21 @@ fn native_copies(
     layer_alpha: f32,
     wraps: &[f32],
 ) -> Vec<NativeDraw> {
-    native_hover_copies(names, camera, viewport, layer_alpha, wraps, None)
+    native_hover_copies(
+        names,
+        camera,
+        viewport,
+        layer_alpha,
+        wraps,
+        StrategicNames::All,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StrategicNames {
+    #[default]
+    All,
+    Hover(Option<u32>),
 }
 
 fn native_hover_copies(
@@ -871,7 +885,7 @@ fn native_hover_copies(
     viewport: [u32; 2],
     layer_alpha: f32,
     wraps: &[f32],
-    hovered_province: Option<u32>,
+    strategic_names: StrategicNames,
 ) -> Vec<NativeDraw> {
     if layer_alpha == 0.0 {
         return Vec::new();
@@ -885,9 +899,9 @@ fn native_hover_copies(
         let planes = side_planes(camera, viewport);
         for group in names.chunk_by(|a, b| a.source == b.source) {
             let first = &group[0];
-            if let (Some(provinces), Some(province)) =
-                (&first.strategic_provinces, hovered_province)
-                && provinces.binary_search(&province).is_err()
+            if let Some(provinces) = &first.strategic_provinces
+                && let StrategicNames::Hover(province) = strategic_names
+                && province.is_none_or(|province| provinces.binary_search(&province).is_err())
             {
                 continue;
             }
@@ -954,7 +968,7 @@ fn arrow_draws(names: &[StaticName], admitted: &[(usize, usize)]) -> Vec<NativeD
 
 /// The content shader, font pages and placed country names or order labels.
 pub struct NamePass {
-    hovered_province: Option<u32>,
+    strategic_names: StrategicNames,
     country_layer: bool,
     compiled: Result<super::name_shader::Names, String>,
     pages: Vec<wgpu::TextureView>,
@@ -990,7 +1004,7 @@ impl NamePass {
         }
         .map_err(|error| error.to_string());
         Ok(Self {
-            hovered_province: None,
+            strategic_names: StrategicNames::All,
             country_layer,
             compiled,
             pages: textures.views(),
@@ -1002,10 +1016,8 @@ impl NamePass {
         })
     }
 
-    /// A picked province restricts strategic names to its connected area when the local preference
-    /// does not request every region. Other name layers keep their ordinary admission.
-    pub fn set_strategic_hover(&mut self, province: Option<u32>) {
-        self.hovered_province = province;
+    pub fn set_strategic_names(&mut self, selection: StrategicNames) {
+        self.strategic_names = selection;
     }
 
     /// Uploads glyphs once per placement and selects visible country names.
@@ -1058,7 +1070,7 @@ impl NamePass {
                 viewport,
                 layer_alpha,
                 wrap,
-                self.hovered_province,
+                self.strategic_names,
             );
         }
         self.update_count();
@@ -1183,7 +1195,7 @@ impl LayerFade {
     }
 
     /// A changed hovered region resets the already stepped fade, unless the local preference
-    /// requests all names. With no picked province the native renderer keeps the whole layer.
+    /// requests all names.
     pub fn strategic_hover(
         self,
         show_all: bool,

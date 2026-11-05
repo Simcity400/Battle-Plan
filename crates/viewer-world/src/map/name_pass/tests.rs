@@ -716,7 +716,7 @@ fn strategic_hover_admits_one_connected_area_across_font_pages_and_wrapped_copie
             [1920, 1080],
             1.0,
             &[0.0, -W, W],
-            hover,
+            StrategicNames::Hover(hover),
         )
     };
     assert_eq!(
@@ -749,8 +749,20 @@ fn strategic_hover_admits_one_connected_area_across_font_pages_and_wrapped_copie
     );
     assert_eq!(
         draw(None).len(),
+        1,
+        "hover-only names hide strategic areas when the pointer leaves the map"
+    );
+    assert_eq!(
+        native_copies(
+            &names,
+            camera([100.0, 1000.0], 310.0),
+            [1920, 1080],
+            1.0,
+            &[0.0, -W, W],
+        )
+        .len(),
         7,
-        "show-all or no picked province keeps the whole native layer"
+        "show-all still admits every strategic area and ordinary country name"
     );
     assert!(
         native_hover_copies(
@@ -759,7 +771,7 @@ fn strategic_hover_admits_one_connected_area_across_font_pages_and_wrapped_copie
             [1920, 1080],
             0.0,
             &[0.0],
-            Some(1)
+            StrategicNames::Hover(Some(1))
         )
         .is_empty()
     );

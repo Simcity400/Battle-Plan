@@ -558,7 +558,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             // (ScriptFlags scope 0).
             "has_global_flag" => {
                 return self
-                    .flag_trigger(item, 0, Some(0))
+                    .flag_trigger(item, 0, Some(0), scopes)
                     .unwrap_or_else(Eval::unknown);
             }
             // Custom tooltip triggers take `tooltip` and `not_tooltip`
@@ -1841,7 +1841,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let character = self.character_of(scopes.this)?;
         let bytes = item.value.scalar().unwrap_or_default();
         Ok(Some(match name {
-            "has_character_flag" => self.flag_trigger(item, CHARACTER_FLAGS, Some(character))?,
+            "has_character_flag" => {
+                self.flag_trigger(item, CHARACTER_FLAGS, Some(character), scopes)?
+            }
             "is_country_leader" => {
                 let expected = item
                     .value
