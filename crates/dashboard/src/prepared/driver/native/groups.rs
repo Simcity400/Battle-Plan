@@ -1,15 +1,18 @@
-//! The country groups' native backend: each hour's operator hands its ordered emit the group
-//! tables the hour may have changed, as the walk's world holds them, and whether it read the
-//! dictionary; the emit keeps the branch's frame of them and observes it with the groups' scan
-//! and change publisher, as the hourly walk does, a quiet step where nothing they read moved.
-//! It publishes the pages the walk publishes: the scan, the changes and their catalogue.
+//! The country groups' native backend: each hour's operator reads the group tables the hour may
+//! have changed, as the walk's world holds them, by the fields the groups' scan reads, and hands
+//! its ordered emit which tables moved and, of those, only what the scan reads of them otherwise
+//! than the segment handed on before: the rows set and the keys gone, or a table whole where its
+//! status or most of its rows moved. The emit applies them to its frame of the tables as the scan
+//! reads them and observes it with the groups' scan and change publisher, as the hourly walk does,
+//! a quiet step where nothing they read moved. It publishes the pages the walk publishes: the
+//! scan, the changes and their catalogue.
 
 use super::backend::{Native, Projected};
 use crate::{
     Source,
     config::LoadContext,
     prepared::{driver::publication::Stage, frame_changes::FrameChanges},
-    products::country_groups::{self, Scan, changes::Prepared as Changes, prepared::TABLES},
+    products::country_groups::{Scan, changes::Prepared as Changes, prepared::TABLES},
 };
 use dashboard_base::prepared::{
     roots::Published,
@@ -22,8 +25,11 @@ use replay::{
     columns,
     segments::{self, Item, Operator, Sink},
 };
-use replay_data::rows::{TABLE_COUNT, TableId};
-use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView};
+use replay_data::rows::{
+    CapitulationRow, CountryRow, FactionRow, RowCodec, TABLE_COUNT, TableId, TableRows,
+    TableSchema, WarRelationRow, tables,
+};
+use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
 use std::{
     io::{self, BufReader},
     mem::size_of,
@@ -34,10 +40,353 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
-/// How the world holds each table the groups read, and the fields a change to which they hand
-/// on ([`country_groups::prepared::holds`]).
+/// The tables the groups read, by position: [`Hour::moved`] holds a bit for each.
+const READ: [TableId; 8] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::HumanControllers,
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::WarRelations,
+    TableId::Capitulation,
+    TableId::LexicalTokens,
+];
+
+/// How the world holds each table the groups read, and the fields a change to which moves it:
+/// countries' slots and tags, wars' dates and instigator, every field of the others, since any
+/// change of those is an hour the walk observes.
 fn holds() -> io::Result<[(TableId, Hold); 8]> {
-    country_groups::prepared::holds()
+    let fields = |table, names: &[&str]| -> io::Result<Hold> {
+        let mut mask = 0_u64;
+        for name in names {
+            mask |= 1_u64 << columns::field(table, name)?;
+        }
+        Ok(Hold::Fields(mask))
+    };
+    let mut holds = READ.map(|table| (table, Hold::Whole));
+    holds[0].1 = fields(TableId::Countries, &["canonical_slot", "tag"])?;
+    holds[5].1 = fields(
+        TableId::WarRelations,
+        &["start_hour", "end_hour", "first_was_instigator"],
+    )?;
+    Ok(holds)
+}
+
+/// Each row of a table as the scan reads it: the fields it reads, the others default.
+fn country(row: &CountryRow) -> CountryRow {
+    CountryRow {
+        id: row.id,
+        canonical_slot: row.canonical_slot,
+        tag: row.tag.clone(),
+        ..CountryRow::default()
+    }
+}
+fn faction(row: &FactionRow) -> FactionRow {
+    FactionRow {
+        id: row.id,
+        name: row.name.clone(),
+        template_token: row.template_token,
+        ..FactionRow::default()
+    }
+}
+fn war(row: &WarRelationRow) -> WarRelationRow {
+    WarRelationRow {
+        first_country: row.first_country,
+        second_country: row.second_country,
+        start_hour: row.start_hour,
+        end_hour: row.end_hour,
+        first_was_instigator: row.first_was_instigator,
+        ..WarRelationRow::default()
+    }
+}
+fn capitulation(row: &CapitulationRow) -> CapitulationRow {
+    CapitulationRow {
+        country: row.country,
+        capitulated: row.capitulated,
+        capitulated_hour: row.capitulated_hour,
+        ..CapitulationRow::default()
+    }
+}
+
+/// How the scan reads a table's rows: each row as it reads it, and whether a row reads as a
+/// row read before.
+struct Reading<R> {
+    read: fn(&R) -> R,
+    same: fn(&R, &R) -> bool,
+}
+
+impl<R: RowCodec> Reading<R> {
+    /// A table whose every field the scan reads.
+    const WHOLE: Self = Self {
+        read: R::clone,
+        same: R::eq,
+    };
+}
+
+const COUNTRIES: Reading<CountryRow> = Reading {
+    read: country,
+    same: |held, row| {
+        held.id == row.id && held.canonical_slot == row.canonical_slot && held.tag == row.tag
+    },
+};
+const FACTIONS: Reading<FactionRow> = Reading {
+    read: faction,
+    same: |held, row| {
+        held.id == row.id && held.name == row.name && held.template_token == row.template_token
+    },
+};
+const WARS: Reading<WarRelationRow> = Reading {
+    read: war,
+    same: |held, row| {
+        held.first_country == row.first_country
+            && held.second_country == row.second_country
+            && held.start_hour == row.start_hour
+            && held.end_hour == row.end_hour
+            && held.first_was_instigator == row.first_was_instigator
+    },
+};
+const CAPITULATIONS: Reading<CapitulationRow> = Reading {
+    read: capitulation,
+    same: |held, row| {
+        held.country == row.country
+            && held.capitulated == row.capitulated
+            && held.capitulated_hour == row.capitulated_hour
+    },
+};
+
+/// `view` with each of its rows as `read` reads them.
+fn reduced<T: TableSchema>(view: &TableView, read: fn(&T::Row) -> T::Row) -> TableView {
+    let rows =
+        |rows: &TableRows| T::borrow(rows).map(|rows| T::wrap(rows.iter().map(read).collect()));
+    match view {
+        TableView::Complete(held) => rows(held).map_or_else(|| view.clone(), TableView::Complete),
+        TableView::Truncated { rows: held, missing } => rows(held).map_or_else(
+            || view.clone(),
+            |rows| TableView::Truncated {
+                rows,
+                missing: *missing,
+            },
+        ),
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => view.clone(),
+    }
+}
+
+fn ascending<R: RowCodec>(rows: &[R]) -> bool {
+    rows.windows(2).all(|pair| pair[0].key() < pair[1].key())
+}
+
+/// `rows`, ascending by key, with the rows `set` and the keys `gone` applied, both ascending.
+fn merge<R: RowCodec>(rows: &mut Vec<R>, set: Vec<R>, gone: &[u128]) {
+    // Where no row goes, the rows held take their new values in place.
+    let set = if gone.is_empty() {
+        let mut missing = Vec::new();
+        for row in set {
+            match rows.binary_search_by_key(&row.key(), R::key) {
+                Ok(position) => rows[position] = row,
+                Err(_) => missing.push(row),
+            }
+        }
+        missing
+    } else {
+        set
+    };
+    if set.is_empty() && gone.is_empty() {
+        return;
+    }
+    let old = std::mem::take(rows);
+    rows.reserve(old.len() + set.len());
+    let mut set = set.into_iter().peekable();
+    let mut gone = gone.iter().copied().peekable();
+    for row in old {
+        let key = row.key();
+        while let Some(next) = set.next_if(|next| next.key() < key) {
+            rows.push(next);
+        }
+        if let Some(next) = set.next_if(|next| next.key() == key) {
+            rows.push(next);
+            continue;
+        }
+        while gone.next_if(|&gone| gone < key).is_some() {}
+        if gone.next_if(|&gone| gone == key).is_some() {
+            continue;
+        }
+        rows.push(row);
+    }
+    rows.extend(set);
+}
+
+/// What an hour hands on of a table whose rows the scan reads moved.
+enum Handed {
+    /// The table as the scan reads it.
+    Whole(SharedView),
+    /// The rows set and the keys gone since the complete table handed on before, both
+    /// ascending by key.
+    Edits { set: TableRows, gone: Vec<u128> },
+}
+
+impl Handed {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Whole(view) => view_heap_bytes(view),
+            Self::Edits { set, gone } => set.heap_bytes() + gone.capacity() * size_of::<u128>(),
+        }
+    }
+}
+
+/// Whether `view` reads as `held`, a view as the scan read it.
+fn reads_as<T: TableSchema>(
+    held: &TableView,
+    view: &TableView,
+    reading: &Reading<T::Row>,
+) -> bool {
+    let same = |held: &TableRows, rows: &TableRows| match (T::borrow(held), T::borrow(rows)) {
+        (Some(held), Some(rows)) => {
+            held.len() == rows.len()
+                && held.iter().zip(rows).all(|(held, row)| (reading.same)(held, row))
+        }
+        _ => false,
+    };
+    match (held, view) {
+        (TableView::Complete(held), TableView::Complete(rows)) => same(held, rows),
+        (
+            TableView::Truncated {
+                rows: held,
+                missing: before,
+            },
+            TableView::Truncated { rows, missing },
+        ) => before == missing && same(held, rows),
+        (TableView::Unavailable { .. }, TableView::Unavailable { .. })
+        | (TableView::NotRecorded { .. }, TableView::NotRecorded { .. }) => held == view,
+        _ => false,
+    }
+}
+
+/// What `view` hands on against `sent`, the table as the scan read it when handed on before,
+/// which it becomes: none where the scan reads the same rows; its edits only where `edits`.
+fn hand<T: TableSchema>(
+    view: &TableView,
+    sent: &mut Option<SharedView>,
+    reading: &Reading<T::Row>,
+    edits: bool,
+) -> Option<Handed> {
+    if let Some(held) = sent.as_mut()
+        && edits
+        && let (TableView::Complete(old), TableView::Complete(new)) = (&**held, view)
+        && let (Some(old), Some(new)) = (T::borrow(old), T::borrow(new))
+        && ascending(old)
+        && ascending(new)
+    {
+        let mut set = Vec::new();
+        let mut gone = Vec::new();
+        let (mut i, mut j) = (0, 0);
+        loop {
+            match (old.get(i), new.get(j)) {
+                (Some(a), Some(b)) if a.key() == b.key() => {
+                    if !(reading.same)(a, b) {
+                        set.push((reading.read)(b));
+                    }
+                    i += 1;
+                    j += 1;
+                }
+                (Some(a), Some(b)) if a.key() < b.key() => {
+                    gone.push(a.key());
+                    i += 1;
+                }
+                (Some(a), None) => {
+                    gone.push(a.key());
+                    i += 1;
+                }
+                (_, Some(b)) => {
+                    set.push((reading.read)(b));
+                    j += 1;
+                }
+                (None, None) => break,
+            }
+        }
+        if set.is_empty() && gone.is_empty() {
+            return None;
+        }
+        if set.len() + gone.len() < new.len() {
+            // In place once the views handed on are the emit's alone.
+            if let TableView::Complete(rows) = &mut **held
+                && let Some(rows) = T::borrow_mut(rows)
+            {
+                merge(rows, set.clone(), &gone);
+            }
+            return Some(Handed::Edits {
+                set: T::wrap(set),
+                gone,
+            });
+        }
+    }
+    if sent
+        .as_deref()
+        .is_some_and(|held| reads_as::<T>(held, view, reading))
+    {
+        return None;
+    }
+    let new = SharedView::from(reduced::<T>(view, reading.read));
+    *sent = Some(new.clone());
+    Some(Handed::Whole(new))
+}
+
+/// What `view` of `table` hands on against `sent` ([`hand`]).
+fn hand_table(table: TableId, view: &TableView, sent: &mut Option<SharedView>) -> Option<Handed> {
+    match table {
+        TableId::Countries => hand::<tables::Countries>(view, sent, &COUNTRIES, true),
+        TableId::CountryLinks => hand::<tables::CountryLinks>(view, sent, &Reading::WHOLE, true),
+        TableId::HumanControllers => {
+            hand::<tables::HumanControllers>(view, sent, &Reading::WHOLE, true)
+        }
+        TableId::Factions => hand::<tables::Factions>(view, sent, &FACTIONS, true),
+        TableId::FactionMembers => {
+            hand::<tables::FactionMembers>(view, sent, &Reading::WHOLE, true)
+        }
+        TableId::WarRelations => hand::<tables::WarRelations>(view, sent, &WARS, true),
+        TableId::Capitulation => hand::<tables::Capitulation>(view, sent, &CAPITULATIONS, true),
+        // Whole: the scan keeps the dictionary it read, so edits would copy it in the emit.
+        TableId::LexicalTokens => {
+            hand::<tables::LexicalTokens>(view, sent, &Reading::WHOLE, false)
+        }
+        _ => None,
+    }
+}
+
+/// The complete view `held` with `set` and `gone` applied: a view of its own, since the scan
+/// tells a table's rows apart by its view.
+fn edited<T: TableSchema>(
+    held: SharedView,
+    set: TableRows,
+    gone: &[u128],
+) -> io::Result<SharedView> {
+    let refused = || invalid("Country group edits name a table never handed on whole");
+    let mut view = held.into_inner();
+    let TableView::Complete(rows) = &mut view else {
+        return Err(refused());
+    };
+    let rows = T::borrow_mut(rows).ok_or_else(refused)?;
+    let set = T::take(set).map_err(|_| refused())?;
+    merge(rows, set, gone);
+    Ok(view.into())
+}
+
+/// `held` of `table` with `set` and `gone` applied ([`edited`]).
+fn apply(
+    table: TableId,
+    held: SharedView,
+    set: TableRows,
+    gone: &[u128],
+) -> io::Result<SharedView> {
+    match table {
+        TableId::Countries => edited::<tables::Countries>(held, set, gone),
+        TableId::CountryLinks => edited::<tables::CountryLinks>(held, set, gone),
+        TableId::HumanControllers => edited::<tables::HumanControllers>(held, set, gone),
+        TableId::Factions => edited::<tables::Factions>(held, set, gone),
+        TableId::FactionMembers => edited::<tables::FactionMembers>(held, set, gone),
+        TableId::WarRelations => edited::<tables::WarRelations>(held, set, gone),
+        TableId::Capitulation => edited::<tables::Capitulation>(held, set, gone),
+        _ => Err(invalid("Country group edits name a table the groups do not read")),
+    }
 }
 
 /// One hour of a branch's group tables.
@@ -48,19 +397,26 @@ pub(crate) struct Hour {
     starts: bool,
     /// The hour read the dictionary.
     lexical: bool,
-    /// The tables the hour may have changed, as the walk's world holds them.
-    changes: Vec<(TableId, SharedView)>,
+    /// The tables the hour may have changed, a bit by position in [`READ`].
+    moved: u8,
+    /// Of those, what moved of the rows the scan reads.
+    handed: Vec<(TableId, Handed)>,
+}
+
+impl Hour {
+    /// The tables the hour may have changed.
+    fn moved(&self) -> impl Iterator<Item = TableId> + '_ {
+        READ.iter()
+            .enumerate()
+            .filter(|&(position, _)| self.moved & 1 << position != 0)
+            .map(|(_, &table)| table)
+    }
 }
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        // Each view is its own once the world's next build copies it.
-        let views: usize = self
-            .changes
-            .iter()
-            .map(|(_, view)| view_heap_bytes(view))
-            .sum();
-        self.changes.capacity() * size_of::<(TableId, SharedView)>() + views
+        self.handed.capacity() * size_of::<(TableId, Handed)>()
+            + self.handed.iter().map(|(_, handed)| handed.bytes()).sum::<usize>()
     }
 }
 
@@ -74,10 +430,33 @@ pub(crate) struct Projector {
     asks: [(TableId, Hold); 8],
     /// The asks of the hour's moved tables, kept from hour to hour.
     moved: Vec<(TableId, Hold)>,
+    /// Each table as the scan read it when the segment last handed it on, by position in
+    /// [`READ`].
+    sent: [Option<SharedView>; 8],
+}
+
+impl Projector {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            asks: holds()?,
+            moved: Vec::with_capacity(READ.len()),
+            sent: Default::default(),
+        })
+    }
+
+    /// Nothing handed on: the next hour hands every table on.
+    fn restart(&mut self) {
+        self.sent = Default::default();
+    }
 }
 
 impl Operator<World> for Projector {
     type Output = Hour;
+
+    fn start(&mut self, _: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
+        self.restart();
+        Ok(())
+    }
 
     fn hour(
         &mut self,
@@ -87,30 +466,46 @@ impl Operator<World> for Projector {
         let _cpu = replay_frame::cpu::scope("groups.columnar", Some("groups"));
         let world = hour.world;
         let opens = hour.starts || hour.opens;
+        if opens {
+            self.restart();
+        }
         self.moved.clear();
-        self.moved.extend(self.asks.iter().copied().filter(|&(table, hold)| {
+        let mut moved = 0_u8;
+        for (position, &(table, hold)) in self.asks.iter().enumerate() {
             let fields = match hold {
                 Hold::Whole => u64::MAX,
                 Hold::Fields(fields) => fields,
             };
             // The row decoder reads a table it cannot read whole anew every hour.
-            opens
+            if opens
                 || world.touched(table, fields)
                 || columns::status(hour.state, table) != columns::Status::Complete
-        }));
-        let mut changes = Vec::new();
+            {
+                moved |= 1 << position;
+                self.moved.push((table, hold));
+            }
+        }
+        let mut handed = Vec::new();
         if !self.moved.is_empty() {
+            // The frame is dropped before the hour ends: none of the walk's views is kept.
             let frame = world.frame_held(hour.state, &self.moved)?;
-            engine_allocation::reserve(&mut changes, self.moved.len())?;
-            for &(table, _) in &self.moved {
-                changes.push((table, frame.tables[table.index()].clone()));
+            for (position, &table) in READ.iter().enumerate() {
+                if moved & 1 << position == 0 {
+                    continue;
+                }
+                let view = &frame.tables[table.index()];
+                if let Some(change) = hand_table(table, view, &mut self.sent[position]) {
+                    engine_allocation::reserve(&mut handed, 1)?;
+                    handed.push((table, change));
+                }
             }
         }
         out.push(Hour {
             hour: hour.hour,
             starts: hour.starts,
             lexical: world.metrics().table_ns[TableId::LexicalTokens.index()] != 0,
-            changes,
+            moved,
+            handed,
         })
     }
 }
@@ -168,9 +563,17 @@ impl Branch {
             updates: None,
         };
         facts.table_read[lexical] = hour.lexical;
-        for (table, view) in hour.changes {
+        for table in hour.moved() {
             facts.rows_changed[table.index()] = true;
-            frame.tables[table.index()] = view;
+        }
+        for (table, handed) in hour.handed {
+            let held = &mut frame.tables[table.index()];
+            *held = match handed {
+                Handed::Whole(view) => view,
+                Handed::Edits { set, gone } => {
+                    apply(table, std::mem::replace(held, not_selected()), set, &gone)?
+                }
+            };
         }
         self.changes
             .observe_changed(&mut self.scan, frame, &facts, source, context)
@@ -237,10 +640,7 @@ impl Native for Groups<'_> {
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Projector> {
-        Ok(Projector {
-            asks: holds()?,
-            moved: Vec::new(),
-        })
+        Projector::new()
     }
 
     fn branch(&self, branch: u64, _: i32) -> io::Result<Self::Branch> {

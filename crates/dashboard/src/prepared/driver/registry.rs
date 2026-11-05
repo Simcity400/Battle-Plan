@@ -401,7 +401,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "country-group-state",
         ],
         // 2: an unchanged hour no longer repeats the last hour's boundary refusals.
-        version: 2,
+        // 3: the operator hands on what moved of the rows the scan reads, not the tables.
+        version: 3,
         ..family("groups")
     },
     Descriptor {

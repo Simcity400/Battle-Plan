@@ -202,10 +202,7 @@ fn projected(hours: &[Tables], starts: &[i32]) -> (Vec<Hour>, Vec<DecodedFrame>)
         frame: holds().unwrap().to_vec(),
         ..Needs::default()
     };
-    let mut projector = Projector {
-        asks: holds().unwrap(),
-        moved: Vec::new(),
-    };
+    let mut projector = Projector::new().unwrap();
     for (ordinal, tables) in (0..).zip(hours) {
         let gap = frames
             .last()
@@ -439,15 +436,15 @@ fn native_groups_publish_as_the_row_groups() {
     }
 }
 
-/// An hour that changes nothing the groups read hands its emit no table; a table not read
-/// whole is handed on every hour, as the row decoder reads it anew.
+/// An hour that changes nothing the groups read moves no table; a table not read whole moves
+/// every hour, as the row decoder reads it anew, but hands nothing on while its reads hold.
 #[test]
 fn quiet_hours_hand_on_no_table() {
     let hours = scenario();
     let (projected, _) = projected(&hours, &[]);
     let quiet: Vec<i32> = projected
         .iter()
-        .filter(|hour| hour.changes.is_empty())
+        .filter(|hour| hour.moved == 0)
         .map(|hour| hour.hour)
         .collect();
     // Casualties change every hour and no group reads them.
@@ -457,13 +454,8 @@ fn quiet_hours_hand_on_no_table() {
     for hour in [100, 105, 108, 115, 132, 133, 145, 150, 155, 156] {
         assert!(!quiet.contains(&hour), "{hour}");
     }
-    let handed: Vec<TableId> = projected
-        .iter()
-        .find(|hour| hour.hour == 156)
-        .unwrap()
-        .changes
-        .iter()
-        .map(|(table, _)| *table)
-        .collect();
-    assert_eq!(handed, [TableId::Factions]);
+    let hour = projected.iter().find(|hour| hour.hour == 156).unwrap();
+    assert_eq!(hour.moved().collect::<Vec<_>>(), [TableId::Factions]);
+    // The factions stay unavailable: nothing of their rows moved since 155.
+    assert!(hour.handed.is_empty());
 }
