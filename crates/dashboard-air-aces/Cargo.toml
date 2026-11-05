@@ -20,8 +20,8 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
-dashboard-keyed.workspace = true
 dashboard-text.workspace = true
+dashboard-world.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 store = { path = "../store" }
@@ -33,7 +33,6 @@ mimalloc.workspace = true
 engine-executable.workspace = true
 installed-content-core.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
-dashboard-world.workspace = true
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }
 

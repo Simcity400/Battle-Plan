@@ -419,10 +419,10 @@ fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
         .is_some()
     );
     let mut unknown = scan.aces[0].runs[0].facts.clone();
-    unknown.row = RecordedAce::Changed(Box::new(AirAceRow {
+    unknown.row = AirAceRow {
         name: b"Other".to_vec(),
-        ..(*unknown.row).clone()
-    }));
+        ..unknown.row.clone()
+    };
     assert!(
         portrait(&PortraitOperands::from(&unknown), &cat)
             .unwrap_err()
@@ -431,18 +431,14 @@ fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
 }
 
 #[test]
-fn air_aces_initial_roster_shares_strings_and_changes_retain_only_changed_rows() {
+fn air_aces_a_changed_ace_splits_only_its_own_run() {
     let mut sample = frame(100, vec![ace(1, true), ace(2, true)]);
-    let initial = sample.tables[TableId::AirAces.index()].clone();
     let mut scan = Scan {
         first: 100,
         last: 101,
         ..Default::default()
     };
     scan.observe(&sample);
-    let retained = &scan.aces[0].runs[0].facts.row;
-    let original = &sample.complete::<tables::AirAces>().unwrap()[0];
-    assert_eq!(retained.name.as_ptr(), original.name.as_ptr());
     sample.hour = 101;
     let mut changed = ace(1, false);
     changed.name = b"Changed".to_vec();
@@ -450,13 +446,8 @@ fn air_aces_initial_roster_shares_strings_and_changes_retain_only_changed_rows()
         TableView::Complete(TableRows::AirAces(vec![changed, ace(2, true)]));
     scan.observe(&sample);
     finish(&mut scan);
-    assert!(matches!(
-        scan.aces[0].runs[1].facts.row,
-        RecordedAce::Changed(_)
-    ));
+    assert_eq!(scan.aces[0].runs.len(), 2);
     assert_eq!(scan.aces[1].runs.len(), 1);
-    assert!(matches!(&scan.aces[1].runs[0].facts.row,
-        RecordedAce::Initial { table, .. } if SharedView::ptr_eq(table, &initial)));
     let reply = history(&scan);
     assert!(reply.aces[0].runs.iter().all(|run| run.name.is_none()));
     assert_eq!(scan.aces[0].runs[0].facts.row.name, b"Mod name");
@@ -1065,7 +1056,7 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
     scan.observe(&frame(100, vec![ace(1, true)]));
     let mut facts = scan.aces[0].runs[0].facts.clone();
     facts.tag = Some("MOD".into());
-    let mut row = (*facts.row).clone();
+    let mut row = facts.row.clone();
     let mut fields = AirAcePresentation {
         gender: 7,
         pool_index: 1,
@@ -1077,7 +1068,7 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
         ..Default::default()
     };
     row.presentation = Recorded::Value(Some(fields.clone()));
-    facts.row = RecordedAce::Changed(Box::new(row.clone()));
+    facts.row = row.clone();
     assert_eq!(
         portrait(&PortraitOperands::from(&facts), &cat).unwrap(),
         expected("GFX_retained_ace")
@@ -1085,7 +1076,7 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
     fields.portrait.as_mut().unwrap().cached = None;
     fields.portrait.as_mut().unwrap().fallback = None;
     row.presentation = Recorded::Value(Some(fields.clone()));
-    facts.row = RecordedAce::Changed(Box::new(row.clone()));
+    facts.row = row.clone();
     // The missing f_1 ends the pool, so native 1 % 1 selects f_0, not f_2.
     assert_eq!(
         portrait(&PortraitOperands::from(&facts), &cat).unwrap(),
@@ -1094,14 +1085,14 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
     fields.gender = 0; // No male culture entries: use the recorded global pool.
     fields.portrait.as_mut().unwrap().fallback = Some(b"GFX_global_ace".to_vec());
     row.presentation = Recorded::Value(Some(fields.clone()));
-    facts.row = RecordedAce::Changed(Box::new(row.clone()));
+    facts.row = row.clone();
     assert_eq!(
         portrait(&PortraitOperands::from(&facts), &cat).unwrap(),
         expected("GFX_global_ace")
     );
     fields.portrait.as_mut().unwrap().fallback = Some(b"GFX_undefined_ace".to_vec());
     row.presentation = Recorded::Value(Some(fields));
-    facts.row = RecordedAce::Changed(Box::new(row));
+    facts.row = row;
     assert!(
         portrait(&PortraitOperands::from(&facts), &cat)
             .unwrap_err()

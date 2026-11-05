@@ -416,7 +416,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["air-aces", "air-ace-portraits"],
         sections: &["air-aces"],
         // 2: on the segment driver, its pages published as the walk published them.
-        version: 2,
+        // 3: its operators hand on each read's changed aces and named designs, never tables.
+        version: 3,
         ..family("aces")
     },
     Descriptor {

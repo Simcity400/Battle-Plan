@@ -260,6 +260,8 @@ pub struct Naming {
     upgrades: slots::Index<u64>,
     token_variants: HashMap<u32, HashSet<u64>>,
     variant_tokens: HashMap<u64, Vec<u32>>,
+    /// Whether a nonempty VariantChanges reads the catalogue too, beside its dated reads.
+    witness: bool,
     #[cfg(any(test, feature = "test-support"))]
     reads: usize,
 }
@@ -286,8 +288,17 @@ impl Naming {
             upgrades: slots::Index::default(),
             token_variants: HashMap::new(),
             variant_tokens: HashMap::new(),
+            witness: true,
             #[cfg(any(test, feature = "test-support"))]
             reads: 0,
+        })
+    }
+
+    /// Names read at the variant table's dated reads alone, never at a design change's witness.
+    pub fn dated() -> io::Result<Self> {
+        Ok(Self {
+            witness: false,
+            ..Self::new()?
         })
     }
 
@@ -487,7 +498,8 @@ impl Naming {
         }
         // VariantChanges is a nonempty witness; none of its payload is a naming operand.
         let read = read
-            || (columns::complete(state, TableId::VariantChanges)
+            || (self.witness
+                && columns::complete(state, TableId::VariantChanges)
                 && columns::table(state, TableId::VariantChanges)?
                     .live()
                     .ones()

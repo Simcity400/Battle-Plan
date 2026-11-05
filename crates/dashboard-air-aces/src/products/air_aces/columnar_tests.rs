@@ -4,21 +4,21 @@
 
 use super::{
     emit::Emit,
+    facts::{Hour, Project, Roster, TABLES},
     prepared::Prepared,
-    segment::{Segments, TABLES},
     tests::{ace, frame as row_frame},
     *,
 };
 use dashboard_base::prepared::series::{self, tests::Fixture};
+use dashboard_base::products::equipment::VariantHour;
 use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, records};
-use dashboard_keyed::segment::{self as keyed, Hour};
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
     segments::{self, Operator as _},
 };
 use replay_data::{
     format::FormatVersion,
-    rows::{AceDeath, Recorded, RowCodec, RowsVisit, TABLE_COUNT, TableRows},
+    rows::{AceDeath, Recorded, RowCodec, RowsVisit, TableRows},
     scope::CaptureMode,
 };
 use replay_frame::frame::TableView;
@@ -166,14 +166,14 @@ fn write(walk: &mut Synthetic, frame: &DecodedFrame, scenario: &Scenario) {
 
 /// The hours the segments' operators hand on, a fresh operator starting at each of `starts`
 /// and at each walk's first hour, and the row frames of the same hours.
-fn projected(scenario: &Scenario, starts: &[i32]) -> (Vec<Hour<Segments>>, Vec<DecodedFrame>) {
+fn projected(scenario: &Scenario, starts: &[i32]) -> (Vec<Hour>, Vec<DecodedFrame>) {
     let format = FormatVersion::CURRENT;
-    let needs = keyed::needs::<Segments>().unwrap();
+    let needs = super::facts::needs().unwrap();
     let mut out = Vec::new();
     let mut frames: Vec<DecodedFrame> = Vec::new();
     let mut walk: Option<Synthetic> = None;
     let mut world = None;
-    let mut operator = keyed::Operator::<Segments>::new(format).unwrap();
+    let mut operator = Project::new(format).unwrap();
     for (ordinal, hour) in (0..).zip(hours()) {
         let gap = frames.last().is_some_and(|last| last.hour + 1 != hour);
         if walk.is_none() || gap {
@@ -187,7 +187,7 @@ fn projected(scenario: &Scenario, starts: &[i32]) -> (Vec<Hour<Segments>>, Vec<D
             .end(|state, manifest, decoded, first| {
                 let starts = first || cold;
                 if starts {
-                    operator = keyed::Operator::new(format).unwrap();
+                    operator = Project::new(format).unwrap();
                 }
                 let world = dashboard_world::World::at(
                     &mut world,
@@ -257,7 +257,7 @@ fn recorded(frames: Vec<DecodedFrame>) -> Source {
 /// The pages the emit publishes from `hours`, flushed and committed after each of `cuts`' hours,
 /// the last ending the branch; after each of `resumes`, the emit is saved and loaded again, as a
 /// preparation of a grown recording goes on at the next segment's first hour.
-fn build(hours: Vec<Hour<Segments>>, source: &Source, cuts: &[i32], resumes: &[i32]) -> Fixture {
+fn build(hours: Vec<Hour>, source: &Source, cuts: &[i32], resumes: &[i32]) -> Fixture {
     let fixture = Fixture::new();
     let replay = source.replay_ref();
     let context = LoadContext { content: None };
@@ -395,23 +395,29 @@ fn the_scenario_reads_as_the_row_scan_finds_it() {
 }
 
 /// Hours where only what the roster does not read moves (the wing's amounts, the country's
-/// power) and neither table is read hand the emit nothing; the wing's rename does.
+/// power) hand the emit no ace and no design; a read after them gives no ace again, and the read
+/// after the wing's rename gives its one ace alone.
 #[test]
 fn hours_where_nothing_the_roster_reads_moves_hand_on_nothing() {
     let (out, _) = projected(&SCENARIO, &[]);
     let held = |hour: i32| out.iter().find(|held| held.hour == hour).unwrap();
     for hour in [101, 104, 110, 113, 122] {
-        assert!(held(hour).read.is_none(), "{hour}");
+        assert!(
+            matches!(held(hour).roster, Roster::Unread | Roster::Same),
+            "{hour}"
+        );
+        assert!(held(hour).built.is_empty(), "{hour}");
     }
-    let changed = |hour: i32| {
-        held(hour)
-            .read
-            .as_ref()
-            .map_or([false; TABLE_COUNT], |kept| kept.changes.rows_changed)
+    assert!(matches!(held(105).roster, Roster::Same));
+    let Roster::Read(read) = &held(114).roster else {
+        panic!("the read after the wing's rename gives what changed")
     };
-    assert!(changed(112)[TableId::AirWings.index()]);
-    assert!(!changed(112)[TableId::WingEquipment.index()]);
-    assert!(!changed(112)[TableId::Countries.index()]);
+    assert!(!read.whole);
+    assert_eq!(
+        read.seen.iter().map(|seen| seen.row.id).collect::<Vec<_>>(),
+        [1]
+    );
+    assert!(read.gone.is_empty());
 }
 
 /// The scenario with ace 3 retired from the roster at 124, inside the third window.
@@ -508,13 +514,12 @@ fn an_untimed_catalogue_slot_read_names_what_changed_since_its_last_read() {
         0,
         "the slot read at 142 is untimed"
     );
-    let kept = out
+    let held = out
         .iter()
         .find(|held| held.hour == 142)
-        .and_then(|held| held.read.as_ref())
-        .expect("the catalogue's slot read is visited");
-    assert!(kept.changes.slot_read[TableId::VariantDefinitions.index()]);
-    assert!(!kept.changes.rows_changed.contains(&true));
+        .expect("the catalogue's slot read is projected");
+    assert_eq!(held.variants, VariantHour::Read);
+    assert!(held.built.iter().any(|(id, _)| *id == 80));
     let source = recorded(frames);
     let scan = cached(&source, BRANCH, &AtomicBool::new(false)).unwrap();
     assert!(
@@ -649,4 +654,60 @@ fn a_cold_roster_holds_the_values_the_native_pages_publish_at_its_read() {
             "{hour}: the variant's name"
         );
     }
+}
+
+/// A kept manifest takes the content's warnings as each request finds them.
+#[test]
+fn kept_manifests_take_each_requests_content_warnings() {
+    let (projected, frames) = projected(&SCENARIO, &[]);
+    let source = recorded(frames);
+    let fixture = build(projected, &source, &[147], &[]);
+    let (cat, _folder) = catalogue::tests::folder_catalogue(&[]);
+    let cat: io::Result<Arc<Catalogue>> = Ok(Arc::new(cat));
+    let params = AirAcesParams {
+        branch_id: BRANCH.to_string(),
+        view: AirAcesView::Manifest,
+        window: None,
+    };
+    let flag = AtomicBool::new(false);
+    let read = || {
+        serde_json::to_value(
+            prepared::kept_manifest(&source, &fixture.store, &fixture.key, &params, &cat, &flag)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let refused = |reply: &serde_json::Value| {
+        reply["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str().unwrap().contains("synthetic refusal"))
+    };
+    let before = read();
+    assert!(!refused(&before));
+    // Another product's refusal joins the shared catalogue between two reads.
+    cat.as_ref().unwrap().refuse("synthetic refusal", "another text");
+    let after = read();
+    assert!(refused(&after));
+    let mut fresh = Prepared::read(&fixture.store, &fixture.key, None, BRANCH).unwrap();
+    let expected = prepared::with_warnings(
+        fresh
+            .named_manifest(
+                &source,
+                &fixture.store,
+                &fixture.key,
+                &params,
+                cat.as_deref().ok(),
+                &flag,
+            )
+            .unwrap(),
+        cat.as_deref(),
+    )
+    .unwrap();
+    assert_eq!(after, serde_json::to_value(expected).unwrap());
+    assert_eq!(
+        dashboard_base::prepared::query::observations::usage(&source, "air-aces:manifest").2,
+        1
+    );
 }

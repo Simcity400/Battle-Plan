@@ -638,6 +638,7 @@ projected!(
     crate::products::division_log::columnar::Hour,
     navy::facts::Hour,
     land_owners::Hour,
+    air_aces::facts::Hour,
 );
 
 /// A family's emit on the series engine.
@@ -4926,9 +4927,9 @@ impl Native for AirLedger {
     }
 }
 
-/// Air aces: their operators read their hours a segment at a time ([`keyed`]), and each
-/// branch's emit gives them to the walk's roster observer, publishing the pages the walk
-/// published.
+/// Air aces: their operators project each segment's roster changes and named designs, and each
+/// branch's emit keeps them in order, publishing each block's window and, at each flush, the
+/// roster's continuation, read series and variant catalogue.
 struct Aces<'p> {
     source: &'p crate::Source,
     context: &'p crate::config::LoadContext,
@@ -4950,19 +4951,19 @@ fn aces<'p>(
 }
 
 impl Native for Aces<'_> {
-    type Operator = keyed::Operator<air_aces::segment::Segments>;
+    type Operator = air_aces::facts::Project;
     type Branch = Box<air_aces::emit::Emit>;
 
     fn tables(&self) -> &'static [TableId] {
-        air_aces::segment::TABLES
+        air_aces::facts::TABLES
     }
 
     fn needs(&self) -> io::Result<Needs> {
-        keyed::needs::<air_aces::segment::Segments>()
+        air_aces::facts::needs()
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        keyed::Operator::new(self.replay.format)
+        air_aces::facts::Project::new(self.replay.format)
     }
 
     fn branch(&self, branch: u64, _: i32) -> io::Result<Self::Branch> {
@@ -4974,7 +4975,7 @@ impl Native for Aces<'_> {
         state: &mut Self::Branch,
         stage: &mut Stage<'_, '_>,
         _: u64,
-        hour: keyed::Hour<air_aces::segment::Segments>,
+        hour: air_aces::facts::Hour,
     ) -> io::Result<()> {
         let cancelled = AtomicBool::new(false);
         state.observe(

@@ -1,19 +1,12 @@
-//! Air aces' ordered emit on one branch: the observer the row walk kept ([`Prepared`]), given
-//! the hours a segment's readers kept ([`super::segment`]) in order as the walk gave it frames,
-//! each quiet hour on the frame of the last kept, and publishing the pages the walk published:
-//! each replay block's window once its hours are observed, and at each flush the roster
-//! continuation, its read series and its variant catalogue.
+//! Air aces' ordered emit on one branch: each hour its segments' operators projected
+//! ([`super::facts`]), in order, kept in the branch's roster, variant catalogue and portraits
+//! ([`Prepared`]), publishing each replay block's window once its hours are kept, and at each
+//! flush the roster continuation, its read series and its variant catalogue.
 
-use super::{
-    prepared::Prepared,
-    segment::{Kept, Segments, TABLES},
-};
-use dashboard_base::{prepared::frame_changes::FrameChanges, source::Source};
+use super::{facts::Hour, prepared::Prepared};
+use dashboard_base::source::Source;
 use dashboard_core::config::LoadContext;
-use dashboard_keyed::segment::Hour;
 use replay::container::Replay;
-use replay_data::rows::{TABLE_COUNT, TableId};
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
@@ -28,8 +21,8 @@ fn blocks(replay: &Replay, branch: u64) -> Vec<usize> {
         .collect()
 }
 
-/// What a branch's emit saves: its observer after its last flush, its variant keys, the next
-/// block it publishes, and the rows its retained runs hold, which its observer does not save
+/// What a branch's emit saves: its state after its last flush, its variant keys, the next block
+/// it publishes, and the rows its retained runs hold, which its state does not save
 /// ([`Prepared::run_rows`]).
 #[derive(Serialize)]
 struct Saving<'a> {
@@ -50,35 +43,23 @@ struct Saved {
 /// The family's emit on one branch.
 pub struct Emit {
     prepared: Box<Prepared>,
-    /// The frame the observer reads: the views of the last hour kept.
-    frame: DecodedFrame,
     branch: u64,
     blocks: Vec<usize>,
     /// The next of `blocks` it publishes.
     next: usize,
 }
 
-fn frame(branch: u64) -> DecodedFrame {
-    DecodedFrame {
-        branch,
-        hour: 0,
-        tables: std::array::from_fn(|_| not_selected()),
-        metrics: Metrics::default(),
-    }
-}
-
 impl Emit {
     pub fn new(replay: &Replay, branch: u64) -> Self {
         Self {
             prepared: Box::default(),
-            frame: frame(branch),
             branch,
             blocks: blocks(replay, branch),
             next: 0,
         }
     }
 
-    /// Observes one hour, publishing every block ending before it first and the block it ends
+    /// Keeps one hour, publishing every block ending before it first and the block it ends
     /// after it.
     pub fn observe(
         &mut self,
@@ -86,31 +67,12 @@ impl Emit {
         source: &Source,
         replay: &Replay,
         context: &LoadContext,
-        hour: Hour<Segments>,
+        hour: Hour,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let at = hour.hour;
         self.publish(writer, source, replay, context, at, cancelled)?;
-        let changes = match hour.read {
-            None => {
-                let mut slot_read = [false; TABLE_COUNT];
-                slot_read[TableId::AirAces.index()] = hour.dated;
-                FrameChanges::observed([false; TABLE_COUNT], [false; TABLE_COUNT], slot_read, None)
-            }
-            Some(Kept {
-                views,
-                metrics,
-                changes,
-            }) => {
-                for (&table, view) in TABLES.iter().zip(views.into_vec()) {
-                    self.frame.tables[table.index()] = view;
-                }
-                self.frame.metrics = *metrics;
-                *changes
-            }
-        };
-        self.frame.hour = at;
-        self.prepared.observe_changed(&self.frame, replay, &changes)?;
+        self.prepared.observe(hour)?;
         self.publish(writer, source, replay, context, at.saturating_add(1), cancelled)
     }
 
@@ -162,8 +124,8 @@ impl Emit {
         dashboard_base::prepared::series::compress(&serde_json::to_vec(&saving)?, 3)
     }
 
-    /// The emit [`Self::save`] wrote. It goes on at a segment's first hour, which restates
-    /// every table.
+    /// The emit [`Self::save`] wrote. It goes on at a segment's first hour, whose operator
+    /// gives every ace and every design whole.
     pub fn load(replay: &Replay, branch: u64, saved: &[u8]) -> io::Result<Self> {
         let bytes = dashboard_base::prepared::series::decompress(saved)?;
         let Saved {
@@ -176,7 +138,6 @@ impl Emit {
         prepared.restore_run_rows(&rows)?;
         Ok(Self {
             prepared: Box::new(prepared),
-            frame: frame(branch),
             branch,
             blocks: blocks(replay, branch),
             next,

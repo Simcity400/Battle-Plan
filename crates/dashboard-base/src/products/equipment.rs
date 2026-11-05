@@ -943,6 +943,31 @@ pub struct VariantCatalogue {
     pub work: crate::prepared::observer_tests::Work,
 }
 
+/// Whether two reads' operands are equal but for the hour each was read at.
+fn same_operands(left: &RawVariant, right: &RawVariant) -> bool {
+    let RawVariant {
+        id,
+        first_hour: _,
+        token,
+        display_name,
+        suffix,
+        append,
+        name_tag,
+        type_tag,
+        design,
+        refusals,
+    } = left;
+    *id == right.id
+        && *token == right.token
+        && *display_name == right.display_name
+        && *suffix == right.suffix
+        && *append == right.append
+        && *name_tag == right.name_tag
+        && *type_tag == right.type_tag
+        && *design == right.design
+        && *refusals == right.refusals
+}
+
 /// What the variant catalogue reads of an hour besides a complete read's rows
 /// ([`VariantCatalogue::hour_of`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1240,14 +1265,9 @@ impl VariantCatalogue {
         changed: &mut Vec<(u64, VariantVersion)>,
     ) {
         let versions = self.versions.entry(id).or_default();
-        let same = versions.last().is_some_and(|last| {
-            last.raw.as_ref().is_some_and(|last| {
-                RawVariant {
-                    first_hour: hour,
-                    ..last.clone()
-                } == raw
-            })
-        });
+        let same = versions
+            .last()
+            .is_some_and(|last| last.raw.as_ref().is_some_and(|last| same_operands(last, &raw)));
         if !same {
             let version = VariantVersion {
                 first_hour: hour,

@@ -27,13 +27,15 @@ use dashboard_text::{
     metadata::{LinkTags, branch_bounds, slot_read},
 };
 use installed_content_localisation::localisation::Argument;
+use facts::{Read, Roster};
 use replay::container::Replay;
-use replay_data::{rows::AirAceRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView, frame::ViewIdentity};
+use replay_data::{rows::AirAceRow, rows::RowCodec, rows::TableId, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
     io,
+    mem::size_of,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -52,8 +54,8 @@ pub struct AirAcePortraits;
 #[cfg(test)]
 mod columnar_tests;
 pub mod emit;
+pub mod facts;
 pub mod prepared;
-pub mod segment;
 mod served;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, TS)]
@@ -203,37 +205,184 @@ pub struct AirAcePortraitReply {
     pub warnings: Vec<String>,
 }
 
-// Keep the first decoded roster instead of copying its strings once per ace.
-// Later changes own only their changed row, never another entire roster.
-#[derive(Clone, Debug)]
-enum RecordedAce {
-    Initial { table: SharedView, index: usize },
-    Changed(Box<AirAceRow>),
+/// One ace as a roster read gives it: its row, and what the read joins to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sighting {
+    row: AirAceRow,
+    tag: Option<String>,
+    variants: Option<Vec<u64>>,
+    wing_name: Option<Vec<u8>>,
+    killer_tag: Option<String>,
 }
-impl std::ops::Deref for RecordedAce {
-    type Target = AirAceRow;
-    fn deref(&self) -> &AirAceRow {
-        match self {
-            Self::Initial { table, index } => {
-                let TableView::Complete(rows) = &**table else {
-                    unreachable!("retained complete ace roster")
-                };
-                &rows.rows::<tables::AirAces>().expect("retained ace rows")[*index]
-            }
-            Self::Changed(row) => row,
+
+impl Sighting {
+    /// The bytes it owns on the heap.
+    pub(crate) fn heap(&self) -> usize {
+        RowCodec::heap_bytes(&self.row)
+            + self.tag.as_ref().map_or(0, String::capacity)
+            + self
+                .variants
+                .as_ref()
+                .map_or(0, |ids| ids.capacity() * size_of::<u64>())
+            + self.wing_name.as_ref().map_or(0, Vec::capacity)
+            + self.killer_tag.as_ref().map_or(0, String::capacity)
+    }
+}
+
+/// [`Sighting`] borrowed from the read that gives it.
+#[derive(Clone, Copy)]
+pub(crate) struct Joined<'r> {
+    row: &'r AirAceRow,
+    tag: Option<&'r String>,
+    variants: Option<&'r [u64]>,
+    wing_name: Option<&'r Vec<u8>>,
+    killer_tag: Option<&'r String>,
+}
+
+impl Joined<'_> {
+    pub(crate) fn id(&self) -> u64 {
+        self.row.id
+    }
+
+    pub(crate) fn is(&self, seen: &Sighting) -> bool {
+        *self.row == seen.row
+            && self.tag == seen.tag.as_ref()
+            && self.variants == seen.variants.as_deref()
+            && self.wing_name == seen.wing_name.as_ref()
+            && self.killer_tag == seen.killer_tag.as_ref()
+    }
+
+    pub(crate) fn owned(&self) -> Sighting {
+        Sighting {
+            row: self.row.clone(),
+            tag: self.tag.cloned(),
+            variants: self.variants.map(<[u64]>::to_vec),
+            wing_name: self.wing_name.cloned(),
+            killer_tag: self.killer_tag.cloned(),
         }
     }
 }
+
+/// Whether a roster read holds an ace twice, which makes it a gap.
+pub(crate) fn duplicated(rows: &[AirAceRow]) -> bool {
+    let mut ids = HashSet::with_capacity(rows.len());
+    rows.iter().any(|row| !ids.insert(row.id))
+}
+
+/// Each ace of a roster read, in roster order, with what the read joins to it: its owner's and
+/// killer's tags, its wing's variants by ordinal and the wing's stored name.
+pub(crate) fn join(
+    frame: &DecodedFrame,
+    rows: &[AirAceRow],
+    tags: &mut LinkTags,
+    refusals: &mut Refusals,
+    wing_refusals: &mut Refusals,
+    mut each: impl FnMut(Joined<'_>),
+) {
+    let tags_known = tags.update(frame).is_ok();
+    let assigned: HashSet<u64> = rows
+        .iter()
+        .map(|row| row.assigned_wing)
+        .filter(|wing| *wing != 0)
+        .collect();
+    let equipment = frame.complete::<tables::WingEquipment>().ok();
+    let wings: HashSet<u64> = frame
+        .complete::<tables::AirWings>()
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|row| row.id)
+        .filter(|id| assigned.contains(id))
+        .collect();
+    let mut by_wing: HashMap<u64, Vec<(u32, u64)>> = HashMap::new();
+    for row in equipment
+        .into_iter()
+        .flatten()
+        .filter(|row| assigned.contains(&row.wing))
+    {
+        by_wing
+            .entry(row.wing)
+            .or_default()
+            .push((row.ordinal, row.variant));
+    }
+    let by_wing: HashMap<u64, Vec<u64>> = by_wing
+        .into_iter()
+        .map(|(wing, mut rows)| {
+            rows.sort_unstable();
+            (wing, rows.into_iter().map(|(_, id)| id).collect())
+        })
+        .collect();
+    let names = dashboard_text::air_wing_names::recorded_names(frame, &assigned, wing_refusals);
+    let tags = &*tags;
+    for row in rows {
+        let tag = tags_known.then(|| tags.get(row.country)).flatten();
+        if tag.is_none() {
+            refusals.note(
+                "Ace owner country link has no resolved recorded tag",
+                row.country.to_string(),
+            );
+        }
+        let variants = if row.assigned_wing == 0 {
+            Some(&[][..])
+        } else if equipment.is_some() && wings.contains(&row.assigned_wing) {
+            Some(
+                by_wing
+                    .get(&row.assigned_wing)
+                    .map_or(&[][..], Vec::as_slice),
+            )
+        } else {
+            None
+        };
+        let killer_tag = row.death.as_ref().and_then(|death| {
+            tags_known
+                .then(|| tags.get(death.killer_country))
+                .flatten()
+        });
+        each(Joined {
+            row,
+            tag,
+            variants,
+            wing_name: names.get(&row.assigned_wing),
+            killer_tag,
+        });
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Facts {
-    #[serde(skip, default = "unrestored_ace")]
-    row: RecordedAce,
+    /// Saved apart from the continuation, which no reply reads it from.
+    #[serde(skip)]
+    row: AirAceRow,
     tag: Option<String>,
     variants: Option<Vec<u64>>,
     wing_name: Option<Vec<u8>>,
     last_alive: Option<i32>,
     dead_by: Option<i32>,
     killer_tag: Option<String>,
+}
+
+impl Facts {
+    fn new(seen: Sighting, last_alive: Option<i32>, dead_by: Option<i32>) -> Self {
+        Self {
+            row: seen.row,
+            tag: seen.tag,
+            variants: seen.variants,
+            wing_name: seen.wing_name,
+            last_alive,
+            dead_by,
+            killer_tag: seen.killer_tag,
+        }
+    }
+
+    fn same(&self, seen: &Sighting, last_alive: Option<i32>, dead_by: Option<i32>) -> bool {
+        self.row == seen.row
+            && self.tag == seen.tag
+            && self.variants == seen.variants
+            && self.wing_name == seen.wing_name
+            && self.last_alive == last_alive
+            && self.dead_by == dead_by
+            && self.killer_tag == seen.killer_tag
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Run {
@@ -250,6 +399,15 @@ struct Ace {
     dead_by: Option<i32>,
     runs: Vec<Run>,
 }
+
+/// Which aces an hour's roster gave anew: none, every one, or, of a read that gave only what
+/// changed, those it gave and those it no longer holds (indices into [`Scan::aces`]).
+enum Touched {
+    None,
+    All,
+    Changes { seen: Vec<usize>, gone: Vec<usize> },
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Scan {
     /// The recording's format, which dates its daily tables
@@ -263,34 +421,21 @@ struct Scan {
     unread: bool,
     last_frame: Option<i32>,
     read_through: Option<i32>,
-    #[serde(skip)]
-    country_keys: Option<dashboard_text::metadata::CountryKeys>,
-    #[serde(skip)]
-    country_dirty: bool,
-    #[serde(skip)]
-    country_frame: Option<(u64, i32)>,
-    #[cfg(test)]
-    #[serde(skip)]
-    work: dashboard_base::prepared::observer_tests::Work,
     known: bool,
     aces: Vec<Ace>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     indices: HashMap<u64, usize>,
-    active: Vec<usize>,
+    active: BTreeSet<usize>,
     observed: Vec<HourSpan>,
     reads: Vec<i32>,
-    #[serde(skip)]
-    from: Vec<ViewIdentity>,
     variant_ids: BTreeSet<u64>,
     variants: VariantCatalogue,
+    /// The row reads' tags; a native roster's are its operators'.
+    #[serde(skip)]
     tags: LinkTags,
     warnings: BTreeSet<String>,
     refusals: Refusals,
     wing_refusals: Refusals,
-}
-
-fn unrestored_ace() -> RecordedAce {
-    RecordedAce::Changed(Box::default())
 }
 
 fn bounded<T: Serialize>(reply: T, kind: &str) -> io::Result<T> {
@@ -312,316 +457,117 @@ fn cancelled(flag: &AtomicBool) -> io::Result<()> {
     }
 }
 
+/// Ends `ace`'s last run at `last`, dating the ace to the roster's last read, `read`.
+fn close_ace(ace: &mut Ace, read: Option<i32>, last: i32) {
+    if let Some(read) = read {
+        ace.last_read = Some(read);
+        if ace.runs.last().is_some_and(|run| run.facts.row.alive != 0) {
+            ace.last_alive = Some(read);
+        }
+    }
+    if let Some(run) = ace.runs.last_mut() {
+        run.last = last;
+    }
+}
+
 impl Scan {
     fn close(&mut self, last: i32) {
         for &index in &self.active {
-            #[cfg(test)]
-            {
-                self.work.history_visits += 1;
-            }
-            let ace = &mut self.aces[index];
-            if let Some(read) = self.read_through {
-                ace.last_read = Some(read);
-                if ace.runs.last().is_some_and(|run| run.facts.row.alive != 0) {
-                    ace.last_alive = Some(read);
-                }
-            }
-            if let Some(run) = self.aces[index].runs.last_mut() {
-                run.last = last;
-            }
+            close_ace(&mut self.aces[index], self.read_through, last);
         }
     }
+
+    /// What is known of the roster ends at `last`.
+    fn end(&mut self, last: i32) {
+        self.close(last);
+        self.active.clear();
+        self.known = false;
+        self.read_through = None;
+    }
+
     #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame) {
         self.variants.observe(self.format, frame);
-        self.observe_roster(frame, None);
+        self.observe_roster(frame)
+            .expect("a row read gives every ace");
     }
-    fn observe_roster(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
-    ) -> bool {
-        let mut changed = false;
-        let hour = frame.hour;
-        // The roster can skip reads while country balances keep changing.
-        // Retain identity invalidation from every intervening hour; only a
-        // roster read may confirm the complete projection and clear it.
-        let country_continuous = self.country_frame.is_some_and(|(branch, last)| {
-            branch == frame.branch && last.checked_add(1) == Some(hour)
-        });
-        self.country_frame = Some((frame.branch, hour));
-        self.country_dirty = self.country_dirty
-            || !country_continuous
-            || self.country_keys.as_ref().is_none_or(|keys| {
-                #[cfg(test)]
-                let before = keys.row_visits();
-                let kept = frame.complete::<tables::Countries>().is_ok_and(|rows| {
-                    keys.kept_changes(
-                        rows.len(),
-                        changes.and_then(|changes| changes.rows(TableId::Countries)),
-                    )
-                });
-                #[cfg(test)]
-                {
-                    self.work.row_visits += keys.row_visits() - before;
-                }
-                !kept
-            });
-        if self
-            .last_frame
-            .is_some_and(|last| last.checked_add(1) != Some(hour))
-        {
-            self.close(self.last_frame.unwrap());
-            self.active.clear();
-            self.known = false;
-            self.read_through = None;
-            changed = true;
-        }
-        let rows = frame.complete::<tables::AirAces>();
-        let read = changes.map_or_else(
-            || slot_read(self.format, &frame.metrics, TableId::AirAces, hour),
-            |changes| changes.slot_read[TableId::AirAces.index()],
-        );
-        match rows {
-            Err(_) => {
-                self.close(self.last_frame.unwrap_or(hour.saturating_sub(1)));
-                self.active.clear();
-                self.known = false;
-                self.read_through = None;
-                changed = true;
-            }
-            Ok(rows) if read => {
-                let same_roster = self.known
-                    && self.from.first().is_some_and(|identity| {
-                        identity.is(&frame.tables[TableId::AirAces.index()])
-                    });
-                let mut ids = HashSet::new();
-                if !same_roster
-                    && rows.iter().any(|row| {
-                        #[cfg(test)]
-                        {
-                            self.work.row_visits += 1;
-                        }
-                        !ids.insert(row.id)
-                    })
-                {
-                    self.close(hour.saturating_sub(1));
-                    self.active.clear();
-                    self.known = false;
-                    self.refusals
-                        .note("Duplicate ace reference; read is a gap", hour.to_string());
-                    self.read_through = None;
-                    self.last_frame = Some(hour);
-                    return true;
-                }
-                let inputs = [
-                    TableId::AirAces,
-                    TableId::Countries,
-                    TableId::CountryLinks,
-                    TableId::AirWings,
-                    TableId::WingEquipment,
-                    TableId::Raids,
-                    TableId::RaidTooltipOperands,
-                ];
-                let country_same = !self.country_dirty
-                    || self.country_keys.as_ref().is_some_and(|keys| {
-                        #[cfg(test)]
-                        let before = keys.row_visits();
-                        let same = frame
-                            .complete::<tables::Countries>()
-                            .is_ok_and(|rows| keys.same(rows));
-                        #[cfg(test)]
-                        {
-                            self.work.row_visits += keys.row_visits() - before;
-                        }
-                        same
-                    });
-                self.country_dirty = !country_same;
-                if self.known
-                    && self.from.len() == inputs.len()
-                    && self.from.iter().zip(inputs).all(|(identity, table)| {
-                        if table == TableId::Countries {
-                            country_same
-                        } else {
-                            // These stamps date the last roster, not the
-                            // previous hour whose delta `changes` describes.
-                            identity.is(&frame.tables[table.index()])
-                        }
-                    })
-                {
-                    self.read_through = Some(hour);
+
+    /// One hour of a row recording, whose every read gives every ace.
+    fn observe_roster(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        let roster = match frame.complete::<tables::AirAces>() {
+            Err(_) => Roster::Unknown,
+            Ok(rows) if slot_read(self.format, &frame.metrics, TableId::AirAces, frame.hour) => {
+                if duplicated(rows) {
+                    Roster::Duplicate
                 } else {
-                    changed = true;
-                    self.close(hour.saturating_sub(1));
-                    self.country_keys = frame
-                        .complete::<tables::Countries>()
-                        .ok()
-                        .map(dashboard_text::metadata::CountryKeys::read);
-                    self.country_dirty = self.country_keys.is_none();
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += rows.len();
-                    }
-                    let previous_read = self.known.then(|| self.reads.last().copied()).flatten();
-                    self.active.clear();
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += frame
-                            .complete::<tables::Countries>()
-                            .map_or(0, |rows| rows.len())
-                            + frame
-                                .complete::<tables::CountryLinks>()
-                                .map_or(0, |rows| rows.len());
-                    }
-                    let tags_known = self.tags.update(frame).is_ok();
-                    let equipment = frame.complete::<tables::WingEquipment>().ok();
-                    let wings = frame.complete::<tables::AirWings>().ok();
-                    let wing_ids: HashSet<u64> = wings
-                        .into_iter()
-                        .flatten()
-                        .map(|row| {
-                            #[cfg(test)]
-                            {
-                                self.work.row_visits += 1;
-                            }
-                            row.id
-                        })
-                        .collect();
-                    let mut by_wing: HashMap<u64, Vec<(u32, u64)>> = HashMap::new();
-                    for row in equipment.into_iter().flatten() {
-                        #[cfg(test)]
-                        {
-                            self.work.row_visits += 1;
-                        }
-                        by_wing
-                            .entry(row.wing)
-                            .or_default()
-                            .push((row.ordinal, row.variant));
-                    }
-                    for rows in by_wing.values_mut() {
-                        rows.sort_unstable();
-                    }
-                    let by_wing: HashMap<u64, Vec<u64>> = by_wing
-                        .into_iter()
-                        .map(|(wing, rows)| (wing, rows.into_iter().map(|(_, id)| id).collect()))
-                        .collect();
-                    let assigned_wings = rows
-                        .iter()
-                        .map(|row| row.assigned_wing)
-                        .filter(|wing| *wing != 0)
-                        .collect();
-                    let names = dashboard_text::air_wing_names::recorded_names(
+                    let mut seen = Vec::with_capacity(rows.len());
+                    join(
                         frame,
-                        &assigned_wings,
+                        rows,
+                        &mut self.tags,
+                        &mut self.refusals,
                         &mut self.wing_refusals,
+                        |ace| seen.push(ace.owned()),
                     );
-                    self.aces
-                        .reserve(rows.len().saturating_sub(self.aces.len()));
-                    self.indices
-                        .reserve(rows.len().saturating_sub(self.indices.len()));
-                    self.active.reserve(rows.len());
-                    let initial = self.aces.is_empty();
-                    for (position, row) in rows.iter().enumerate() {
-                        let index = match self.indices.entry(row.id) {
-                            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                            std::collections::hash_map::Entry::Vacant(entry) => {
-                                let index = self.aces.len();
-                                self.aces.push(Ace {
-                                    id: row.id,
-                                    first_seen: hour,
-                                    last_read: None,
-                                    last_alive: None,
-                                    dead_by: None,
-                                    runs: Vec::with_capacity(1),
-                                });
-                                entry.insert(index);
-                                index
-                            }
-                        };
-                        let ace = &mut self.aces[index];
-                        let continues = previous_read.is_some() && ace.last_read == previous_read;
-                        ace.last_read = Some(hour);
-                        if row.alive != 0 {
-                            ace.last_alive = Some(hour);
-                            ace.dead_by = None;
-                        } else if ace.dead_by.is_none() && ace.last_alive.is_some() {
-                            ace.dead_by = Some(hour);
-                        }
-                        let tag = tags_known.then(|| self.tags.get(row.country)).flatten();
-                        if tag.is_none() {
-                            self.refusals.note(
-                                "Ace owner country link has no resolved recorded tag",
-                                row.country.to_string(),
-                            );
-                        }
-                        let variants = if row.assigned_wing == 0 {
-                            Some(&[][..])
-                        } else if equipment.is_some() && wing_ids.contains(&row.assigned_wing) {
-                            Some(
-                                by_wing
-                                    .get(&row.assigned_wing)
-                                    .map_or(&[][..], Vec::as_slice),
-                            )
-                        } else {
-                            None
-                        };
-                        self.variant_ids
-                            .extend(variants.into_iter().flatten().copied());
-                        let killer_tag = row.death.as_ref().and_then(|death| {
-                            tags_known
-                                .then(|| self.tags.get(death.killer_country))
-                                .flatten()
-                        });
-                        let wing_name = names.get(&row.assigned_wing);
-                        let last_alive = if row.alive == 0 { ace.last_alive } else { None };
-                        if continues
-                            && ace.runs.last().is_some_and(|run| {
-                                let facts = &run.facts;
-                                *facts.row == *row
-                                    && facts.tag.as_ref() == tag
-                                    && facts.variants.as_deref() == variants
-                                    && facts.wing_name.as_ref() == wing_name
-                                    && facts.last_alive == last_alive
-                                    && facts.dead_by == ace.dead_by
-                                    && facts.killer_tag.as_ref() == killer_tag
-                            })
-                        {
-                            ace.runs.last_mut().unwrap().last = hour;
-                        } else {
-                            let facts = Facts {
-                                row: if initial {
-                                    RecordedAce::Initial {
-                                        table: frame.tables[TableId::AirAces.index()].clone(),
-                                        index: position,
-                                    }
-                                } else {
-                                    RecordedAce::Changed(Box::new(row.clone()))
-                                },
-                                tag: tag.cloned(),
-                                variants: variants.map(<[u64]>::to_vec),
-                                wing_name: wing_name.cloned(),
-                                last_alive,
-                                dead_by: ace.dead_by,
-                                killer_tag: killer_tag.cloned(),
-                            };
-                            ace.runs.push(Run {
-                                first: hour,
-                                last: hour,
-                                facts,
-                            });
-                        }
-                        self.active.push(index);
-                    }
-                    self.from = inputs
-                        .iter()
-                        .map(|table| frame.tables[table.index()].identity())
-                        .collect();
+                    Roster::Read(Box::new(Read {
+                        whole: true,
+                        seen,
+                        gone: Vec::new(),
+                    }))
                 }
+            }
+            Ok(_) => Roster::Unread,
+        };
+        self.hour(frame.hour, roster).map(drop)
+    }
+
+    /// Keeps one hour of the roster: which aces it gave anew.
+    fn hour(&mut self, hour: i32, roster: Roster) -> io::Result<Touched> {
+        let mut touched = Touched::None;
+        if let Some(last) = self.last_frame
+            && last.checked_add(1) != Some(hour)
+        {
+            self.end(last);
+            touched = Touched::All;
+        }
+        match roster {
+            Roster::Unread => {}
+            Roster::Unknown => {
+                self.end(self.last_frame.unwrap_or(hour.saturating_sub(1)));
+                touched = Touched::All;
+            }
+            Roster::Duplicate => {
+                self.end(hour.saturating_sub(1));
+                self.refusals
+                    .note("Duplicate ace reference; read is a gap", hour.to_string());
+                self.last_frame = Some(hour);
+                return Ok(Touched::All);
+            }
+            Roster::Same => {
+                if !self.known {
+                    return Err(dashboard_core::invalid(
+                        "An ace roster read repeats a read not known",
+                    ));
+                }
+                self.read_through = Some(hour);
+                self.reads.push(hour);
+            }
+            Roster::Read(read) => {
+                let Read { whole, seen, gone } = *read;
+                touched = if whole {
+                    self.read_whole(hour, seen);
+                    Touched::All
+                } else if self.known {
+                    self.read_changes(hour, seen, &gone)?
+                } else {
+                    return Err(dashboard_core::invalid(
+                        "An ace roster read changes a read not known",
+                    ));
+                };
                 self.known = true;
                 self.read_through = Some(hour);
                 self.reads.push(hour);
             }
-            Ok(_) => {}
         }
         if self.known {
             match self.observed.last_mut() {
@@ -633,7 +579,113 @@ impl Scan {
             }
         }
         self.last_frame = Some(hour);
-        changed
+        Ok(touched)
+    }
+
+    /// A read giving every ace.
+    fn read_whole(&mut self, hour: i32, seen: Vec<Sighting>) {
+        self.close(hour.saturating_sub(1));
+        let previous = self.known.then(|| self.reads.last().copied()).flatten();
+        self.active.clear();
+        self.aces.reserve(seen.len().saturating_sub(self.aces.len()));
+        self.indices
+            .reserve(seen.len().saturating_sub(self.indices.len()));
+        for seen in seen {
+            let index = self.sight(hour, seen, previous);
+            self.active.insert(index);
+        }
+    }
+
+    /// A read giving only the aces it gives otherwise than the read before, from which every
+    /// other ace it holds goes on, and the aces it no longer holds.
+    fn read_changes(
+        &mut self,
+        hour: i32,
+        seen: Vec<Sighting>,
+        gone: &[u64],
+    ) -> io::Result<Touched> {
+        let previous = self.reads.last().copied();
+        let before = hour.saturating_sub(1);
+        let mut left = Vec::with_capacity(gone.len());
+        for id in gone {
+            let index = *self
+                .indices
+                .get(id)
+                .ok_or_else(|| dashboard_core::invalid("An ace left a roster it was never in"))?;
+            if !self.active.remove(&index) {
+                return Err(dashboard_core::invalid(
+                    "An ace left a roster it was not in",
+                ));
+            }
+            close_ace(&mut self.aces[index], self.read_through, before);
+            left.push(index);
+        }
+        let mut given = Vec::with_capacity(seen.len());
+        for seen in seen {
+            if let Some(&index) = self.indices.get(&seen.row.id)
+                && self.active.contains(&index)
+            {
+                close_ace(&mut self.aces[index], self.read_through, before);
+            }
+            let index = self.sight(hour, seen, previous);
+            self.active.insert(index);
+            given.push(index);
+        }
+        Ok(Touched::Changes {
+            seen: given,
+            gone: left,
+        })
+    }
+
+    /// One ace a read at `hour` gave, the roster's read before it at `previous`: its index.
+    fn sight(&mut self, hour: i32, seen: Sighting, previous: Option<i32>) -> usize {
+        let index = match self.indices.entry(seen.row.id) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let index = self.aces.len();
+                self.aces.push(Ace {
+                    id: seen.row.id,
+                    first_seen: hour,
+                    last_read: None,
+                    last_alive: None,
+                    dead_by: None,
+                    runs: Vec::with_capacity(1),
+                });
+                entry.insert(index);
+                index
+            }
+        };
+        self.variant_ids
+            .extend(seen.variants.iter().flatten().copied());
+        let ace = &mut self.aces[index];
+        let continues = previous.is_some() && ace.last_read == previous;
+        ace.last_read = Some(hour);
+        if seen.row.alive != 0 {
+            ace.last_alive = Some(hour);
+            ace.dead_by = None;
+        } else if ace.dead_by.is_none() && ace.last_alive.is_some() {
+            ace.dead_by = Some(hour);
+        }
+        let last_alive = if seen.row.alive == 0 {
+            ace.last_alive
+        } else {
+            None
+        };
+        if continues
+            && ace
+                .runs
+                .last()
+                .is_some_and(|run| run.facts.same(&seen, last_alive, ace.dead_by))
+        {
+            ace.runs.last_mut().expect("compared run").last = hour;
+        } else {
+            ace.runs.push(Run {
+                first: hour,
+                last: hour,
+                facts: Facts::new(seen, last_alive, ace.dead_by),
+            });
+        }
+        index
     }
     #[cfg(test)]
     fn at(&self, id: u64, hour: i32) -> Option<&Run> {
