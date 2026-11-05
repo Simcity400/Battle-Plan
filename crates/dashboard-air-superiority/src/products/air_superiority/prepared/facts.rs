@@ -3,28 +3,18 @@
 //! active region's representatives' pairs and running activity.
 use super::*;
 use crate::products::air_superiority::daily::{Day, Operands, Pair, Roster, Theatres};
-#[cfg(any(test, feature = "test-support"))]
 use crate::products::air_superiority::daily::{self, Group};
 use dashboard_base::prepared::facts::{Checkpoint, Facts, Limits, MemoryBudget, ReadPages};
-#[cfg(any(test, feature = "test-support"))]
 use dashboard_base::prepared::facts::{Namespace, Status};
 
 // The column names the writer opens; a reader restores them from its checkpoints.
-#[cfg(any(test, feature = "test-support"))]
 const FAMILY: &str = "air-superiority";
-#[cfg(any(test, feature = "test-support"))]
 const DAYS: &str = "air-superiority-days";
-#[cfg(any(test, feature = "test-support"))]
 const SETS: &str = "air-superiority-sets";
-#[cfg(any(test, feature = "test-support"))]
 const ROSTERS: &str = "air-superiority-rosters";
-#[cfg(any(test, feature = "test-support"))]
 const OPERANDS: &str = "air-superiority-operands";
-#[cfg(any(test, feature = "test-support"))]
 const THEATRES: &str = "air-superiority-theatres";
-#[cfg(any(test, feature = "test-support"))]
 const PAIRS: &str = "air-superiority-pairs";
-#[cfg(any(test, feature = "test-support"))]
 const ACTIVITY: &str = "air-superiority-activity";
 
 fn limits() -> Limits {
@@ -59,7 +49,6 @@ pub(super) struct Columns {
 }
 
 impl Columns {
-    #[cfg(any(test, feature = "test-support"))]
     fn new(branch: u64, budget: &MemoryBudget) -> io::Result<Self> {
         let open = |column| Namespace::new(FAMILY, branch, column);
         Ok(Self {
@@ -97,7 +86,6 @@ impl Columns {
 }
 
 /// A tag set's slot in the operands, each deduplicated against its last.
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy)]
 pub(super) enum Slot {
     Present,
@@ -118,20 +106,16 @@ pub(super) struct Ledger {
     operands: Option<(Operands, u32)>,
     theatres: Option<(Theatres, u32)>,
     totals: BTreeMap<u32, u128>,
-    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     columns: Option<Box<Columns>>,
-    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pending: Pending,
-    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     held: Option<Box<Held>>,
 }
 
 /// The composition of the last day's operands and roster, by their ids,
 /// with the roster's representatives in tag order.
-#[cfg(any(test, feature = "test-support"))]
 struct Held {
     operands: u32,
     roster: Option<u32>,
@@ -140,7 +124,6 @@ struct Held {
     representatives: Vec<String>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Pending {
     sets: Vec<(u32, Vec<String>)>,
@@ -152,7 +135,6 @@ struct Pending {
     activity: Vec<(i32, u32, u128)>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn next(counter: &mut u32) -> io::Result<u32> {
     let id = *counter;
     *counter = id
@@ -171,7 +153,6 @@ impl Ledger {
     }
 
     /// The id of `tags` in `slot`: the slot's last set's when equal.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn set(&mut self, slot: Slot, tags: &Arc<BTreeSet<String>>) -> io::Result<u32> {
         if let Some((set, id)) = &self.sets[slot as usize]
             && (Arc::ptr_eq(set, tags) || set == tags)
@@ -186,7 +167,6 @@ impl Ledger {
 
     /// The id of `roster` assigned under faction `names`: the last roster's
     /// when both are equal.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn roster(&mut self, roster: Roster, names: Vec<String>) -> io::Result<u32> {
         if let Some((held, held_names, id)) = &self.roster
             && *held == roster
@@ -200,7 +180,6 @@ impl Ledger {
         Ok(id)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn operands(&mut self, operands: Operands) -> io::Result<u32> {
         if let Some((held, id)) = &self.operands
             && *held == operands
@@ -213,7 +192,6 @@ impl Ledger {
         Ok(id)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn theatres(&mut self, theatres: Theatres) -> io::Result<u32> {
         if let Some((held, id)) = &self.theatres
             && *held == theatres
@@ -227,7 +205,6 @@ impl Ledger {
     }
 
     /// A finished day, with each active region's pairs and activity.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn day(&mut self, day: i32, fact: Day, regions: Vec<(u32, Vec<Pair>, u128)>) {
         for (region, pairs, activity) in regions {
             let total = self.totals.entry(region).or_default();
@@ -266,7 +243,6 @@ impl Ledger {
     }
 
     /// Append the pending facts and checkpoint every column.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn flush(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
         let budget = MemoryBudget::preparation();
         if self.columns.is_none() {
@@ -336,7 +312,6 @@ impl Ledger {
 }
 
 /// A finished day as the observer holds it at the day's sample hour.
-#[cfg(any(test, feature = "test-support"))]
 pub(super) struct Sample<'a> {
     pub hour: i32,
     pub operands: &'a scan::ScoreOperands,
@@ -351,12 +326,10 @@ pub(super) struct Sample<'a> {
     pub active: &'a BTreeSet<u32>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn tags(set: &BTreeSet<String>) -> daily::Tags {
     set.iter().cloned().collect()
 }
 
-#[cfg(any(test, feature = "test-support"))]
 impl Ledger {
     /// Record the finished day of `sample`.
     pub fn finish(&mut self, sample: Sample<'_>) -> io::Result<()> {

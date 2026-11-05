@@ -53,6 +53,39 @@ pub const TABLES: &[TableId] = &[
     TableId::Capitulation,
 ];
 
+/// How a columnar walk's world holds each table the groups read, by the fields whose change is
+/// an hour the groups observe: countries' slots and tags, wars' dates and instigator, every
+/// field of the others. Every native read of the groups holds them so.
+pub fn holds() -> std::io::Result<[(TableId, dashboard_world::Hold); 8]> {
+    use dashboard_world::Hold;
+    let fields = |table, names: &[&str]| -> std::io::Result<Hold> {
+        let mut mask = 0_u64;
+        for name in names {
+            mask |= 1_u64 << replay::columns::field(table, name)?;
+        }
+        Ok(Hold::Fields(mask))
+    };
+    Ok([
+        (
+            TableId::Countries,
+            fields(TableId::Countries, &["canonical_slot", "tag"])?,
+        ),
+        (TableId::CountryLinks, Hold::Whole),
+        (TableId::HumanControllers, Hold::Whole),
+        (TableId::Factions, Hold::Whole),
+        (TableId::FactionMembers, Hold::Whole),
+        (
+            TableId::WarRelations,
+            fields(
+                TableId::WarRelations,
+                &["start_hour", "end_hour", "first_was_instigator"],
+            )?,
+        ),
+        (TableId::Capitulation, Hold::Whole),
+        (TableId::LexicalTokens, Hold::Whole),
+    ])
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub static FAMILY: Family = Family {
     name: "groups",

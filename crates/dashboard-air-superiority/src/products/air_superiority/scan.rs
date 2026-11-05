@@ -11,10 +11,11 @@ use super::{
     *,
 };
 use dashboard_base::products::country_groups::Scan;
+use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 use replay_frame::frame::TableUpdate;
 #[cfg(any(test, feature = "test-support"))]
-use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
+use replay_frame::frame::ViewIdentity;
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
@@ -215,7 +216,6 @@ fn reason(reason: &str) -> AirCell {
     AirCell(Some(AirValue::Reason(reason.into())))
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn check_country_tags(countries: &[replay_data::rows::CountryRow]) -> io::Result<()> {
     let unsupported = countries
         .iter()
@@ -401,7 +401,6 @@ pub(super) struct CountryScores {
     pub pairs: BTreeMap<(String, u32), (i64, i64)>,
     pub active: BTreeSet<u32>,
 }
-#[cfg(any(test, feature = "test-support"))]
 pub(super) fn score_countries(
     frame: &DecodedFrame,
 ) -> io::Result<(ScoreOperands, HashMap<u32, String>)> {
@@ -888,7 +887,6 @@ pub(super) fn day_decoder(tables: &[TableId]) -> FrameDecoder {
     FrameDecoder::for_tables(&tables)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub(super) fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
     let mut result = Auxiliary::default();
     let Ok(wings) = frame.complete::<tables::AirWings>() else {
@@ -949,7 +947,6 @@ pub(super) fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn date_theatres(read: bool, hour: i32, known: bool, last_read: &mut Option<i32>) {
     if !known {
         *last_read = None;
@@ -1004,14 +1001,7 @@ impl AuxiliaryRead {
                 .zip(tables)
                 .any(|(old, table)| !old.is(&frame.tables[table.index()]))
         {
-            let mut value = auxiliary(frame);
-            value.theatre_read = self.value.theatre_read;
-            if value.theatres == self.value.theatres {
-                value.theatres = Arc::clone(&self.value.theatres);
-            }
-            if *self.value != value {
-                self.value = Arc::new(value);
-            }
+            self.hold(auxiliary(frame));
             // Weak identities do not keep decoder baselines alive or force COW.
             self.views = tables
                 .iter()
@@ -1020,6 +1010,56 @@ impl AuxiliaryRead {
         }
         self.date(read, frame.hour, last_read);
         Arc::clone(&self.value)
+    }
+}
+
+impl AuxiliaryRead {
+    /// [`Self::read`] of an hour whose auxiliary rows moved as `change` says where they may have
+    /// changed, None where they are the hour before's.
+    pub(super) fn apply(
+        &mut self,
+        change: Option<&super::columnar::AuxiliaryChange>,
+        read: bool,
+        hour: i32,
+        last_read: &mut Option<i32>,
+    ) -> Arc<Auxiliary> {
+        if let Some(change) = change {
+            let value = Arc::make_mut(&mut self.value);
+            if change.whole {
+                value.wings.clear();
+            }
+            for &(region, count) in &change.wings {
+                if count == 0 {
+                    value.wings.remove(&region);
+                } else {
+                    value.wings.insert(region, count);
+                }
+            }
+            value.wings_known = change.wings_known;
+            if let Some((theatres, names)) = &change.theatres {
+                if value.theatres != *theatres {
+                    value.theatres = Arc::clone(theatres);
+                }
+                if value.theatre_names != *names {
+                    value.theatre_names = Arc::clone(names);
+                }
+            }
+            value.theatres_known = change.theatres_known;
+        }
+        self.date(read, hour, last_read);
+        Arc::clone(&self.value)
+    }
+
+    /// Holds `value`, read anew, dated as the held value is.
+    #[cfg(any(test, feature = "test-support"))]
+    fn hold(&mut self, mut value: Auxiliary) {
+        value.theatre_read = self.value.theatre_read;
+        if value.theatres == self.value.theatres {
+            value.theatres = Arc::clone(&self.value.theatres);
+        }
+        if *self.value != value {
+            self.value = Arc::new(value);
+        }
     }
 
     /// Date the held theatres at `hour`, read there or not (`read`), as

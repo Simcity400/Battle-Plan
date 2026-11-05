@@ -33,7 +33,7 @@ fn reads<'a>(fixture: &'a Fixture, flag: &'a AtomicBool) -> reader::Reads<'a> {
 /// does: the side choices, moments, and timelines of the sides, a side and
 /// a country, unfiltered and filtered to a side, ranked and every region,
 /// through each day's end and part way into it.
-fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
+pub(super) fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
     let replay = Arc::new(recording(frames.to_vec()));
     let groups = groups(&replay);
     // Queries read the groups the walk publishes beside the family's pages.
@@ -159,7 +159,7 @@ fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<Strin
 /// recorded and not, a leaderless faction, lone countries at war, a
 /// truncated score table, an invalid leader score, and a leaderless
 /// coalition on the open last day.
-fn mixed_frames() -> Vec<DecodedFrame> {
+pub(super) fn mixed_frames() -> Vec<DecodedFrame> {
     use replay_data::rows::{
         AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow, AirWingRow, FactionMemberRow,
     };

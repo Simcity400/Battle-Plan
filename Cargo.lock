@@ -2727,6 +2727,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
+ "dashboard-world",
  "engine-executable",
  "engine-native",
  "installed-content-core",

@@ -102,10 +102,9 @@ pub static FAMILY: Family = Family {
     start,
 };
 
-/// The groups' sections air superiority keeps under its own names besides its
-/// read of the groups ([`groups_section`]): the change publisher's pages and
-/// catalogue, and the change publisher's continuation.
-pub const GROUP_CHANGES: &str = "air-superiority-group-changes";
+/// The groups' change publisher's pages and catalogue, kept under air
+/// superiority's names besides its read of the groups ([`groups_section`]).
+pub use super::prepared::GROUP_CHANGES;
 pub fn state_section(branch: u64) -> String {
     format!("air-superiority-group-state-{branch}")
 }

@@ -9,7 +9,7 @@ use crate::{
     Source,
     config::LoadContext,
     prepared::{driver::publication::Stage, frame_changes::FrameChanges},
-    products::country_groups::{Scan, changes::Prepared as Changes, prepared::TABLES},
+    products::country_groups::{self, Scan, changes::Prepared as Changes, prepared::TABLES},
 };
 use dashboard_base::prepared::{
     roots::Published,
@@ -35,35 +35,9 @@ fn invalid(message: &str) -> io::Error {
 }
 
 /// How the world holds each table the groups read, and the fields a change to which they hand
-/// on: countries' slots and tags, wars' dates and instigator, every field of the others, since
-/// any change of those is an hour the walk observes.
+/// on ([`country_groups::prepared::holds`]).
 fn holds() -> io::Result<[(TableId, Hold); 8]> {
-    let fields = |table, names: &[&str]| -> io::Result<Hold> {
-        let mut mask = 0_u64;
-        for name in names {
-            mask |= 1_u64 << columns::field(table, name)?;
-        }
-        Ok(Hold::Fields(mask))
-    };
-    Ok([
-        (
-            TableId::Countries,
-            fields(TableId::Countries, &["canonical_slot", "tag"])?,
-        ),
-        (TableId::CountryLinks, Hold::Whole),
-        (TableId::HumanControllers, Hold::Whole),
-        (TableId::Factions, Hold::Whole),
-        (TableId::FactionMembers, Hold::Whole),
-        (
-            TableId::WarRelations,
-            fields(
-                TableId::WarRelations,
-                &["start_hour", "end_hour", "first_was_instigator"],
-            )?,
-        ),
-        (TableId::Capitulation, Hold::Whole),
-        (TableId::LexicalTokens, Hold::Whole),
-    ])
+    country_groups::prepared::holds()
 }
 
 /// One hour of a branch's group tables.

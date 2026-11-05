@@ -21,8 +21,9 @@ use crate::{
     prepared_focus as national_focus,
     prepared_production::{ProductionAccumulator, columnar as production},
     products::{
-        event_feed::columnar as event_feed, intelligence_prepared, land_battles,
-        land_owners::native as land_owners, naval_battles, raids, ships_sunk, style_runs,
+        air_superiority, event_feed::columnar as event_feed, intelligence_prepared,
+        land_battles, land_owners::native as land_owners, naval_battles, raids, ships_sunk,
+        style_runs,
     },
 };
 use dashboard_air_aces::products::air_aces;
@@ -435,6 +436,11 @@ pub(crate) static REGISTERED: &[Registered] = &[
         bind: aces,
     },
     Registered {
+        name: "air_superiority",
+        load: free,
+        bind: superiority,
+    },
+    Registered {
         name: "casualties",
         load: |content| content.casualties().map(drop),
         bind: casualties,
@@ -639,6 +645,7 @@ projected!(
     navy::facts::Hour,
     land_owners::Hour,
     air_aces::facts::Hour,
+    air_superiority::columnar::Hour,
 );
 
 /// A family's emit on the series engine.
@@ -5019,6 +5026,81 @@ impl Native for Aces<'_> {
         saved: &[u8],
     ) -> io::Result<Self::Branch> {
         air_aces::emit::Emit::load(self.replay, branch, saved).map(Box::new)
+    }
+}
+
+/// Air superiority: each segment's operator keeps its own read of the groups and hands on the
+/// rosters they assign at the ends of days and what moved of the scores, country identity, wings
+/// and theatres; each branch's emit folds them, publishing the fold's pages at each flush.
+struct Superiority<'p> {
+    replay: &'p Replay,
+}
+
+fn superiority<'p>(
+    id: FamilyId,
+    content: &'p Content<'p>,
+    stage: Stage<'p, 'p>,
+    taken: Taken<'p>,
+) -> Made<'p> {
+    let native = Superiority {
+        replay: content.source.replay_ref(),
+    };
+    bound(id, native, stage, taken)
+}
+
+impl Native for Superiority<'_> {
+    type Operator = air_superiority::columnar::Project;
+    type Branch = Box<air_superiority::emit::Emit>;
+
+    fn tables(&self) -> &'static [TableId] {
+        air_superiority::columnar::TABLES
+    }
+
+    fn needs(&self) -> io::Result<Needs> {
+        air_superiority::columnar::needs()
+    }
+
+    fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
+        air_superiority::columnar::Project::new(self.replay.format)
+    }
+
+    fn branch(&self, _: u64, _: i32) -> io::Result<Self::Branch> {
+        Ok(Box::new(air_superiority::emit::Emit::new()))
+    }
+
+    fn observe(
+        &self,
+        state: &mut Self::Branch,
+        _: &mut Stage<'_, '_>,
+        _: u64,
+        hour: air_superiority::columnar::Hour,
+    ) -> io::Result<()> {
+        state.observe(hour)
+    }
+
+    fn flush(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        _: Option<i32>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        state.flush(stage.pages()?, branch, cancelled)
+    }
+
+    fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
+        state.save().map(Some)
+    }
+
+    fn resume(
+        &self,
+        _: &mut Stage<'_, '_>,
+        _: u64,
+        _: &Published,
+        saved: &[u8],
+    ) -> io::Result<Self::Branch> {
+        air_superiority::emit::Emit::load(saved).map(Box::new)
     }
 }
 

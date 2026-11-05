@@ -395,6 +395,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         ("country-nukes", None),
         ("world-tension", None),
         ("trade-flows", None),
+        ("air-superiority", None),
     ] {
         assert_eq!(rows.gating(product), publisher, "gate of {product}");
     }
@@ -417,6 +418,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
             ]),
         ),
         ("civil-wars", Some(vec!["politics_state", "event_feed"])),
+        ("air-superiority", Some(vec!["air_superiority", "groups"])),
         (
             "faction-totals",
             Some(vec!["groups", "identities", "territory"]),
@@ -485,6 +487,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
             ][..],
         ),
         ("civil-wars", &["event_feed", "politics_state"][..]),
+        ("air-superiority", &["air_superiority", "groups"][..]),
         ("country-people", &["manpower", "politics_state"][..]),
         (
             "faction-totals",

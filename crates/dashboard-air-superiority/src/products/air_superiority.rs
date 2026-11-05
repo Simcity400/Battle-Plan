@@ -23,11 +23,11 @@ use dashboard_core::invalid;
 #[cfg(test)]
 use dashboard_text::metadata::recorded_rows;
 use dashboard_text::metadata::check_cancel;
-#[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::{link_slots, tagged_countries_indexed};
 use replay::container::Replay;
 #[cfg(any(test, feature = "test-support"))]
-use replay_data::{rows::TableId, rows::tables};
+use replay_data::rows::TableId;
+use replay_data::rows::tables;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
@@ -38,12 +38,15 @@ mod assignment;
 // The row observer's block pre-pass: the reference a native port tests against.
 #[cfg(any(test, feature = "test-support"))]
 pub mod block;
+pub mod columnar;
 mod daily;
+pub mod emit;
 mod model;
 pub mod prepared;
 mod scan;
 #[cfg(any(test, feature = "test-support"))]
 mod scores;
+mod served;
 pub use model::*;
 use scan::{DayCache, Snapshot, span};
 #[cfg(test)]
@@ -904,6 +907,7 @@ fn compact_unknowns(
 impl Product for AirSuperiority {
     const KEY: &'static str = "air-superiority";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = AirParams;
     type Reply = AirReply;
     fn types() -> Vec<String> {

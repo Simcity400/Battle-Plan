@@ -387,10 +387,11 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         version: 2,
         ..family("stockpile")
     },
-    // Air superiority reads the groups in the same hour.
+    // Air superiority reads the group tables with the groups' scan in the same hour, and its
+    // replies read the groups' pages.
     Descriptor {
         status: &["country-groups"],
-        queries: &["country-groups", "faction-totals", "event-feed"],
+        queries: &["country-groups", "faction-totals", "event-feed", "air-superiority"],
         gates: &["country-groups"],
         observers: &[AIR_SUPERIORITY],
         sections: &[
@@ -431,9 +432,11 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     Descriptor {
         status: &["air-superiority"],
         queries: &["air-superiority"],
-        gates: &["air-superiority"],
         sections: &["air-superiority"],
-        version: 2,
+        // 3: on the segment driver: its operators hand on what moved, never the score table.
+        // 4: each segment's operator reads the groups and hands on the day's roster; its replies
+        // read the groups' pages, never a read of its own.
+        version: 4,
         ..family("air_superiority")
     },
     Descriptor {
@@ -950,6 +953,11 @@ pub(crate) static QUERIES: &[Query] = &[
     Query {
         product: crate::products::faction_totals::FACTORIES_GATE,
         suppliers: &[GROUPS, IDENTITIES, FamilyId::new("factories")],
+    },
+    // Air superiority's samples are classified and named by the groups' pages.
+    Query {
+        product: "air-superiority",
+        suppliers: &[AIR_SUPERIORITY, GROUPS],
     },
     // Casualty lifetimes joined with the wars' app continuity.
     Query {
