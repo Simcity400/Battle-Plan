@@ -11,6 +11,57 @@ use replay_frame::frame::{RecordedSource, ViewIdentity};
 type Target = Option<TargetId>;
 type Route = (usize, u16, u128, Target);
 type Back = (Target, usize, u16, u128);
+type Range = (usize, u64, bool, u128, u128);
+#[derive(Default)]
+struct Ranges(ValueIndex<Range, ()>);
+impl Ranges {
+    fn add(&mut self, read: TableRead) -> std::io::Result<()> {
+        let (first, last) = read.rows.unwrap_or((0, u128::MAX));
+        self.0 = self.0.inserted(
+            (read.table.index(), read.fields, read.ends, first, last),
+            (),
+        )?;
+        if read.owner.is_some() {
+            self.add(TableRead::fields(
+                TableId::CountryLinks,
+                &["canonical_slot"],
+            ))?;
+        }
+        Ok(())
+    }
+    fn apply(&self, routes: &mut Routes, target: Target) -> std::io::Result<()> {
+        let mut pending: Option<Range> = None;
+        for (&(table, fields, ends, first, last), _) in self.0.iter() {
+            if let Some((old_table, old_fields, old_ends, _, old_last)) = &mut pending
+                && (*old_table, *old_fields, *old_ends) == (table, fields, ends)
+                && first <= old_last.saturating_add(1)
+            {
+                *old_last = (*old_last).max(last);
+                continue;
+            }
+            if let Some(read) = pending.replace((table, fields, ends, first, last)) {
+                Self::install(routes, target, read)?;
+            }
+        }
+        if let Some(read) = pending {
+            Self::install(routes, target, read)?;
+        }
+        Ok(())
+    }
+    fn install(routes: &mut Routes, target: Target, range: Range) -> std::io::Result<()> {
+        let (table, fields, ends, first, last) = range;
+        routes.add(
+            target,
+            TableRead {
+                table: TableId::ALL[table],
+                fields,
+                rows: Some((first, last)),
+                ends,
+                owner: None,
+            },
+        )
+    }
+}
 #[derive(Default)]
 pub(super) struct Routes {
     rows: ValueIndex<Route, u64>,
@@ -71,6 +122,7 @@ impl Routes {
         frame: &replay_frame::frame::DecodedFrame,
     ) -> std::io::Result<()> {
         self.remove(target)?;
+        let mut ranges = Ranges::default();
         for key in reads.keys() {
             use dashboard_text::triggers::{inputs::Key, world::Query};
             if let Key::World(Query::TableFresh(table)) = key {
@@ -83,20 +135,31 @@ impl Routes {
                 continue;
             }
             if let Key::World(Query::TableStatus(table)) = key {
-                self.add(target, TableRead::keys(*table))?;
+                ranges.add(TableRead::keys(*table))?;
             }
             match key.dependence() {
                 None => self.volatile = self.volatile.inserted(target, ())?,
                 Some(dependencies) => {
                     for read in dependencies {
-                        self.add(target, read)?;
+                        ranges.add(read)?;
                     }
                 }
             }
         }
-        Ok(())
+        ranges.apply(self, target)
     }
     fn add(&mut self, target: Target, read: TableRead) -> std::io::Result<()> {
+        self.add_indexed(target, read).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Scripted map dependency {read:?} for {target:?} ({} indexed ranges): {error}",
+                    self.rows.len()
+                ),
+            )
+        })
+    }
+    fn add_indexed(&mut self, target: Target, read: TableRead) -> std::io::Result<()> {
         let table = read.table.index();
         self.tables = self.tables.inserted((table, target), ())?;
         prefixes(read.rows.unwrap_or((0, u128::MAX)), |depth, prefix| {
@@ -116,12 +179,6 @@ impl Routes {
             }
             Ok(())
         })?;
-        if read.owner.is_some() {
-            self.add(
-                target,
-                TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
-            )?;
-        }
         Ok(())
     }
     fn whole(&self, table: usize, dirty: &mut ValueIndex<Target, ()>) -> std::io::Result<()> {
@@ -353,6 +410,102 @@ fn prefixes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coalesced_reads_keep_gaps_fields_and_clock_boundaries() {
+        let mut ranges = Ranges::default();
+        let mut separate = Routes::default();
+        let mut compact = Routes::default();
+        let target = Some(TargetId::Country(1501));
+        let links = TableRead::fields(TableId::CountryLinks, &["canonical_slot"]);
+        for country in (1..=1500).rev() {
+            let read = links.row(country);
+            ranges.add(read).unwrap();
+            separate.add(target, read).unwrap();
+        }
+        ranges.apply(&mut compact, target).unwrap();
+        assert!(compact.rows.len() < 32);
+        assert_eq!(separate.rows.len(), 1500);
+        let relations = TableRead::fields(TableId::Subjects, &["start_hour", "end_hour"]);
+        for read in [
+            relations.rows(3, 8).ending(),
+            relations.rows(5, 12).ending(),
+            relations.rows(14, 18).ending(),
+            relations.rows(19, 22),
+            TableRead::keys(TableId::Subjects).rows(0, 2),
+            relations.rows(u128::MAX - 2, u128::MAX).ending(),
+            relations.row(u128::MAX),
+        ] {
+            ranges.add(read).unwrap();
+            separate.add(target, read).unwrap();
+        }
+        compact.remove(target).unwrap();
+        ranges.apply(&mut compact, target).unwrap();
+        for table in [TableId::CountryLinks, TableId::Subjects] {
+            for key in (0..=1501).chain([u128::MAX - 3, u128::MAX - 2, u128::MAX]) {
+                for mask in [None, Some(0), Some(1), Some(2), Some(u64::MAX)] {
+                    for boundary in [false, true] {
+                        let mut expected = ValueIndex::default();
+                        let mut actual = ValueIndex::default();
+                        separate
+                            .row(table.index(), key, mask, boundary, &mut expected)
+                            .unwrap();
+                        compact
+                            .row(table.index(), key, mask, boundary, &mut actual)
+                            .unwrap();
+                        assert_eq!(
+                            actual.contains_key(&target),
+                            expected.contains_key(&target),
+                            "{table:?}, {key}, {mask:?}, boundary={boundary}"
+                        );
+                    }
+                }
+            }
+        }
+        compact.remove(target).unwrap();
+        assert!(compact.rows.is_empty());
+        assert!(compact.back.is_empty());
+        assert!(compact.ends.is_empty());
+        assert!(compact.depths.is_empty());
+        assert!(compact.tables.is_empty());
+    }
+    #[test]
+    fn empty_range_still_watches_table_availability() {
+        let target = Some(TargetId::Country(1501));
+        let mut ranges = Ranges::default();
+        ranges
+            .add(TableRead::keys(TableId::Subjects).rows(5, 3))
+            .unwrap();
+        let mut routes = Routes::default();
+        ranges.apply(&mut routes, target).unwrap();
+        assert!(routes.rows.is_empty());
+        let mut dirty = ValueIndex::default();
+        routes.whole(TableId::Subjects.index(), &mut dirty).unwrap();
+        assert!(dirty.contains_key(&target));
+    }
+    #[test]
+    fn owned_ranges_watch_country_link_changes() {
+        for read in [
+            TableRead::keys(TableId::ScriptVariables).owned_by(1501, 32),
+            TableRead::keys(TableId::ScriptVariables).of_country(1501, 32),
+        ] {
+            let target = Some(TargetId::Country(1501));
+            let mut ranges = Ranges::default();
+            ranges.add(read).unwrap();
+            let mut routes = Routes::default();
+            ranges.apply(&mut routes, target).unwrap();
+            let mut dirty = ValueIndex::default();
+            routes
+                .row(
+                    TableId::CountryLinks.index(),
+                    17,
+                    Some(fields(TableId::CountryLinks, &["canonical_slot"])),
+                    false,
+                    &mut dirty,
+                )
+                .unwrap();
+            assert!(dirty.contains_key(&target));
+        }
+    }
     #[test]
     fn prefix_routes_preserve_point_ranges_field_masks_and_unbounded_membership() {
         let mut routes = Routes::default();

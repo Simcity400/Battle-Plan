@@ -235,7 +235,7 @@ struct PreparedSlot {
     /// The selected type's `drawn_at_distance`; `None` leaves the retained
     /// byte alone, as no positive-level type does natively.
     drawn_at_distance: Option<bool>,
-    entity: Option<PreparedEntity>,
+    entity: Option<map_display_data::retained::Retained<PreparedEntity>>,
 }
 
 /// The entity request for one damage state.
@@ -262,12 +262,27 @@ struct PreparedEntity {
     instance: ModelInstance,
 }
 
+impl PreparedEntity {
+    fn retain(self) -> io::Result<map_display_data::retained::Retained<Self>> {
+        map_display_data::retained::Retained::build(0, || self)
+    }
+}
+
 impl PartialEq for PreparedSlot {
     fn eq(&self, other: &Self) -> bool {
         self.same_bits(other)
     }
 }
 impl PreparedSlot {
+    #[cfg(test)]
+    fn entity_mut(&mut self) -> &mut PreparedEntity {
+        let entity = self.entity.as_mut().unwrap();
+        if entity.get_mut().is_none() {
+            *entity = (**entity).clone().retain().unwrap();
+        }
+        entity.get_mut().unwrap()
+    }
+
     // Tail reuse must distinguish signed zero and preserve NaN payloads.
     fn same_bits(&self, other: &Self) -> bool {
         if (self.id, self.source, self.drawn_at_distance)
@@ -1465,32 +1480,21 @@ impl MapBuildingAssets {
             }),
             Err(reason) => spans.measure("buildings.slots", |_| {
                 let _cost = replay_frame::cpu::scope("buildings.slots", Some("buildings"));
-                let bytes = self
-                    .slot_count()
-                    .checked_mul(size_of::<PreparedSlot>())
-                    .and_then(|bytes| {
-                        ordinary_slots
-                            .checked_mul(size_of::<Tally>())
-                            .and_then(|tallies| bytes.checked_add(tallies))
-                    })
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                let credit = map_display_data::credit::display_products().admit_item(bytes)?;
-                let mut slots = Vec::with_capacity(self.slot_count());
-                let mut tallies = Vec::with_capacity(ordinary_slots);
+                let mut slots = incremental::ChunkBuilder::new()?;
+                let mut tallies = incremental::ChunkBuilder::new()?;
                 let mut totals = incremental::SlotSummary::default();
                 for ((_, bucket), positions) in &self.slots {
                     let candidates = self.bucket_candidates(bucket);
                     for (ordinal, (position, province)) in positions.iter().enumerate() {
                         let id = slots.len() as u32;
                         let (slot, tally) =
-                            self.slot(id, ordinal, position, *province, candidates, &context);
+                            self.slot(id, ordinal, position, *province, candidates, &context)?;
                         totals.add(tally, &self.facts.ordered)?;
-                        tallies.push(tally);
-                        slots.push(slot);
+                        tallies.push(tally)?;
+                        slots.push(slot)?;
                     }
                 }
                 Ok(incremental::Ordinary::Full {
-                    _credit: credit,
                     slots,
                     tallies,
                     totals,
@@ -1570,7 +1574,7 @@ impl MapBuildingAssets {
         province: Option<u32>,
         candidates: &[usize],
         context: &SlotContext<'_>,
-    ) -> (PreparedSlot, Tally) {
+    ) -> io::Result<(PreparedSlot, Tally)> {
         let selected = candidates.iter().find_map(|&index| {
             let building = &self.facts.ordered[index];
             let location = if building.provincial() {
@@ -1601,9 +1605,12 @@ impl MapBuildingAssets {
                 ordinal,
                 seed: id,
             };
-            prepared.entity = self.entity(index, row, position, province, &mut tally, gates);
+            prepared.entity = self
+                .entity(index, row, position, province, &mut tally, gates)
+                .map(PreparedEntity::retain)
+                .transpose()?;
         }
-        (prepared, tally)
+        Ok((prepared, tally))
     }
 
     /// One selected slot's entity, or `None` where a gate hides it.

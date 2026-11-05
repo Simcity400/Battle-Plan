@@ -2,8 +2,15 @@ use installed_content_core::ResolvedLayers;
 use installed_content_core::content::{ContentRead, LayerSource, ReadOutcome};
 use product_codec::Product;
 use sha2::{Digest, Sha256};
-use std::{cmp::Ordering, collections::BTreeSet, sync::Mutex};
-use std::{io, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
+use std::{
+    io,
+    sync::{Arc, Weak},
+};
 
 pub const WITNESS_CONTRACT: &[u8] = b"map-export/content-witness/canonical-resolution-set/v1";
 
@@ -57,16 +64,19 @@ impl Ord for Canonical {
 pub struct Recorder {
     roster: Arc<[Layer]>,
     sources: Arc<[(LayerSource, Layer)]>,
-    entries: Arc<Mutex<BTreeSet<Canonical>>>,
+    entries: Arc<Mutex<BTreeMap<Canonical, Option<CachedRecord>>>>,
     shards: Arc<Mutex<std::collections::BTreeMap<Vec<String>, Witness>>>,
 }
 impl Recorder {
     pub fn new(layers: &ResolvedLayers) -> Self {
         let roster = Self::roster(layers);
-        let mut entries = BTreeSet::new();
-        entries.insert(Canonical(Entry::Roster {
-            layers: roster.clone(),
-        }));
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            Canonical(Entry::Roster {
+                layers: roster.clone(),
+            }),
+            None,
+        );
         Self {
             sources: layers
                 .layers
@@ -159,11 +169,11 @@ impl Recorder {
             .shards
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if !entries.contains(&entry) {
+        if !entries.contains_key(&entry) {
             shards.retain(|purposes, _| {
                 !purposes.iter().any(|wanted| wanted == entry.0.location().1)
             });
-            entries.insert(entry);
+            entries.insert(entry, None);
         }
     }
     pub fn record_read(&self, read: ContentRead) {
@@ -207,7 +217,7 @@ impl Recorder {
         });
     }
     pub fn snapshot_for(&self, purposes: &[&str]) -> io::Result<Witness> {
-        let entries = self
+        let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -221,27 +231,7 @@ impl Recorder {
         }) {
             return Ok(witness.clone());
         }
-        let selected = || {
-            entries.iter().filter(|entry| {
-                matches!(entry.0, Entry::Roster { .. }) || purposes.contains(&entry.0.location().1)
-            })
-        };
-        let credit = witness_credit(selected().map(|entry| &entry.0), purposes)?;
-        let mut records = engine_allocation::vec(selected().count())?;
-        let mut hash = witness_hash();
-        for entry in selected() {
-            let mut bytes = engine_allocation::vec(entry_bytes(&entry.0)?)?;
-            entry.0.encode(&mut bytes)?;
-            hash_entry(&mut hash, &bytes)?;
-            records.push(bytes);
-        }
-        let witness = Witness {
-            digest: hash.finalize().into(),
-            entries: u64::try_from(records.len())
-                .map_err(|_| invalid("content shard count overflows"))?,
-            records: records.into(),
-            _credit: Some(Arc::new(credit)),
-        };
+        let witness = build_witness(&mut entries, purposes, false)?;
         shards.insert(
             purposes.iter().map(|value| value.to_string()).collect(),
             witness.clone(),
@@ -251,40 +241,20 @@ impl Recorder {
 
     /// Snapshots the content-bounded set; retained product readers may keep using this recorder.
     pub fn snapshot(&self) -> io::Result<Witness> {
-        let entries = self
+        let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let credit = witness_credit(entries.iter().map(|entry| &entry.0), &[])?;
-        let mut records = engine_allocation::vec(entries.len())?;
-        let mut hash = witness_hash();
-        for entry in entries.iter() {
-            let mut bytes = engine_allocation::vec(entry_bytes(&entry.0)?)?;
-            entry.0.encode(&mut bytes)?;
-            hash_entry(&mut hash, &bytes)?;
-            records.push(bytes);
-        }
-        Ok(Witness {
-            digest: hash.finalize().into(),
-            entries: u64::try_from(records.len())
-                .map_err(|_| invalid("content witness count overflows"))?,
-            records: records.into(),
-            _credit: Some(Arc::new(credit)),
-        })
+        build_witness(&mut entries, &[], true)
     }
 }
 
-fn witness_credit<'a>(
-    mut entries: impl Iterator<Item = &'a Entry>,
+fn witness_credit(
+    count: usize,
     purposes: &[&str],
 ) -> io::Result<engine_allocation::credit::Credit> {
     use engine_allocation::{add, mul};
-    let bytes = entries.try_fold(256usize, |bytes, entry| {
-        add(
-            bytes,
-            add(mul(entry_bytes(entry)?, 2)?, 2 * size_of::<Vec<u8>>())?,
-        )
-    })?;
+    let bytes = add(256, mul(count, size_of::<Arc<EncodedRecord>>())?)?;
     let bytes = if purposes.is_empty() {
         bytes
     } else {
@@ -297,6 +267,86 @@ fn witness_credit<'a>(
         .iter()
         .try_fold(bytes, |bytes, purpose| add(bytes, add(64, purpose.len())?))?;
     engine_allocation::credit::display_products().admit(bytes)
+}
+
+#[derive(Debug)]
+struct EncodedRecord {
+    bytes: Vec<u8>,
+    _credit: engine_allocation::credit::Credit,
+    _allocation: Arc<engine_allocation::credit::Credit>,
+}
+struct CachedRecord {
+    weak: Weak<EncodedRecord>,
+    _allocation: Arc<engine_allocation::credit::Credit>,
+}
+impl PartialEq for EncodedRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+impl Eq for EncodedRecord {}
+impl EncodedRecord {
+    fn get(entry: &Entry, cached: &mut Option<CachedRecord>) -> io::Result<Arc<Self>> {
+        if let Some(record) = cached.as_ref().and_then(|cached| cached.weak.upgrade()) {
+            return Ok(record);
+        }
+        cached.take();
+        use engine_allocation::add;
+        let length = entry_bytes(entry)?;
+        let owner = engine_allocation::credit::display_products();
+        let allocation = Arc::new(owner.admit(
+            size_of::<Self>()
+                + size_of::<CachedRecord>()
+                + 4 * size_of::<usize>()
+                + align_of::<Self>()
+                + size_of::<engine_allocation::credit::Credit>()
+                + align_of::<engine_allocation::credit::Credit>(),
+        )?);
+        let credit = owner.admit(add(length, size_of::<Vec<u8>>())?)?;
+        let mut bytes = engine_allocation::vec(length)?;
+        entry.encode(&mut bytes)?;
+        let record = Arc::new(Self {
+            bytes,
+            _credit: credit,
+            _allocation: Arc::clone(&allocation),
+        });
+        *cached = Some(CachedRecord {
+            weak: Arc::downgrade(&record),
+            _allocation: allocation,
+        });
+        Ok(record)
+    }
+}
+
+fn build_witness(
+    entries: &mut BTreeMap<Canonical, Option<CachedRecord>>,
+    purposes: &[&str],
+    all: bool,
+) -> io::Result<Witness> {
+    let selected = |entry: &Entry| {
+        all || matches!(entry, Entry::Roster { .. }) || purposes.contains(&entry.location().1)
+    };
+    let count = entries.keys().filter(|entry| selected(&entry.0)).count();
+    let credit = witness_credit(count, purposes)?;
+    let scratch = engine_allocation::credit::display_products().admit(engine_allocation::mul(
+        count,
+        size_of::<Arc<EncodedRecord>>(),
+    )?)?;
+    let mut records = engine_allocation::vec(count)?;
+    let mut hash = witness_hash();
+    for (entry, cached) in entries.iter_mut().filter(|(entry, _)| selected(&entry.0)) {
+        let record = EncodedRecord::get(&entry.0, cached)?;
+        hash_entry(&mut hash, &record.bytes)?;
+        records.push(record);
+    }
+    let records = records.into();
+    drop(scratch);
+    Ok(Witness {
+        digest: hash.finalize().into(),
+        entries: u64::try_from(count).map_err(|_| invalid("content witness count overflows"))?,
+        records,
+        _credit: Some(Arc::new(credit)),
+    })
 }
 fn layer_bytes(layer: &Layer) -> io::Result<usize> {
     layer.replace_paths.iter().try_fold(
@@ -360,7 +410,7 @@ fn hash_entry(hash: &mut Sha256, bytes: &[u8]) -> io::Result<()> {
 pub struct Witness {
     pub digest: [u8; 32],
     pub entries: u64,
-    records: Arc<[Vec<u8>]>,
+    records: Arc<[Arc<EncodedRecord>]>,
     _credit: Option<Arc<engine_allocation::credit::Credit>>,
 }
 impl PartialEq for Witness {
@@ -394,8 +444,8 @@ impl Witness {
         Ok((result, recorder.snapshot()?))
     }
     pub fn visit(&self, mut visit: impl FnMut(u64, &[u8]) -> io::Result<()>) -> io::Result<()> {
-        for (ordinal, bytes) in self.records.iter().enumerate() {
-            visit(ordinal as u64, bytes)?;
+        for (ordinal, record) in self.records.iter().enumerate() {
+            visit(ordinal as u64, &record.bytes)?;
         }
         Ok(())
     }
@@ -447,6 +497,31 @@ mod tests {
             layer: None,
             outcome,
         }
+    }
+    #[test]
+    fn overlapping_shards_share_records_and_keep_weak_allocations_charged() {
+        let recorder = Recorder::new(&ResolvedLayers::default());
+        recorder.record(read("map", Outcome::Probe { present: true }));
+        recorder.record(read("audio", Outcome::Probe { present: false }));
+        let map = recorder.snapshot_for(&["map"]).unwrap();
+        let all = recorder.snapshot().unwrap();
+        for record in map.records.iter() {
+            let shared = all
+                .records
+                .iter()
+                .find(|other| other.bytes == record.bytes)
+                .unwrap();
+            assert!(Arc::ptr_eq(record, shared));
+        }
+        let record = Arc::downgrade(&map.records[1]);
+        let allocation = Arc::downgrade(&map.records[1]._allocation);
+        drop(map);
+        drop(all);
+        recorder.shards.lock().unwrap().clear();
+        assert!(record.upgrade().is_none());
+        assert!(allocation.upgrade().is_some());
+        drop(recorder);
+        assert!(allocation.upgrade().is_none());
     }
     #[test]
     fn purpose_shards_are_immutable_and_late_negative_and_error_reads_invalidate_only_dependents() {
@@ -557,10 +632,13 @@ mod tests {
     #[test]
     fn canonical_order_and_ordered_mod_roster_are_independent_of_read_order() {
         fn recorder(layers: Vec<Layer>) -> Recorder {
-            let mut entries = BTreeSet::new();
-            entries.insert(Canonical(Entry::Roster {
-                layers: layers.clone(),
-            }));
+            let mut entries = BTreeMap::new();
+            entries.insert(
+                Canonical(Entry::Roster {
+                    layers: layers.clone(),
+                }),
+                None,
+            );
             Recorder {
                 roster: layers.into(),
                 sources: Arc::from([]),

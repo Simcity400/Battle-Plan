@@ -1,0 +1,173 @@
+use super::{Kind, Log};
+use installed_content_core::{
+    ResolvedLayers,
+    defines::Defines,
+    map::MapData,
+    terrain::{DefaultMap, TerrainDefinitions},
+};
+use installed_content_image::native::Decode;
+use std::{collections::BTreeSet, io};
+use viewer_foundation::map::camera::MapSize;
+use viewer_world::map::{border_pass::BorderAssets, railways::RailAssets, rivers::RiverAssets};
+
+pub(super) fn read(
+    log: &mut Log,
+    layers: &ResolvedLayers,
+    defines: Option<&Defines>,
+    terrain: Option<&(TerrainDefinitions, DefaultMap)>,
+    map: Option<&MapData>,
+    decode: Decode,
+) {
+    let (Some(defines), Some((terrain, default_map)), Some(map)) = (defines, terrain, map) else {
+        for quality in 0..=2 {
+            for kind in ["world", "river", "border"] {
+                log.not_run(
+                    &[&format!("viewer.{kind}_assets.quality{quality}")],
+                    "defines, terrain and map",
+                );
+            }
+        }
+        log.not_run(
+            &[
+                "viewer.tree_assets",
+                "viewer.city_assets",
+                "viewer.rail_assets",
+                "viewer.weather_assets",
+                "viewer.map_shader_sources",
+                "viewer.map_shader_load",
+                "viewer.map_shader_compile",
+            ],
+            "defines, terrain and map",
+        );
+        return;
+    };
+    let size = [map.width, map.height];
+    let mut warnings = Vec::new();
+    for quality in 0..=2 {
+        let reader = format!("viewer.world_assets.quality{quality}");
+        let mut loaded = None;
+        log.read(&reader, || {
+            crate::map_assets::load_with_products(
+                None,
+                layers,
+                defines,
+                defines,
+                MapSize {
+                    width: map.width,
+                    height: map.height,
+                },
+                terrain,
+                default_map,
+                &mut warnings,
+                quality,
+                decode,
+            )
+            .map(|assets| {
+                let summary = (assets.map.width, assets.map.height, assets.post.luts.len());
+                if quality == 0 {
+                    loaded = Some(assets);
+                }
+                summary
+            })
+        });
+        if let Some(assets) = loaded {
+            trees_and_cities(log, layers, defines, map, &assets, decode);
+        } else if quality == 0 {
+            log.not_run(&["viewer.tree_assets", "viewer.city_assets"], &reader);
+        }
+        log.read(&format!("viewer.river_assets.quality{quality}"), || {
+            RiverAssets::load(layers, size, quality, decode).map(|_| ())
+        });
+        log.read(&format!("viewer.border_assets.quality{quality}"), || {
+            BorderAssets::load(layers, defines, size, quality, decode).map(|_| ())
+        });
+    }
+    log.notes(
+        "viewer.world_assets",
+        Kind::Warning,
+        warnings.iter().collect::<BTreeSet<_>>(),
+    );
+    log.read("viewer.rail_assets", || {
+        RailAssets::load(layers, size, decode).map(|_| ())
+    });
+    if let Some(assets) = log.read("viewer.weather_assets", || {
+        viewer_world::map::weather_effects::Assets::load(layers, defines, size, decode)
+            .map(|assets| assets.unresolved.clone())
+    }) {
+        log.notes("viewer.weather_assets", Kind::Refused, &assets);
+    }
+    shaders(log, layers, size, decode);
+}
+
+fn trees_and_cities(
+    log: &mut Log,
+    layers: &ResolvedLayers,
+    defines: &Defines,
+    map: &MapData,
+    assets: &viewer_world::map::scene_content::MapAssets,
+    decode: Decode,
+) {
+    let palettes: Vec<_> = assets
+        .trees
+        .indices
+        .iter()
+        .copied()
+        .filter(|index| *index != 0)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut warnings = Vec::new();
+    log.read("viewer.tree_assets", || {
+        viewer_world::map::trees::TreeAssets::load(
+            layers,
+            decode,
+            &palettes,
+            &assets.rivers,
+            &mut warnings,
+        )
+        .map(|_| ())
+    });
+    log.notes("viewer.tree_assets", Kind::Warning, &warnings);
+    let mut warnings = Vec::new();
+    log.read("viewer.city_assets", || {
+        let (cities, styles) = installed_content_core::cities::read(layers)?;
+        let plan = viewer_world::map::sprawl::generate(
+            &cities,
+            &styles,
+            &assets.spawn_city,
+            &assets.height_field(),
+            &map.province_ids,
+            &assets.rivers,
+        )?;
+        viewer_world::map::sprawl::Sprawl::load(layers, decode, &plan, defines, &mut warnings)
+            .map(|_| ())
+    });
+    log.notes("viewer.city_assets", Kind::Warning, &warnings);
+}
+
+fn shaders(log: &mut Log, layers: &ResolvedLayers, size: [u32; 2], decode: Decode) {
+    let Some(passes) = log.read("viewer.map_shader_sources", || {
+        viewer_world::map::shader_sources::passes(layers)
+    }) else {
+        return;
+    };
+    let (mut library, defines) = viewer_world::map::shader_sources::library(layers, size, decode);
+    let paths: BTreeSet<_> = passes.into_iter().map(|(_, path)| path).collect();
+    for path in paths {
+        let Some(effect) = log.read("viewer.map_shader_load", || {
+            library
+                .load(path.as_bytes(), &defines)
+                .map_err(io::Error::other)
+        }) else {
+            continue;
+        };
+        for (index, technique) in effect.source.techniques.iter().enumerate() {
+            let subject = format!("{path}: {}", technique.name);
+            log.read(&format!("viewer.map_shader_compile.{subject}"), || {
+                effect.compiled(index).map(|_| ()).map_err(io::Error::other)
+            });
+        }
+    }
+    log.note("viewer.map_shader_compile", Kind::Offline,
+        "Compiled authored map techniques with the renderer globals; runtime material defines, GPU bindings and recorded draw selection require a rendered campaign frame.");
+}

@@ -10,6 +10,63 @@ const POW2: Decode = Decode {
     force_pow2_textures: true,
 };
 
+#[test]
+fn native_missing_and_oversized_map_textures_sample_zero() {
+    for content in [
+        Vec::new(),
+        vec![("map/large.dds", vec![0; 16 * 1024 * 1024 + 1])],
+    ] {
+        let read = files(content);
+        let mut warnings = Vec::new();
+        let texture = load_map_texture(
+            "map/large.dds",
+            &read,
+            Decode::default(),
+            ColorSpace::Linear,
+            &mut warnings,
+        )
+        .unwrap();
+        assert!(texture.unbound);
+        let texture = texture.texture;
+        assert_eq!(texture.base().data, [0; 4]);
+        assert_eq!((texture.width, texture.height, texture.faces), (1, 1, 1));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("map/large.dds") && warnings[0].contains("unbound"));
+    }
+}
+
+#[test]
+fn unknown_map_texture_outcomes_are_not_replaced_with_zero() {
+    let mut bytes = dx10_file(4, 4, 1, 83);
+    bytes.extend([0; 16]);
+    let read = files(vec![("map/unknown.dds", bytes)]);
+    let mut warnings = Vec::new();
+    let error = load_map_texture(
+        "map/unknown.dds",
+        &read,
+        Decode::default(),
+        ColorSpace::Linear,
+        &mut warnings,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("map/unknown.dds"));
+    assert!(warnings.is_empty());
+    let denied = |_: &[u8]| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    assert_eq!(
+        load_map_texture(
+            "map/denied.dds",
+            &denied,
+            Decode::default(),
+            ColorSpace::Linear,
+            &mut warnings
+        )
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert!(warnings.is_empty());
+}
+
 /// A DDS header for `width` x `height` over `mips` levels: 32-bit BGRA, or `fourcc` blocks.
 fn dds_header(width: u32, height: u32, mips: u32, fourcc: Option<&[u8; 4]>) -> Vec<u8> {
     let mut bytes = vec![0_u8; 128];
@@ -302,7 +359,10 @@ fn an_unrecorded_province_is_not_a_recorded_zero() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
     let partial: BTreeMap<u32, u8> = [(2, 0)].into_iter().collect();
     assert_eq!(
-        IntelCells::new(&map).unwrap().intel_map(Some(&partial)).texels,
+        IntelCells::new(&map)
+            .unwrap()
+            .intel_map(Some(&partial))
+            .texels,
         vec![255, 0]
     );
 }
@@ -313,7 +373,10 @@ fn sea_and_lake_provinces_never_take_fog() {
     let map = two_block_map([ProvinceKind::Sea, ProvinceKind::Lake]);
     let visibility: BTreeMap<u32, u8> = [(1, 0), (2, 0)].into_iter().collect();
     assert_eq!(
-        IntelCells::new(&map).unwrap().intel_map(Some(&visibility)).texels,
+        IntelCells::new(&map)
+            .unwrap()
+            .intel_map(Some(&visibility))
+            .texels,
         vec![0, 0]
     );
 }

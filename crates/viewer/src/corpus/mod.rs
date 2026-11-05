@@ -19,7 +19,7 @@ use std::{
 
 pub const USAGE: &str =
     "viewer --mod-corpus --out <directory> [--game-dir <directory>] [--user-dir <directory>]
-         [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>] [--values[=text]] [--sounds-only]
+         [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>] [--values[=text]] [--sounds-only | --maps-only]
 viewer --mod-corpus-diff <base run> <head run> [--out <file.md>] [--examples <n>]";
 
 /// The stack with no mod, which every other stack mounts beneath its mod.
@@ -50,6 +50,7 @@ struct Options {
     values: Option<values::Mode>,
     /// Runs only the defines and the map audio's readers.
     sounds_only: bool,
+    maps_only: bool,
 }
 
 fn value(args: &mut std::slice::Iter<'_, OsString>, name: &str) -> io::Result<OsString> {
@@ -71,6 +72,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
     let mut jobs = 4;
     let mut values = None;
     let mut sounds_only = false;
+    let mut maps_only = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -92,6 +94,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
             Some("--values") => values = Some(values::Mode::Digest),
             Some("--values=text") => values = Some(values::Mode::Text),
             Some("--sounds-only") => sounds_only = true,
+            Some("--maps-only") => maps_only = true,
             _ => {
                 return Err(invalid(format!(
                     "unknown argument {}\n{USAGE}",
@@ -99,6 +102,9 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
                 )));
             }
         }
+    }
+    if sounds_only && maps_only {
+        return Err(invalid("give one of --sounds-only and --maps-only"));
     }
     // The desktop app's saved folders, unless named.
     let config = dashboard::Config::load().ok();
@@ -118,6 +124,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
         jobs,
         values,
         sounds_only,
+        maps_only,
     })
 }
 
@@ -301,7 +308,7 @@ fn stack(
     let (runs, diagnostics, state_history) = if options.sounds_only {
         readers::run_sounds(content, values.clone())
     } else {
-        readers::run(content, decode, values.clone())
+        readers::run(content, decode, values.clone(), options.maps_only)
     };
     if let Some(values) = values {
         values.finish();

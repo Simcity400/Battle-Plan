@@ -1365,7 +1365,11 @@ impl Hooks {
         last_sequence: Option<u64>,
         counts: replay_data::event_feed_rows::EventFeedCounts,
         slots: usize,
+        enabled: bool,
     ) -> Result<Self, &'static str> {
+        if !enabled {
+            return Ok(Self { held: None });
+        }
         let mut store = Store::new(last_sequence)?;
         store.restore_counts(counts);
         let capacity = slots.saturating_mul(2).max(1024);
@@ -1461,15 +1465,13 @@ impl Hooks {
     }
 
     pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.held
-            .as_ref()
-            .into_iter()
-            .flat_map(|held| {
-                held.hooks
-                    .iter()
-                    .flat_map(Hook::executable_ranges)
-                    .chain(held.taps.iter().flat_map(Tap::executable_ranges))
-            })
+        let Some(held) = self.held.as_ref() else {
+            return Vec::new();
+        };
+        held.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(held.taps.iter().flat_map(Tap::executable_ranges))
             .chain(std::iter::once(
                 unsafe { &event_stub_start } as *const u8 as usize
                     ..unsafe { &event_stub_end } as *const u8 as usize,
@@ -1779,6 +1781,12 @@ pub fn presize(slots: usize) {
     engine_allocation::advisory(|| presize_storage(slots));
 }
 
+fn staging_capacity(current: usize, required: usize) -> usize {
+    let required = current.max(required);
+    // Certificate indexes round up too; doubling an uneven capacity never catches them.
+    required.checked_next_power_of_two().unwrap_or(required)
+}
+
 fn presize_storage(slots: usize) {
     if active() & RETAIN != 0 {
         return;
@@ -1786,9 +1794,8 @@ fn presize_storage(slots: usize) {
     if let Ok(mut retired) = RETIRED.lock() {
         drop(retired.take());
     }
-    let mut capacity = CAPACITY.load(Ordering::Acquire);
-    crate::table_capture::grow_capacity(
-        &mut capacity,
+    let capacity = staging_capacity(
+        CAPACITY.load(Ordering::Acquire),
         // Two war links per country, and one hour's state owner changes and
         // ended war relations at most every state and war at once.
         slots
@@ -2042,6 +2049,44 @@ mod tests {
     use windows_sys::Win32::System::Diagnostics::Debug::{
         CONTEXT, RtlLookupFunctionEntry, RtlVirtualUnwind,
     };
+
+    #[test]
+    fn uneven_staging_and_rounded_indexes_converge_without_new_demand() {
+        let mut store = Store::new(None).unwrap();
+        store.prepare_capacity(1030).unwrap();
+        store.prepare_delayed(1030).unwrap();
+        store.prepare_decisions(1030).unwrap();
+        let capacity = staging_capacity(store.capacity(), store.capacity_demand());
+        assert_eq!(capacity, 2048);
+        let mut spare = Store::new(None).unwrap();
+        spare.prepare_capacity(capacity).unwrap();
+        spare.prepare_delayed(capacity).unwrap();
+        spare.prepare_decisions(capacity).unwrap();
+        store.install_capacity(&mut spare);
+        for _ in 0..16 {
+            assert_eq!(
+                staging_capacity(store.capacity(), store.capacity_demand()),
+                capacity
+            );
+        }
+        assert_eq!(staging_capacity(capacity, capacity + 1), 4096);
+    }
+
+    #[test]
+    fn excluded_history_constructs_no_hooks_or_storage() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("excluded history must not read game memory")
+            }
+        }
+        let mut hooks =
+            unsafe { Hooks::new(&NoReads, 0, None, Default::default(), 1500, false) }.unwrap();
+        assert!(hooks.held.is_none());
+        assert!(hooks.executable_ranges().is_empty());
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+    }
 
     struct RestoreTestGlobals {
         shared: *mut Owner,

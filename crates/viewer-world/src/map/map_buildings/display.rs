@@ -75,7 +75,7 @@ impl PreparedBuildings {
             let bytes = chunk
                 .iter()
                 .fold(
-                    chunk.len().checked_mul(2 * size_of::<data::Slot>()),
+                    chunk.len().checked_mul(size_of::<data::Slot>()),
                     |bytes, slot| {
                         bytes.and_then(|bytes| {
                             bytes.checked_add(
@@ -91,32 +91,30 @@ impl PreparedBuildings {
                 })
                 .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
             let credit = map_display_data::credit::display_products().admit_item(bytes)?;
-            let values = chunk
-                .iter()
-                .map(|slot| {
-                    Ok(data::Slot {
-                        id: slot.id,
-                        selected_type: slot.source.map(|(index, _)| types[index].name.clone()),
-                        recorded_country: slot.source.map(|(_, country)| country),
-                        drawn_at_distance: slot.drawn_at_distance,
-                        entity: slot
-                            .entity
-                            .as_ref()
-                            .map(|entity| {
-                                Ok::<_, io::Error>(data::Entity {
-                                    healthy: select(entity.healthy)?,
-                                    ruined: select(entity.ruined)?,
-                                    destroyed: entity.destroyed,
-                                    uncertain: entity.uncertain,
-                                    damaged: entity.damaged,
-                                    disable_grow_animation: entity.disable_grow_animation,
-                                    instance: entity.instance.into(),
-                                })
+            let mut values = Vec::with_capacity(chunk.len());
+            for slot in chunk.iter() {
+                values.push(data::Slot {
+                    id: slot.id,
+                    selected_type: slot.source.map(|(index, _)| types[index].name.clone()),
+                    recorded_country: slot.source.map(|(_, country)| country),
+                    drawn_at_distance: slot.drawn_at_distance,
+                    entity: slot
+                        .entity
+                        .as_ref()
+                        .map(|entity| {
+                            Ok::<_, io::Error>(data::Entity {
+                                healthy: select(entity.healthy)?,
+                                ruined: select(entity.ruined)?,
+                                destroyed: entity.destroyed,
+                                uncertain: entity.uncertain,
+                                damaged: entity.damaged,
+                                disable_grow_animation: entity.disable_grow_animation,
+                                instance: entity.instance.into(),
                             })
-                            .transpose()?,
-                    })
-                })
-                .collect::<io::Result<Vec<_>>>()?;
+                        })
+                        .transpose()?,
+                });
+            }
             edits.push((
                 index,
                 Some(map_display_data::retained::Retained::with_credit(
@@ -160,6 +158,16 @@ impl PreparedBuildings {
         binding: impl Fn(&data::AssetKey) -> io::Result<usize>,
         previous: Option<(&data::Buildings, &Self)>,
     ) -> io::Result<Self> {
+        Self::install_with(value, groups, binding, previous, None)
+    }
+
+    fn install_with(
+        value: &data::Buildings,
+        groups: &[ProvinceSlots],
+        binding: impl Fn(&data::AssetKey) -> io::Result<usize>,
+        previous: Option<(&data::Buildings, &Self)>,
+        shared: Option<Chunked<PreparedSlot>>,
+    ) -> io::Result<Self> {
         let select = |value: &data::Selection| {
             Ok::<_, io::Error>(Selection {
                 admitted: value.admitted,
@@ -175,8 +183,11 @@ impl PreparedBuildings {
             old.slots.len() == value.slots.len()
                 && installed.slots.chunks.len() == value.slots.len()
         });
-        let slots = match previous_chunks {
-            Some((old, installed)) if old.slots.ptr_eq(&value.slots) => installed.slots.clone(),
+        let slots = match (shared, previous_chunks) {
+            (Some(slots), _) => slots,
+            (_, Some((old, installed))) if old.slots.ptr_eq(&value.slots) => {
+                installed.slots.clone()
+            }
             _ => {
                 let mut directory = previous_chunks.map_or_else(
                     map_display_data::value_index::ValueIndex::default,
@@ -222,8 +233,14 @@ impl PreparedBuildings {
                     {
                         return Err(invalid("building projection has an invalid slot chunk"));
                     }
-                    let bytes = chunk.len().checked_mul(2 * size_of::<PreparedSlot>())
-                        .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>() + map_display_data::retained::Retained::<Arc<[PreparedSlot]>>::overhead()))
+                    let payload = chunk
+                        .len()
+                        .checked_mul(size_of::<PreparedSlot>())
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+                    let scratch =
+                        map_display_data::credit::display_products().admit_item(payload)?;
+                    let bytes = payload
+                        .checked_add(2 * size_of::<usize>() + map_display_data::retained::Retained::<Arc<[PreparedSlot]>>::overhead())
                         .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
                     let credit = map_display_data::credit::display_products().admit_item(bytes)?;
                     let mut slots = Vec::with_capacity(chunk.len());
@@ -242,7 +259,7 @@ impl PreparedBuildings {
                                 .entity
                                 .as_ref()
                                 .map(|entity| {
-                                    Ok::<_, io::Error>(PreparedEntity {
+                                    PreparedEntity {
                                         healthy: select(&entity.healthy)?,
                                         ruined: select(&entity.ruined)?,
                                         destroyed: entity.destroyed,
@@ -250,18 +267,17 @@ impl PreparedBuildings {
                                         damaged: entity.damaged,
                                         disable_grow_animation: entity.disable_grow_animation,
                                         instance: entity.instance.into(),
-                                    })
+                                    }
+                                    .retain()
                                 })
                                 .transpose()?,
                         });
                     }
-                    edits.push((
-                        index,
-                        Some(map_display_data::retained::Retained::with_credit(
-                            credit,
-                            || Arc::<[PreparedSlot]>::from(slots),
-                        )),
-                    ));
+                    let chunk = map_display_data::retained::Retained::with_credit(credit, || {
+                        Arc::<[PreparedSlot]>::from(slots)
+                    });
+                    drop(scratch);
+                    edits.push((index, Some(chunk)));
                 }
                 directory = directory.patched(&edits)?;
                 Chunked::from_directory(directory)?
@@ -409,7 +425,7 @@ impl MapBuildingAssets {
                     .collect(),
             )
         });
-        prepared.display_with(
+        let mut value = prepared.display_with(
             bank,
             perspective,
             fog,
@@ -422,7 +438,11 @@ impl MapBuildingAssets {
             &self.facts.ordered,
             Arc::clone(authored),
             previous.and_then(|base| base.display.as_deref().map(|value| (&base.slots, value))),
-        )
+        )?;
+        value.slots = value
+            .slots
+            .with_producer(self.projection_id(), Arc::clone(&prepared.slots.chunks));
+        Ok(value)
     }
 }
 
@@ -450,7 +470,11 @@ impl BuildingHistory {
             })
             .as_ref()
             .map_err(|reason| invalid(reason))?;
-        let installed = PreparedBuildings::install(
+        let shared = value
+            .slots
+            .producer::<incremental::ChunkDirectory<PreparedSlot>>(assets.projection_id())
+            .map(Chunked::shared);
+        let installed = PreparedBuildings::install_with(
             value,
             &assets.groups,
             |key| {
@@ -463,6 +487,7 @@ impl BuildingHistory {
                 .as_ref()
                 .filter(|(id, _, _)| *id == assets.projection_id())
                 .map(|(_, old, installed)| (old, installed)),
+            shared,
         )?;
         self.display_install = Some((assets.projection_id(), value.clone(), installed.clone()));
         Ok(installed)

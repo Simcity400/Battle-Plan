@@ -8,6 +8,118 @@ use replay_data::rows::{
 use replay_frame::frame::{Metrics, SharedView, TableView};
 use viewer_foundation::map::perspective::{Choice, Country};
 
+#[test]
+fn streamed_slot_chunks_preserve_order_with_less_than_two_copies() {
+    let count = CHUNK_SIZE * 20 + 7;
+    let owner = MemoryBudget::new(count * size_of::<[u64; 32]>() * 3 / 2);
+    let mut builder = ChunkBuilder::new_in(&owner).unwrap();
+    for value in 0..count {
+        builder.push([value as u64; 32]).unwrap();
+    }
+    let chunks = builder.finish().unwrap();
+    assert_eq!(chunks.len(), count);
+    for value in 0..count {
+        assert_eq!(chunks.get(value), Some(&[value as u64; 32]));
+    }
+    assert!(owner.used() < owner.limit());
+    drop(chunks);
+    assert_eq!(owner.used(), 0);
+}
+
+#[test]
+fn installed_live_buildings_keep_their_producer_pages_across_lookahead() {
+    let assets = assets();
+    let keys: Vec<_> = (0..5)
+        .map(|index| {
+            Arc::new(map_display_data::buildings::AssetKey::Selected {
+                entity: format!("fixture{index}"),
+                namespace: Vec::new(),
+                role: 0,
+                contract: 0,
+                force_pow2_textures: false,
+            })
+        })
+        .collect();
+    assets.display_keys.set(keys.clone()).unwrap();
+    assets
+        .display_bindings
+        .set(Ok(keys
+            .into_iter()
+            .enumerate()
+            .map(|(index, key)| (key, index))
+            .collect()))
+        .unwrap();
+    let hour = Hour::first();
+    let frame = hour.frame();
+    let vision = hour.vision(&frame);
+    let built = assets
+        .build(
+            &frame,
+            &vision,
+            &terrain(hour.cities),
+            Err("reference"),
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+        .unwrap();
+    let wire = assets
+        .display(
+            &built.prepared,
+            [1; 32],
+            vision.ours(),
+            vision.fog(),
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+    let ahead = assets
+        .display(
+            &built.prepared,
+            [1; 32],
+            vision.ours(),
+            !vision.fog(),
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+    assert!(!wire.slots.ptr_eq(&ahead.slots));
+    let mut history = BuildingHistory::default();
+    let installed = history.install_display(&wire, &assets).unwrap();
+    assert!(installed.slots.ptr_eq(&built.prepared.slots));
+    assert!(installed.bit_eq(&built.prepared));
+    let encoded = product_codec::encode(&wire).unwrap();
+    let restored = product_codec::decode(&encoded).unwrap();
+    let mut restored_history = BuildingHistory::default();
+    let restored = restored_history
+        .install_display(&restored, &assets)
+        .unwrap();
+    assert!(!restored.slots.ptr_eq(&built.prepared.slots));
+    assert!(restored.bit_eq(&built.prepared));
+    let receiver = self::assets();
+    receiver.display_binding.set([1; 32]).unwrap();
+    receiver
+        .display_bindings
+        .set(Ok(assets
+            .display_keys
+            .get()
+            .unwrap()
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, key)| (key, 4 - index))
+            .collect()))
+        .unwrap();
+    let rebound = BuildingHistory::default()
+        .install_display(&wire, &receiver)
+        .unwrap();
+    let decoded = product_codec::decode(&encoded).unwrap();
+    let restored = BuildingHistory::default()
+        .install_display(&decoded, &receiver)
+        .unwrap();
+    assert!(!rebound.slots.ptr_eq(&built.prepared.slots));
+    assert!(rebound.bit_eq(&restored));
+    assert!(!rebound.bit_eq(&built.prepared));
+}
+
 // Both factory types redirect to one declared bucket, in declaration order.
 const TYPES: &[u8] = br#"
 buildings = {
@@ -806,7 +918,7 @@ fn the_exact_comparator_tells_signed_zeros_apart() {
     negative.popup_speed = -0.0;
     assert!(negative == zero, "derived equality takes -0.0 for 0.0");
     assert!(!negative.bit_eq(&zero));
-    let instance = &mut other.slots.get_mut(0).entity.as_mut().unwrap().instance;
+    let instance = &mut other.slots.get_mut(0).entity_mut().instance;
     assert_eq!(instance.position[1].to_bits(), 0.0_f32.to_bits());
     instance.position[1] = -0.0;
     assert!(other != same, "slot equality compares instance bits");
@@ -873,7 +985,10 @@ fn a_building_base_keeps_closed_operands_without_source_pins() {
     );
     assert_eq!(base.vision.ours, vision.ours());
     assert_eq!(base.vision.fog, vision.fog());
-    assert_eq!(base.vision.provinces.as_deref().map(|v| v.flat()), vision.province_fog());
+    assert_eq!(
+        base.vision.provinces.as_deref().map(|v| v.flat()),
+        vision.province_fog()
+    );
     drop(vision);
     // The fixture holds the campaign view across hours.
     drop(hour);
@@ -1047,28 +1162,32 @@ fn persistent_slot_chunks_do_not_coalesce_signed_zero_or_nan_payloads() {
         source: None,
         id: 0,
         drawn_at_distance: Some(false),
-        entity: Some(PreparedEntity {
-            healthy: Selection {
-                admitted: true,
-                mesh: 1,
-                definition: 1,
-                variant: 0,
-            },
-            ruined: Selection {
-                admitted: true,
-                mesh: 1,
-                definition: 1,
-                variant: 0,
-            },
-            destroyed: false,
-            uncertain: false,
-            damaged: false,
-            disable_grow_animation: false,
-            instance: ModelInstance {
-                position: [x, 0.0, 0.0],
-                ..Default::default()
-            },
-        }),
+        entity: Some(
+            PreparedEntity {
+                healthy: Selection {
+                    admitted: true,
+                    mesh: 1,
+                    definition: 1,
+                    variant: 0,
+                },
+                ruined: Selection {
+                    admitted: true,
+                    mesh: 1,
+                    definition: 1,
+                    variant: 0,
+                },
+                destroyed: false,
+                uncertain: false,
+                damaged: false,
+                disable_grow_animation: false,
+                instance: ModelInstance {
+                    position: [x, 0.0, 0.0],
+                    ..Default::default()
+                },
+            }
+            .retain()
+            .unwrap(),
+        ),
     };
     let original = Chunked::from_values(vec![make(0.0)]).unwrap();
     let signed = original
@@ -1286,23 +1405,27 @@ fn reference_floating(
                 definition: mesh,
                 variant: 0,
             };
-            Some(PreparedEntity {
-                healthy: selection,
-                ruined: selection,
-                destroyed: false,
-                uncertain: false,
-                damaged: false,
-                // The reserved slot receives a null template,
-                // which grows unless its template explicitly suppresses popup growth.
-                disable_grow_animation: false,
-                instance: ModelInstance {
-                    position: [position.x, position.y, position.z],
-                    rotation: position.rotation,
-                    scale: 1.0,
-                    animation_seed: id,
-                    ..ModelInstance::default()
-                },
-            })
+            Some(
+                PreparedEntity {
+                    healthy: selection,
+                    ruined: selection,
+                    destroyed: false,
+                    uncertain: false,
+                    damaged: false,
+                    // The reserved slot receives a null template,
+                    // which grows unless its template explicitly suppresses popup growth.
+                    disable_grow_animation: false,
+                    instance: ModelInstance {
+                        position: [position.x, position.y, position.z],
+                        rotation: position.rotation,
+                        scale: 1.0,
+                        animation_seed: id,
+                        ..ModelInstance::default()
+                    },
+                }
+                .retain()
+                .unwrap(),
+            )
         })();
         harbors.push(PreparedSlot {
             source: None,
@@ -1404,7 +1527,8 @@ fn fog_changes_preserve_unknowns_and_only_dirty_native_visibility_boundaries() {
         viewer_foundation::map::perspective::values::Values::from_iter(
             previous.iter().map(|(&key, &value)| (key, value)),
             map_display_data::credit::display_products(),
-        ).unwrap(),
+        )
+        .unwrap(),
     ));
     let mut next = (*vision).clone();
     previous.remove(&7);

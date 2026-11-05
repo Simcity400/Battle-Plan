@@ -101,28 +101,32 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
             source: None,
             id: 0,
             drawn_at_distance: Some(landmark),
-            entity: Some(PreparedEntity {
-                healthy: Selection {
-                    admitted: true,
-                    mesh: 1,
-                    definition: 1,
-                    variant: 0,
-                },
-                ruined: Selection {
-                    admitted: true,
-                    mesh: 2,
-                    definition: 2,
-                    variant: 0,
-                },
-                destroyed: health <= 6_000_000,
-                uncertain: health > 6_000_000 && health <= 8_000_000,
-                damaged: health < 8_000_000,
-                disable_grow_animation: false,
-                instance: ModelInstance {
-                    scale: 1.0,
-                    ..Default::default()
-                },
-            }),
+            entity: Some(
+                PreparedEntity {
+                    healthy: Selection {
+                        admitted: true,
+                        mesh: 1,
+                        definition: 1,
+                        variant: 0,
+                    },
+                    ruined: Selection {
+                        admitted: true,
+                        mesh: 2,
+                        definition: 2,
+                        variant: 0,
+                    },
+                    destroyed: health <= 6_000_000,
+                    uncertain: health > 6_000_000 && health <= 8_000_000,
+                    damaged: health < 8_000_000,
+                    disable_grow_animation: false,
+                    instance: ModelInstance {
+                        scale: 1.0,
+                        ..Default::default()
+                    },
+                }
+                .retain()
+                .unwrap(),
+            ),
         }]),
         groups: Arc::from([group([0.0, 0.0, 2.0, 2.0], vec![0])]),
         city_damage: Default::default(),
@@ -139,8 +143,9 @@ fn budget_buildings(provinces: &[(u32, usize)]) -> BuildingHistory {
         for _ in 0..count {
             let mut slot = template.clone();
             slot.id = slots.len() as u32;
-            let healthy = &mut slot.entity.as_mut().unwrap().healthy;
-            healthy.mesh = 100 + slot.id as usize;
+            let mesh = 100 + slot.id as usize;
+            let healthy = &mut slot.entity_mut().healthy;
+            healthy.mesh = mesh;
             healthy.definition = healthy.mesh;
             ids.push(slot.id);
             slots.push(slot);
@@ -329,12 +334,12 @@ fn skipped_hours_carry_selector_without_creating_outside_a_frame() {
     mixed_frame(&mut units, &mut buildings, 1, 0.0);
     let mut skipped = buildings.prepared.clone().unwrap();
     skipped.hour += 1;
-    skipped.slots.get_mut(0).entity.as_mut().unwrap().destroyed = true;
+    skipped.slots.get_mut(0).entity_mut().destroyed = true;
     buildings.advance(&skipped);
     assert!(buildings.collect(None, 0.0).is_empty());
     let mut current = skipped;
     current.hour += 1;
-    current.slots.get_mut(0).entity.as_mut().unwrap().uncertain = true;
+    current.slots.get_mut(0).entity_mut().uncertain = true;
     buildings.set(current, true);
     assert!(mixed_frame(&mut units, &mut buildings, 0, 0.1).is_empty());
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.2), [2]);
@@ -344,7 +349,7 @@ fn skipped_hours_carry_selector_without_creating_outside_a_frame() {
 fn authored_growth_exemption_still_spends_one_creation_slot() {
     let mut buildings = budget_buildings(&[(10, 2)]);
     for slot in buildings.prepared.as_mut().unwrap().slots.iter_mut() {
-        slot.entity.as_mut().unwrap().disable_grow_animation = true;
+        slot.entity_mut().disable_grow_animation = true;
     }
     let mut units = budget_units(Vec::new(), false);
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.0), [100]);
@@ -367,7 +372,7 @@ fn damaged_pose_switch_does_not_consume_an_entity_creation() {
     let generation = buildings.slots[&0].generation;
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
-    let entity = next.slots.get_mut(0).entity.as_mut().unwrap();
+    let entity = next.slots.get_mut(0).entity_mut();
     entity.healthy.mesh = 200; // Renderer-only posed copy of the same definition.
     entity.damaged = true;
     buildings.set(next, true);
@@ -384,13 +389,7 @@ fn selector_change_recreates_even_when_entity_definition_is_unchanged() {
     let generation = buildings.slots[&0].generation;
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
-    next.slots
-        .get_mut(0)
-        .entity
-        .as_mut()
-        .unwrap()
-        .healthy
-        .variant = 1;
+    next.slots.get_mut(0).entity_mut().healthy.variant = 1;
     buildings.set(next, true);
     assert!(mixed_frame(&mut units, &mut buildings, 0, 0.1).is_empty());
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.2), [100]);
@@ -404,14 +403,8 @@ fn exhausted_building_replacement_is_empty_and_retries() {
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.0), [100]);
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
-    next.slots.get_mut(0).entity.as_mut().unwrap().healthy.mesh = 200;
-    next.slots
-        .get_mut(0)
-        .entity
-        .as_mut()
-        .unwrap()
-        .healthy
-        .definition = 200;
+    next.slots.get_mut(0).entity_mut().healthy.mesh = 200;
+    next.slots.get_mut(0).entity_mut().healthy.definition = 200;
     buildings.set(next, true);
     assert!(mixed_frame(&mut units, &mut buildings, 0, 0.1).is_empty());
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.2), [200]);
@@ -577,7 +570,7 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
     let mut input = prepared(10, 10_000_000, true);
     let mut other = input.slots[0].clone();
     other.id = 1;
-    other.entity.as_mut().unwrap().instance.position = [2001.0, 0.0, 1001.0];
+    other.entity_mut().instance.position = [2001.0, 0.0, 1001.0];
     input.slots = input.slots.iter().cloned().chain([other]).collect();
     input.groups = Arc::from([
         group([0.0, 0.0, 2.0, 2.0], vec![0]),
@@ -603,14 +596,7 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
 
     let mut history = BuildingHistory::default();
     let mut same_mesh = prepared(10, 0, false);
-    same_mesh
-        .slots
-        .get_mut(0)
-        .entity
-        .as_mut()
-        .unwrap()
-        .ruined
-        .mesh = 1;
+    same_mesh.slots.get_mut(0).entity_mut().ruined.mesh = 1;
     history.set(same_mesh, true);
     let before = at(&mut history, 50.0, 0.0)[0].1.animation_epoch;
     history.set(prepared(11, 10_000_000, false), true);
@@ -632,7 +618,7 @@ fn buildings_just_past_the_view_edge_are_created() {
         .map(|&id| {
             let mut slot = slot.clone();
             slot.id = id - 1;
-            slot.entity.as_mut().unwrap().instance.position = [id as f32, 0.0, 1000.0];
+            slot.entity_mut().instance.position = [id as f32, 0.0, 1000.0];
             slot
         })
         .collect();
@@ -1380,7 +1366,7 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
             for history in [&mut cached, &mut reference] {
                 let mut next = history.prepared.as_ref().unwrap().clone();
                 next.hour += 1;
-                next.slots.get_mut(1).entity.as_mut().unwrap().damaged = true;
+                next.slots.get_mut(1).entity_mut().damaged = true;
                 next.slots.get_mut(3).entity = None;
                 history.set(next, true);
             }
@@ -1644,7 +1630,7 @@ fn symbolic_buildings_preserve_the_independent_local_history_schedule() {
 fn quiet_tail_reuse_compares_bits_not_float_equality() {
     let source = prepared(10, 10_000_000, false);
     let mut tail = source.slots[0].clone();
-    tail.entity.as_mut().unwrap().instance.position[0] = -0.0;
+    tail.entity_mut().instance.position[0] = -0.0;
     assert_eq!(
         tail.entity.as_ref().unwrap().instance.position[0],
         source.slots[0].entity.as_ref().unwrap().instance.position[0]
@@ -1710,7 +1696,7 @@ fn symbolic_building_chunk_updates_share_untouched_directory_paths() {
         .unwrap();
     let installed = PreparedBuildings::install(&before, &source.groups, |_| Ok(1), None).unwrap();
     let mut change = source.slots[73].clone();
-    change.entity.as_mut().unwrap().instance.position[0] = -0.0;
+    change.entity_mut().instance.position[0] = -0.0;
     let mut next = source.clone();
     next.slots = source
         .slots

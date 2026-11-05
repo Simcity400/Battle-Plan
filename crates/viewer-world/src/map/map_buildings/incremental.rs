@@ -2,7 +2,7 @@
 use super::*;
 use map_display_data::{
     copy_index::CopyIndex,
-    credit::{Credit, display_products},
+    credit::{Credit, MemoryBudget, display_products},
 };
 use replay_data::rows::RowCodec;
 use replay_frame::frame::ViewIdentity;
@@ -14,6 +14,73 @@ const CHUNK_SHIFT: u32 = 6;
 pub(super) const CHUNK_SIZE: usize = 1usize << CHUNK_SHIFT;
 
 use map_display_data::{retained::Retained, value_index::ValueIndex};
+
+pub(super) struct ChunkBuilder<T: PartialEq> {
+    owner: MemoryBudget,
+    directory: ValueIndex<usize, Retained<Arc<[T]>>>,
+    pending: Vec<T>,
+    len: usize,
+    _scratch: Credit,
+}
+
+impl<T: PartialEq> ChunkBuilder<T> {
+    pub(super) fn new() -> io::Result<Self> {
+        Self::new_in(display_products())
+    }
+
+    fn new_in(owner: &MemoryBudget) -> io::Result<Self> {
+        let bytes = CHUNK_SIZE
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        Ok(Self {
+            owner: owner.clone(),
+            directory: ValueIndex::default(),
+            pending: Vec::new(),
+            len: 0,
+            _scratch: owner.admit_item(bytes)?,
+        })
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn push(&mut self, value: T) -> io::Result<()> {
+        if self.pending.capacity() == 0 {
+            self.pending
+                .try_reserve_exact(CHUNK_SIZE)
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        }
+        self.pending.push(value);
+        self.len += 1;
+        if self.pending.len() == CHUNK_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let bytes = self
+            .pending
+            .len()
+            .checked_mul(size_of::<T>())
+            .and_then(|bytes| bytes.checked_add(4 * size_of::<usize>()))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        let pending = std::mem::take(&mut self.pending);
+        let chunk = Retained::build_in(&self.owner, bytes, || Arc::<[T]>::from(pending))?;
+        self.directory = self.directory.inserted(self.directory.len(), chunk)?;
+        Ok(())
+    }
+
+    pub(super) fn finish(mut self) -> io::Result<Chunked<T>> {
+        self.flush()?;
+        Chunked::from_directory(self.directory)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Chunked<T: PartialEq> {
     shift: u32,
@@ -101,6 +168,12 @@ impl<T: PartialEq> ChunkDirectory<T> {
     }
 }
 impl<T: PartialEq> Chunked<T> {
+    pub(super) fn shared(chunks: Arc<ChunkDirectory<T>>) -> Self {
+        Self {
+            shift: CHUNK_SHIFT,
+            chunks,
+        }
+    }
     pub(super) fn from_directory(
         values: ValueIndex<usize, Retained<Arc<[T]>>>,
     ) -> io::Result<Self> {
@@ -112,6 +185,7 @@ impl<T: PartialEq> Chunked<T> {
     pub(super) fn directory(&self) -> ValueIndex<usize, Retained<Arc<[T]>>> {
         self.chunks.values.clone()
     }
+    #[cfg(test)]
     pub(super) fn from_values(values: Vec<T>) -> io::Result<Self> {
         let mut directory = ValueIndex::default();
         let mut values = values.into_iter();
@@ -205,10 +279,13 @@ impl<T: Clone + PartialEq> Chunked<T> {
         for (&index, _) in touched.iter() {
             let base = self.chunks.get(index).expect("checked chunk index");
             let start = index << self.shift;
-            let bytes = base
+            let payload = base
                 .len()
-                .checked_mul(2 * size_of::<T>())
-                .and_then(|n| n.checked_add(4 * size_of::<usize>()))
+                .checked_mul(size_of::<T>())
+                .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            let scratch = display_products().admit_item(payload)?;
+            let bytes = payload
+                .checked_add(4 * size_of::<usize>())
                 .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
             let chunk = Retained::build(bytes, || {
                 base.iter()
@@ -226,6 +303,7 @@ impl<T: Clone + PartialEq> Chunked<T> {
                     })
                     .collect::<Arc<[T]>>()
             })?;
+            drop(scratch);
             edits.push((index, Some(chunk)));
         }
         values = values.patched(&edits)?;
@@ -1826,7 +1904,7 @@ pub(super) fn patch(
     base: &BuildingsBase,
     affected: &[u32],
     types: &[BuildingType],
-    mut evaluate: impl FnMut(u32) -> (PreparedSlot, Tally),
+    mut evaluate: impl FnMut(u32) -> io::Result<(PreparedSlot, Tally)>,
 ) -> io::Result<Patch> {
     let credit = display_products().admit_item(
         affected
@@ -1838,7 +1916,7 @@ pub(super) fn patch(
     let mut slots = Vec::with_capacity(affected.len());
     let mut tallies = Vec::with_capacity(affected.len());
     for &id in affected {
-        let (slot, tally) = evaluate(id);
+        let (slot, tally) = evaluate(id)?;
         if let Some(old) = base.tallies.get(id as usize) {
             totals.remove(*old, types)?;
         }
@@ -1851,9 +1929,8 @@ pub(super) fn patch(
 
 pub(super) enum Ordinary<'a> {
     Full {
-        _credit: Credit,
-        slots: Vec<PreparedSlot>,
-        tallies: Vec<Tally>,
+        slots: ChunkBuilder<PreparedSlot>,
+        tallies: ChunkBuilder<Tally>,
         totals: SlotSummary,
         reason: &'static str,
     },
@@ -1883,12 +1960,13 @@ impl Ordinary<'_> {
                 tallies,
                 totals,
                 reason,
-                _credit,
             } => {
-                slots.extend(harbors.iter().cloned());
+                for slot in harbors.iter().cloned() {
+                    slots.push(slot)?;
+                }
                 Ok((
-                    Chunked::from_values(slots)?,
-                    Chunked::from_values(tallies)?,
+                    slots.finish()?,
+                    tallies.finish()?,
                     totals,
                     BuildPath::Full(reason),
                 ))

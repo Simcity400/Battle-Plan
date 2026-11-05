@@ -228,6 +228,46 @@ pub fn load_uploadable(
     Ok(texture)
 }
 
+#[derive(Debug)]
+pub struct MapTexture {
+    pub texture: dds::Texture,
+    pub unbound: bool,
+}
+
+/// Native file failures leave map samplers unbound; unknown or device-dependent outcomes refuse.
+pub fn load_map_texture(
+    name: &str,
+    read: Read<'_>,
+    decode: Decode,
+    space: ColorSpace,
+    warnings: &mut Vec<String>,
+) -> io::Result<MapTexture> {
+    match resources::texture(name.as_bytes(), read, decode)? {
+        Ok(texture) => {
+            check_upload(name, &texture.image, space)?;
+            Ok(MapTexture {
+                texture: texture.image,
+                unbound: false,
+            })
+        }
+        Err(reason) if reason.native_failure() => {
+            warnings.push(format!(
+                "{name}: {reason}; reproducing the game's unbound map texture."
+            ));
+            // An unbound D3D11 shader resource samples zero in every channel.
+            Ok(MapTexture {
+                texture: dds::Texture::from_rgba8(Rgba8Image {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![0; 4],
+                }),
+                unbound: true,
+            })
+        }
+        Err(reason) => Err(invalid(format!("{name}: {reason}"))),
+    }
+}
+
 /// Uploads a decoded DDS with every mip level it carries.
 ///
 /// Block-compressed payloads stay compressed, which is why the device must

@@ -119,7 +119,7 @@ impl Output {
                     .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
             )
             .map_err(|_| invalid("floating harbour slot identity exceeds u32"))?;
-            let (paint, tally) = evaluate(assets, vision, inputs, position, id);
+            let (paint, tally) = evaluate(assets, vision, inputs, position, id)?;
             if let Some(before) = counts.get(&index) {
                 totals.remove(*before);
             }
@@ -151,7 +151,7 @@ fn evaluate(
     floating: &FloatingInputs,
     position: &BuildingPosition,
     id: u32,
-) -> (PreparedSlot, Counts) {
+) -> io::Result<(PreparedSlot, Counts)> {
     let mut tally = Counts::default();
     let entity = (|| {
         let province = position.adjacent_sea;
@@ -200,13 +200,13 @@ fn evaluate(
             },
         })
     })();
-    (
+    Ok((
         PreparedSlot {
             source: None,
             id,
             drawn_at_distance: Some(false),
-            entity,
+            entity: entity.map(PreparedEntity::retain).transpose()?,
         },
         tally,
-    )
+    ))
 }

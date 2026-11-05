@@ -65,9 +65,49 @@ impl PartialEq for Instance {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SlotChunks(ValueIndex<usize, Retained<Vec<Slot>>>);
+#[derive(Clone, Default)]
+pub struct SlotChunks(
+    ValueIndex<usize, Retained<Vec<Slot>>>,
+    // In-memory products own their producer pages; the wire restores them after decoding.
+    Option<Producer>,
+);
+#[derive(Clone)]
+struct Producer {
+    owner: u64,
+    pages: Arc<dyn std::any::Any + Send + Sync>,
+}
+impl std::fmt::Debug for SlotChunks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SlotChunks").field(&self.0).finish()
+    }
+}
+impl PartialEq for SlotChunks {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 impl SlotChunks {
+    pub fn with_producer<T: std::any::Any + Send + Sync>(
+        mut self,
+        owner: u64,
+        pages: Arc<T>,
+    ) -> Self {
+        self.1 = Some(Producer { owner, pages });
+        self
+    }
+    pub fn producer<T: std::any::Any + Send + Sync>(&self, owner: u64) -> Option<Arc<T>> {
+        self.1
+            .as_ref()
+            .filter(|producer| producer.owner == owner)?
+            .pages
+            .clone()
+            .downcast()
+            .ok()
+    }
+    fn with_values(&self, values: ValueIndex<usize, Retained<Vec<Slot>>>) -> Self {
+        let producer = self.0.ptr_eq(&values).then(|| self.1.clone()).flatten();
+        Self(values, producer)
+    }
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -90,7 +130,7 @@ impl SlotChunks {
                 "building chunk directory has a gap",
             ));
         }
-        Ok(Self(self.0.inserted(index, chunk)?))
+        Ok(self.with_values(self.0.inserted(index, chunk)?))
     }
     pub fn patched(&self, edits: &[(usize, Option<Retained<Vec<Slot>>>)]) -> io::Result<Self> {
         let mut len = self.len();
@@ -105,7 +145,7 @@ impl SlotChunks {
                 len += 1;
             }
         }
-        Ok(Self(self.0.patched(edits)?))
+        Ok(self.with_values(self.0.patched(edits)?))
     }
     pub fn visit_changes(
         &self,
@@ -298,6 +338,22 @@ mod tests {
                 .unwrap();
             dense.push(Arc::new(values));
         }
+        let wire = product_codec::encode(&chunks).unwrap();
+        let producer = Arc::new(17u32);
+        chunks = chunks.with_producer(7, Arc::clone(&producer));
+        assert_eq!(product_codec::encode(&chunks).unwrap(), wire);
+        assert!(
+            product_codec::decode::<SlotChunks>(&wire)
+                .unwrap()
+                .producer::<u32>(7)
+                .is_none()
+        );
+        let unchanged = chunks.patched(&[]).unwrap();
+        assert!(Arc::ptr_eq(
+            &unchanged.producer::<u32>(7).unwrap(),
+            &producer
+        ));
+        assert!(unchanged.producer::<u32>(8).is_none());
         let before = chunks.clone();
         let mut changed = (*chunks[777]).clone();
         changed[0].drawn_at_distance = None;
@@ -308,6 +364,7 @@ mod tests {
             )
             .unwrap();
         dense[777] = Arc::new(changed);
+        assert!(chunks.producer::<u32>(7).is_none());
         let mut keys = Vec::new();
         chunks.visit_changes(&before, |key, _, _| keys.push(*key));
         assert_eq!(keys, [777]);

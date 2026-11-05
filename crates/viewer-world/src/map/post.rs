@@ -326,8 +326,7 @@ impl PostAssets {
         let block = |value: &Value, what: &str| {
             as_document(value).ok_or_else(|| refuse(format!("{what} is not a block")))
         };
-        let document =
-            parser::parse(&layers.read(file)?).map_err(|error| refuse(error.to_string()))?;
+        let document = map_snow::winter::read_post_effects(layers)?;
 
         let mut raw: BTreeMap<String, RawValues> = BTreeMap::new();
         for value in document.get_all("posteffect_values") {

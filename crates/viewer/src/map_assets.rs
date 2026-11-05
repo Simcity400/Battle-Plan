@@ -5,13 +5,18 @@ use installed_content_image::{bmp, native::Decode};
 use std::{io, sync::Arc};
 use viewer_world::map::scene_content::MapAssets;
 use {
-    viewer_foundation::errors::invalid, viewer_foundation::map::camera::MapSize,
-    viewer_foundation::map::textures::ColorSpace, viewer_foundation::map::textures::atlas_lookup,
-    viewer_foundation::map::textures::expect_size, viewer_foundation::map::textures::load_image,
+    viewer_foundation::errors::invalid,
+    viewer_foundation::map::camera::MapSize,
+    viewer_foundation::map::textures::atlas_lookup,
+    viewer_foundation::map::textures::expect_size,
+    viewer_foundation::map::textures::load_image,
+    viewer_foundation::map::textures::load_map_texture,
     viewer_foundation::map::textures::load_uploadable,
     viewer_foundation::map::textures::sampled_heights,
     viewer_foundation::map::textures::terrain_flag_mask,
-    viewer_foundation::map::textures::terrain_id_map, viewer_world::map::post::PostAssets,
+    viewer_foundation::map::textures::terrain_id_map,
+    viewer_foundation::map::textures::{ColorSpace, MapTexture},
+    viewer_world::map::post::PostAssets,
 };
 
 /// Reads and decodes the whole set, appending any limitation to `warnings`.
@@ -59,10 +64,26 @@ pub fn load_with_products(
     };
     // Each texture is checked for the colour space the scene uploads it in, so artwork a
     // visual mod supplies that the upload would refuse is drawn from the recording instead.
-    let texture = |name: &str, space: ColorSpace| {
+    let mut texture_warnings = Vec::new();
+    let mut texture_with_status = |name: &str, space: ColorSpace| {
         let path = format!("map/terrain/{name}");
         layers.artwork(&path, |stack| {
-            load_uploadable(&path, &|request| stack.read_path(request), decode, space)
+            if stack.shows_visual_mods() {
+                load_uploadable(&path, &|request| stack.read_path(request), decode, space).map(
+                    |texture| MapTexture {
+                        texture,
+                        unbound: false,
+                    },
+                )
+            } else {
+                load_map_texture(
+                    &path,
+                    &|request| stack.read_path(request),
+                    decode,
+                    space,
+                    &mut texture_warnings,
+                )
+            }
         })
     };
     let terrain = bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.terrain))?)
@@ -112,11 +133,15 @@ pub fn load_with_products(
         &terrain.indices,
         &atlas_of_palette,
     )?;
-    let reflection = texture("reflection.dds", ColorSpace::Srgb)?;
-    if reflection.faces == 1 {
+    let reflection = texture_with_status("reflection.dds", ColorSpace::Srgb)?;
+    if !reflection.unbound && reflection.texture.faces == 1 {
         // Retain DDS view type; do not convert strips into cube faces.
         warnings.push("1 2D reflection texture (map/terrain/reflection.dds): cube samples reproduce the native hardware GPU's zero result; native D3D11 software-driver results are device-dependent.".into());
     }
+    let reflection = reflection.texture;
+    let mut texture = |name: &str, space: ColorSpace| {
+        texture_with_status(name, space).map(|loaded| loaded.texture)
+    };
     // The arrow effects, movement arrows and order labels all follow `maparrows.txt`, so they
     // come from one stack together.
     let (arrow_shader, movement_arrows, order_label_shader) =
@@ -138,7 +163,7 @@ pub fn load_with_products(
                 ),
             ))
         })?;
-    Ok(MapAssets {
+    let assets = MapAssets {
         map,
         mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
             viewer_world::map::mesh_budget::Budget::read(defines)
@@ -200,7 +225,9 @@ pub fn load_with_products(
             kind.spawn_city
         })),
         sight: Default::default(),
-    })
+    };
+    warnings.extend(texture_warnings);
+    Ok(assets)
 }
 
 /// The world normal map. It is artwork, so a visual mod's is drawn (in any form the game reads),

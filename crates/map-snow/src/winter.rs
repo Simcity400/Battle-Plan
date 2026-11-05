@@ -81,6 +81,14 @@ impl Factors for Winter {
         )
     }
 }
+pub fn read_post_effects(layers: &ResolvedLayers) -> io::Result<parser::Document> {
+    let file = "gfx/posteffect_volumes.txt";
+    // Native post-effect readers finish an open block at EOF too.
+    parser::parse_unclosed(&layers.read(file)?)
+        .map(|(document, _)| document)
+        .map_err(|error| invalid(format!("{file}: {error}")))
+}
+
 impl Winter {
     pub fn load(
         layers: &ResolvedLayers,
@@ -88,7 +96,7 @@ impl Winter {
         map: &MapData,
         regions: &BTreeMap<u32, StrategicRegion>,
     ) -> io::Result<Self> {
-        let document = parser::parse(&layers.read("gfx/posteffect_volumes.txt")?)?;
+        let document = read_post_effects(layers)?;
         let mut names = std::collections::BTreeSet::new();
         for value in document.get_all("posteffect_values") {
             let value = as_document(value).ok_or_else(|| {

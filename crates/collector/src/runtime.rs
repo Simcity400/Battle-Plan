@@ -1103,6 +1103,10 @@ fn run(
             event_feed_sequence,
             event_feed_counts,
             slots,
+            crate::extended::records_any(
+                session.capture_mode,
+                &[replay_data::rows::TableId::EventFeedHistory],
+            ),
         )
     })?;
     crate::politics_changes::resize(
@@ -5836,7 +5840,12 @@ fn sizing_pass(
     let span = span.switch(Phase::Observers);
     let peace = lock(&sizing.capacities).extended.peace_settlements;
     crate::peace_settlements::presize(peace);
-    crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
+    if crate::extended::records_any(
+        shared.capture_mode,
+        &[replay_data::rows::TableId::EventFeedHistory],
+    ) {
+        crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
+    }
     let span = span.switch(Phase::Sizing);
     crate::naval_result_sources::prepare(&live, base);
     let naval_result_capacity = crate::naval_result_sources::capacity();

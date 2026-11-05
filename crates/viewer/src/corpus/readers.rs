@@ -26,6 +26,9 @@ use installed_content_core::{
 
 use super::report::{Diagnostic, Kind, ReaderRun};
 
+#[path = "map_assets.rs"]
+mod map_assets;
+
 /// The readers' runs and diagnostics, in call order.
 #[derive(Default)]
 struct Log {
@@ -190,6 +193,7 @@ pub fn run(
     content: installed_content_core::GatheredContent,
     decode: installed_content_image::native::Decode,
     values: Option<super::values::Writer>,
+    maps_only: bool,
 ) -> (Vec<ReaderRun>, Vec<Diagnostic>, super::report::StateHistory) {
     let language = content
         .language
@@ -224,7 +228,9 @@ pub fn run(
     }
     let (interface, localisation) = interface(&mut log, layers, &language, decode);
     let map = map(&mut log, layers, defines.as_ref(), decode);
-    politics(&mut log, layers, defines.as_ref());
+    if !maps_only {
+        politics(&mut log, layers, defines.as_ref());
+    }
     units(
         &mut log,
         layers,
@@ -241,6 +247,18 @@ pub fn run(
         decode,
         interface.as_ref().map(|interface| &interface.registry),
     );
+    if maps_only {
+        map_assets::read(
+            &mut log,
+            layers,
+            defines.as_ref(),
+            map.terrain.as_ref(),
+            map.data.as_ref(),
+            decode,
+        );
+        log.note("viewer.visual_parity", Kind::Offline, "Asset loading and shader compilation do not establish visual parity; compare recorded campaign frames with the game at the same hour, camera and display settings.");
+        return (log.runs, log.diagnostics, log.state_history);
+    }
     triggers(&mut log, layers, defines.as_ref());
     sounds(&mut log, layers, defines.as_ref());
     let counts = match (&map.buildings, &map.ideologies, &map.resources) {
@@ -649,8 +667,6 @@ fn map(
         for (file, field) in &modes.refused {
             log.about("scripted_map_modes", Kind::Refused, file, field);
         }
-        // The viewer draws a layer that hands over to one of the game's layers; a colour
-        // script is not evaluated.
         for mode in &modes.modes {
             for (side, layer) in [("top", &mode.top), ("bottom", &mode.bottom)] {
                 use installed_content_core::scripted_map_modes::LayerType;
@@ -660,9 +676,9 @@ fn map(
                 ) {
                     log.about(
                         "scripted_map_modes",
-                        Kind::Refused,
+                        Kind::Offline,
                         format_args!("{}.{side}", mode.name),
-                        "colour script is not evaluated",
+                        "colour script requires a recorded campaign trigger world",
                     );
                 }
             }
@@ -1514,6 +1530,17 @@ fn viewer_map_assets(
     }) {
         log.typed("viewer.raids", raids.warnings.iter().cloned());
         log.notes("viewer.raids", Kind::Refused, &raids.refusals());
+        let mut warnings = Vec::new();
+        log.read("viewer.map_frame", || {
+            viewer_world::map::mapframe::FrameAssets::load(
+                layers,
+                decode,
+                raids.trigger_content.facts(),
+                &mut warnings,
+            )
+            .map(|_| ())
+        });
+        log.notes("viewer.map_frame", Kind::Warning, &warnings);
     }
 }
 
@@ -1593,10 +1620,7 @@ mod tests {
             [1, 3, 4]
         );
         for state in &log.state_history.states {
-            assert_eq!(
-                state.file,
-                states.source(state.id).map(ToString::to_string)
-            );
+            assert_eq!(state.file, states.source(state.id).map(ToString::to_string));
             assert_eq!(state.reasons, states.diagnostics(state.id));
         }
         assert!(states.diagnostics(2).is_empty());

@@ -4,7 +4,9 @@ use collector_certificates::{dirty_set, watch_registry};
 use collector_hooks::hook;
 use collector_lifetime::world_lifetime;
 use collector_memory::terminal as allocation;
-use collector_primitives::{clock, raw_memory, table_capture};
+#[cfg(test)]
+use collector_primitives::table_capture;
+use collector_primitives::{clock, raw_memory};
 use collector_status::status;
 #[cfg(test)]
 use collector_test_support as test_support;
