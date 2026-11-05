@@ -98,7 +98,7 @@ fn latest_rows_of_many_keys_read_each_directory_once_and_equal_single_key_reads(
         assert!(reads <= 1_000, "{reads} directory reads at hour {hour}");
         let mut single = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
         for (&key, row) in keys.iter().zip(rows) {
-            let expected = single.latest_event(key, hour).unwrap();
+            let expected = single.latest_value(key, hour).unwrap();
             let actual =
                 row.map(|(date, bytes)| (date, serde_json::from_slice::<Value>(&bytes).unwrap()));
             assert_eq!(actual, expected, "key {key} at hour {hour}");

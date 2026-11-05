@@ -382,13 +382,13 @@ pub fn query(
         .collect();
     let mut reads = BTreeSet::new();
     if let Some((_, row)) = reader.latest_event(OPERATIVE_READ, first)? {
-        reads.insert(serde_json::from_value::<i32>(row)?);
+        reads.insert(serde_json::from_slice::<i32>(&row)?);
     }
     for row in reader
         .events(&[OPERATIVE_READ], first, last, 0, u32::MAX)?
         .rows
     {
-        reads.insert(serde_json::from_value::<i32>(row.row)?);
+        reads.insert(serde_json::from_slice::<i32>(&row.row)?);
     }
     for (name, key) in keys {
         check_cancel(cancelled)?;
@@ -404,13 +404,13 @@ pub fn query(
                 .ok_or_else(|| dashboard_core::invalid("Missing prepared agency event"))?;
             match field.as_str() {
                 "agency" => {
-                    let mut entry: RawEntry = serde_json::from_value(row)?;
+                    let mut entry: RawEntry = serde_json::from_slice(&row)?;
                     entry.first_hour = span.first_hour;
                     entry.last_hour = span.last_hour;
                     track.entries.push(entry);
                 }
                 "roster" => {
-                    let mut roster: AgencyRosterRun = serde_json::from_value(row)?;
+                    let mut roster: AgencyRosterRun = serde_json::from_slice(&row)?;
                     roster.first_hour = span.first_hour;
                     roster.last_hour = span.last_hour;
                     reads.insert(roster.read_hour);

@@ -359,7 +359,19 @@ fn rows<T: serde::de::DeserializeOwned>(
         .unwrap()
         .rows
         .into_iter()
-        .map(|row| serde_json::from_value(row.row).unwrap())
+        .map(|row| serde_json::from_slice(&row.row).unwrap())
+        .collect()
+}
+
+/// The facts of `keys` the feed stored in `section`, as stored ([`decode_fact`]).
+fn facts(fixture: &Fixture, section: &str, keys: &[u64], cancelled: &AtomicBool) -> Vec<Fact> {
+    Reader::new(&fixture.store, &fixture.key, section.into(), cancelled)
+        .unwrap()
+        .events(keys, i32::MIN, i32::MAX, 0, u32::MAX)
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|row| decode_fact(&row.row).unwrap())
         .collect()
 }
 
@@ -432,7 +444,7 @@ fn prepared_feed_sources_equal_their_change_builders_across_commits_resume_appen
             changes.sort_by_key(&order);
             wanted.sort_by_key(order);
             assert_eq!(changes, wanted);
-            let facts: Vec<Fact> = rows(&fixture, "event-feed-facts-1", &FACT_KEYS, &cancelled);
+            let facts = facts(&fixture, "event-feed-facts-1", &FACT_KEYS, &cancelled);
             assert_eq!(
                 facts
                     .iter()
@@ -515,7 +527,6 @@ fn pages(
                     EventFeedCategory::Politics,
                     EventFeedCategory::Milestones,
                 ]),
-                observations: false,
             },
             context,
             store,
@@ -608,20 +619,18 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
             .facts
             .late
             .insert(row.hour, row.read_hour, key, ordinal);
+        let fact = Fact {
+            row,
+            nuke_type: None,
+            occurrence: None,
+            item: None,
+            shown: Default::default(),
+        };
+        let read_hour = fact.row.read_hour;
         state
             .facts
             .events
-            .event(
-                key,
-                row.read_hour,
-                &Fact {
-                    row,
-                    nuke_type: None,
-                    script: None,
-                    occurrence: None,
-                    item: None,
-                },
-            )
+            .event_raw(key, read_hour, stored(&fact).unwrap())
             .unwrap();
     }
     state.publish(&mut fixture, &source, false, &flag);
@@ -651,7 +660,6 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
             cursor: None,
             page_size: 1,
             categories: BTreeSet::new(),
-            observations: false,
         },
         &context,
         &fixture.store,
@@ -879,7 +887,6 @@ fn prepared_feed_obsolete_project_pages_advance_to_live_rows_after_resume_and_ap
             cursor: None,
             page_size: 2,
             categories: BTreeSet::from([EventFeedCategory::Milestones]),
-            observations: false,
         },
         &context,
         &fixture.store,
@@ -1130,7 +1137,6 @@ fn prepared_feed_strike_only_campaign_keeps_recorded_types_and_stockpile_refusal
             cursor: None,
             page_size: 256,
             categories: BTreeSet::from([EventFeedCategory::WarsPeace]),
-            observations: false,
         },
         &context,
         &fixture.store,
@@ -1186,7 +1192,6 @@ fn prepared_feed_ordinary_project_after_many_late_rows_reads_only_its_raw_page()
             cursor: None,
             page_size: 1,
             categories: BTreeSet::from([EventFeedCategory::Milestones]),
-            observations: false,
         },
         &context,
         &fixture.store,
@@ -1863,143 +1868,22 @@ fn mutable_surrender_targets_keep_event_and_decision_edges_and_their_exact_charg
     assert!(!charges(&current).contains_key(&key));
 }
 
+/// A draft's bytes, once its opener is written, are its fact as stored, and read back as it: with
+/// and without what presenting showed, an occurrence, a charge, an item and a strike type.
 #[test]
-fn retained_observations_read_back_as_made() {
-    use super::super::native::{Projection, tests::retained_packs};
-    let flag = AtomicBool::new(false);
-    let frames: Vec<DecodedFrame> = retained_packs()
-        .into_iter()
-        .map(|pack| {
-            let mut frame = quiet_frame(pack.read_hour, 3);
-            *frame.tables[TableId::EventFeedHistory.index()] =
-                TableView::Complete(TableRows::EventFeedHistory(vec![pack]));
-            frame
-        })
-        .collect();
-    // Each read's observation made whole, named as the feed names it.
-    let mut names = HistoryScan::new(false, &[]);
-    let mut whole = Projection::default();
-    let mut builder = Builder::new(i32::MIN, i32::MAX);
-    for (frame, pack) in frames.iter().zip(retained_packs()) {
-        names.observe(frame);
-        whole
-            .append_named(
-                &mut builder,
-                &pack,
-                |hour, country| names.native_tag(hour, country),
-                &flag,
-            )
-            .unwrap();
-    }
-    let without_id = |row: &EventFeedRow| {
-        let mut value = serde_json::to_value(row).unwrap();
-        value.as_object_mut().unwrap().remove("id");
-        value
-    };
-    let expected: Vec<_> = builder.feed.rows.iter().map(without_id).collect();
-    assert_eq!(expected.len(), 2);
-    let mut fixture = Fixture::new();
-    let mut sources = None;
-    let mut seen = Vec::new();
-    for (batch, range) in [0..2, 2..3, 3..4].into_iter().enumerate() {
-        seen.extend(frames[range.clone()].iter().cloned());
-        let source = super::super::tests::opened(seen.clone());
-        let state = sources.get_or_insert_with(|| Sources::new(&source));
-        state.groups.begin_block();
-        for frame in &frames[range] {
-            state.observe(frame, &source, &flag).unwrap();
-        }
-        state.publish(&mut fixture, &source, batch == 2, &flag);
-    }
-    let source = super::super::tests::opened(seen);
-    let page = query(
-        &source,
-        query::Params {
-            branch_id: "1".into(),
-            first_hour: None,
-            last_hour: 123,
-            cursor: None,
-            page_size: 100,
-            categories: BTreeSet::from([
-                EventFeedCategory::WarsPeace,
-                EventFeedCategory::Diplomacy,
-                EventFeedCategory::Politics,
-                EventFeedCategory::Milestones,
-            ]),
-            observations: true,
-        },
-        &LoadContext { content: None },
-        &fixture.store,
-        &fixture.key,
-        &flag,
-    )
-    .unwrap()
-    .unwrap();
-    assert!(page.next_cursor.is_none());
-    let mut served: Vec<_> = page
-        .reply
-        .rows
-        .iter()
-        .filter(|row| row.kind == EventFeedKind::ScriptStateObserved)
-        .collect();
-    served.sort_by_key(|row| row.hour);
-    assert_eq!(
-        served.into_iter().map(without_id).collect::<Vec<_>>(),
-        expected
-    );
-    let facts: Vec<Fact> = rows(
-        &fixture,
-        "event-feed-facts-1",
-        &[EventFeedKind::ScriptStateObserved as u64],
-        &flag,
-    );
-    assert_eq!(facts.len(), 2);
-}
-
-/// A draft's bytes, once its opener and any held roster are written, are those serde writes of
-/// its fact: with and without a script, an occurrence, a charge, an item and a strike type.
-#[test]
-fn drafts_write_what_serde_writes_of_their_facts() {
-    use replay_data::event_feed_rows::{
-        EventFeedEventIdentity, EventFeedScope, EventFeedScript, decisions::DecisionState,
-    };
+fn drafts_store_and_read_back_their_facts() {
     // Text that names an opener stays inside its quotes.
     let named = ",\"opener\":null";
-    let event = EventFeedEvent {
-        script: Some(EventFeedScript {
-            token_len: 3,
-            scope_len: 1,
-            native_event: Some(EventFeedEventIdentity { kind: 1, id: 9 }),
-            instance: Some(7),
-            option: Some(-1),
-            ..Default::default()
-        }),
-        sequence: 5,
-        generation: 9,
-        hour: 120,
-        source: EventFeedSource::EventOption,
-        actor: EventFeedCountry {
-            reference: 3,
-            id: 3,
-            instance: 1,
-        },
-        target: EventFeedCountry::default(),
-        cause: Recorded::Value(Default::default()),
+    let sample = || Shown {
+        notices: vec![Notice {
+            key: ("kind".into(), named.into(), Some(named.into()), true),
+            reason: named.into(),
+            count: Some(2),
+            samples: Vec::new(),
+        }],
+        noted: Default::default(),
     };
-    let pack = EventFeedHistoryRow {
-        script_tokens: b"mod".to_vec(),
-        script_scopes: vec![EventFeedScope::default()],
-        events: vec![event],
-        ..Default::default()
-    };
-    let roster = || {
-        crate::products::event_feed::decision_roster::Inputs::captured(
-            &DecisionState::default(),
-            replay_data::event_feed_rows::state::Change::of(&pack, &event),
-            true,
-        )
-    };
-    let fact = |[script, occurrence, costs, item, nuke]: [bool; 5]| Fact {
+    let fact = |[shown, occurrence, costs, item, nuke]: [bool; 5]| Fact {
         row: EventFeedRow {
             id: "native:9:5".into(),
             hour: 120,
@@ -2024,7 +1908,7 @@ fn drafts_write_what_serde_writes_of_their_facts() {
             strike: None,
         },
         nuke_type: nuke.then_some(2),
-        script: script.then(|| script_effects::Inputs::captured(&pack, &event)),
+        shown: if shown { sample() } else { Shown::default() },
         occurrence: occurrence.then(|| Occurrence {
             generation: 9,
             sequence: 5,
@@ -2041,37 +1925,18 @@ fn drafts_write_what_serde_writes_of_their_facts() {
     };
     for bits in 0..32_u32 {
         let shape: [bool; 5] = std::array::from_fn(|bit| bits & (1 << bit) != 0);
-        let draft = Draft::new(fact(shape), false).unwrap();
-        assert_eq!(
-            draft.finish().unwrap(),
-            serde_json::to_vec(&fact(shape)).unwrap(),
-            "{bits:05b}"
-        );
+        let written = Draft::new(fact(shape)).unwrap().finish();
+        assert_eq!(written, stored(&fact(shape)).unwrap(), "{bits:05b}");
+        assert_eq!(stored(&decode_fact(&written).unwrap()).unwrap(), written, "{bits:05b}");
         if shape[1] {
             let mut opened = fact(shape);
             opened.occurrence.as_mut().unwrap().opener = Some((7, 11));
-            let mut draft = Draft::new(fact(shape), false).unwrap();
+            let mut draft = Draft::new(fact(shape)).unwrap();
             draft.occurrence.as_mut().unwrap().opener = Some((7, 11));
-            assert_eq!(
-                draft.finish().unwrap(),
-                serde_json::to_vec(&opened).unwrap()
-            );
-        }
-        if shape[0] {
-            let mut rostered = fact(shape);
-            rostered.script.as_mut().unwrap().roster = Some(roster());
-            let held = Draft::new(fact(shape), true).unwrap();
-            assert!(held.finish().is_err());
-            let mut held = Draft::new(fact(shape), true).unwrap();
-            held.complete(|script, hour, sequence| {
-                assert_eq!((hour, sequence), (120, if shape[1] { 5 } else { 0 }));
-                script.roster = Some(roster());
-            })
-            .unwrap();
-            assert_eq!(
-                held.finish().unwrap(),
-                serde_json::to_vec(&rostered).unwrap()
-            );
+            let written = draft.finish();
+            assert_eq!(written, stored(&opened).unwrap());
+            let read = decode_fact(&written).unwrap();
+            assert_eq!(read.occurrence.unwrap().opener, Some((7, 11)));
         }
     }
 }

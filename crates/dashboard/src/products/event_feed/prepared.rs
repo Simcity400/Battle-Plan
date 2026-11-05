@@ -12,7 +12,7 @@ use replay_data::{
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 
-pub(crate) const FACT_KEYS: [u64; 56] = [
+pub(crate) const FACT_KEYS: [u64; 52] = [
     1,
     2,
     3,
@@ -39,8 +39,6 @@ pub(crate) const FACT_KEYS: [u64; 56] = [
     35,
     36,
     37,
-    38,
-    39,
     (1 << 63) | 1,
     (1 << 63) | 2,
     (1 << 63) | 3,
@@ -67,22 +65,32 @@ pub(crate) const FACT_KEYS: [u64; 56] = [
     (1 << 63) | 35,
     (1 << 63) | 36,
     (1 << 63) | 37,
-    (1 << 63) | 38,
-    (1 << 63) | 39,
 ];
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Fact {
     pub row: EventFeedRow,
     pub nuke_type: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub script: Option<script_effects::Inputs>,
     /// A native occurrence's typed operands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurrence: Option<Occurrence>,
-    /// The item `row.item` names, kept with the fact.
+    /// The item `row.item` names, presented at the hour that read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<EventFeedItem>,
+    /// What presenting `item` showed besides it.
+    #[serde(default, skip_serializing_if = "Shown::is_empty")]
+    pub shown: Shown,
+}
+
+/// What presents a fact's item as the hour that read it shows it ([`super::present`]): its
+/// row, its item and its occurrence's script; what it showed besides the item.
+pub(super) type Present<'p> = dyn FnMut(&EventFeedRow, &mut EventFeedItem, Option<&script_effects::Inputs>) -> io::Result<Shown>
+    + 'p;
+
+/// Whether a fact of `kind` is presented at the hour that read it: for every other kind
+/// presenting changes nothing.
+pub(super) fn presented(kind: EventFeedKind) -> bool {
+    presents_event(kind) || names_decision(kind)
 }
 
 /// A prepared fact's address: its stream key and ordinal.
@@ -93,121 +101,63 @@ fn fact_key(kind: EventFeedKind, hour: i32, read_hour: i32) -> u64 {
     (kind as u64) | (u64::from(read_hour > hour) << 63)
 }
 
-/// Where an encoded occurrence names the fact it continues, written null until publication.
-const OPENER: &[u8] = b",\"opener\":";
+/// A stored fact's opener prefix: whether its occurrence continues one, then that fact's key and
+/// ordinal, each little-endian. The rest is the fact's encoded body, its opener left out.
+const OPENER: usize = 17;
 
-/// A fact encoded before its publication: the bytes before its occurrence's opener and those
-/// after, which publication joins with the opener it links.
+/// `fact` as stored: its opener prefix, then its body.
+#[cfg(test)]
+fn stored(fact: &Fact) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(256);
+    opener(&mut bytes, fact.occurrence.as_ref().and_then(|occurrence| occurrence.opener));
+    dashboard_base::prepared::codec::encode_into(&mut bytes, fact)?;
+    Ok(bytes)
+}
+
+fn opener(bytes: &mut Vec<u8>, opener: Option<FactRef>) {
+    let (flag, (key, ordinal)) = opener.map_or((0, (0, 0)), |at| (1, at));
+    bytes.push(flag);
+    bytes.extend_from_slice(&key.to_le_bytes());
+    bytes.extend_from_slice(&ordinal.to_le_bytes());
+}
+
+/// A stored fact ([`stored`]).
+pub(crate) fn decode_fact(bytes: &[u8]) -> io::Result<Fact> {
+    let (prefix, body) = bytes
+        .split_at_checked(OPENER)
+        .ok_or_else(|| crate::invalid("A prepared feed fact is truncated"))?;
+    let word = |at: usize| u64::from_le_bytes(prefix[at..at + 8].try_into().expect("eight bytes"));
+    let mut fact: Fact = dashboard_base::prepared::codec::decode(body)?;
+    if let Some(occurrence) = &mut fact.occurrence {
+        occurrence.opener = (prefix[0] == 1).then(|| (word(1), word(9)));
+    }
+    Ok(fact)
+}
+
+/// A fact encoded before its publication: its body, which publication prefixes with the opener
+/// it links ([`stored`]).
 pub(super) struct Draft {
     hour: i32,
     read_hour: i32,
     kind: EventFeedKind,
     occurrence: Option<Occurrence>,
-    head: Vec<u8>,
-    /// A roster rebuild's script, written into `head` at its offset once its reduction is known.
-    roster: Option<(usize, Box<script_effects::Inputs>)>,
-    tail: Vec<u8>,
-    /// What another thread writes of it ([`Self::write`]).
-    later: Option<Later>,
-}
-
-/// What a draft leaves to be written when its fact's bytes are: a roster rebuild's reduction,
-/// or a whole retained observation.
-pub(super) enum Later {
-    Roster(Option<Box<decision_roster::Captured>>),
-    Retained(Box<native::retained::Observed>),
+    body: Vec<u8>,
 }
 
 impl Draft {
-    /// `fact` as serde writes it, but for the opener and, when `roster`, the script.
-    pub(super) fn new(fact: Fact, roster: bool) -> io::Result<Self> {
-        let Fact {
-            row,
-            nuke_type,
-            script,
-            occurrence,
-            item,
-        } = fact;
-        let mut head = b"{\"row\":".to_vec();
-        serde_json::to_writer(&mut head, &row)?;
-        head.extend_from_slice(b",\"nuke_type\":");
-        serde_json::to_writer(&mut head, &nuke_type)?;
-        let mut held = None;
-        if let Some(script) = script {
-            head.extend_from_slice(b",\"script\":");
-            if roster {
-                held = Some((head.len(), Box::new(script)));
-            } else {
-                serde_json::to_writer(&mut head, &script)?;
-            }
-        }
-        let mut tail = Vec::new();
-        if let Some(occurrence) = &occurrence {
-            head.extend_from_slice(b",\"occurrence\":");
-            let start = head.len();
-            serde_json::to_writer(&mut head, occurrence)?;
-            let opener = head[start..]
-                .windows(OPENER.len() + 4)
-                .rposition(|bytes| bytes.starts_with(OPENER) && bytes.ends_with(b"null"))
-                .ok_or_else(|| crate::invalid("An encoded occurrence has no opener"))?
-                + start
-                + OPENER.len();
-            tail = head.split_off(opener + 4);
-            head.truncate(opener);
-        }
-        let end = if occurrence.is_some() {
-            &mut tail
-        } else {
-            &mut head
-        };
-        if let Some(item) = &item {
-            end.extend_from_slice(b",\"item\":");
-            serde_json::to_writer(&mut *end, item)?;
-        }
-        end.push(b'}');
+    /// `fact`'s body, its opener left to publication.
+    pub(super) fn new(fact: Fact) -> io::Result<Self> {
         Ok(Self {
-            hour: row.hour,
-            read_hour: row.read_hour,
-            kind: row.kind,
-            occurrence,
-            head,
-            roster: held,
-            tail,
-            later: None,
+            hour: fact.row.hour,
+            read_hour: fact.row.read_hour,
+            kind: fact.row.kind,
+            body: dashboard_base::prepared::codec::encode(&fact)?,
+            occurrence: fact.occurrence,
         })
     }
 
-    /// A retained observation's fact, written whole by [`Self::write`].
-    pub(super) fn observed(observed: native::retained::Observed) -> Self {
-        let read_hour = observed.read_hour();
-        Self {
-            hour: read_hour,
-            read_hour,
-            kind: EventFeedKind::ScriptStateObserved,
-            occurrence: None,
-            head: Vec::new(),
-            roster: None,
-            tail: Vec::new(),
-            later: Some(Later::Retained(Box::new(observed))),
-        }
-    }
-
-    /// What orders the fact among others of the hour but for its tags and identity.
-    pub(super) fn order(&self) -> (i32, i32, EventFeedKind) {
-        (self.hour, self.read_hour, self.kind)
-    }
-
-    pub(super) fn read_hour(&self) -> i32 {
-        self.read_hour
-    }
-
-    /// The bytes it owns on the heap: its encoded parts, and what is left to write.
+    /// The bytes it owns on the heap.
     pub(super) fn heap(&self) -> usize {
-        let later = match &self.later {
-            Some(Later::Roster(Some(captured))) => captured.heap(),
-            Some(Later::Retained(observed)) => observed.heap(),
-            Some(Later::Roster(None)) | None => 0,
-        };
         let occurrence = self.occurrence.as_ref().map_or(0, |occurrence| {
             occurrence.token.as_ref().map_or(0, String::capacity)
                 + occurrence.costs.as_ref().map_or(0, |costs| {
@@ -215,102 +165,27 @@ impl Draft {
                         + costs.iter().map(|cost| cost.amount.capacity()).sum::<usize>()
                 })
         });
-        self.head.capacity()
-            + self.tail.capacity()
-            + occurrence
-            + self
-                .roster
-                .as_ref()
-                .map_or(0, |(_, inputs)| inputs.heap())
-            + later
+        self.body.capacity() + occurrence
     }
 
-    /// The occurrence and hour of a roster rebuild whose script waits for its reduction.
-    pub(super) fn held_roster(&self) -> Option<(u64, i32)> {
-        self.roster.as_ref()?;
-        let sequence = self
-            .occurrence
-            .as_ref()
-            .map_or(0, |occurrence| occurrence.sequence);
-        Some((sequence, self.hour))
-    }
-
-    /// Leaves a held roster rebuild's script to [`Self::write`], with what its reduction
-    /// `captured`, its target countries' slots resolved.
-    pub(super) fn hold(&mut self, captured: Option<decision_roster::Captured>) {
-        self.later = Some(Later::Roster(captured.map(Box::new)));
-    }
-
-    /// The fact's bytes, with what it left to be written, on whichever thread writes them.
-    pub(super) fn write(mut self) -> io::Result<Vec<u8>> {
-        match self.later.take() {
-            Some(Later::Retained(observed)) => Self::new(
-                Fact {
-                    row: observed.row(true)?,
-                    nuke_type: None,
-                    script: None,
-                    occurrence: None,
-                    item: None,
-                },
-                false,
-            )?
-            .finish(),
-            Some(Later::Roster(captured)) => {
-                self.complete(|script, _, _| {
-                    script.roster = captured.map(|captured| captured.inputs());
-                })?;
-                self.finish()
-            }
-            None => self.finish(),
-        }
-    }
-
-    /// Writes a held roster rebuild's script, once `fill` gives it its roster and names from
-    /// the fact's hour and occurrence.
-    pub(super) fn complete(
-        &mut self,
-        fill: impl FnOnce(&mut script_effects::Inputs, i32, u64),
-    ) -> io::Result<()> {
-        let Some((at, mut script)) = self.roster.take() else {
-            return Ok(());
-        };
-        let sequence = self
-            .occurrence
-            .as_ref()
-            .map_or(0, |occurrence| occurrence.sequence);
-        fill(&mut *script, self.hour, sequence);
-        let rest = self.head.split_off(at);
-        serde_json::to_writer(&mut self.head, &*script)?;
-        self.head.extend_from_slice(&rest);
-        Ok(())
-    }
-
-    /// The fact's bytes, with the opener its occurrence joined.
-    fn finish(self) -> io::Result<Vec<u8>> {
-        if self.roster.is_some() || self.later.is_some() {
-            return Err(crate::invalid(
-                "A roster rebuild's script was never written",
-            ));
-        }
-        let mut bytes = self.head;
-        if let Some(occurrence) = &self.occurrence {
-            serde_json::to_writer(&mut bytes, &occurrence.opener)?;
-            bytes.extend_from_slice(&self.tail);
-        }
-        Ok(bytes)
+    /// The fact as stored, with the opener its occurrence joined.
+    fn finish(self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(OPENER + self.body.len());
+        opener(&mut bytes, self.occurrence.and_then(|occurrence| occurrence.opener));
+        bytes.extend_from_slice(&self.body);
+        bytes
     }
 }
 
 impl Builder {
-    /// The hour's rows as facts in row order, encoded but for their openers, with their script
-    /// inputs named by `slot_at`; a charge is kept by the one execution of the read it is
-    /// proven for. A roster rebuild's script is held for its reduction unless `rosters`, all
-    /// but its roster named.
+    /// The hour's rows as facts in row order, encoded but for their openers, their items
+    /// presented by `present` with their script inputs named by `slot_at`; a charge is kept by
+    /// the one execution of the read it is proven for.
     pub(super) fn drafts(
         &mut self,
         charges: &mut BTreeMap<ChargeKey, Vec<ScriptCost>>,
         mut slot_at: impl FnMut(i32, replay_data::event_feed_rows::EventFeedCountry) -> Option<u32>,
-        rosters: bool,
+        present: &mut Present<'_>,
     ) -> io::Result<Vec<Draft>> {
         self.feed.rows.sort_by(row_order);
         // An execution shares its charge key with no other of this read, or
@@ -335,19 +210,23 @@ impl Builder {
             {
                 occurrence.costs = charges.remove(&charge);
             }
-            let held = !rosters && row.kind == EventFeedKind::DecisionRosterRebuilt;
             let script = self.script_inputs.remove(&row.id).map(|mut inputs| {
                 inputs.resolve(|country| slot_at(row.hour, country));
                 inputs
             });
-            let fact = Fact {
+            let mut fact = Fact {
                 item: item_of(&self.feed.items, &row)?,
                 occurrence,
-                script,
                 row,
                 nuke_type: None,
+                shown: Shown::default(),
             };
-            drafts.push(Draft::new(fact, held)?);
+            if let Some(item) = &mut fact.item
+                && presented(fact.row.kind)
+            {
+                fact.shown = present(&fact.row, item, script.as_ref())?;
+            }
+            drafts.push(Draft::new(fact)?);
         }
         Ok(drafts)
     }
@@ -754,9 +633,9 @@ pub(super) fn strike_facts(
             facts.push(Fact {
                 row,
                 nuke_type: Some(strike.nuke_type),
-                script: None,
                 occurrence: None,
                 item: None,
+                shown: Shown::default(),
             });
         }
     }
@@ -774,9 +653,6 @@ pub(crate) struct Observer {
     observed: BTreeSet<String>,
     #[serde(default)]
     links: Links,
-    /// Facts published but not yet written ([`Draft::write`]), by key.
-    #[serde(skip)]
-    held: BTreeMap<u64, u64>,
 }
 impl Default for Observer {
     fn default() -> Self {
@@ -788,7 +664,6 @@ impl Default for Observer {
             diagnostics: Builder::new(0, 0),
             observed: BTreeSet::new(),
             links: Links::default(),
-            held: BTreeMap::new(),
         }
     }
 }
@@ -838,16 +713,13 @@ impl Observer {
                 1,
             );
         }
+        // The row path observes without content: items stay as recorded.
         let drafts = self.diagnostics.drafts(
             &mut charges(frame),
             |hour, country| identities.native_scope_slot(hour, country),
-            true,
+            &mut |_, _, _| Ok(Shown::default()),
         )?;
-        if !self.publish(drafts, frame.hour, complete)?.is_empty() {
-            return Err(crate::invalid(
-                "The row path left a fact to be written later",
-            ));
-        }
+        self.publish(drafts, frame.hour, complete)?;
         let mut changes = country_groups::changes::Scan {
             moments: Vec::new(),
             observed: BTreeSet::new(),
@@ -858,20 +730,19 @@ impl Observer {
         let strikes = nuclear::read(frame, &mut self.diagnostics, cancelled)?;
         let types = strike_types();
         for strike in strike_facts(frame.hour, &strikes, tag_at, &mut self.diagnostics, &types) {
-            self.publish_one(Draft::new(strike, false)?)?;
+            self.publish_one(Draft::new(strike)?)?;
         }
         self.end_hour();
         Ok(())
     }
     /// The hour's native facts, published in row order once each is joined, in native order,
-    /// to the occurrence it continues. Those with bytes still to be written, and every later
-    /// one of their keys, are held for [`Self::written`], in order, with their keys.
+    /// to the occurrence it continues.
     pub(super) fn publish(
         &mut self,
         mut drafts: Vec<Draft>,
         hour: i32,
         complete: bool,
-    ) -> io::Result<Vec<(u64, Draft)>> {
+    ) -> io::Result<()> {
         // Facts publish in row order; their joins follow the native order,
         // so an edge continues the occurrence open when it ran.
         let mut next = BTreeMap::<u64, u64>::new();
@@ -901,52 +772,25 @@ impl Observer {
                 self.links.link(draft.kind, occurrence, at[index]);
             }
         }
-        let mut later = Vec::new();
         for (draft, (key, ordinal)) in drafts.into_iter().zip(at) {
             self.late.insert(draft.hour, draft.read_hour, key, ordinal);
-            if draft.later.is_some() || self.held.contains_key(&key) {
-                *self.held.entry(key).or_default() += 1;
-                later.push((key, draft));
-                continue;
-            }
             let read_hour = draft.read_hour;
-            self.events.event_raw(key, read_hour, draft.finish()?)?;
+            self.events.event_raw(key, read_hour, draft.finish())?;
         }
         self.diagnostics.war_ends.clear();
-        Ok(later)
+        Ok(())
     }
-    /// The next ordinal of `key`, after the facts it holds.
+    /// The next ordinal of `key`.
     fn ordinal(&self, key: u64) -> u64 {
         self.events.state(key).map_or(0, |state| state.events)
-            + self.held.get(&key).copied().unwrap_or(0)
-    }
-    /// The bytes of the oldest fact `key` holds, written ([`Self::publish`]).
-    pub(super) fn written(&mut self, key: u64, read_hour: i32, bytes: Vec<u8>) -> io::Result<()> {
-        match self.held.get_mut(&key) {
-            Some(held) if *held > 1 => *held -= 1,
-            Some(_) => {
-                self.held.remove(&key);
-            }
-            None => {
-                return Err(crate::invalid(
-                    "An event-feed fact was written but never held",
-                ));
-            }
-        }
-        self.events.event_raw(key, read_hour, bytes)
     }
     /// A fact after the hour's native ones, at its key's next ordinal.
     pub(super) fn publish_one(&mut self, draft: Draft) -> io::Result<()> {
         let key = fact_key(draft.kind, draft.hour, draft.read_hour);
-        if self.held.contains_key(&key) {
-            return Err(crate::invalid(
-                "An event-feed fact would pass one held before it",
-            ));
-        }
         let ordinal = self.ordinal(key);
         self.late.insert(draft.hour, draft.read_hour, key, ordinal);
         let read_hour = draft.read_hour;
-        self.events.event_raw(key, read_hour, draft.finish()?)
+        self.events.event_raw(key, read_hour, draft.finish())
     }
     /// The hour's diplomacy observation: the tables it read, its refusals and its moments.
     pub(super) fn publish_diplomacy(
@@ -980,12 +824,12 @@ impl Observer {
             let item = item_of(&self.diagnostics.feed.items, &row)?;
             let fact = Fact {
                 nuke_type: None,
-                script: None,
                 occurrence: None,
                 item,
                 row,
+                shown: Shown::default(),
             };
-            self.publish_one(Draft::new(fact, false)?)?;
+            self.publish_one(Draft::new(fact)?)?;
         }
         Ok(())
     }

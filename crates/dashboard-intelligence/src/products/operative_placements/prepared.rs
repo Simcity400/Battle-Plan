@@ -284,7 +284,7 @@ pub fn query(
         let (_, row) = reader
             .latest_event(COVERAGE, span.first_hour)?
             .ok_or_else(|| dashboard_core::invalid("Missing placement coverage event"))?;
-        let mut period: PlacementPeriod = serde_json::from_value(row)?;
+        let mut period: PlacementPeriod = serde_json::from_slice(&row)?;
         period.first_hour = span.first_hour;
         period.last_hour = span.last_hour;
         scan.history.periods.push(period);
@@ -293,7 +293,7 @@ pub fn query(
         .events(&[MEMBERSHIP_READ], first, last, 0, u32::MAX)?
         .rows
         .into_iter()
-        .map(|row| serde_json::from_value(row.row).map_err(io::Error::from))
+        .map(|row| serde_json::from_slice(&row.row).map_err(io::Error::from))
         .collect::<io::Result<_>>()?;
     for (id, key) in keys {
         check_cancel(cancelled)?;
@@ -309,7 +309,7 @@ pub fn query(
             let (_, row) = reader
                 .latest_event(key, span.first_hour)?
                 .ok_or_else(|| dashboard_core::invalid("Missing placement value event"))?;
-            let mut run: OperativePlacementRun = serde_json::from_value(row)?;
+            let mut run: OperativePlacementRun = serde_json::from_slice(&row)?;
             run.first_hour = span.first_hour;
             run.last_hour = span.last_hour;
             pair.runs.push(run);

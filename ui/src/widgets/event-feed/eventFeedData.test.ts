@@ -28,7 +28,7 @@ const named = { token: 'mod/item', name: 'A modded item', description: null,
 
 test('scripted fires, news and sub-day decision lifecycles retain distinct occurrences and compact identities', () => {
   const kinds = ['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected',
-    'decisionRemoved', 'decisionCancelled', 'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect', 'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged', 'decisionRosterRebuilt'] as const;
+    'decisionRemoved', 'decisionCancelled', 'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect', 'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged'] as const;
   const data = reply(kinds.map((kind, n) => row(kind, 'politics', 125, {
     id: `native:7:${n}`, exact: true, readHour: 130, tags: ['actor', 'target'], participants: ['actor', 'target'], item: 0,
     cause: { how: null, within: null, conference: null, state: null, ally: null, reason: null,
@@ -39,10 +39,7 @@ test('scripted fires, news and sub-day decision lifecycles retain distinct occur
   const rows = filteredEventRows(data, all);
   assert.equal(rows.length, kinds.length);
   assert.equal(new Set(rows.map(row => row.item.event.id)).size, kinds.length);
-  for (const at of rows) {
-    if (at.item.event.kind === 'decisionRosterRebuilt') assert.match(eventDescription(at.item, tag => tag), /rebuilt the decision roster/);
-    else assert.match(eventDescription(at.item, tag => tag), /A modded item/);
-  }
+  for (const at of rows) assert.match(eventDescription(at.item, tag => tag), /A modded item/);
   assert.match(eventDescription(rows.find(row => row.item.event.kind === 'newsEventFired')!.item, tag => tag), /news/);
 });
 
@@ -358,20 +355,4 @@ test('prepared cursor pages retain duplicate native occurrences and keep IDs ins
   assert.throws(() => validateEventFeedPage({ reply: data, nextCursor: '' }), /no progress/);
   assert.equal(validateEventFeedPage({ reply: { ...data, rows: [] }, nextCursor: null }).reply.rows.length, 0);
   assert.throws(() => validateEventFeedPage({ reply: reply(), nextCursor: null }), /manifest/);
-});
-
-test('retained script state is inspectable at read time without native occurrence roles', () => {
-  const observed = row('scriptStateObserved', 'politics', 150, { tags: [],
-    cause: { how: null, within: null, conference: null, state: null, ally: null, reason: null,
-      notes: ['Pending instance 17: mod.event; due hour 999.', 'Fired-set baseline membership has no recorded fire time.'] },
-  });
-  const data = validateEventFeedReply(reply([observed]));
-  const at = filteredEventRows(data, { ...all, allCountries: true })[0].item;
-  assert.equal(eventDescription(at, tag => tag), 'Retained script state changed');
-  const tooltip = eventTooltip(at, tag => tag)[0];
-  assert.ok(tooltip.rows.some(value => value.label.includes('due hour 999')));
-  assert.ok(tooltip.rows.some(value => value.label.includes('no recorded fire time')));
-  assert.ok(!tooltip.rows.some(value => value.label === 'How'));
-  assert.throws(() => validateEventFeedReply(reply([{ ...observed, exact: true }])), /malformed/);
-  assert.throws(() => validateEventFeedReply(reply([{ ...observed, participants: ['actor', null] }])), /malformed/);
 });

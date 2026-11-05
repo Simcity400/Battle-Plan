@@ -383,14 +383,14 @@ impl Endpoints<'_> {
         let after = self
             .reader
             .latest_event(id, last)?
-            .map(|(_, value)| serde_json::from_value::<[usize; 2]>(value))
+            .map(|(_, value)| serde_json::from_slice::<[usize; 2]>(&value))
             .transpose()?
             .map_or(0, |value| value[0]);
         let before = match first.checked_sub(1) {
             Some(hour) => self
                 .reader
                 .latest_event(id, hour)?
-                .map(|(_, value)| serde_json::from_value::<[usize; 2]>(value))
+                .map(|(_, value)| serde_json::from_slice::<[usize; 2]>(&value))
                 .transpose()?
                 .map_or(0, |value| value[0]),
             None => 0,
@@ -398,7 +398,7 @@ impl Endpoints<'_> {
         let late = if first == native_first {
             match self.reader.latest_event(id, first)? {
                 Some((hour, value)) if hour == first => {
-                    serde_json::from_value::<[usize; 2]>(value)?[1]
+                    serde_json::from_slice::<[usize; 2]>(&value)?[1]
                 }
                 _ => 0,
             }

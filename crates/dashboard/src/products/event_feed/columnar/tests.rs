@@ -68,7 +68,7 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
         let table = rows.table();
         frame.tables[table.index()] = TableView::Complete(rows).into();
     }
-    for &table in TABLES {
+    for &table in OWN {
         frame.metrics.table_ns[table.index()] = 1;
     }
     frame
@@ -121,7 +121,7 @@ fn write_hour(walk: &mut Synthetic, frame: &DecodedFrame, unread: Option<TableId
 fn emit(hours: &mut Vec<Hour>, state: &mut Prepared, fixture: &Fixture, flushes: &BTreeSet<i32>) {
     for hour in std::mem::take(hours) {
         let at = hour.hour;
-        state.observe_projected(hour).unwrap();
+        state.observe_projected(hour, None).unwrap();
         if flushes.contains(&at) {
             let mut writer = fixture.writer();
             state
@@ -186,7 +186,7 @@ fn parity_with(
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut row = FeedReference::default();
     let mut projected = Prepared::new(&replay, 1);
-    let mut walk = Synthetic::new(TABLES, 1, inputs[0].hour).unwrap();
+    let mut walk = Synthetic::new(OWN, 1, inputs[0].hour).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
     let mut projector = Projector::new(&replay).unwrap();
     let mut hours: Vec<Hour> = Vec::new();
@@ -214,7 +214,7 @@ fn parity_with(
             }
             projector = Projector::new(&replay).unwrap();
             if run {
-                walk = Synthetic::new(TABLES, 1, input.hour).unwrap();
+                walk = Synthetic::new(OWN, 1, input.hour).unwrap();
                 projector
                     .start(Start::Run { continues: true }, 1, input.hour)
                     .unwrap();
@@ -294,7 +294,7 @@ fn parity_with(
 
 #[test]
 fn every_status_and_recovery_matches_at_several_restarts() {
-    for &table in TABLES.iter().filter(|&&table| table != TableId::Campaign) {
+    for &table in OWN.iter().filter(|&&table| table != TableId::Campaign) {
         for status in 0..4 {
             let mut broken = frame(102, 3);
             let rows = match &*broken.tables[table.index()] {
@@ -452,7 +452,7 @@ fn quiet(hour: i32, countries: u32) -> DecodedFrame {
 fn one_changed_slot_stays_one_at_fifteen_hundred_countries() {
     let first = quiet(100, 1_500);
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
-    let mut walk = Synthetic::new(TABLES, 1, 100).unwrap();
+    let mut walk = Synthetic::new(OWN, 1, 100).unwrap();
     let mut world_held: Option<dashboard_world::World> = None;
     let mut projector = Projector::new(&replay).unwrap();
     let mut hours: Vec<Hour> = Vec::new();

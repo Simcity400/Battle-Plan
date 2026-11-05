@@ -5,6 +5,7 @@
 //! answers from its series-engine publication. The dashboard's pipeline writes them; products
 //! read them.
 
+pub mod codec;
 pub mod coverage;
 pub mod engine;
 pub mod entries;

@@ -18,29 +18,6 @@ pub(crate) struct Inputs {
     target: Option<DecisionTarget>,
     missing: bool,
     scopes: Vec<ScopeInput>,
-    pub(super) roster: Option<super::decision_roster::Inputs>,
-}
-impl Inputs {
-    /// The bytes it owns, itself included.
-    pub(crate) fn heap(&self) -> usize {
-        size_of::<Self>()
-            + self.scopes.capacity() * size_of::<ScopeInput>()
-            + self
-                .scopes
-                .iter()
-                .map(|scope| {
-                    scope.opaque.as_ref().map_or(0, String::capacity)
-                        + scope
-                            .names
-                            .as_ref()
-                            .map_or(0, |names| names.iter().map(Vec::capacity).sum::<usize>())
-                })
-                .sum::<usize>()
-            + self
-                .roster
-                .as_ref()
-                .map_or(0, super::decision_roster::Inputs::heap)
-    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct DecisionTarget {
@@ -70,7 +47,6 @@ impl Inputs {
         let script = event.script.expect("script occurrence");
         Self {
             hour: event.hour,
-            roster: None,
             option: script.option,
             actor: event.actor.reference,
             actor_slot: None,
@@ -150,9 +126,6 @@ impl Inputs {
             && let Some(country) = target.country.filter(|country| *country as i32 > 0)
         {
             target.slot = resolve(country, None, &mut slot);
-        }
-        if let Some(roster) = &mut self.roster {
-            roster.resolve(&mut slot);
         }
         for scope in &mut self.scopes {
             scope.slot = resolve(scope.reference, scope.id, &mut slot);
@@ -583,7 +556,6 @@ mod tests {
     #[test]
     fn scope_graph_preserves_alias_resolution_links_and_both_random_words() {
         let mut input = Inputs {
-            roster: None,
             hour: 10,
             option: Some(2),
             actor: 90,
@@ -667,7 +639,6 @@ mod tests {
             }
         };
         let mut input = Inputs {
-            roster: None,
             hour: 10,
             option: None,
             actor: 90,
@@ -744,7 +715,6 @@ mod tests {
             ),
         ]);
         let input = Inputs {
-            roster: None,
             hour: 10,
             option: Some(0),
             actor: 1,

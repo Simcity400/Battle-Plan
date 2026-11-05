@@ -586,7 +586,7 @@ fn query_history(
             let Episode {
                 country: identity,
                 mut entry,
-            } = serde_json::from_value::<Episode>(row)?;
+            } = serde_json::from_slice::<Episode>(&row)?;
             if !selected.contains(&(identity.slot, identity.id)) {
                 continue;
             }
@@ -602,7 +602,7 @@ fn query_history(
                 let (_, row) = reader
                     .latest_event(key, span.first_hour)?
                     .ok_or_else(|| dashboard_core::invalid("Missing operative value event"))?;
-                let event: Episode = serde_json::from_value(row)?;
+                let event: Episode = serde_json::from_slice(&row)?;
                 let value = event
                     .entry
                     .runs
@@ -638,7 +638,7 @@ fn query_history(
                     .events(&[capture_key], branch_first, last, 0, u32::MAX)?
                     .rows
                 {
-                    let mut run: OperativeRosterRun = serde_json::from_value(row.row)?;
+                    let mut run: OperativeRosterRun = serde_json::from_slice(&row.row)?;
                     if run.first_hour < first {
                         run.last_hour = run.first_hour;
                         anchors.insert(run.first_hour);

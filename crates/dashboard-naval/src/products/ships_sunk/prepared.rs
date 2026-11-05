@@ -523,7 +523,7 @@ pub fn query(
                 series::Reader::new(store, key, format!("sinking-windows-{branch}"), flag)?;
             let ordinal = windows
                 .latest_event(0, params.hour)?
-                .map(|(_, value)| serde_json::from_value::<u64>(value))
+                .map(|(_, value)| serde_json::from_slice::<u64>(&value))
                 .transpose()?
                 .ok_or_else(|| {
                     dashboard_core::invalid("Prepared sinking window lookup is missing")

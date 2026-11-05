@@ -5,6 +5,7 @@ use crate::prepared_chart::{
     merge, signed, take, var, zig,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(any(test, feature = "test-support"))]
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -2478,7 +2479,6 @@ thread_local! {
     static RUN_BOUNDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static BLOB_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EVENT_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static EVENT_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 fn decode(raw: Vec<u8>, dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
     #[cfg(test)]
@@ -3910,23 +3910,16 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| invalid("event order count exceeds its prefix"))
     }
     fn event_at(&mut self, key: u64, ordinal: u64) -> io::Result<DatedRow> {
-        let native = self.event_native(key, ordinal)?;
-        let batch = self.event_batch(key, native)?;
-        let id = self.file(batch)?.id().cache_key();
-        let (hour, row) = self.event_row(batch, key, native)?;
-        let parsed = query::event((id, key, native), || {
-            #[cfg(test)]
-            EVENT_PARSES.set(EVENT_PARSES.get() + 1);
-            Ok(serde_json::from_slice(row)?)
-        })?;
+        let (hour, row) = self.event_raw(key, ordinal)?;
         Ok(DatedRow {
             key,
-            hour: *hour,
+            hour,
             ordinal,
-            row: parsed,
+            row,
         })
     }
-    pub fn latest_event(&mut self, key: u64, hour: i32) -> io::Result<Option<(i32, Value)>> {
+    /// `key`'s latest event through `hour`: its date and its row as stored.
+    pub fn latest_event(&mut self, key: u64, hour: i32) -> io::Result<Option<(i32, Vec<u8>)>> {
         let count = self.event_count_through(key, hour)?;
         if count == 0 {
             return Ok(None);
@@ -4462,12 +4455,31 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| invalid("prepared event ordinal is outside its batch"))
     }
 }
+/// An event with its row as its family stored it, which its reader decodes.
 #[derive(Debug)]
 pub struct DatedRow {
     pub key: u64,
     pub hour: i32,
     pub ordinal: u64,
-    pub row: Value,
+    pub row: Vec<u8>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DatedRow {
+    /// A JSON row, for tests that write them.
+    pub fn value(&self) -> Value {
+        serde_json::from_slice(&self.row).expect("a JSON row")
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Reader<'_> {
+    /// [`Self::latest_event`] of a JSON row, for tests that write them.
+    pub fn latest_value(&mut self, key: u64, hour: i32) -> io::Result<Option<(i32, Value)>> {
+        Ok(self
+            .latest_event(key, hour)?
+            .map(|(hour, row)| (hour, serde_json::from_slice(&row).expect("a JSON row"))))
+    }
 }
 #[derive(Debug)]
 pub struct EventsPage {

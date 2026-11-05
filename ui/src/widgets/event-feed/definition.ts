@@ -17,7 +17,7 @@ export const EVENT_ICONS: Record<EventFeedKind, IconName> = {
   decisionSelected: 'ballot', decisionRemoved: 'ballot', decisionCancelled: 'ballot',
   decisionTimedOut: 'clock', decisionActivated: 'target', decisionCompleted: 'target', decisionReenabled: 'target',
   decisionRemovalEffect: 'ballot', decisionCancellationEffect: 'ballot', decisionCompletionEffect: 'target',
-  decisionTimeoutEffect: 'clock', decisionDurationChanged: 'clock', decisionRosterRebuilt: 'ballot', scriptStateObserved: 'clock',
+  decisionTimeoutEffect: 'clock', decisionDurationChanged: 'clock',
 };
 
 export const CATEGORIES = [
@@ -31,8 +31,6 @@ export const OPTIONS: readonly OptionField[] = [
   ...CATEGORIES.map(category => ({ key: category.value, section: 'options' as const, label: category.label,
     kind: 'toggle' as const, default: true })),
   { key: 'artwork', section: 'options', label: 'Game artwork', kind: 'toggle', default: true },
-  { key: 'observations', section: 'options', label: 'Recording observations', hint: 'Decision roster rebuilds and retained script state the recording observed; not moments in the game.',
-    kind: 'toggle', default: false },
   ...LOG_OPTIONS,
 ];
 

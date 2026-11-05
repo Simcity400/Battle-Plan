@@ -12,12 +12,12 @@ import type { EventFeedItem, EventFeedReply, EventFeedRow, EventFeedStrike, Even
 import { CATEGORIES } from './definition.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected',
-  'decisionRemoved', 'decisionCancelled', 'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect', 'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged', 'decisionRosterRebuilt']);
+  'decisionRemoved', 'decisionCancelled', 'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect', 'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionDurationChanged']);
 const NATIVE_KINDS = new Set([...SCRIPT_KINDS, 'warDeclared', 'warJoined', 'civilWarWarTransferred', 'annexed', 'warEnded', 'released',
   'stateTransferred', 'peaceConferenceStarted', 'nuclearStrike']);
 /** Native events of the event history, which record their cause; strikes have their own ledger. */
-const CAUSED_KINDS = new Set([...NATIVE_KINDS].filter(kind => kind !== 'nuclearStrike').concat('scriptStateObserved'));
-const KINDS = new Set([...NATIVE_KINDS, 'scriptStateObserved', 'warStarted', 'peace', 'capitulated', 'ceasedToExist', 'factionJoined', 'factionLeft',
+const CAUSED_KINDS = new Set([...NATIVE_KINDS].filter(kind => kind !== 'nuclearStrike'));
+const KINDS = new Set([...NATIVE_KINDS, 'warStarted', 'peace', 'capitulated', 'ceasedToExist', 'factionJoined', 'factionLeft',
   'becameSubject', 'guaranteeGranted', 'rulingPartyChanged', 'lawChanged', 'advisorHired', 'focusCompleted',
   'projectFinished', 'nukesIncreased']);
 const text = (value: unknown): value is string | null => value === null || typeof value === 'string';
@@ -32,8 +32,6 @@ const strike = (row: Record<string, unknown>): boolean => {
     && Array.isArray(value.notRecorded) && value.notRecorded.every(reason => typeof reason === 'string');
 };
 const roles = (row: Record<string, unknown>): boolean => {
-  if (row.kind === 'scriptStateObserved') return row.exact === false && row.category === 'politics'
-    && row.participants == null && row.hour === row.readHour;
   if (!NATIVE_KINDS.has(row.kind as string)) return row.participants === undefined || row.participants === null;
   return row.exact === true && row.category === (SCRIPT_KINDS.has(row.kind as string) ? 'politics' : 'warsPeace') && Array.isArray(row.participants)
     && row.participants.length === 2 && row.participants.every(value => value === null || opaqueTag(value))
@@ -71,7 +69,7 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
       && row.nameHour <= row.hour && first !== null && last !== null && row.hour >= first && row.hour <= last
       && typeof row.exact === 'boolean' && typeof row.category === 'string' && categories.has(row.category)
       && typeof row.kind === 'string' && KINDS.has(row.kind) && Array.isArray(row.tags)
-      && (NATIVE_KINDS.has(row.kind) || row.kind === 'scriptStateObserved' || row.tags.length > 0) && row.tags.every(opaqueTag) && roles(row) && cause(row) && strike(row)
+      && (NATIVE_KINDS.has(row.kind) || row.tags.length > 0) && row.tags.every(opaqueTag) && roles(row) && cause(row) && strike(row)
       && (row.item === null || (int(row.item) && row.item >= 0 && items !== null && row.item < items.length))
       && (row.amount === null || (int(row.amount) && row.amount > 0)))
     || new Set(value.rows.filter(row => !NATIVE_KINDS.has(row.kind)).map(row => row.id)).size !== value.rows.filter(row => !NATIVE_KINDS.has(row.kind)).length
@@ -113,8 +111,6 @@ export function validateEventFeedPage(value: unknown): PreparedFeedPage {
 export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null; reply: EventFeedReply }
 export interface FeedFilter {
   categories: ReadonlySet<string>;
-  /** Whether the recording's own observations are listed too. */
-  observations?: boolean;
   country: (tag: string, hour: number) => boolean;
   firstHour: number | null;
   allCountries?: boolean;
@@ -191,8 +187,6 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
     case 'decisionCancellationEffect': return single(` ran cancellation effects for ${named}`);
     case 'decisionCompletionEffect': return single(` ran completion effects for ${named}`);
     case 'decisionTimeoutEffect': return single(` ran deadline effects for ${named}`);
-    case 'scriptStateObserved': return [{ text: 'Retained script state changed' }];
-    case 'decisionRosterRebuilt': return single(' rebuilt the decision roster');
     case 'decisionDurationChanged': return single(` updated the duration of ${named}`);
     case 'warDeclared': return words(' declared war on ');
     case 'warJoined': return words(' joined the war against ');
@@ -260,13 +254,13 @@ export function eventTooltip(at: FeedEvent, name: (tag: string) => string, state
   const { event, item, reply } = at;
   const title = eventDescription(at, name, stateName);
   const rows: TooltipRow[] = [
-    { label: 'Date', value: (SCRIPT_KINDS.has(event.kind) || event.kind === 'scriptStateObserved') ? formatDateTime(event.hour) : dayOf(event.hour) },
+    { label: 'Date', value: SCRIPT_KINDS.has(event.kind) ? formatDateTime(event.hour) : dayOf(event.hour) },
     ...(SCRIPT_KINDS.has(event.kind) && item?.token ? [{ label: 'Content identity', value: item.token }] : []),
     ...(event.strike ? strikeRows(event.strike, event.hour, stateName) : []),
   ];
   const cause = event.cause;
   if (cause) {
-    if (event.kind !== 'scriptStateObserved') rows.push({ label: 'How', value: cause.how ?? 'No observed operation' });
+    rows.push({ label: 'How', value: cause.how ?? 'No observed operation' });
     if (cause.within) rows.push({ label: 'During', value: cause.within });
     if (cause.reason) rows.push({ label: 'Hostility reason', value: cause.reason });
     if (cause.conference) rows.push({ label: 'Peace conference', value: cause.conference });

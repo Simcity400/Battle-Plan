@@ -502,7 +502,7 @@ fn engine_answers_points_ranges_charts_navigation_and_events_as_the_reader_does(
                 reader.event_count_through(key, hour).unwrap(),
                 "key {key} hour {hour}"
             );
-            let old = reader.latest_event(key, hour).unwrap();
+            let old = reader.latest_value(key, hour).unwrap();
             let new = snapshot.latest_event(selection(key), hour, None).unwrap();
             assert_eq!(
                 new.map(|e| (e.native_hour(), e.sequence())),
@@ -558,7 +558,7 @@ fn engine_answers_points_ranges_charts_navigation_and_events_as_the_reader_does(
         old.extend(
             page.rows
                 .iter()
-                .map(|row| (row.hour, row.key, row.row.as_u64().unwrap())),
+                .map(|row| (row.hour, row.key, row.value().as_u64().unwrap())),
         );
         match page.cursor {
             Some(next) => cursor = next,

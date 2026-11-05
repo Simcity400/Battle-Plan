@@ -10,75 +10,26 @@ use replay_data::{
     event_feed_rows::EventFeedCause as NativeCause,
     event_feed_rows::EventFeedCountry,
     event_feed_rows::EventFeedCoverage,
-    event_feed_rows::EventFeedEvent,
     event_feed_rows::EventFeedHistoryRow,
     event_feed_rows::EventFeedRoute,
-    event_feed_rows::EventFeedScriptChange,
     event_feed_rows::EventFeedSource,
-    event_feed_rows::decisions::Operation,
-    event_feed_rows::state::{HeldPayloads, PackHeader, PreparedHistory},
+    event_feed_rows::state::PackHeader,
     rows::Recorded,
 };
 #[cfg(test)]
-use replay_data::{
-    event_feed_rows::decisions::DecisionState, event_feed_rows::state::Change, rows::TableId,
-    rows::tables,
-};
+use replay_data::{rows::TableId, rows::tables};
 #[cfg(test)]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
-pub(super) mod retained;
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
-
-/// Each final decision roster rebuild's inputs, by occurrence.
-pub(super) type Rosters = BTreeMap<u64, super::decision_roster::Inputs>;
-
-/// Whether `event` is a final decision roster rebuild, the one retained-state change shown as
-/// an occurrence.
-fn roster(event: &EventFeedEvent) -> bool {
-    event.script.is_some_and(|script| {
-        matches!(script.change, Some(EventFeedScriptChange::Decision(change))
-            if change.operation == Operation::Rebuild && change.container == 3)
-    })
-}
-
-/// The final roster rebuilds' inputs, from their owners as `reduce`, reducing `pack`, leaves
-/// each at its rebuild.
 #[cfg(test)]
-fn rosters(
-    pack: &EventFeedHistoryRow,
-    reduce: impl FnOnce(&mut dyn FnMut(&DecisionState, Change<'_>) -> io::Result<()>) -> io::Result<()>,
-) -> io::Result<Rosters> {
-    let covered = pack.coverage == EventFeedCoverage::Complete && pack.script_refusals == 0;
-    let mut captured = Rosters::new();
-    reduce(
-        &mut |state: &DecisionState, change: Change<'_>| -> io::Result<()> {
-            if roster(change.event) {
-                captured.insert(
-                    change.sequence,
-                    super::decision_roster::Inputs::captured(state, change, covered),
-                );
-            }
-            Ok(())
-        },
-    )?;
-    Ok(captured)
-}
+use std::collections::BTreeMap;
+use std::{io, sync::atomic::AtomicBool};
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Projection {
     last_sequence: Option<u64>,
-    script_state: replay_data::event_feed_rows::state::ScriptEventState,
     /// The branch's recorded event losses, as the reads each lies between.
     event_losses: Vec<(i32, i32)>,
-    /// The retained state's parts as the last observation saw them.
-    #[serde(default)]
-    sections: retained::Sections,
-    #[serde(skip)]
-    contents: retained::Contents,
-    /// The payloads of the packs of the walk being reduced.
-    #[serde(skip)]
-    held: HeldPayloads,
 }
 impl Projection {
     pub(super) fn losses(&mut self, replay: &Replay, branch: u64) {
@@ -97,45 +48,9 @@ impl Projection {
         let header = PackHeader::of(pack)?;
         self.follows(&header)?;
         self.notices(builder, &header);
-        let mut captured = rosters(pack, |visit| {
-            self.script_state.observe_decisions(pack, visit)
-        })?;
-        Self::occurrences(builder, pack, &mut tag_at, &mut captured, cancelled)?;
-        self.retain(builder, pack, &header, &mut tag_at)
-    }
-    /// Takes in the payloads `packet` introduced: every prepared read of a walk, in order, whether
-    /// or not it is reduced.
-    pub(super) fn admit(&mut self, packet: &PreparedHistory) -> io::Result<()> {
-        self.held.admit(packet)
-    }
-    /// A read validated where it was prepared, reduced into the retained state, with each final
-    /// roster rebuild's owner as the reduction left it there ([`super::decision_roster::Captured`]).
-    /// `sure`: the read's walk reduced every earlier read to its end.
-    pub(super) fn reduce(
-        &mut self,
-        packet: &PreparedHistory,
-        sure: bool,
-    ) -> io::Result<BTreeMap<u64, super::decision_roster::Captured>> {
-        let header = packet.header();
-        let covered = header.coverage == EventFeedCoverage::Complete && header.script_refusals == 0;
-        let Self {
-            script_state,
-            contents,
-            held,
-            ..
-        } = self;
-        let mut captured = BTreeMap::new();
-        script_state.observe_prepared(packet, held, sure, |state, change| {
-            if roster(change.event) {
-                let kept = retained::decided(contents, change.event.actor.id, state);
-                captured.insert(
-                    change.sequence,
-                    super::decision_roster::Captured::of(state, change, covered, kept),
-                );
-            }
-            Ok(())
-        })?;
-        Ok(captured)
+        Self::occurrences(builder, pack, &mut tag_at, cancelled)?;
+        self.settle(&header);
+        Ok(())
     }
     /// Whether `pack`'s occurrences follow every one observed before. Validation keeps them in
     /// order, so the first is the earliest.
@@ -181,20 +96,16 @@ impl Projection {
         }
     }
     /// The read's occurrences, each named by `tag_at` and pushed to `builder` as a row with
-    /// its operands. Of the retained-state changes only the final roster rebuilds show, with
-    /// the inputs `rosters` holds for them.
+    /// its operands. Retained-state changes are the recorder's, not moments in the game.
     pub(super) fn occurrences(
         builder: &mut Builder,
         pack: &EventFeedHistoryRow,
         mut tag_at: impl FnMut(i32, EventFeedCountry) -> Option<String>,
-        rosters: &mut Rosters,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         for event in &pack.events {
             check_cancel(cancelled)?;
-            // Retained membership is consumed by the script-state row API;
-            // it is not an invented fire at attachment time.
-            if event.source == EventFeedSource::ScriptState && !roster(event) {
+            if event.source == EventFeedSource::ScriptState {
                 continue;
             }
             let participants =
@@ -249,7 +160,7 @@ impl Projection {
                 }
                 EventFeedSource::DecisionTimeoutEffect => EventFeedKind::DecisionTimeoutEffect,
                 EventFeedSource::DecisionDurationChanged => EventFeedKind::DecisionDurationChanged,
-                EventFeedSource::ScriptState => EventFeedKind::DecisionRosterRebuilt,
+                EventFeedSource::ScriptState => continue,
             };
             let mut cause = match event.cause {
                 Recorded::Value(cause) => {
@@ -384,11 +295,7 @@ impl Projection {
                 }
                 builder.script_inputs.insert(
                     format!("native:{}:{}", event.generation, event.sequence),
-                    {
-                        let mut inputs = super::script_effects::Inputs::captured(pack, event);
-                        inputs.roster = rosters.remove(&event.sequence);
-                        inputs
-                    },
+                    super::script_effects::Inputs::captured(pack, event),
                 );
                 // Bind presentation to this occurrence's scope/ordinal, even
                 // when several executions share one authored identity.
@@ -451,47 +358,11 @@ impl Projection {
         }
         Ok(())
     }
-    /// After a reduction: the read's last occurrence, and its retained-state observation.
-    #[cfg(test)]
-    pub(super) fn retain(
-        &mut self,
-        builder: &mut Builder,
-        pack: &EventFeedHistoryRow,
-        header: &PackHeader,
-        tag_at: &mut impl FnMut(i32, EventFeedCountry) -> Option<String>,
-    ) -> io::Result<()> {
-        self.settle(header);
-        if pack.read_hour < builder.feed.first || pack.read_hour > builder.feed.last {
-            return Ok(());
-        }
-        let observed = retained::observations(pack, &mut *tag_at);
-        if let Some(observed) = self.observe(header, observed, tag_at)? {
-            builder.feed.rows.push(observed.row(false)?);
-        }
-        Ok(())
-    }
-    /// After a reduction: the read's last occurrence.
+    /// After a read: its last occurrence.
     pub(super) fn settle(&mut self, pack: &PackHeader) {
         if let Some((_, last)) = pack.sequences {
             self.last_sequence = Some(last);
         }
-    }
-    /// The retained-state observation of a reduced read, of its feed's hours, with the
-    /// read's own `observations` ([`retained::observations`]), its notes yet to be written.
-    pub(super) fn observe(
-        &mut self,
-        pack: &PackHeader,
-        observations: retained::Observations,
-        tag_at: &mut impl FnMut(i32, EventFeedCountry) -> Option<String>,
-    ) -> io::Result<Option<retained::Observed>> {
-        retained::observe(
-            pack,
-            &self.script_state,
-            &mut self.sections,
-            &mut self.contents,
-            observations,
-            tag_at,
-        )
     }
     #[cfg(test)]
     pub(super) fn append<'a>(

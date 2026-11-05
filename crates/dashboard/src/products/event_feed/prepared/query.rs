@@ -1,6 +1,6 @@
 //! Backward native-date pages composed from the owning families' event ranges.
 use super::*;
-use crate::prepared::series::{self, DatedRow, EventsPage, LateIndex, Reader};
+use crate::prepared::series::{self, DatedRow, LateIndex, Reader};
 use crate::prepared_focus::query::Feed as FocusFeed;
 use crate::products::country_nukes::{
     NukeTypeInfo,
@@ -26,9 +26,6 @@ pub(crate) struct Params {
     pub cursor: Option<String>,
     pub page_size: u32,
     pub categories: BTreeSet<EventFeedCategory>,
-    /// Also list the recording's own observations: decision roster rebuilds and retained script state.
-    #[serde(default)]
-    pub observations: bool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,8 +74,6 @@ struct Cursor {
     live: i32,
     first: i32,
     categories: BTreeSet<EventFeedCategory>,
-    #[serde(default)]
-    observations: bool,
     before: Position,
 }
 
@@ -119,13 +114,18 @@ pub(crate) struct Families<'a> {
 }
 
 /// An event a family gives the feed, dated by the hour that read it.
-trait Dated: Serialize {
+trait Dated {
     fn read_hour(&self) -> i32;
+    /// The event as the feed reads it.
+    fn source_row(&self) -> SourceRow;
 }
 
 impl<T: Dated> Dated for &T {
     fn read_hour(&self) -> i32 {
         (**self).read_hour()
+    }
+    fn source_row(&self) -> SourceRow {
+        (**self).source_row()
     }
 }
 
@@ -133,11 +133,17 @@ impl Dated for Increase {
     fn read_hour(&self) -> i32 {
         self.hour
     }
+    fn source_row(&self) -> SourceRow {
+        SourceRow::Increase(self.clone())
+    }
 }
 
 impl Dated for subjects::SubjectStart {
     fn read_hour(&self) -> i32 {
         self.read_hour
+    }
+    fn source_row(&self) -> SourceRow {
+        SourceRow::Subject(self.clone())
     }
 }
 
@@ -145,17 +151,26 @@ impl Dated for Addition {
     fn read_hour(&self) -> i32 {
         self.span.first_hour
     }
+    fn source_row(&self) -> SourceRow {
+        SourceRow::Idea(self.clone())
+    }
 }
 
 impl Dated for national_focus::FocusCompletion {
     fn read_hour(&self) -> i32 {
         self.hour
     }
+    fn source_row(&self) -> SourceRow {
+        SourceRow::Focus(self.clone())
+    }
 }
 
 impl Dated for Change {
     fn read_hour(&self) -> i32 {
         self.observed_hour
+    }
+    fn source_row(&self) -> SourceRow {
+        SourceRow::Project(self.clone())
     }
 }
 
@@ -235,8 +250,10 @@ impl<'a> Keyed for Classified<'a> {
 trait Held {
     /// How many of `key`'s events were read by `hour`.
     fn through(&self, key: u64, hour: i32) -> usize;
-    /// `key`'s event at `ordinal`: the hour that read it, and its row.
-    fn at(&self, key: u64, ordinal: usize) -> io::Result<Option<(i32, serde_json::Value)>>;
+    /// `key`'s event at `ordinal`: the hour that read it, and the event.
+    fn at(&self, key: u64, ordinal: usize) -> Option<(i32, SourceRow)>;
+    /// The hour that read `key`'s event at `ordinal`.
+    fn hour(&self, key: u64, ordinal: usize) -> Option<i32>;
     fn late(&self) -> Option<&LateIndex>;
 }
 
@@ -245,13 +262,13 @@ impl<K: Keyed> Held for K {
         self.given(key)
             .partition_point(|event| event.read_hour() <= hour)
     }
-    fn at(&self, key: u64, ordinal: usize) -> io::Result<Option<(i32, serde_json::Value)>> {
+    fn at(&self, key: u64, ordinal: usize) -> Option<(i32, SourceRow)> {
         self.given(key)
             .get(ordinal)
-            .map(|event| -> io::Result<_> {
-                Ok((event.read_hour(), serde_json::to_value(event)?))
-            })
-            .transpose()
+            .map(|event| (event.read_hour(), event.source_row()))
+    }
+    fn hour(&self, key: u64, ordinal: usize) -> Option<i32> {
+        self.given(key).get(ordinal).map(Dated::read_hour)
     }
     fn late(&self) -> Option<&LateIndex> {
         Keyed::late(self)
@@ -303,17 +320,36 @@ fn classified<'a>(
     })
 }
 
-/// Where a source's events are read: its pages, or the events a family gives the feed whole.
+/// A source's event as the feed reads it: its key, the hour that read it, its ordinal and the
+/// event.
+struct Read {
+    key: u64,
+    hour: i32,
+    ordinal: u64,
+    row: SourceRow,
+}
+
+/// Where a source's events are read: its pages, decoded as their family stored them, or the
+/// events a family gives the feed whole.
 enum Events<'a> {
-    Pages(Reader<'a>),
+    Pages(Reader<'a>, usize),
     Given(&'a dyn Held),
+}
+
+/// A paged source's stored row.
+fn paged(source: usize, row: &[u8]) -> io::Result<SourceRow> {
+    Ok(match source {
+        0 => SourceRow::Group(serde_json::from_slice(row)?),
+        4 => SourceRow::Fact(Box::new(decode_fact(row)?)),
+        _ => return Err(crate::invalid("Unknown paged feed source")),
+    })
 }
 
 impl<'a> Events<'a> {
     /// The late references of the events the feed is given.
     fn late(&self) -> Option<&'a LateIndex> {
         match self {
-            Self::Pages(_) => None,
+            Self::Pages(..) => None,
             Self::Given(held) => {
                 let held: &'a dyn Held = *held;
                 held.late()
@@ -323,25 +359,42 @@ impl<'a> Events<'a> {
 
     fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
         match self {
-            Self::Pages(reader) => reader.event_count_through(key, hour),
+            Self::Pages(reader, _) => reader.event_count_through(key, hour),
             Self::Given(held) => Ok(held.through(key, hour) as u64),
         }
     }
 
-    /// The event of `key` at `ordinal`.
-    fn event(&mut self, key: u64, ordinal: u64) -> io::Result<DatedRow> {
+    /// The hour that read the event of `key` at `ordinal`.
+    fn event_hour(&mut self, key: u64, ordinal: u64) -> io::Result<i32> {
         match self {
-            Self::Pages(reader) => event(reader, key, ordinal),
+            Self::Pages(reader, _) => reader.event_date(key, ordinal),
+            Self::Given(held) => usize::try_from(ordinal)
+                .ok()
+                .and_then(|at| held.hour(key, at))
+                .ok_or_else(|| crate::invalid("Prepared feed event reference is missing")),
+        }
+    }
+
+    /// The event of `key` at `ordinal`.
+    fn event(&mut self, key: u64, ordinal: u64) -> io::Result<Read> {
+        #[cfg(test)]
+        EVENT_ROWS_READ.with(|count| count.set(count.get() + 1));
+        match self {
+            Self::Pages(reader, source) => {
+                let (hour, row) = reader.event_raw(key, ordinal)?;
+                Ok(Read {
+                    key,
+                    hour,
+                    ordinal,
+                    row: paged(*source, &row)?,
+                })
+            }
             Self::Given(held) => {
                 let (hour, row) = usize::try_from(ordinal)
                     .ok()
-                    .map(|at| held.at(key, at))
-                    .transpose()?
-                    .flatten()
+                    .and_then(|at| held.at(key, at))
                     .ok_or_else(|| crate::invalid("Prepared feed event reference is missing"))?;
-                #[cfg(test)]
-                EVENT_ROWS_READ.with(|count| count.set(count.get() + 1));
-                Ok(DatedRow {
+                Ok(Read {
                     key,
                     hour,
                     ordinal,
@@ -360,9 +413,25 @@ impl<'a> Events<'a> {
         to: i32,
         cursor: u64,
         size: u32,
-    ) -> io::Result<EventsPage> {
+    ) -> io::Result<Vec<Read>> {
         let held = match self {
-            Self::Pages(reader) => return reader.events(keys, from, to, cursor, size),
+            Self::Pages(reader, source) => {
+                let page = reader.events(keys, from, to, cursor, size)?;
+                #[cfg(test)]
+                EVENT_ROWS_READ.with(|count| count.set(count.get() + page.rows.len()));
+                return page
+                    .rows
+                    .into_iter()
+                    .map(|row| {
+                        Ok(Read {
+                            key: row.key,
+                            hour: row.hour,
+                            ordinal: row.ordinal,
+                            row: paged(*source, &row.row)?,
+                        })
+                    })
+                    .collect();
+            }
             Self::Given(held) => *held,
         };
         let &[key] = keys else {
@@ -382,21 +451,18 @@ impl<'a> Events<'a> {
         let mut rows = Vec::with_capacity(end.saturating_sub(first));
         for ordinal in first..end {
             let (hour, row) = held
-                .at(key, ordinal)?
+                .at(key, ordinal)
                 .ok_or_else(|| crate::invalid("Prepared feed event reference is missing"))?;
-            rows.push(DatedRow {
+            rows.push(Read {
                 key,
                 hour,
                 ordinal: ordinal as u64,
                 row,
             });
         }
-        Ok(EventsPage {
-            first: first as u64,
-            total: (last - base) as u64,
-            rows,
-            cursor: (end < last).then_some(end as u64),
-        })
+        #[cfg(test)]
+        EVENT_ROWS_READ.with(|count| count.set(count.get() + rows.len()));
+        Ok(rows)
     }
 }
 
@@ -475,17 +541,8 @@ enum SourceRow {
     Increase(Increase),
     Project(Change),
 }
-fn decode(source: usize, row: DatedRow) -> io::Result<(Position, SourceRow)> {
-    let value = match source {
-        0 => SourceRow::Group(serde_json::from_value(row.row)?),
-        1 => SourceRow::Subject(serde_json::from_value(row.row)?),
-        2 => SourceRow::Idea(serde_json::from_value(row.row)?),
-        3 => SourceRow::Focus(serde_json::from_value(row.row)?),
-        4 => SourceRow::Fact(Box::new(serde_json::from_value(row.row)?)),
-        5 => SourceRow::Increase(serde_json::from_value(row.row)?),
-        6 => SourceRow::Project(serde_json::from_value(row.row)?),
-        _ => return Err(crate::invalid("Unknown prepared feed source")),
-    };
+fn decode(source: usize, row: Read) -> io::Result<(Position, SourceRow)> {
+    let value = row.row;
     let (native, kind, tags, native_id) = match &value {
         SourceRow::Group(change) => (
             change.hour,
@@ -555,16 +612,8 @@ fn decode(source: usize, row: DatedRow) -> io::Result<(Position, SourceRow)> {
     ))
 }
 
-fn event(reader: &mut Reader<'_>, key: u64, ordinal: u64) -> io::Result<DatedRow> {
-    let mut page = reader.events(&[key], i32::MIN, i32::MAX, ordinal, 1)?;
-    #[cfg(test)]
-    EVENT_ROWS_READ.with(|count| count.set(count.get() + page.rows.len()));
-    page.rows
-        .pop()
-        .ok_or_else(|| crate::invalid("Prepared feed event reference is missing"))
-}
 
-fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>, observations: bool) -> Vec<u64> {
+fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>) -> Vec<u64> {
     let pairs: Vec<(u64, EventFeedCategory)> = match source {
         0 => vec![
             (0, EventFeedCategory::Diplomacy),
@@ -584,14 +633,6 @@ fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>, observations: b
             .iter()
             .copied()
             .filter(|key| key & (1 << 63) == 0)
-            // Roster rebuilds and retained script state are recording inputs, not moments in the game.
-            .filter(|&key| {
-                observations
-                    || !matches!(
-                        EventFeedKind::from_key(key),
-                        Some(EventFeedKind::DecisionRosterRebuilt | EventFeedKind::ScriptStateObserved)
-                    )
-            })
             // Each fact stream filters by its own kind's category.
             .map(|key| {
                 (
@@ -619,7 +660,6 @@ fn candidates(
     bounds: (i32, i32),
     before: Option<&Position>,
     categories: &BTreeSet<EventFeedCategory>,
-    observations: bool,
     limit: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<(BTreeMap<Position, SourceRow>, BTreeMap<i32, WarEnds>, bool)> {
@@ -628,7 +668,7 @@ fn candidates(
     let mut held: BTreeMap<Position, SourceRow> = BTreeMap::new();
     let mut peace = BTreeMap::new();
     let mut has_older = false;
-    let mut order = |source, row: DatedRow| -> io::Result<(Position, SourceRow)> {
+    let mut order = |source, row: Read| -> io::Result<(Position, SourceRow)> {
         let (mut position, row) = decode(source, row)?;
         if position.kind == EventFeedKind::Peace {
             if let std::collections::btree_map::Entry::Vacant(entry) = peace.entry(position.native)
@@ -664,7 +704,7 @@ fn candidates(
     for source in (0..readers.len()).rev() {
         let late = readers[source].late().or_else(|| metadata.late(source));
         let reader = &mut readers[source];
-        for key in keys(source, categories, observations) {
+        for key in keys(source, categories) {
             check_cancel(cancelled)?;
             let mut to = native_to;
             let mut remaining = limit;
@@ -685,7 +725,7 @@ fn candidates(
                 }) else {
                     break;
                 };
-                let hour = reader.event(key, last)?.hour;
+                let hour = reader.event_hour(key, last)?;
                 if hour < lower {
                     break;
                 }
@@ -732,16 +772,14 @@ fn candidates(
                     };
                     begin = ordinary;
                     let page = reader.events(&[key], hour, hour, begin, remaining as u32)?;
-                    #[cfg(test)]
-                    EVENT_ROWS_READ.with(|count| count.set(count.get() + page.rows.len()));
-                    if page.rows.is_empty() {
+                    if page.is_empty() {
                         return Err(crate::invalid("Prepared feed source page made no progress"));
                     }
                     let next = begin
-                        .checked_add(page.rows.len() as u64)
+                        .checked_add(page.len() as u64)
                         .filter(|next| *next <= end)
                         .ok_or_else(|| crate::invalid("Prepared feed source cursor differs"))?;
-                    for row in page.rows {
+                    for row in page {
                         let (position, row) = order(source, row)?;
                         if position.native < position.read {
                             continue; // Already reached through its LateIndex.
@@ -758,7 +796,7 @@ fn candidates(
                 to = previous;
             }
         }
-        let ordinary = keys(source, categories, observations);
+        let ordinary = keys(source, categories);
         if let Some(late) = late {
             for &(native, _, key, ordinal) in late.between(first, native_to, live).rev() {
                 check_cancel(cancelled)?;
@@ -815,7 +853,17 @@ fn war_ends(
     }
     for &(_, _, key, ordinal) in metadata.facts.2.between(first, hour, live) {
         if key & !(1 << 63) == EventFeedKind::WarEnded as u64 {
-            add_war_end(&mut result, event(reader, key, ordinal)?, live)?;
+            let (hour, row) = reader.event_raw(key, ordinal)?;
+            add_war_end(
+                &mut result,
+                DatedRow {
+                    key,
+                    hour,
+                    ordinal,
+                    row,
+                },
+                live,
+            )?;
         }
     }
     Ok(result)
@@ -825,7 +873,7 @@ fn add_war_end(
     row: DatedRow,
     live: i32,
 ) -> io::Result<()> {
-    let value: Fact = serde_json::from_value(row.row)?;
+    let value = decode_fact(&row.row)?;
     if value.row.read_hour <= live && value.row.tags.len() == 2 {
         ends.insert(war_end_key(
             value.row.hour,
@@ -847,7 +895,6 @@ fn project(
     catalogue: Option<&Catalogue>,
     nuclear_art: &Result<Option<String>, String>,
     focus_art: Option<&artwork::ResolvedArt>,
-    texts: &ScopedTexts<'_>,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
     let from = builder.feed.rows.len();
@@ -859,6 +906,7 @@ fn project(
             subject_row(builder, &change);
         }
         SourceRow::Idea(change) => {
+            let _phase = replay_frame::cpu::scope_phase("ef-q:idea-rows");
             let built = change
                 .span
                 .character
@@ -918,20 +966,11 @@ fn project(
         }
         SourceRow::Fact(mut fact) => {
             if fact.row.item.is_some() {
-                let mut item = fact
+                let item = fact
                     .item
                     .take()
                     .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?;
-                if let Some(catalogue) = catalogue {
-                    super::super::script_presentation(
-                        builder,
-                        catalogue,
-                        fact.row.kind,
-                        &mut item,
-                        fact.script.as_ref(),
-                        Some((texts, fact.row.name_hour)),
-                    )?;
-                }
+                std::mem::take(&mut fact.shown).show(builder);
                 fact.row.item = Some(builder.item(item)?);
             }
             if let Some(info) = fact.nuke_type.and_then(|kind| {
@@ -1044,7 +1083,6 @@ pub(crate) fn query(
         cursor.live != live
             || cursor.first != first
             || cursor.categories != params.categories
-            || cursor.observations != params.observations
             || cursor.before.native < first
             || cursor.before.native > live
             || cursor.before.read > live
@@ -1053,6 +1091,7 @@ pub(crate) fn query(
             "Prepared feed cursor belongs to another view",
         ));
     }
+    let phase = replay_frame::cpu::scope_phase("ef-q:metadata");
     let (Some(metadata), Some(families)) = (metadata(source, store, key, branch)?, families) else {
         return Ok(None);
     };
@@ -1060,7 +1099,11 @@ pub(crate) fn query(
     let politics = context
         .content()
         .and_then(|content| politics_content::politics_content(source, content));
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:classify");
     let ideas = classified(families.ideas, politics.as_deref().ok())?;
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:candidates");
     let given: [Option<&dyn Held>; 7] = [
         None,
         Some(families.subjects),
@@ -1073,9 +1116,10 @@ pub(crate) fn query(
     let mut readers: Vec<_> = PAGES
         .iter()
         .zip(given)
-        .map(|(pages, given)| match (pages, given) {
+        .enumerate()
+        .map(|(source, (pages, given))| match (pages, given) {
             (Some(family), _) => Reader::new(store, key, format!("{family}-{branch}"), cancelled)
-                .map(Events::Pages),
+                .map(|reader| Events::Pages(reader, source)),
             (None, Some(held)) => Ok(Events::Given(held)),
             (None, None) => Err(crate::invalid("A prepared feed source has no events")),
         })
@@ -1088,10 +1132,10 @@ pub(crate) fn query(
         (first, live),
         cursor.as_ref().map(|cursor| &cursor.before),
         &params.categories,
-        params.observations,
         params.page_size as usize + 1,
         cancelled,
     )?;
+    drop(phase);
     let more = has_older || rows.len() > params.page_size as usize;
     if rows.len() > params.page_size as usize {
         rows.pop_first();
@@ -1110,7 +1154,6 @@ pub(crate) fn query(
             live,
             first,
             categories: params.categories.clone(),
-            observations: params.observations,
             before: rows.first_key_value().unwrap().0.clone(),
         })?)
     } else {
@@ -1127,8 +1170,8 @@ pub(crate) fn query(
         }
         _ => true,
     });
+    let phase = replay_frame::cpu::scope_phase("ef-q:diagnostics");
     let mut builder = Builder::new(first, live);
-    let texts = ScopedTexts::rising(source, branch, cancelled);
     diagnostics(&mut builder, &metadata, &families, &ideas.unclassified, live)?;
     let nuke_types = families.nukes.types();
     let mut project_refusals = catalogue::Refusals::default();
@@ -1159,6 +1202,8 @@ pub(crate) fn query(
             ),
         );
     }
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:catalogue");
     let catalogue = match context
         .content()
         .and_then(|content| catalogue::catalogue(source, content))
@@ -1174,18 +1219,6 @@ pub(crate) fn query(
             None
         }
     };
-    if catalogue.is_some() {
-        texts.prefetch(rows.values().filter_map(|row| match row {
-            SourceRow::Fact(fact)
-                if fact.row.item.is_some()
-                    && fact.script.is_some()
-                    && super::super::names_decision(fact.row.kind) =>
-            {
-                Some(fact.row.name_hour)
-            }
-            _ => None,
-        }));
-    }
     let politics = match politics {
         Ok(content) => Some(content),
         Err(reason) => {
@@ -1204,6 +1237,8 @@ pub(crate) fn query(
             .warnings
             .extend(content.warnings.iter().cloned());
     }
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:nuclear-art");
     let nuclear_art = if rows.keys().any(|position| {
         matches!(
             position.kind,
@@ -1230,6 +1265,8 @@ pub(crate) fn query(
             _ => None,
         })
         .collect();
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:focus-art");
     let focus_art: Vec<Option<artwork::ResolvedArt>> = match context.content() {
         Ok(content) => match crate::prepared_focus::art::event_art(
             source,
@@ -1253,6 +1290,8 @@ pub(crate) fn query(
     // Completed projects' icons, kept as their choice's operands, drawn as this request shows them.
     // Their content is loaded only for a page holding completions; content that does not load
     // leaves each icon unavailable with why and the rest of the page as it is.
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:project-art");
     let failed = special_projects::present_completions(
         source,
         &special_projects::ArtSource::new(source, context.content.as_ref()),
@@ -1265,18 +1304,8 @@ pub(crate) fn query(
         .feed
         .warnings
         .extend(special_projects::art_warnings(failed));
-    if let Some(catalogue) = catalogue.as_deref() {
-        super::super::prefetch_script_events(
-            catalogue,
-            rows.values().filter_map(|row| match row {
-                SourceRow::Fact(fact) if fact.row.item.is_some() => {
-                    Some((fact.row.kind, fact.item.as_ref()?))
-                }
-                _ => None,
-            }),
-            cancelled,
-        );
-    }
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:present");
     for (position, row) in rows {
         check_cancel(cancelled)?;
         if position.kind == EventFeedKind::Peace {
@@ -1297,10 +1326,11 @@ pub(crate) fn query(
             catalogue.as_deref(),
             &nuclear_art,
             art.as_ref(),
-            &texts,
             cancelled,
         )?;
     }
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("ef-q:idea-format");
     if let Some(content) = politics {
         let (keys, texts) = idea_history::effect_keys(
             builder
@@ -1327,6 +1357,8 @@ pub(crate) fn query(
             builder.unavailable("contentPresentation", "Content presentation", reason, count);
         }
     }
+    drop(phase);
+    let _phase = replay_frame::cpu::scope_phase("ef-q:reply");
     builder.feed.rows.sort_by(row_order);
     builder.feed.warnings.sort();
     builder.feed.warnings.dedup();

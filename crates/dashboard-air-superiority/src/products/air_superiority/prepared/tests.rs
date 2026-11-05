@@ -731,7 +731,7 @@ fn superiority_equal_theatre_reads_publish_dates_without_copying_the_dictionary(
         )
         .unwrap();
         assert_eq!(reader.event_count_through(1, i32::MAX).unwrap(), 1);
-        let (_, date) = reader.latest_event(2, 25 + hours).unwrap().unwrap();
+        let (_, date) = reader.latest_value(2, 25 + hours).unwrap().unwrap();
         assert_eq!(date, serde_json::json!(25 + hours));
         parity(&fixture, &frames, None);
     }

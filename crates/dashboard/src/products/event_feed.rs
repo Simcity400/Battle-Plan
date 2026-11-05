@@ -32,7 +32,6 @@ use ts_rs::TS;
 
 mod diplomacy;
 
-mod decision_roster;
 mod native;
 mod script_effects;
 
@@ -102,13 +101,11 @@ pub enum EventFeedKind {
     DecisionCompletionEffect,
     DecisionTimeoutEffect,
     DecisionDurationChanged,
-    DecisionRosterRebuilt,
-    ScriptStateObserved,
 }
 impl EventFeedKind {
     /// Every kind, in declaration order: a kind's prepared stream key is its
     /// position, with the high bit for facts read after their native hour.
-    pub(crate) const ALL: [Self; 40] = {
+    pub(crate) const ALL: [Self; 38] = {
         use EventFeedKind::*;
         [
             WarStarted,
@@ -149,8 +146,6 @@ impl EventFeedKind {
             DecisionCompletionEffect,
             DecisionTimeoutEffect,
             DecisionDurationChanged,
-            DecisionRosterRebuilt,
-            ScriptStateObserved,
         ]
     };
     /// The kind a prepared fact stream key holds.
@@ -195,9 +190,7 @@ impl EventFeedKind {
             | DecisionCancellationEffect
             | DecisionCompletionEffect
             | DecisionTimeoutEffect
-            | DecisionDurationChanged
-            | DecisionRosterRebuilt
-            | ScriptStateObserved => EventFeedCategory::Politics,
+            | DecisionDurationChanged => EventFeedCategory::Politics,
             FocusCompleted | ProjectFinished | NukesIncreased => EventFeedCategory::Milestones,
         }
     }
@@ -324,7 +317,8 @@ pub(crate) struct Occurrence {
     /// The native route and enclosing operation, as their recorded bytes.
     pub route: Option<u8>,
     pub within: Option<u8>,
-    #[serde(default)]
+    /// The fact it continues: joined at publication and stored ahead of the fact's body.
+    #[serde(skip)]
     pub opener: Option<(u64, u64)>,
     /// The power this execution was proven to charge ([`prepared::charges`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -458,6 +452,7 @@ struct Feed {
     warnings: Vec<String>,
 }
 /// A notice a capturing builder held back, for the builder it is merged into in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Notice {
     key: UnavailableKey,
     reason: String,
@@ -772,6 +767,7 @@ struct ScriptContentIndex(std::sync::Mutex<Option<Arc<installed_content_events::
 /// Reads the script events presenting `items` reads ([`script_presentation`]) together, each
 /// event file once, so presenting them reads none
 /// ([`installed_content_events::events::LazyEvents::prefetch`]).
+#[cfg(test)]
 fn prefetch_script_events<'i>(
     catalogue: &Catalogue,
     items: impl IntoIterator<Item = (EventFeedKind, &'i EventFeedItem)>,
@@ -811,38 +807,32 @@ fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events:
     }))
 }
 
-/// Expands scripted event text in an occurrence's recorded scopes at its naming hour.
-pub(crate) struct ScopedTexts<'a> {
-    source: &'a Source,
-    branch: u64,
-    cancelled: &'a AtomicBool,
-    /// By hour and whether it holds every scripted-text table or only the naming ones (`keep_frame`).
-    frames: std::cell::RefCell<BTreeMap<(i32, bool), Result<Arc<replay_frame::frame::DecodedFrame>, String>>>,
-    /// A failed read (not a gap) fails the query, so a refused decode reruns it where decodes are allowed.
+/// The world an occurrence's text is expanded in: that of its naming hour, the walk's frame of
+/// [`columnar::presentation`] when it is the hour that read it, else sought in the recording.
+/// Each is read once, when first asked.
+pub(crate) struct HourTexts<'a> {
+    hour: i32,
+    read: &'a dyn Fn() -> io::Result<replay_frame::frame::DecodedFrame>,
+    seek: Option<&'a dyn Fn(i32) -> io::Result<replay::container::SeekResult>>,
+    frames: std::cell::RefCell<BTreeMap<i32, Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String>>>,
+    /// A failed read fails the hour's preparation.
     failure: std::cell::RefCell<Option<io::Error>>,
-    /// Scripted frames sought in rising hours share their block's decodes ([`Self::rising`]).
-    walk: Option<std::cell::RefCell<dashboard_base::prepared::query::frames::Walk<'a>>>,
 }
 
-impl<'a> ScopedTexts<'a> {
-    pub(crate) fn new(source: &'a Source, branch: u64, cancelled: &'a AtomicBool) -> Self {
+impl<'a> HourTexts<'a> {
+    /// Texts of occurrences read at `hour`, whose world `read` gives; those named at another
+    /// hour have theirs sought by `seek`, or none without it.
+    pub(crate) fn new(
+        hour: i32,
+        read: &'a dyn Fn() -> io::Result<replay_frame::frame::DecodedFrame>,
+        seek: Option<&'a dyn Fn(i32) -> io::Result<replay::container::SeekResult>>,
+    ) -> Self {
         Self {
-            source,
-            branch,
-            cancelled,
+            hour,
+            read,
+            seek,
             frames: Default::default(),
             failure: Default::default(),
-            walk: None,
-        }
-    }
-
-    /// Texts asked for in rising naming hours, mostly: their scripted frames are read through one walk.
-    pub(crate) fn rising(source: &'a Source, branch: u64, cancelled: &'a AtomicBool) -> Self {
-        Self {
-            walk: Some(std::cell::RefCell::new(
-                dashboard_base::prepared::query::frames::Walk::new(source, branch),
-            )),
-            ..Self::new(source, branch, cancelled)
         }
     }
 
@@ -851,93 +841,33 @@ impl<'a> ScopedTexts<'a> {
         self.failure.borrow_mut().take().map_or(Ok(()), Err)
     }
 
-    fn seek(
-        source: &Source,
-        branch: u64,
-        cancelled: &AtomicBool,
-        hour: i32,
-        scripted: bool,
-    ) -> io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>> {
-        let tables: &[replay_data::rows::TableId] = if scripted {
-            crate::scripted_text::TABLES
-        } else {
-            &installed_content_country_names::country_names::TABLES
-        };
-        dashboard_base::prepared::query::frames::seek(source, branch, hour, tables, cancelled).map(framed)
-    }
-
-    /// A scripted frame through the walk; a block it cannot read whole may still answer the hour's own seek.
-    fn walked(
-        &self,
-        walk: &std::cell::RefCell<dashboard_base::prepared::query::frames::Walk<'a>>,
-        hour: i32,
-    ) -> io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>> {
-        let found = walk.borrow_mut().seek(hour, crate::scripted_text::TABLES, self.cancelled);
-        match found {
-            Err(error) if error.kind() != io::ErrorKind::Interrupted => {
-                Self::seek(self.source, self.branch, self.cancelled, hour, true)
-            }
-            found => found.map(framed),
+    fn frame(&self, hour: i32) -> Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String> {
+        if let Some(held) = self.frames.borrow().get(&hour) {
+            return held.clone();
         }
-    }
-
-    fn hold(&self, key: (i32, bool), read: io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>>)
-        -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
-        match read {
-            Ok(read) => {
-                keep_frame(&mut self.frames.borrow_mut(), key, read.clone());
-                read
+        let read = if hour == self.hour {
+            let _phase = replay_frame::cpu::scope_phase("ef-w:present-frame");
+            (self.read)().map(Ok)
+        } else {
+            let _phase = replay_frame::cpu::scope_phase("ef-w:present-seek");
+            match self.seek {
+                Some(seek) => seek(hour).map(|found| match found {
+                    replay::container::SeekResult::Frame(frame) => Ok(*frame),
+                    replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+                }),
+                None => Ok(Err("its naming hour's world is not at hand".into())),
             }
+        };
+        let held = match read {
+            Ok(read) => read.map(std::rc::Rc::new),
             Err(error) => {
                 let reason = error.to_string();
                 self.failure.borrow_mut().get_or_insert(error);
                 Err(reason)
             }
-        }
-    }
-
-    fn frame(&self, hour: i32, scripted: bool) -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
-        if let Some(held) = self.frames.borrow().get(&(hour, scripted)) {
-            return held.clone();
-        }
-        let read = match &self.walk {
-            Some(walk) if scripted => self.walked(walk, hour),
-            _ => Self::seek(self.source, self.branch, self.cancelled, hour, scripted),
         };
-        self.hold((hour, scripted), read)
-    }
-
-    /// Reads the naming frames of these hours in one ordered pass that shares block decodes;
-    /// rows then present in order from them.
-    pub(crate) fn prefetch(&self, hours: impl IntoIterator<Item = i32>) {
-        let wanted: Vec<_> = hours
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|&hour| !self.frames.borrow().contains_key(&(hour, false)))
-            .collect();
-        // Where block decodes are refused, the first seek fails the query to rerun it.
-        if wanted.len() < 2 || dashboard_base::prepared::query::progressive::block_decodes_disabled() {
-            return;
-        }
-        let walked = dashboard_base::prepared::query::frames::hours(
-            self.source,
-            self.branch,
-            &wanted,
-            &installed_content_country_names::country_names::TABLES,
-            self.cancelled,
-            |hour, read| {
-                let read = match read {
-                    replay::container::SeekResult::Frame(frame) => Ok(Arc::new(*frame)),
-                    replay::container::SeekResult::Gap { reason, .. } => Err(reason),
-                };
-                self.frames.borrow_mut().insert((hour, false), read);
-                Ok(())
-            },
-        );
-        if let Err(error) = walked {
-            self.failure.borrow_mut().get_or_insert(error);
-        }
+        self.frames.borrow_mut().insert(hour, held.clone());
+        held
     }
 
     fn expand(
@@ -947,7 +877,7 @@ impl<'a> ScopedTexts<'a> {
         hour: i32,
         key: &str,
     ) -> Result<String, String> {
-        script_effects::scoped_text(catalogue, inputs, &*self.frame(hour, true)?, key)
+        script_effects::scoped_text(catalogue, inputs, &*self.frame(hour)?, key)
     }
 
     /// A decision's title, and why any scripted text in it is elided.
@@ -958,15 +888,13 @@ impl<'a> ScopedTexts<'a> {
         hour: i32,
         token: &str,
     ) -> Result<(String, Option<String>), String> {
-        let (key, name, scoped) =
-            script_effects::decision_name(catalogue, inputs, &*self.frame(hour, false)?, token)?;
+        let frame = self.frame(hour)?;
+        let (key, name, scoped) = script_effects::decision_name(catalogue, inputs, &*frame, token)?;
         if !name.contains('[') {
             return Ok((name, None));
         }
         let expanded = if scoped {
-            self.frame(hour, true).and_then(|frame| {
-                script_effects::decision_title_text(catalogue, inputs, &*frame, &key)
-            })
+            script_effects::decision_title_text(catalogue, inputs, &*frame, &key)
         } else {
             Err("it names a highlighted state the recording does not hold".into())
         };
@@ -980,22 +908,49 @@ impl<'a> ScopedTexts<'a> {
     }
 }
 
-fn framed(
-    found: replay::container::SeekResult,
-) -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
-    match found {
-        replay::container::SeekResult::Frame(frame) => Ok(Arc::new(*frame)),
-        replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+/// What presenting a fact's item gave besides the item: its notices, in order, and the text
+/// refusals the catalogue noted meanwhile. A query shows them with the item.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Shown {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notices: Vec<Notice>,
+    #[serde(default, skip_serializing_if = "catalogue::OwnRefusals::is_empty")]
+    noted: catalogue::OwnRefusals,
+}
+
+impl Shown {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.notices.is_empty() && self.noted.is_empty()
+    }
+
+    /// Its notices merged into `builder` and its refusals credited to the reply's scope, as
+    /// presenting the item there would have left them.
+    fn show(self, builder: &mut Builder) {
+        for notice in self.notices {
+            notice.apply(builder);
+        }
+        catalogue::credit(&self.noted);
     }
 }
 
-/// Holds a read frame by (hour, scripted). Naming frames hold only name tables; a scripted
-/// frame holds world tables, so only the latest is kept.
-fn keep_frame<T>(frames: &mut BTreeMap<(i32, bool), T>, key: (i32, bool), frame: T) {
-    if key.1 {
-        frames.retain(|held, _| !held.1);
-    }
-    frames.insert(key, frame);
+/// `item` of a fact of `kind` presented ([`script_presentation`]), with what it showed.
+pub(crate) fn present(
+    catalogue: &Catalogue,
+    kind: EventFeedKind,
+    item: &mut EventFeedItem,
+    inputs: Option<&script_effects::Inputs>,
+    texts: Option<(&HourTexts<'_>, i32)>,
+) -> io::Result<Shown> {
+    let mut builder = Builder::new(i32::MIN, i32::MAX);
+    builder.captured = Some(Vec::new());
+    let (presented, noted) = catalogue::capture_isolated(|| {
+        script_presentation(&mut builder, catalogue, kind, item, inputs, texts)
+    });
+    presented?;
+    Ok(Shown {
+        notices: builder.captured.take().unwrap_or_default(),
+        noted,
+    })
 }
 
 /// Kinds whose title is a decision's name, read at the occurrence's naming hour.
@@ -1041,14 +996,12 @@ fn script_presentation(
     kind: EventFeedKind,
     item: &mut EventFeedItem,
     inputs: Option<&script_effects::Inputs>,
-    texts: Option<(&ScopedTexts<'_>, i32)>,
+    texts: Option<(&HourTexts<'_>, i32)>,
 ) -> io::Result<()> {
-    if kind == EventFeedKind::DecisionRosterRebuilt {
-        return decision_roster::present(builder, catalogue, item, inputs);
-    }
     if !presents_event(kind) {
         if names_decision(kind) {
             let token = item.token.as_deref().unwrap_or("unidentified decision");
+            let phase = replay_frame::cpu::scope_phase("pres:decision-name");
             let named = match (texts, inputs) {
                 (Some((texts, hour)), Some(inputs)) => texts.decision_name(catalogue, inputs, hour, token),
                 _ => Err("the occurrence's owner is not recorded".into()),
@@ -1069,15 +1022,21 @@ fn script_presentation(
             }
             builder.unavailable("decisionPresentation","Decision presentation",
                 format!("Decision {token}: triggered artwork requires exact historical presentation inputs."),Some(1));
+            drop(phase);
         }
+        let _phase = replay_frame::cpu::scope_phase("pres:effects");
         script_effects::present(builder, catalogue, kind, item, inputs)?;
         return Ok(());
     }
     let Some(token) = &item.token else {
         return Ok(());
     };
+    let phase = replay_frame::cpu::scope_phase("pres:event-get");
     let events = script_events(catalogue);
-    let event = match events.get(token.as_bytes()) {
+    let fetched = events.get(token.as_bytes());
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("pres:event-text");
+    let event = match fetched {
         Ok(event) if event.refused.is_none() => event,
         Ok(event) => {
             builder.unavailable(
@@ -1139,6 +1098,8 @@ fn script_presentation(
             ),
         }
     }
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("pres:picture");
     if event.picture.is_empty() {
         builder.unavailable(
             "scriptEventPicture",
@@ -1185,6 +1146,8 @@ fn script_presentation(
             Some(1),
         );
     }
+    drop(phase);
+    let phase = replay_frame::cpu::scope_phase("pres:options");
     let mut options = Vec::new();
     let mut authored = Vec::new();
     for (ordinal, name) in event.option_names.iter().enumerate() {
@@ -1231,6 +1194,8 @@ fn script_presentation(
         body.push_str("Authored options (native ordinals):\n");
         body.push_str(&options.join("\n"));
     }
+    drop(phase);
+    let _phase = replay_frame::cpu::scope_phase("pres:effects");
     script_effects::present(builder, catalogue, kind, item, inputs)?;
     Ok(())
 }

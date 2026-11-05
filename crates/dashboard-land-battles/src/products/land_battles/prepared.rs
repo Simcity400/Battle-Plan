@@ -992,12 +992,12 @@ pub fn query(
             )?;
             let first = index
                 .latest_event(0, params.first_hour)?
-                .map(|(_, value)| serde_json::from_value::<u64>(value))
+                .map(|(_, value)| serde_json::from_slice::<u64>(&value))
                 .transpose()?
                 .unwrap_or(0);
             let last = index
                 .latest_event(0, params.last_hour)?
-                .map(|(_, value)| serde_json::from_value::<u64>(value))
+                .map(|(_, value)| serde_json::from_slice::<u64>(&value))
                 .transpose()?
                 .unwrap_or(0);
             for index in first..=last {

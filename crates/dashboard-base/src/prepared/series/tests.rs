@@ -1548,7 +1548,7 @@ fn events_keep_duplicate_order_every_row_and_exact_screen_counts() {
     loop {
         let page = reader.events(&[0], i32::MIN, 599, cursor, 32).unwrap();
         assert_eq!(page.total, 1800);
-        rows.extend(page.rows.into_iter().map(|row| row.row));
+        rows.extend(page.rows.into_iter().map(|row| row.value()));
         if let Some(next) = page.cursor {
             cursor = next;
         } else {
@@ -1677,7 +1677,7 @@ fn multi_key_events_resume_in_hour_key_and_duplicate_order() {
     for (index, row) in rows.into_iter().enumerate() {
         let hour = index / 6 + 1;
         let key = if index % 6 < 3 { 2 } else { 9 };
-        assert_eq!(row.row, json!([hour, key, index % 3]));
+        assert_eq!(row.value(), json!([hour, key, index % 3]));
         assert_eq!(
             (row.hour, row.key, row.ordinal),
             (hour as i32, key, hour as u64 * 3 + index as u64 % 3)
@@ -3150,7 +3150,7 @@ fn event_pages_reset_the_merge_frontier_on_changed_requests_and_clamping() {
         let page = reader.events(&keys, 0, 1, cursor, 2).unwrap();
         assert_eq!(page.total, 6);
         for row in page.rows {
-            assert_eq!(row.row, json!([seen / 3, seen % 3]));
+            assert_eq!(row.value(), json!([seen / 3, seen % 3]));
             assert_eq!(
                 (row.key, row.ordinal),
                 ((seen % 3) as u64, (seen / 3) as u64)
@@ -3162,11 +3162,11 @@ fn event_pages_reset_the_merge_frontier_on_changed_requests_and_clamping() {
     }
     assert_eq!(seen, 6);
     assert_eq!(
-        reader.events(&[2], 1, 1, 0, 1).unwrap().rows[0].row,
+        reader.events(&[2], 1, 1, 0, 1).unwrap().rows[0].value(),
         json!([1, 2])
     );
     assert_eq!(
-        reader.events(&keys, 0, 1, 0, 1).unwrap().rows[0].row,
+        reader.events(&keys, 0, 1, 0, 1).unwrap().rows[0].value(),
         json!([0, 0])
     );
     reader.through_hour(0).unwrap();
@@ -3358,8 +3358,8 @@ fn unflushed_checkpoints_keep_runs_interned_events_references_and_raw_bytes() {
         let observations = reader.events(&[20], 100, 125, 0, 100).unwrap();
         assert_eq!(observations.total, 25);
         for row in observations.rows {
-            let ordinal = row.row["presentation"].as_u64().unwrap();
-            assert!(reader.event_at(10, ordinal).unwrap().row["name"].is_string());
+            let ordinal = row.value()["presentation"].as_u64().unwrap();
+            assert!(reader.event_at(10, ordinal).unwrap().value()["name"].is_string());
         }
         for (ordinal, hour) in (100..=120).chain(123..=125).enumerate() {
             assert_eq!(
@@ -3462,7 +3462,7 @@ fn backdated_events_do_not_move_the_forward_frontier() {
             revisions
                 .rows
                 .iter()
-                .map(|row| (row.hour, row.row["instance"].as_u64().unwrap()))
+                .map(|row| (row.hour, row.value()["instance"].as_u64().unwrap()))
                 .collect::<Vec<_>>(),
             vec![(24, 1), (29, 2)]
         );
@@ -3508,7 +3508,7 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
             Reader::new(&fixture.store, &fixture.key, "revisions".into(), &flag).unwrap();
         assert_eq!(earlier.event_count_through(9, 29).unwrap(), 8);
         assert_eq!(
-            earlier.latest_event(9, 29).unwrap(),
+            earlier.latest_value(9, 29).unwrap(),
             Some((29, json!({"instance": 2})))
         );
         restore(&mut values);
@@ -3527,7 +3527,7 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
         writer.commit().unwrap();
         assert_eq!(earlier.event_count_through(9, 29).unwrap(), 8);
         assert_eq!(
-            earlier.latest_event(9, 29).unwrap(),
+            earlier.latest_value(9, 29).unwrap(),
             Some((29, json!({"instance": 2})))
         );
         drop(earlier);
@@ -3580,7 +3580,7 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
         let rows = |page: &EventsPage| {
             page.rows
                 .iter()
-                .map(|row| (row.hour, row.row["instance"].as_u64().unwrap()))
+                .map(|row| (row.hour, row.value()["instance"].as_u64().unwrap()))
                 .collect::<Vec<_>>()
         };
         let all = reader.events(&[9], 24, 61, 0, 20).unwrap();
@@ -3590,7 +3590,7 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
         for (ordinal, &(hour, instance)) in expected.iter().enumerate() {
             let row = reader.event_at(9, ordinal as u64).unwrap();
             assert_eq!(
-                (row.hour, row.ordinal, row.row),
+                (row.hour, row.ordinal, row.value()),
                 (hour, ordinal as u64, json!({"instance": instance}))
             );
             assert_eq!(reader.event_date(9, ordinal as u64).unwrap(), hour);
@@ -3602,11 +3602,11 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
         }
         assert!(reader.event_at(9, 14).is_err());
         assert_eq!(
-            reader.latest_event(9, 29).unwrap(),
+            reader.latest_value(9, 29).unwrap(),
             Some((29, json!({"instance": 4})))
         );
         assert_eq!(
-            reader.latest_event(10, 25).unwrap(),
+            reader.latest_value(10, 25).unwrap(),
             Some((22, json!({"instance": 2})))
         );
         let latest = reader.latest_event_rows(&[9, 10, 12, 99], 29).unwrap();
@@ -3640,7 +3640,7 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
             within
                 .rows
                 .iter()
-                .map(|row| (row.hour, row.key, row.row["instance"].as_u64().unwrap()))
+                .map(|row| (row.hour, row.key, row.value()["instance"].as_u64().unwrap()))
                 .collect::<Vec<_>>(),
             vec![
                 (21, 10, 3),
@@ -3672,16 +3672,16 @@ fn backdated_event_ranks_include_committed_and_resumed_batches() {
         assert_eq!(reader.through_hour(48).unwrap(), Some(48));
         assert_eq!(reader.event_count_through(9, 29).unwrap(), 8);
         assert_eq!(
-            reader.latest_event(9, 29).unwrap(),
+            reader.latest_value(9, 29).unwrap(),
             Some((29, json!({"instance": 2})))
         );
         assert_eq!(reader.through_hour(30).unwrap(), Some(30));
         assert_eq!(reader.event_count_through(9, 29).unwrap(), 6);
         assert_eq!(
-            reader.latest_event(9, 29).unwrap(),
+            reader.latest_value(9, 29).unwrap(),
             Some((29, json!({"instance": 1})))
         );
-        assert_eq!(reader.latest_event(12, 30).unwrap(), None);
+        assert_eq!(reader.latest_value(12, 30).unwrap(), None);
     }
 }
 
@@ -3759,7 +3759,7 @@ fn each_event_gives_the_rows_events_gives_late_ones_included() {
             let mut cursor = 0;
             loop {
                 let page = reader.events(&[key], from, to, cursor, 7).unwrap();
-                paged.extend(page.rows.into_iter().map(|row| (row.hour, row.row)));
+                paged.extend(page.rows.into_iter().map(|row| (row.hour, row.value())));
                 match page.cursor {
                     Some(next) => cursor = next,
                     None => break,
@@ -3834,7 +3834,7 @@ fn backdated_event_counts_do_not_scan_committed_batches() {
     assert_eq!(reader.event_count_through(9, -65).unwrap(), 0);
     assert_eq!(reader.event_count_through(9, -1).unwrap(), 64);
     assert_eq!(reader.event_count_through(9, 576).unwrap(), 321);
-    assert_eq!(reader.latest_event(9, 127).unwrap(), Some((127, json!(2))));
+    assert_eq!(reader.latest_value(9, 127).unwrap(), Some((127, json!(2))));
     for (ordinal, hour, value) in [
         (0, -64, 3),
         (63, -1, 3),
@@ -3843,7 +3843,7 @@ fn backdated_event_counts_do_not_scan_committed_batches() {
         (320, 255, 1),
     ] {
         let row = reader.event_at(9, ordinal).unwrap();
-        assert_eq!((row.hour, row.row), (hour, json!(value)));
+        assert_eq!((row.hour, row.value()), (hour, json!(value)));
     }
 }
 
@@ -3879,10 +3879,10 @@ fn event_only_backdating_keeps_unindexed_keys_and_batch_bounds_exact() {
         assert_eq!(reader.hours(batch).unwrap(), expected);
     }
     assert_eq!(reader.event_count_through(9, 20).unwrap(), 3);
-    assert_eq!(reader.latest_event(9, 5).unwrap(), Some((5, json!(2))));
+    assert_eq!(reader.latest_value(9, 5).unwrap(), Some((5, json!(2))));
     assert_eq!(reader.event_count_through(10, 29).unwrap(), 0);
-    assert_eq!(reader.latest_event(10, 29).unwrap(), None);
-    assert_eq!(reader.latest_event(10, 30).unwrap(), Some((30, json!(1))));
+    assert_eq!(reader.latest_value(10, 29).unwrap(), None);
+    assert_eq!(reader.latest_value(10, 30).unwrap(), Some((30, json!(1))));
     let mut file = fixture
         .store
         .read(&fixture.key, "events", 4)
@@ -3900,7 +3900,7 @@ fn event_only_backdating_keeps_unindexed_keys_and_batch_bounds_exact() {
     assert_eq!(directory(&mut file, 9).unwrap().order_slot, Some(0));
     assert_eq!(reader.through_hour(20).unwrap(), Some(20));
     assert_eq!(reader.event_count_through(9, 20).unwrap(), 2);
-    assert_eq!(reader.latest_event(9, 5).unwrap(), None);
+    assert_eq!(reader.latest_value(9, 5).unwrap(), None);
 }
 
 #[cfg(test)]
@@ -3994,7 +3994,7 @@ fn first_backdate_construction_is_independent_of_the_forward_history() {
         (16385, 32769, 3),
     ] {
         let row = reader.event_at(9, ordinal).unwrap();
-        assert_eq!((row.hour, row.row), (hour, json!(value)));
+        assert_eq!((row.hour, row.value()), (hour, json!(value)));
     }
 }
 
@@ -4046,7 +4046,7 @@ fn staggered_first_backdates_do_not_seed_any_of_fifteen_hundred_keys() {
         assert_eq!(reader.event_count_through(key, 543).unwrap(), 65);
         for (ordinal, hour, value) in [(7, 7, 1), (8, 7, 2), (64, 63, 1)] {
             let row = reader.event_at(key, ordinal).unwrap();
-            assert_eq!((row.hour, row.row), (hour, json!(value)));
+            assert_eq!((row.hour, row.value()), (hour, json!(value)));
         }
         let root = reader.event_order(key).unwrap().unwrap();
         assert_eq!(reader.order_node(root).unwrap().count, 1);
@@ -4151,7 +4151,7 @@ fn mixed_backdated_and_forward_rows_merge_at_publication_ties() {
     ];
     for (ordinal, (hour, value)) in expected.into_iter().enumerate() {
         let row = reader.event_at(9, ordinal as u64).unwrap();
-        assert_eq!((row.hour, row.row), (hour, json!(value)));
+        assert_eq!((row.hour, row.value()), (hour, json!(value)));
     }
     assert!(reader.event_at(9, 13).is_err());
     let root = reader.event_order(9).unwrap().unwrap();
@@ -4159,7 +4159,7 @@ fn mixed_backdated_and_forward_rows_merge_at_publication_ties() {
     assert_eq!(reader.through_hour(21).unwrap(), Some(21));
     assert_eq!(reader.event_count_through(9, 5).unwrap(), 1);
     assert_eq!(reader.event_count_through(9, 21).unwrap(), 5);
-    assert_eq!(reader.latest_event(9, 20).unwrap(), Some((20, json!(4))));
+    assert_eq!(reader.latest_value(9, 20).unwrap(), Some((20, json!(4))));
 }
 
 #[test]

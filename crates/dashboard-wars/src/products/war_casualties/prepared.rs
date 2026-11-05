@@ -136,7 +136,7 @@ pub fn read_measures(
             let Some((_, row)) = observations.latest_event(key, hour)? else {
                 return Ok(None);
             };
-            let observation: Observation = serde_json::from_value(row)?;
+            let observation: Observation = serde_json::from_slice(&row)?;
             Ok(Some(
                 observation
                     .sample(
@@ -848,7 +848,7 @@ pub fn query(
                 let Some((event_hour, event)) = observations.latest_event(key, hour)? else {
                     continue;
                 };
-                let observation: Observation = serde_json::from_value(event)?;
+                let observation: Observation = serde_json::from_slice(&event)?;
                 if !selection.tags.is_empty() && !selected.contains(&observation.identity) {
                     continue;
                 }
@@ -1035,7 +1035,7 @@ pub fn query(
                 size,
             )?;
             Ok(
-                json!({"rows": page.rows.into_iter().map(|row| json!({"key": row.key.to_string(), "hour": row.hour, "ordinal": row.ordinal.to_string(), "row": row.row})).collect::<Vec<_>>(),
+                json!({"rows": page.rows.into_iter().map(|row| Ok::<_, io::Error>(json!({"key": row.key.to_string(), "hour": row.hour, "ordinal": row.ordinal.to_string(), "row": serde_json::from_slice::<serde_json::Value>(&row.row)?}))).collect::<io::Result<Vec<_>>>()?,
                 "firstOrdinal": page.first.to_string(), "total": page.total.to_string(), "cursor": page.cursor.map(|cursor| cursor.to_string()), "warnings": catalogue.warnings}),
             )
         }

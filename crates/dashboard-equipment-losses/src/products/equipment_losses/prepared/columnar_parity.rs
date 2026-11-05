@@ -344,7 +344,7 @@ fn published(
         .unwrap()
         .rows
         .into_iter()
-        .map(|row| serde_json::from_value(row.row).unwrap())
+        .map(|row| serde_json::from_slice(&row.row).unwrap())
         .collect();
     let state = prepared.values.state(actor).unwrap();
     (points, state.runs, state.events)

@@ -307,7 +307,7 @@ fn pair_reply(
 ) -> io::Result<DecryptionPair> {
     let mut observations = Vec::new();
     if let Some((_, row)) = reader.latest_event(key, first)? {
-        observations.push(serde_json::from_value::<Observation>(row)?);
+        observations.push(serde_json::from_slice::<Observation>(&row)?);
     }
     if let Some(from) = first.checked_add(1).filter(|from| *from <= last) {
         let mut cursor = 0;
@@ -315,7 +315,7 @@ fn pair_reply(
             check_cancel(cancelled)?;
             let page = reader.events(&[key], from, last, cursor, 256)?;
             for row in page.rows {
-                observations.push(serde_json::from_value::<Observation>(row.row)?);
+                observations.push(serde_json::from_slice::<Observation>(&row.row)?);
             }
             let Some(next) = page.cursor else {
                 break;
@@ -406,7 +406,7 @@ pub fn query(
             let (_, row) = reader
                 .latest_event(0, hour)?
                 .ok_or_else(|| dashboard_core::invalid("Missing cipher coverage event"))?;
-            let mut entry: DecryptionCoverage = serde_json::from_value(row)?;
+            let mut entry: DecryptionCoverage = serde_json::from_slice(&row)?;
             entry.first_hour = run.first_hour;
             entry.last_hour = run.last_hour.min(last);
             let next = entry.last_hour.checked_add(1);

@@ -56,7 +56,7 @@ fn order_at(
     Ok(Some((
         first,
         ordinal,
-        serde_json::from_value(row)?,
+        serde_json::from_slice(&row)?,
         presence,
     )))
 }
@@ -92,7 +92,7 @@ pub fn query_hour(
         .ok_or_else(|| dashboard_core::refused("Prepared focus hour was not recorded"))?;
     let start = reader
         .latest_event(actor + 2, block.first_hour)?
-        .map(|(_, row)| serde_json::from_value::<Progress>(row))
+        .map(|(_, row)| serde_json::from_slice::<Progress>(&row))
         .transpose()?;
     let progress = progress_at(replay, block, tag, hour, start, cancelled)?.ok_or_else(|| {
         crate::invalid("Prepared focus progress is not observed at this hour; prepare again")
@@ -172,7 +172,7 @@ pub fn query_unavailable(
     let Some((first, row)) = reader.latest_event(0, hour)? else {
         return Ok(None);
     };
-    let reasons: Vec<TableRefusal> = serde_json::from_value(row)?;
+    let reasons: Vec<TableRefusal> = serde_json::from_slice(&row)?;
     Ok((!reasons.is_empty()).then(|| UnavailableHour {
         schema: StateSchema,
         first_hour: first.max(run.first_hour),
@@ -253,7 +253,7 @@ pub fn order_page(
         .rows;
     let entries = read
         .into_iter()
-        .map(|row| serde_json::from_value::<FocusEntry>(row.row))
+        .map(|row| serde_json::from_slice::<FocusEntry>(&row.row))
         .collect::<Result<Vec<_>, _>>()?;
     check_cancel(cancelled)?;
     if entries.len() as u64 != rows

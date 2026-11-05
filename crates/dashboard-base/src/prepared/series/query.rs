@@ -32,7 +32,6 @@ pub struct SummaryCache {
     tables: BTreeMap<[u64; 3], Arc<Option<Table>>>,
     // Each text binds its kind and ordered page identities to the retained bytes.
     texts: BTreeMap<TextKey, Arc<Vec<u8>>>,
-    events: BTreeMap<([u64; 3], u64, u64), Arc<Value>>,
     values: BTreeMap<ValueKey, Arc<Retained>>,
 }
 
@@ -106,15 +105,6 @@ impl SummaryCache {
                         + 2 * std::mem::size_of::<usize>()
                         + std::mem::size_of::<Vec<u8>>()
                         + text.capacity()
-                })
-                .sum::<usize>()
-            + self
-                .events
-                .values()
-                .map(|value| {
-                    2 * std::mem::size_of::<(([u64; 3], u64, u64), Arc<Value>)>()
-                        + 2 * std::mem::size_of::<usize>()
-                        + crate::prepared::query::observations::json_bytes(value)
                 })
                 .sum::<usize>()
     }
@@ -297,17 +287,6 @@ pub(super) fn text(
         },
     )
 }
-pub(super) fn event(
-    id: ([u64; 3], u64, u64),
-    read: impl FnOnce() -> io::Result<Value>,
-) -> io::Result<Value> {
-    let Some(scope) = current() else {
-        return read();
-    };
-    let value = reuse(Some(scope), id, |cache| &mut cache.events, read)?;
-    Ok((*value).clone())
-}
-
 struct Fold {
     pages: Arc<Vec<[u64; 3]>>,
     ranges: Vec<Option<(i32, i32)>>,

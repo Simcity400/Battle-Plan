@@ -4,7 +4,8 @@
 //! candidate store and compares the replies
 //! ([`dashboard::prepared::served_check`]).
 //! `served-check record --family F --recording R --store S --work W --out T [--columnar C]`
-//! `served-check check --recording R --store S --work W --reference T --report P [--ignore PATH]...`
+//! `served-check check --recording R --store S --work W --reference T|DIR --report P|DIR [--families F,...] [--threads N] [--ignore PATH]...`
+//! A folder of transcripts is checked in one process, every request of them `--threads` at a time.
 //! Both also take `[--game G --user U]` (else BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR)
 //! and `[--allow-unverified]`. A store is its folder,
 //! `…\HOI4Replay\prepared\<store>`; `--work` keeps the content cache.
@@ -35,7 +36,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const USAGE: &str =
     "served-check record --families all|F1,F2,... --recording R --store S --work W --out-dir D [--columnar C] [--threads N]
 served-check record --family F --recording R --store S --work W --out T [--columnar C] [--threads N]
-served-check check --recording R --store S --work W --reference T --report P [--ignore PATH]...
+served-check check --recording R --store S --work W --reference T|DIR --report P|DIR [--families F1,F2,...] [--threads N] [--scopes P] [--ignore PATH]...
 each also [--game G --user U] [--allow-unverified]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -55,6 +56,8 @@ struct Options {
     columnar: Option<PathBuf>,
     reference: Option<PathBuf>,
     report: Option<PathBuf>,
+    /// Where `check` writes the CPU its queries charged, by label.
+    scopes: Option<PathBuf>,
     game: Option<PathBuf>,
     user: Option<PathBuf>,
     /// Dotted reply paths not compared, `*` for any member or element.
@@ -91,6 +94,7 @@ impl Options {
                 Some("--columnar") => options.columnar = path,
                 Some("--reference") => options.reference = path,
                 Some("--report") => options.report = path,
+                Some("--scopes") => options.scopes = path,
                 Some("--game") => options.game = path,
                 Some("--user") => options.user = path,
                 Some("--ignore") => options.ignore.push(
@@ -400,15 +404,55 @@ fn check(
     shader_compiler: &str,
 ) -> io::Result<bool> {
     let reference = required(options.reference.as_deref())?;
-    let path = required(options.report.as_deref())?;
-    let mut transcript = BufReader::new(zstd::stream::read::Decoder::new(File::open(reference)?)?);
-    let header = served_check::read_header(&mut transcript)?;
-    let served = served_check::Served::open(recording, folder, content, &header.family)?;
-    if header.revision != served.revision() {
-        return Err(invalid(
-            "The transcript was recorded of another revision of the recording",
-        ));
-    }
+    let report = required(options.report.as_deref())?;
+    // A folder of transcripts is checked whole, each family's report in the report folder.
+    let checked: Vec<(PathBuf, PathBuf)> = if reference.is_dir() {
+        let selected = options
+            .families
+            .as_deref()
+            .map(served_check::families)
+            .transpose()?;
+        std::fs::create_dir_all(report)?;
+        let mut transcripts = Vec::new();
+        for entry in std::fs::read_dir(reference)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|extension| extension == "zst")
+                && let Some(family) = path.file_stem().and_then(|stem| stem.to_str())
+                && selected
+                    .as_ref()
+                    .is_none_or(|selected| selected.iter().any(|name| name == family))
+            {
+                let bytes = std::fs::metadata(&path)?.len();
+                transcripts.push((bytes, path.clone(), report.join(format!("{family}.json"))));
+            }
+        }
+        if let Some(selected) = &selected {
+            let missing: Vec<&str> = selected
+                .iter()
+                .filter(|family| {
+                    !transcripts
+                        .iter()
+                        .any(|(_, path, _): &(u64, PathBuf, PathBuf)| path.file_stem().is_some_and(|stem| stem == family.as_str()))
+                })
+                .map(String::as_str)
+                .collect();
+            if !missing.is_empty() {
+                return Err(invalid(format!("No transcript of {}", missing.join(", "))));
+            }
+        }
+        if transcripts.is_empty() {
+            return Err(invalid(format!("{} holds no transcript", reference.display())));
+        }
+        // The largest first, so the last requests asked are short ones.
+        transcripts.sort_by_key(|(bytes, ..)| std::cmp::Reverse(*bytes));
+        transcripts
+            .into_iter()
+            .map(|(_, transcript, report)| (transcript, report))
+            .collect()
+    } else {
+        vec![(reference.to_owned(), report.to_owned())]
+    };
+    let served = served_check::Served::open_shared(recording, folder, content)?;
     let shape = |branch: &dashboard_base::prepared::served::Branch| {
         (
             branch.id,
@@ -419,49 +463,86 @@ fn check(
         )
     };
     let branches = served.branches(&BTreeMap::new());
-    if !header
-        .branches
-        .iter()
-        .map(shape)
-        .eq(branches.iter().map(shape))
-    {
-        return Err(invalid("The transcript's branches are not the recording's"));
+    let mut families = Vec::new();
+    let mut readers: Vec<Box<dyn io::BufRead + Send>> = Vec::new();
+    let mut success = true;
+    for (path, report) in checked {
+        let mut transcript = BufReader::new(zstd::stream::read::Decoder::new(File::open(&path)?)?);
+        let header = served_check::read_header(&mut transcript)?;
+        let refused = if header.revision != served.revision() {
+            Some("The transcript was recorded of another revision of the recording".to_owned())
+        } else if !header
+            .branches
+            .iter()
+            .map(shape)
+            .eq(branches.iter().map(shape))
+        {
+            Some("The transcript's branches are not the recording's".to_owned())
+        } else {
+            served.require_family(&header.family).err().map(|error| error.to_string())
+        };
+        if let Some(refused) = refused {
+            println!("{}: not checked: {refused}", header.family);
+            success = false;
+            continue;
+        }
+        families.push((header.family, report));
+        readers.push(Box::new(transcript));
+    }
+    let threads = options
+        .threads
+        .map(Ok)
+        .unwrap_or_else(std::thread::available_parallelism)?;
+    if options.scopes.is_some() {
+        replay_frame::cpu::enable();
     }
     let started = Instant::now();
-    let report = served_check::check_ignoring(
-        &mut transcript,
-        &mut |product: &str, params: &Value| served.serve(product, params),
+    let reports = served_check::check_parallel(
+        readers,
+        &|product: &str, params: &Value| served.serve(product, params),
         &options.ignore,
+        threads,
     )?;
-    std::fs::write(
-        path,
-        serde_json::to_vec_pretty(&json!({
-            "shaderCompiler": shader_compiler,
-            "family": &header.family,
-            "seconds": started.elapsed().as_secs_f64(),
-            "report": &report,
-        }))?,
-    )?;
-    for (product, tally) in &report.products {
-        println!(
-            "{product}: {} asked, {} answered, {} pending, {} refused, {} differing",
-            tally.queries, tally.answered, tally.pending, tally.refused, tally.differing
-        );
-        if let Some(first) = &tally.first {
-            println!(
-                "  first at `{}` of {} {}",
-                first.difference.path, first.product, first.params
-            );
+    let mut differing = 0;
+    for ((family, path), (report, seconds)) in families.iter().zip(&reports) {
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "shaderCompiler": shader_compiler,
+                "family": family,
+                "seconds": seconds,
+                "report": report,
+            }))?,
+        )?;
+        for (product, tally) in &report.products {
+            if tally.differing > 0 {
+                println!(
+                    "{family} {product}: {} asked, {} answered, {} pending, {} refused, {} differing",
+                    tally.queries, tally.answered, tally.pending, tally.refused, tally.differing
+                );
+            }
+            if let Some(first) = &tally.first {
+                println!(
+                    "  first at `{}` of {} {}",
+                    first.difference.path, first.product, first.params
+                );
+            }
         }
+        println!(
+            "{family}: {} of {} replies differ, served in {seconds:.1} s",
+            report.differing, report.queries
+        );
+        differing += report.differing;
+    }
+    if let Some(path) = &options.scopes {
+        write_json(path, &replay_frame::cpu::snapshot())?;
     }
     println!(
-        "{}: {} of {} replies differ; the report is {}",
-        header.family,
-        report.differing,
-        report.queries,
-        path.display()
+        "{} families, {differing} differing replies, {:.1} s on {threads} threads",
+        families.len(),
+        started.elapsed().as_secs_f64()
     );
-    Ok(report.differing == 0)
+    Ok(success && differing == 0)
 }
 
 fn run() -> io::Result<bool> {

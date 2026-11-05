@@ -1,18 +1,16 @@
 //! The feed prepared on a columnar recording's segments ([`replay::segments`]). Each segment's
 //! worker reads the changed slots of the feed's tables, the rest from the walk's shared frame
 //! ([`dashboard_world`]), names occurrences at its own hours through an identity history of
-//! its own, plans each pack's reduction and encodes their facts;
-//! the ordered emit holds every state the feed carries, its saved continuation, and advances it
-//! once per hour. Facts whose bytes need the emit's state of an hour but no more (roster
-//! rebuilds, retained observations) are written by threads of their own, in batches, and
-//! appended in order before any flush.
+//! its own, presents their items in the hour's world and encodes their facts; the ordered emit
+//! holds every state the feed carries, its saved continuation, and advances it once per hour.
 
 use super::{
-    Builder, EventFeedKind, Notice, country_groups,
-    decision_roster::Captured,
-    diplomacy, native, nuclear,
-    prepared::{ChargeKey, Draft, Observer, charges_of, strike_facts, strike_types},
+    Builder, EventFeedItem, EventFeedKind, EventFeedRow, HourTexts, Notice, Shown,
+    country_groups, diplomacy, native, nuclear,
+    prepared::{ChargeKey, Draft, Observer, Present, charges_of, presented, strike_facts, strike_types},
+    script_effects,
 };
+use crate::catalogue::Catalogue;
 use crate::{
     metadata::{LinkTags, branch_bounds},
     prepared::frame_changes::FrameChanges,
@@ -28,8 +26,7 @@ use replay::{
 };
 use replay_data::{
     event_feed_rows::{
-        EventFeedCountry, EventFeedCoverage, EventFeedHistoryRow, EventFeedSource,
-        state::{Payloads, PreparedHistory, Written},
+        EventFeedCoverage, EventFeedHistoryRow, EventFeedSource, state::PackHeader,
     },
     format::FormatVersion,
     rows::{
@@ -44,11 +41,11 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     mem::size_of,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 /// The tables the feed and its identity history read.
-pub const TABLES: &[TableId] = &[
+const OWN: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
@@ -61,6 +58,28 @@ pub const TABLES: &[TableId] = &[
     TableId::CountryPowerChanges,
     TableId::PoliticsCaptureCoverage,
 ];
+
+/// The tables an occurrence's text is expanded in at the hour that read it: country names and
+/// every table scripted text reads.
+pub fn presentation() -> &'static [TableId] {
+    static TABLES: std::sync::OnceLock<Vec<TableId>> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut tables: BTreeSet<TableId> =
+            installed_content_country_names::country_names::TABLES.into_iter().collect();
+        tables.extend(crate::scripted_text::TABLES.iter().copied());
+        tables.into_iter().collect()
+    })
+}
+
+/// The tables the feed reads: its own, and those its occurrences are presented in.
+pub fn tables() -> &'static [TableId] {
+    static TABLES: std::sync::OnceLock<Vec<TableId>> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let mut tables: BTreeSet<TableId> = OWN.iter().copied().collect();
+        tables.extend(presentation().iter().copied());
+        tables.into_iter().collect()
+    })
+}
 
 /// The tables the worker reads as rows from the walk's frame. Relations are read by their
 /// changed keys and read owners instead ([`Projector::guaranteed`]).
@@ -92,48 +111,68 @@ fn read_fields() -> io::Result<[u64; TABLE_COUNT]> {
     Ok(masks)
 }
 
-/// What a worker reads of its walk's world: [`FRAME`], each in the fields it reads.
-pub fn needs() -> io::Result<Needs> {
+/// [`FRAME`] as a worker asks its walk's world for it, each table in the fields it reads.
+fn frame_holds() -> io::Result<Vec<(TableId, Hold)>> {
     let masks = read_fields()?;
-    Ok(Needs {
-        frame: FRAME
-            .iter()
-            .map(|&table| {
-                let mask = masks[table.index()];
-                (
-                    table,
-                    if mask == u64::MAX {
-                        Hold::Whole
-                    } else {
-                        Hold::Fields(mask)
-                    },
-                )
-            })
-            .collect(),
-        ..Needs::default()
-    })
+    Ok(FRAME
+        .iter()
+        .map(|&table| {
+            let mask = masks[table.index()];
+            (
+                table,
+                if mask == u64::MAX {
+                    Hold::Whole
+                } else {
+                    Hold::Fields(mask)
+                },
+            )
+        })
+        .collect())
+}
+
+/// [`presentation`] as a worker asks for it, whole.
+fn presentation_holds() -> Vec<(TableId, Hold)> {
+    presentation()
+        .iter()
+        .map(|&table| (table, Hold::Whole))
+        .collect()
+}
+
+/// What a worker reads of its walk's world: [`FRAME`], each in the fields it reads, and the
+/// tables it presents occurrences in.
+pub fn needs() -> io::Result<Needs> {
+    Ok(Needs::union(&[
+        Needs {
+            frame: frame_holds()?,
+            ..Needs::default()
+        },
+        Needs {
+            frame: presentation_holds(),
+            ..Needs::default()
+        },
+    ]))
 }
 
 /// Both sides observe an hour whole; nothing cancels inside one.
 static WHOLE_HOUR: AtomicBool = AtomicBool::new(false);
 
-/// What a worker made of a pack, as a reduction that succeeds leaves it.
+/// What a worker made of a pack.
 enum Facts {
-    /// The occurrences' notices and facts, in order, and the pack's own retained-state
-    /// observation notes.
-    Drafted(Vec<Notice>, Vec<Draft>, native::retained::Observations),
-    /// An occurrence dated before the walk, which the emit names: the pack whole, and the
-    /// hour's proven charges.
+    /// The occurrences' notices and facts, in order.
+    Drafted(Vec<Notice>, Vec<Draft>),
+    /// An occurrence dated before the walk, which the emit names: the pack whole, the hour's
+    /// proven charges, and the items the worker presented in the hour's world, by row.
     Deferred(
         Arc<EventFeedHistoryRow>,
         BTreeMap<ChargeKey, Vec<super::ScriptCost>>,
+        Presented,
     ),
 }
 
 enum Native {
     /// Why the hour has no pack to observe.
     Missing(String),
-    Packet(Arc<PreparedHistory>, Facts),
+    Packet(Arc<PackHeader>, Facts),
 }
 
 /// The hour's strikes: the read's notices, then their facts, or the strikes themselves when
@@ -143,14 +182,16 @@ enum Nuclear {
     Deferred(Vec<Notice>, Vec<NuclearStrikeRow>),
 }
 
+/// Items a worker presented at the hour that read them, by their rows' identities, with what
+/// each showed.
+type Presented = HashMap<String, (EventFeedItem, Shown)>;
+
 /// One hour of a segment, as its worker prepared it.
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// The walk reads every table whole at this hour.
     opens: bool,
-    /// The walk's account of what its packs wrote ([`Written`]) begins at this hour.
-    fresh: bool,
     metrics: Metrics,
     /// The identity tables' changes, for the emit's own frame.
     changes: Vec<(TableId, Arc<Change>)>,
@@ -168,22 +209,27 @@ impl Item for Hour {
         // A pack goes to its supplying hour alone, which keeps it once the projector moves on.
         let native = match &self.native {
             Native::Missing(reason) => reason.capacity(),
-            Native::Packet(pack, Facts::Drafted(notices, drafts, (notes, tags))) => {
-                size_of::<PreparedHistory>()
-                    + pack.heap_bytes()
+            Native::Packet(pack, Facts::Drafted(notices, drafts)) => {
+                size_of::<PackHeader>()
+                    + pack.failure.as_ref().map_or(0, Vec::capacity)
                     + notices_heap(notices)
                     + drafts_heap(drafts)
-                    + notes.capacity() * size_of::<String>()
-                    + tags.len() * size_of::<String>()
-                    + notes
-                        .iter()
-                        .chain(tags)
-                        .map(String::capacity)
-                        .sum::<usize>()
             }
-            Native::Packet(pack, Facts::Deferred(row, proven)) => {
-                size_of::<PreparedHistory>()
-                    + pack.heap_bytes()
+            Native::Packet(pack, Facts::Deferred(row, proven, given)) => {
+                given.len() * size_of::<(String, (EventFeedItem, Shown))>()
+                    + given
+                        .iter()
+                        .map(|(id, (item, _))| {
+                            id.capacity()
+                                + [&item.token, &item.name, &item.icon, &item.description]
+                                    .into_iter()
+                                    .flatten()
+                                    .map(String::capacity)
+                                    .sum::<usize>()
+                        })
+                        .sum::<usize>()
+                    + size_of::<PackHeader>()
+                    + pack.failure.as_ref().map_or(0, Vec::capacity)
                     + size_of::<EventFeedHistoryRow>()
                     + replay_data::value::Value::heap_bytes(&**row)
                     + proven
@@ -240,7 +286,7 @@ fn drafts_heap(drafts: &Vec<Draft>) -> usize {
 
 /// A segment's walk: its identity tables' changes, and the identity history and tags it names
 /// countries with from its first hour on.
-pub struct Projector {
+pub struct Projector<'p> {
     format: FormatVersion,
     mode: CaptureMode,
     bounds: BTreeMap<u64, (i32, i32)>,
@@ -248,13 +294,16 @@ pub struct Projector {
     masks: [u64; TABLE_COUNT],
     /// [`FRAME`] as the worker asks the walk's frame for it.
     holds: Vec<(TableId, Hold)>,
-    /// The pack last read, with its supplying hour, and the walk's payloads.
+    /// The tables occurrences are presented in, as the worker asks for them.
+    presenting: Vec<(TableId, Hold)>,
+    /// The recorded content items are presented with; none without the game's content.
+    catalogue: Option<Arc<Catalogue>>,
+    /// The recording an occurrence named before the hour that read it seeks its world in.
+    source: Option<&'p crate::Source>,
+    /// The pack last read, with its supplying hour.
     packet: Option<(i32, Result<Pack, String>)>,
-    payloads: Payloads,
     identities: HistoryScan,
     tags: LinkTags,
-    written: Written,
-    fresh: bool,
     /// The walk's first hour and its branch's bounds.
     first: i32,
     within: (i32, i32),
@@ -266,18 +315,24 @@ pub struct Projector {
     types: BTreeMap<u32, u32>,
 }
 
-impl Projector {
+impl<'p> Projector<'p> {
     pub fn new(replay: &Replay) -> io::Result<Self> {
         let bounds = replay
             .branches
             .iter()
             .map(|start| (start.id, branch_bounds(replay, start)))
             .collect();
-        Self::within(replay, bounds)
+        Self::within(replay, bounds, None, None)
     }
 
-    /// [`Self::new`] of a recording whose branches' first and last hours are `bounds`.
-    pub fn within(replay: &Replay, bounds: BTreeMap<u64, (i32, i32)>) -> io::Result<Self> {
+    /// [`Self::new`] of a recording whose branches' first and last hours are `bounds`,
+    /// presenting items with `catalogue` in `source`'s worlds.
+    pub fn within(
+        replay: &Replay,
+        bounds: BTreeMap<u64, (i32, i32)>,
+        catalogue: Option<Arc<Catalogue>>,
+        source: Option<&'p crate::Source>,
+    ) -> io::Result<Self> {
         let masks = read_fields()?;
         Ok(Self {
             format: replay.format,
@@ -285,13 +340,13 @@ impl Projector {
             bounds,
             shapes: [None; TABLE_COUNT],
             masks,
-            holds: needs()?.frame,
+            holds: frame_holds()?,
+            presenting: presentation_holds(),
+            catalogue,
+            source,
             packet: None,
-            payloads: Payloads::default(),
             identities: HistoryScan::new(false, &[]),
             tags: LinkTags::default(),
-            written: Written::default(),
-            fresh: false,
             first: 0,
             within: (0, 0),
             sent: BTreeSet::new(),
@@ -334,20 +389,16 @@ impl Projector {
                             self.format.version(),
                         )?;
                         let read_hour = row.read_hour;
-                        // Only its supplying hour reduces a pack.
+                        // Only its supplying hour observes a pack.
                         let packet = if read_hour == hour.hour {
-                            PreparedHistory::decoded(&row, &mut self.written, &mut self.payloads)
-                                .map(|prepared| (Arc::new(row), Arc::new(prepared)))
+                            row.validate()
+                                .and_then(|()| PackHeader::of(&row))
+                                .map(|header| (Arc::new(row), Arc::new(header)))
                                 .map_err(|error| error.to_string())
                         } else {
                             replay_data::event_feed_rows::reuse(row.events);
                             Err("The pack was read at another hour.".into())
                         };
-                        if packet.is_err() {
-                            // This hour reduces no pack, so no later plan may count on its writes.
-                            self.written = Written::default();
-                            self.fresh = true;
-                        }
                         Some((read_hour, packet))
                     }
                     _ => None,
@@ -492,8 +543,8 @@ impl Projector {
     }
 }
 
-/// A pack whole, which its worker drafts, and as its emit reduces it.
-type Pack = (Arc<EventFeedHistoryRow>, Arc<PreparedHistory>);
+/// A pack whole, which its worker drafts, and what its emit observes of it.
+type Pack = (Arc<EventFeedHistoryRow>, Arc<PackHeader>);
 
 fn identity_table(table: TableId) -> bool {
     matches!(
@@ -578,15 +629,43 @@ fn charged(kind: EventFeedKind) -> bool {
     )
 }
 
-/// What a worker makes of a pack: its occurrences' notices and facts and its own retained-state
-/// observation notes, named from `first` on, with the `charges` of its hour.
+/// What seeks the world of an occurrence named before the hour that read it, in `source`.
+fn seeking(
+    source: Option<&crate::Source>,
+    branch: u64,
+) -> Option<impl Fn(i32) -> io::Result<replay::container::SeekResult> + '_> {
+    source.map(|source| {
+        move |hour| {
+            dashboard_base::prepared::query::frames::seek(
+                source,
+                branch,
+                hour,
+                presentation(),
+                &WHOLE_HOUR,
+            )
+        }
+    })
+}
+
+/// What a worker makes of a pack: its occurrences' notices and facts, their items presented
+/// by `present`, and its own retained-state observation notes, named from `first` on, with the
+/// `charges` of its hour. A pack the emit names keeps the items presented in its hour's world.
 fn draft(
     pack: &Arc<EventFeedHistoryRow>,
     identities: &HistoryScan,
     first: i32,
     (start, end): (i32, i32),
     charges: impl FnOnce() -> io::Result<BTreeMap<ChargeKey, Vec<super::ScriptCost>>>,
+    present: &mut Present<'_>,
 ) -> io::Result<Facts> {
+    let mut builder = Builder::new(start, end);
+    builder.captured = Some(Vec::new());
+    native::Projection::occurrences(
+        &mut builder,
+        pack,
+        |hour, country| identities.native_tag(hour, country),
+        &WHOLE_HOUR,
+    )?;
     if pack.events.iter().any(|event| event.hour < first) {
         let decided = pack.events.iter().any(|event| {
             matches!(
@@ -595,17 +674,28 @@ fn draft(
             )
         });
         let proven = if decided { charges()? } else { BTreeMap::new() };
-        return Ok(Facts::Deferred(Arc::clone(pack), proven));
+        // Those named at the read are presented here; the emit presents the rest.
+        let mut given = Presented::new();
+        for row in &builder.feed.rows {
+            let Some(index) = row.item else { continue };
+            if row.name_hour != pack.read_hour || !presented(row.kind) {
+                continue;
+            }
+            let mut item = builder
+                .feed
+                .items
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| crate::invalid("Event feed fact item is not the hour's"))?;
+            let script = builder.script_inputs.get(&row.id).cloned().map(|mut script| {
+                script.resolve(|country| identities.native_scope_slot(row.hour, country));
+                script
+            });
+            let shown = present(row, &mut item, script.as_ref())?;
+            given.insert(row.id.clone(), (item, shown));
+        }
+        return Ok(Facts::Deferred(Arc::clone(pack), proven, given));
     }
-    let mut builder = Builder::new(start, end);
-    builder.captured = Some(Vec::new());
-    native::Projection::occurrences(
-        &mut builder,
-        pack,
-        |hour, country| identities.native_tag(hour, country),
-        &mut native::Rosters::new(),
-        &WHOLE_HOUR,
-    )?;
     let mut proven = if builder.feed.rows.iter().any(|row| charged(row.kind)) {
         charges()?
     } else {
@@ -614,15 +704,11 @@ fn draft(
     let drafts = builder.drafts(
         &mut proven,
         |hour, country| identities.native_scope_slot(hour, country),
-        false,
+        present,
     )?;
-    let observations = native::retained::observations(pack, &mut |hour, country| {
-        identities.native_tag(hour, country)
-    });
     Ok(Facts::Drafted(
         builder.captured.take().unwrap_or_default(),
         drafts,
-        observations,
     ))
 }
 
@@ -694,7 +780,7 @@ fn strikes(
     );
     let drafts = facts
         .into_iter()
-        .map(|fact| Draft::new(fact, false))
+        .map(Draft::new)
         .collect::<io::Result<_>>()?;
     Ok(Nuclear::Drafted(
         builder.captured.take().unwrap_or_default(),
@@ -702,7 +788,7 @@ fn strikes(
     ))
 }
 
-impl Operator<World> for Projector {
+impl Operator<World> for Projector<'_> {
     type Output = Hour;
 
     fn start(&mut self, _: Start<'_>, branch: u64, first: i32) -> io::Result<()> {
@@ -713,11 +799,8 @@ impl Operator<World> for Projector {
         self.first = first;
         self.shapes = [None; TABLE_COUNT];
         self.packet = None;
-        self.payloads = Payloads::default();
         self.identities = HistoryScan::new(false, &[]);
         self.tags = LinkTags::default();
-        self.written = Written::default();
-        self.fresh = true;
         self.sent.clear();
         self.guaranteed = None;
         Ok(())
@@ -767,7 +850,7 @@ impl Operator<World> for Projector {
         let packet = self.read_packet(hour)?;
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:frame", None);
-        for &table in TABLES {
+        for &table in OWN {
             self.shapes[table.index()] = Some(columns::status(hour.state, table));
         }
         let opens = hour.opens || hour.starts;
@@ -795,9 +878,35 @@ impl Operator<World> for Projector {
         let format = self.format;
         let native = match packet {
             Ok((row, packet)) => {
-                let drafted = draft(&row, &self.identities, self.first, self.within, || {
-                    charges_at(hour, format)
-                })?;
+                let read = || hour.world.frame_held(hour.state, &self.presenting);
+                let seek = seeking(self.source, hour.branch);
+                let texts = HourTexts::new(hour.hour, &read, seek.as_ref().map(|seek| seek as _));
+                let catalogue = self.catalogue.as_deref();
+                let mut present = |row: &EventFeedRow,
+                                   item: &mut EventFeedItem,
+                                   script: Option<&script_effects::Inputs>| {
+                    let _phase = replay_frame::cpu::scope_phase("ef-w:present");
+                    catalogue.map_or_else(
+                        || Ok(Shown::default()),
+                        |catalogue| {
+                            super::present(
+                                catalogue,
+                                row.kind,
+                                item,
+                                script,
+                                Some((&texts, row.name_hour)),
+                            )
+                        },
+                    )
+                };
+                let drafted = draft(
+                    &row,
+                    &self.identities,
+                    self.first,
+                    self.within,
+                    || charges_at(hour, format),
+                    &mut present,
+                )?;
                 Native::Packet(packet, drafted)
             }
             Err(reason) => Native::Missing(reason),
@@ -826,7 +935,6 @@ impl Operator<World> for Projector {
             branch: hour.branch,
             hour: hour.hour,
             opens,
-            fresh: std::mem::take(&mut self.fresh),
             metrics: measured,
             changes,
             native,
@@ -992,188 +1100,6 @@ impl Counters {
     }
 }
 
-/// The hours the emit's identity history names alike: `since` on, through the last observed.
-#[derive(Clone, Copy, Default)]
-struct Naming {
-    since: Option<i32>,
-    /// The last hour's witnesses were read.
-    read: bool,
-}
-
-impl Naming {
-    /// After the history's step at `hour`: `quiet` whether it named the hour as the hour before,
-    /// `read` whether the hour's witnesses were read. A quiet step after an unread hour names its
-    /// hour anew.
-    fn advance(&mut self, hour: i32, (quiet, read): (bool, bool)) {
-        if !(quiet && self.read) {
-            self.since = Some(hour);
-        }
-        self.read = read;
-    }
-}
-
-/// Each roster owner's target countries with their slots, as last named while the hours from
-/// the first value on are named alike ([`Naming`]).
-type Rostered = HashMap<u32, (i32, Vec<([u32; 3], Option<u32>)>)>;
-
-/// `captured`'s target countries named at `hour`: as its owner's last rebuild named the same
-/// countries, while the hours since are named alike, or each anew.
-fn name_targets(
-    rostered: &mut Rostered,
-    naming: Naming,
-    identities: &HistoryScan,
-    hour: i32,
-    captured: &mut Captured,
-) {
-    let since = naming.since.filter(|since| *since <= hour);
-    if let Some(since) = since
-        && let Some((named, countries)) = rostered.get(&captured.owner)
-        && *named == since
-        && countries.len() == captured.countries.len()
-        && countries
-            .iter()
-            .zip(&captured.countries)
-            .all(|(named, country)| named.0 == country.0)
-    {
-        captured.countries.clone_from(countries);
-        return;
-    }
-    for (country, slot) in &mut captured.countries {
-        let [reference, id, instance] = *country;
-        *slot = identities.native_scope_slot(
-            hour,
-            EventFeedCountry {
-                reference,
-                id,
-                instance,
-            },
-        );
-    }
-    if let Some(since) = since {
-        rostered.insert(captured.owner, (since, captured.countries.clone()));
-    }
-}
-
-/// Facts the writer takes at a time: a few days of roster rebuilds.
-const BATCH: usize = 256;
-/// Batches written at once: past them the emit appends the oldest before sending another.
-const WRITING: usize = 2;
-
-/// A batch of facts with their keys, and what writing it gave: each fact's key, hour and bytes.
-type FactBatch = Vec<(u64, Draft)>;
-type WrittenFacts = io::Result<Vec<(u64, i32, Vec<u8>)>>;
-
-/// Facts whose bytes a thread of their own writes ([`Draft::write`]) while the emit goes on,
-/// appended in their publication's order.
-#[derive(Default)]
-struct Writing {
-    /// Facts held since the last batch went, with their keys.
-    open: FactBatch,
-    /// The thread writing every batch of this preparation in turn, from the first one sent.
-    writer: Option<FactWriter>,
-    /// Batches sent and not yet appended.
-    sent: usize,
-}
-
-/// One thread for a preparation's batches, so a long campaign starts one rather than one a
-/// batch (whose exits strand their heaps' pages).
-struct FactWriter {
-    batches: mpsc::Sender<FactBatch>,
-    written: mpsc::Receiver<WrittenFacts>,
-}
-
-impl FactWriter {
-    fn start() -> io::Result<Self> {
-        let (batches, sent) = mpsc::channel::<FactBatch>();
-        let (done, written) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("event feed facts".into())
-            .spawn(move || {
-                for facts in sent {
-                    let _cpu = replay_frame::cpu::scope("event-feed-facts", None);
-                    let result: WrittenFacts = facts
-                        .into_iter()
-                        .map(|(key, draft)| {
-                            let hour = draft.read_hour();
-                            Ok((key, hour, draft.write()?))
-                        })
-                        .collect();
-                    if done.send(result).is_err() {
-                        break;
-                    }
-                }
-            })?;
-        Ok(Self { batches, written })
-    }
-}
-
-fn panicked() -> io::Error {
-    crate::invalid("An event-feed fact writer panicked")
-}
-
-impl Writing {
-    fn hold(&mut self, facts: FactBatch) {
-        self.open.extend(facts);
-    }
-
-    /// Appends the batches already written, in order, and sends a full batch to be written.
-    fn advance(&mut self, feed: &mut Observer) -> io::Result<()> {
-        while self.sent > 0 {
-            let writer = self.writer.as_ref().ok_or_else(panicked)?;
-            match writer.written.try_recv() {
-                Ok(written) => self.appended(feed, written)?,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return Err(panicked()),
-            }
-        }
-        if self.open.len() >= BATCH {
-            while self.sent >= WRITING {
-                self.append(feed)?;
-            }
-            self.send()?;
-        }
-        Ok(())
-    }
-
-    /// Every fact held, written and appended.
-    fn finish(&mut self, feed: &mut Observer) -> io::Result<()> {
-        if !self.open.is_empty() {
-            self.send()?;
-        }
-        while self.sent > 0 {
-            self.append(feed)?;
-        }
-        Ok(())
-    }
-
-    fn send(&mut self) -> io::Result<()> {
-        let facts = std::mem::take(&mut self.open);
-        if self.writer.is_none() {
-            self.writer = Some(FactWriter::start()?);
-        }
-        let writer = self.writer.as_ref().ok_or_else(panicked)?;
-        writer.batches.send(facts).map_err(|_| panicked())?;
-        self.sent += 1;
-        Ok(())
-    }
-
-    /// Appends the oldest batch sent, once it is written.
-    fn append(&mut self, feed: &mut Observer) -> io::Result<()> {
-        let writer = self.writer.as_ref().ok_or_else(panicked)?;
-        let written = writer.written.recv().map_err(|_| panicked())?;
-        self.appended(feed, written)
-    }
-
-    fn appended(&mut self, feed: &mut Observer, written: WrittenFacts) -> io::Result<()> {
-        self.sent -= 1;
-        let written = written?;
-        for (key, hour, bytes) in written {
-            feed.written(key, hour, bytes)?;
-        }
-        Ok(())
-    }
-}
-
 /// One branch's ordered preparation. It holds every state the feed carries, which is what its
 /// sections save, but for the identity tables last read, the counters' memo, the facts still
 /// being written and what names roster targets alike.
@@ -1185,11 +1111,8 @@ pub struct Prepared {
     bounds: Option<(i32, i32)>,
     counters: Counters,
     types: BTreeMap<u32, u32>,
-    writing: Writing,
-    /// The walk reduced every pack since its account of what they wrote began.
-    sure: bool,
-    naming: Naming,
-    rostered: Rostered,
+    /// The content items of packs the emit names are presented with.
+    catalogue: Option<Arc<Catalogue>>,
 }
 
 impl Prepared {
@@ -1202,10 +1125,18 @@ impl Prepared {
         )
     }
 
-    /// [`Self::new`] of a branch whose first and last hours are `bounds`.
-    pub fn within(replay: &Replay, branch: u64, bounds: (i32, i32)) -> Self {
+    /// [`Self::new`] of a branch whose first and last hours are `bounds`, presenting items
+    /// with `catalogue`.
+    pub fn within(
+        replay: &Replay,
+        branch: u64,
+        bounds: (i32, i32),
+        catalogue: Option<Arc<Catalogue>>,
+    ) -> Self {
         let (identities, feed) = (HistoryScan::new(false, &[]), Observer::default());
-        Self::bounded(replay, branch, Some(bounds), identities, feed)
+        let mut prepared = Self::bounded(replay, branch, Some(bounds), identities, feed);
+        prepared.catalogue = catalogue;
+        prepared
     }
 
     /// The preparation its saved sections continue: the identity history and the feed.
@@ -1244,15 +1175,13 @@ impl Prepared {
             bounds,
             counters: Counters::default(),
             types: strike_types(),
-            writing: Writing::default(),
-            sure: false,
-            naming: Naming::default(),
-            rostered: Rostered::new(),
+            catalogue: None,
         }
     }
 
-    /// One hour, as the row path observes it: the identity history, then the feed.
-    pub fn observe_projected(&mut self, hour: Hour) -> io::Result<()> {
+    /// One hour, as the row path observes it: the identity history, then the feed; occurrences
+    /// named before a walk's first hour are presented in `source`'s worlds.
+    pub fn observe_projected(&mut self, hour: Hour, source: Option<&crate::Source>) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("event-feed-emit", None);
         if self.bounds.is_none() {
             return Err(crate::invalid("Event feed branch is not recorded"));
@@ -1264,10 +1193,7 @@ impl Prepared {
             format,
             counters,
             types,
-            writing,
-            sure,
-            naming,
-            rostered,
+            catalogue,
             ..
         } = self;
         let facts = apply_frame(
@@ -1279,28 +1205,23 @@ impl Prepared {
             *format,
         )?;
         let frame = frame.as_ref().expect("the emit's identity frame");
-        let step = advance_identities(
+        advance_identities(
             identities,
             (hour.hour, hour.opens),
             &hour.changes,
             frame,
             &facts,
         );
-        naming.advance(hour.hour, step);
         counters.note(&hour.changes)?;
         feed.events.through(hour.hour);
-        if hour.fresh {
-            *sure = true;
-        }
         let mut complete = false;
         let read = match hour.native {
             Native::Missing(reason) => Err(crate::invalid(reason)),
-            Native::Packet(packet, facts) => {
-                let pack = packet.header();
+            Native::Packet(pack, facts) => {
                 complete =
                     pack.coverage == EventFeedCoverage::Complete && pack.script_refusals == 0;
-                let naming = (*naming, &mut *rostered);
-                natives(feed, identities, sure, naming, &packet, facts)
+                let presenting = (catalogue.as_deref(), seeking(source, hour.branch));
+                natives(feed, identities, presenting, &pack, facts)
             }
         };
         let complete = complete && read.is_ok();
@@ -1314,7 +1235,7 @@ impl Prepared {
             Vec::new()
         });
         let probe = replay_frame::cpu::scope("ef:publish", None);
-        writing.hold(feed.publish(drafts, hour.hour, complete)?);
+        feed.publish(drafts, hour.hour, complete)?;
         drop(probe);
         let mut changes = country_groups::changes::Scan {
             moments: Vec::new(),
@@ -1358,7 +1279,7 @@ impl Prepared {
                     types,
                 )
                 .into_iter()
-                .map(|fact| Draft::new(fact, false))
+                .map(Draft::new)
                 .collect::<io::Result<_>>()?
             }
         };
@@ -1366,13 +1287,7 @@ impl Prepared {
             feed.publish_one(strike)?;
         }
         feed.end_hour();
-        writing.advance(feed)
-    }
-
-    /// Every fact published so far written and appended, which a flush and a save need.
-    fn settle(&mut self) -> io::Result<()> {
-        let _cpu = replay_frame::cpu::scope("event-feed-settle", None);
-        self.writing.finish(&mut self.feed)
+        Ok(())
     }
 
     pub fn flush(
@@ -1381,13 +1296,11 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.settle()?;
         write_identities(writer, branch, &mut self.identities)?;
         self.feed.flush(writer, branch, cancelled)
     }
 
     pub fn save_state(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        self.settle()?;
         self.counters.settle(&mut self.feed.diplomacy);
         save_feed(writer, branch, &self.feed)
     }
@@ -1427,77 +1340,63 @@ pub(crate) fn save_feed(
     )
 }
 
-/// A pack observed in order, as the row path observes it: its notices and reduction, then its
-/// occurrences' facts, a worker's held to the reduction that succeeded, then its retained state.
-/// `sure` stays only once the reduction is made; roster targets are named through `naming`.
+/// A pack observed in order, as the row path observes it: its notices, then its occurrences'
+/// facts, a worker's as it drafted them.
 fn natives(
     feed: &mut Observer,
     identities: &HistoryScan,
-    sure: &mut bool,
-    (naming, rostered): (Naming, &mut Rostered),
-    packet: &PreparedHistory,
+    (catalogue, seek): (Option<&Catalogue>, Option<impl Fn(i32) -> io::Result<replay::container::SeekResult>>),
+    pack: &PackHeader,
     facts: Facts,
 ) -> io::Result<Vec<Draft>> {
     let _cpu = replay_frame::cpu::scope("event-feed-reduce", None);
-    let pack = packet.header();
-    let walked = std::mem::replace(sure, false);
-    feed.native.admit(packet)?;
     let probe = replay_frame::cpu::scope("ef:follows-notices", None);
     feed.native.follows(pack)?;
     feed.native.notices(&mut feed.diagnostics, pack);
     drop(probe);
-    let probe = replay_frame::cpu::scope("ef:reduce", None);
-    let mut captured = feed.native.reduce(packet, walked)?;
-    *sure = walked;
-    drop(probe);
     let probe = replay_frame::cpu::scope("ef:drafts", None);
-    let mut tag_at = |hour, country| identities.native_tag(hour, country);
-    let slot_at = |hour, country| identities.native_scope_slot(hour, country);
-    let (mut drafts, observations) = match facts {
-        Facts::Drafted(notices, mut drafts, observations) => {
+    let drafts = match facts {
+        Facts::Drafted(notices, drafts) => {
             for notice in notices {
                 notice.apply(&mut feed.diagnostics);
             }
-            for draft in &mut drafts {
-                let Some((sequence, hour)) = draft.held_roster() else {
-                    continue;
-                };
-                let mut rebuilt = captured.remove(&sequence);
-                if let Some(rebuilt) = &mut rebuilt {
-                    name_targets(rostered, naming, identities, hour, rebuilt);
-                }
-                draft.hold(rebuilt);
-            }
-            (drafts, observations)
+            drafts
         }
-        Facts::Deferred(row, mut proven) => {
-            let mut rosters = captured
-                .into_iter()
-                .map(|(sequence, rebuilt)| (sequence, rebuilt.inputs()))
-                .collect();
-            native::Projection::occurrences(
-                &mut feed.diagnostics,
-                &row,
-                &mut tag_at,
-                &mut rosters,
-                &WHOLE_HOUR,
-            )?;
-            let drafts = feed.diagnostics.drafts(&mut proven, slot_at, true)?;
-            (drafts, native::retained::observations(&row, &mut tag_at))
+        Facts::Deferred(row, mut proven, mut given) => {
+            let mut tag_at = |hour, country| identities.native_tag(hour, country);
+            native::Projection::occurrences(&mut feed.diagnostics, &row, &mut tag_at, &WHOLE_HOUR)?;
+            // The worker presented those named at the read in its world; the rest are sought.
+            let unread = || -> io::Result<DecodedFrame> { Err(crate::invalid("The emit holds no world")) };
+            let texts = HourTexts::new(i32::MIN, &unread, seek.as_ref().map(|seek| seek as _));
+            let mut present = |row: &EventFeedRow,
+                               item: &mut EventFeedItem,
+                               script: Option<&script_effects::Inputs>| {
+                if let Some((presented, shown)) = given.remove(&row.id) {
+                    *item = presented;
+                    return Ok(shown);
+                }
+                catalogue.map_or_else(
+                    || Ok(Shown::default()),
+                    |catalogue| {
+                        super::present(
+                            catalogue,
+                            row.kind,
+                            item,
+                            script,
+                            Some((&texts, row.name_hour)),
+                        )
+                    },
+                )
+            };
+            feed.diagnostics.drafts(
+                &mut proven,
+                |hour, country| identities.native_scope_slot(hour, country),
+                &mut present,
+            )?
         }
     };
     drop(probe);
-    let _probe = replay_frame::cpu::scope("ef:retain", None);
     feed.native.settle(pack);
-    let within =
-        (feed.diagnostics.feed.first..=feed.diagnostics.feed.last).contains(&pack.read_hour);
-    if within && let Some(observed) = feed.native.observe(pack, observations, &mut tag_at)? {
-        // The retained observation sorts among the facts by its date and kind, which no
-        // occurrence shares.
-        let observed = Draft::observed(observed);
-        let at = drafts.partition_point(|draft| draft.order() < observed.order());
-        drafts.insert(at, observed);
-    }
     Ok(drafts)
 }
 

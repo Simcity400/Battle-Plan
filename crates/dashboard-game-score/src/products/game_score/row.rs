@@ -672,7 +672,7 @@ fn values_at(
     let (_, row) = reader
         .latest_event(base, hour)?
         .ok_or_else(|| dashboard_core::invalid("Missing score facts"))?;
-    let facts: Facts = serde_json::from_value(row)?;
+    let facts: Facts = serde_json::from_slice(&row)?;
     let mut amounts = Vec::new();
     for index in 0..6 {
         let raw = reader

@@ -56,10 +56,9 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   const categoriesKey = JSON.stringify(CATEGORIES.filter(category => options[category.value] === true).map(category => category.value));
   const categories = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(categoriesKey)), [categoriesKey]);
   const artwork = options.artwork !== false;
-  const observations = options.observations === true;
-  const filter = useMemo<FeedFilter>(() => ({ categories, observations, country: match.matches, firstHour: from, allCountries: !filtered }),
-    [categories, observations, match, from, filtered]);
-  const filterKey = JSON.stringify([categoriesKey, observations, widget.countries, fallback, from]);
+  const filter = useMemo<FeedFilter>(() => ({ categories, country: match.matches, firstHour: from, allCountries: !filtered }),
+    [categories, match, from, filtered]);
+  const filterKey = JSON.stringify([categoriesKey, widget.countries, fallback, from]);
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, parity?.requested);
   const [visible, setVisible] = useState<readonly LogRow<FeedEvent>[]>(NO_ROWS);

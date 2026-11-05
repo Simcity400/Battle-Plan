@@ -223,18 +223,12 @@ fn state_runs_and_events_reuse_unchanged_pages_and_replacements_miss() {
         values.flush(&mut writer, "test", 0, &flag).unwrap();
         writer.commit().unwrap();
         let before = BLOB_DECODES.get();
-        let parses = EVENT_PARSES.get();
         let scope = cache_scope(Some(&held));
         let actual = read();
         assert_eq!(
             BLOB_DECODES.get() - before,
             1,
             "decoded a settled batch again"
-        );
-        assert_eq!(
-            EVENT_PARSES.get() - parses,
-            4,
-            "parsed a settled event again"
         );
         held = scope.finish();
         assert_eq!(

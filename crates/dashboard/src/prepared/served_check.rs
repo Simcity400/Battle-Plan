@@ -534,27 +534,147 @@ pub fn check_ignoring(
     serve: &mut dyn FnMut(&str, &Value) -> Reply,
     ignored: &[Vec<String>],
 ) -> io::Result<Report> {
-    let mut report = Report {
-        ignored: ignored.iter().map(|path| path.join(".")).collect(),
-        patterns: ignored.to_vec(),
-        ..Report::default()
-    };
+    let mut report = Report::ignoring(ignored);
     let mut line = String::new();
-    loop {
+    for index in 0.. {
         line.clear();
         if transcript.read_line(&mut line)? == 0 {
-            return Ok(report);
+            break;
         }
         if line.trim().is_empty() {
             continue;
         }
-        let mut exchange: Exchange = serde_json::from_str(&line)?;
-        let mut candidate = serve(&exchange.product, &exchange.params);
-        if let Some(form) = compared_as(&exchange.product) {
-            exchange.reply = in_form(form, &exchange.reply);
-            candidate = in_form(form, &candidate);
+        let exchange: Exchange = serde_json::from_str(&line)?;
+        let candidate = serve(&exchange.product, &exchange.params);
+        let compared = compare(exchange, candidate, &report.patterns);
+        report.count(index, compared);
+    }
+    Ok(report)
+}
+
+/// [`check_ignoring`] of several transcripts at once, each after its header, their requests asked
+/// `threads` at a time: each transcript's report, and the seconds its requests were served for.
+pub fn check_parallel(
+    transcripts: Vec<Box<dyn BufRead + Send + '_>>,
+    serve: &(dyn Fn(&str, &Value) -> Reply + Sync),
+    ignored: &[Vec<String>],
+    threads: NonZeroUsize,
+) -> io::Result<Vec<(Report, f64)>> {
+    let count = transcripts.len();
+    let reports: Vec<Mutex<(Report, f64)>> = (0..count)
+        .map(|_| Mutex::new((Report::ignoring(ignored), 0.0)))
+        .collect();
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, usize, String)>(threads.get() * 4);
+    let receiver = Mutex::new(receiver);
+    let failed: Mutex<Option<io::Error>> = Mutex::new(None);
+    let stop = AtomicBool::new(false);
+    let fail = |error: io::Error| {
+        failed.lock().unwrap().get_or_insert(error);
+        stop.store(true, Ordering::Relaxed);
+    };
+    std::thread::scope(|scope| -> io::Result<()> {
+        let mut workers = Vec::new();
+        for worker in 0..threads.get() {
+            let (receiver, reports, fail, stop) = (&receiver, &reports, &fail, &stop);
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("served-check-{worker}"))
+                    .spawn_scoped(scope, move || {
+                        loop {
+                            let Ok((transcript, index, line)) = receiver.lock().unwrap().recv()
+                            else {
+                                break;
+                            };
+                            if stop.load(Ordering::Relaxed) {
+                                continue;
+                            }
+                            // A failure stops the reading, but the queue is drained to its end
+                            // so the reader never waits on a worker that is gone.
+                            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                || -> io::Result<()> {
+                                    let exchange: Exchange = serde_json::from_str(&line)?;
+                                    let started = std::time::Instant::now();
+                                    let candidate = serve(&exchange.product, &exchange.params);
+                                    let seconds = started.elapsed().as_secs_f64();
+                                    let compared = compare(exchange, candidate, ignored);
+                                    let mut held = reports[transcript]
+                                        .lock()
+                                        .unwrap_or_else(|error| error.into_inner());
+                                    held.0.count(index, compared);
+                                    held.1 += seconds;
+                                    Ok(())
+                                },
+                            ));
+                            match checked {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => fail(error),
+                                Err(_) => fail(io::Error::other("A served-check request panicked")),
+                            }
+                        }
+                    })?,
+            );
         }
-        report.add(exchange, &candidate);
+        let read = (|| -> io::Result<()> {
+            for (transcript, mut lines) in transcripts.into_iter().enumerate() {
+                for index in 0.. {
+                    if stop.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    let mut line = String::new();
+                    if lines.read_line(&mut line)? == 0 {
+                        break;
+                    }
+                    if !line.trim().is_empty() && sender.send((transcript, index, line)).is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+            Ok(())
+        })();
+        drop(sender);
+        if let Err(error) = read {
+            fail(error);
+        }
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| io::Error::other("A served-check worker panicked"))?;
+        }
+        Ok(())
+    })?;
+    if let Some(error) = failed.into_inner().unwrap() {
+        return Err(error);
+    }
+    Ok(reports
+        .into_iter()
+        .map(|report| report.into_inner().unwrap())
+        .collect())
+}
+
+/// One request compared: what the report counts of it.
+struct Compared {
+    label: String,
+    /// The reference's reply's data: none refused, null pending.
+    reference: Option<bool>,
+    mismatch: Option<Mismatch>,
+}
+
+fn compare(mut exchange: Exchange, mut candidate: Reply, patterns: &[Vec<String>]) -> Compared {
+    if let Some(form) = compared_as(&exchange.product) {
+        exchange.reply = in_form(form, &exchange.reply);
+        candidate = in_form(form, &candidate);
+    }
+    let reference = exchange.reply.data().map(|data| !data.is_null());
+    let difference =
+        difference_ignoring(&exchange.reply, &candidate, &exchange.unordered, patterns);
+    Compared {
+        label: label(&exchange.product, &exchange.params),
+        reference,
+        mismatch: difference.map(|difference| Mismatch {
+            product: exchange.product,
+            params: exchange.params,
+            difference,
+        }),
     }
 }
 
@@ -607,6 +727,9 @@ pub struct Tally {
     pub differing: usize,
     /// Its first request whose replies differ, and where.
     pub first: Option<Mismatch>,
+    /// The transcript line of `first`.
+    #[serde(skip)]
+    first_at: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -639,32 +762,30 @@ pub enum Side {
 }
 
 impl Report {
-    fn add(&mut self, exchange: Exchange, candidate: &Reply) {
-        let tally = self
-            .products
-            .entry(label(&exchange.product, &exchange.params))
-            .or_default();
+    fn ignoring(ignored: &[Vec<String>]) -> Self {
+        Self {
+            ignored: ignored.iter().map(|path| path.join(".")).collect(),
+            patterns: ignored.to_vec(),
+            ..Self::default()
+        }
+    }
+
+    /// Counts the request at transcript line `index`, in any order.
+    fn count(&mut self, index: usize, compared: Compared) {
+        let tally = self.products.entry(compared.label).or_default();
         self.queries += 1;
         tally.queries += 1;
-        match exchange.reply.data() {
+        match compared.reference {
             None => tally.refused += 1,
-            Some(Value::Null) => tally.pending += 1,
-            Some(_) => tally.answered += 1,
+            Some(false) => tally.pending += 1,
+            Some(true) => tally.answered += 1,
         }
-        if let Some(difference) = difference_ignoring(
-            &exchange.reply,
-            candidate,
-            &exchange.unordered,
-            &self.patterns,
-        ) {
+        if let Some(mismatch) = compared.mismatch {
             self.differing += 1;
             tally.differing += 1;
-            if tally.first.is_none() {
-                tally.first = Some(Mismatch {
-                    product: exchange.product,
-                    params: exchange.params,
-                    difference,
-                });
+            if tally.first.is_none() || index < tally.first_at {
+                tally.first = Some(mismatch);
+                tally.first_at = index;
             }
         }
     }
@@ -1119,6 +1240,7 @@ impl Served {
             params: params.clone(),
         };
         let cancelled = AtomicBool::new(false);
+        let _scope = replay_frame::cpu::scope_named("query", product);
         let routed = crate::products::find(product).filter(|_| !super::query::answers(product));
         let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match routed {
             // The product's own route, as the service asks it.

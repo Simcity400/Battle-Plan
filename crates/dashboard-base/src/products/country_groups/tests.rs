@@ -3107,7 +3107,7 @@ fn group_membership_change_reads_deferred_unchanged_faction_name() {
             .collect::<Vec<_>>()
     );
     assert_eq!(actual.rows.len(), 1);
-    assert_eq!(actual.rows[0].row["name"]["Ok"], "Pact");
+    assert_eq!(actual.rows[0].value()["name"]["Ok"], "Pact");
 }
 
 #[test]

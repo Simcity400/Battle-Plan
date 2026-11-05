@@ -384,7 +384,7 @@ impl Prepared {
                 })?;
                 self.builder.seen_completions.insert(
                     (row.owner, row.sequence),
-                    serde_json::from_value(reference)?,
+                    serde_json::from_slice(&reference)?,
                 );
                 continue;
             }
@@ -400,7 +400,7 @@ impl Prepared {
                 let Some(row) = page.rows.into_iter().next() else {
                     return Err(dashboard_core::invalid("Missing espionage instance event"));
                 };
-                let id: String = serde_json::from_value(row.row)?;
+                let id: String = serde_json::from_slice(&row.row)?;
                 let episode = *self
                     .keys
                     .get(&episode_key(&id))
@@ -408,7 +408,7 @@ impl Prepared {
                 let (_, row) = reader.latest_event(episode, frame.hour)?.ok_or_else(|| {
                     dashboard_core::invalid("Missing espionage episode continuation")
                 })?;
-                let candidate: Candidate = serde_json::from_value(row)?;
+                let candidate: Candidate = serde_json::from_slice(&row)?;
                 if candidate
                     .operation
                     .end

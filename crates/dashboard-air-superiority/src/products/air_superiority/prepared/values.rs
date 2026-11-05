@@ -268,7 +268,7 @@ struct Operands {
 /// A key's latest event through an hour: the one already parsed, or its row to parse.
 enum Latest {
     Parsed,
-    Row(u64, serde_json::Value),
+    Row(u64, Vec<u8>),
 }
 
 impl Operands {
@@ -290,10 +290,10 @@ impl Operands {
             "Prepared air auxiliary operands are missing",
         )?;
         if let Latest::Row(count, row) = scores {
-            self.scores = Some((count, serde_json::from_value(row)?));
+            self.scores = Some((count, serde_json::from_slice(&row)?));
         }
         if let Latest::Row(count, row) = auxiliary {
-            self.auxiliary = Some((count, serde_json::from_value(row)?));
+            self.auxiliary = Some((count, serde_json::from_slice(&row)?));
         }
         if let Latest::Row(count, row) = latest(
             &self.theatre_read,
@@ -302,7 +302,7 @@ impl Operands {
             hour,
             "Prepared air theatre read is missing",
         )? {
-            self.theatre_read = Some((count, serde_json::from_value(row)?));
+            self.theatre_read = Some((count, serde_json::from_slice(&row)?));
         }
         let (Some((_, scores)), Some((_, auxiliary)), Some((_, read))) =
             (&self.scores, &self.auxiliary, &self.theatre_read)

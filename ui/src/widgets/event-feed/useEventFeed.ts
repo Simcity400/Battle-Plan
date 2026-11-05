@@ -28,7 +28,7 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
   const request = (cursor: string | null, lastHour: number | null, pageSize = PAGE_SIZE) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed',
     params: { branchId: track!.branch.id, firstHour: filter.firstHour, lastHour,
-      categories: [...filter.categories], observations: filter.observations === true, cursor, pageSize } });
+      categories: [...filter.categories], cursor, pageSize } });
   const first = useFollowedProduct<PreparedFeedPage>(runtime.client, track && hour !== null ? request(null, hour, FIRST_PAGE_SIZE) : null, ['lastHour'], active, validateEventFeedPage, track?.source);
   // The page chain follows the hour the first page answers; rows still stop at `hour`.
   const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;

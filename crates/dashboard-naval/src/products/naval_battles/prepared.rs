@@ -857,12 +857,12 @@ pub fn query(
             )?;
             let first = index
                 .latest_event(0, params.first_hour)?
-                .map(|(_, value)| serde_json::from_value::<u64>(value))
+                .map(|(_, value)| serde_json::from_slice::<u64>(&value))
                 .transpose()?
                 .unwrap_or(0);
             let last = index
                 .latest_event(0, params.last_hour)?
-                .map(|(_, value)| serde_json::from_value::<u64>(value))
+                .map(|(_, value)| serde_json::from_slice::<u64>(&value))
                 .transpose()?
                 .unwrap_or(0);
             for index in first..=last {
@@ -963,7 +963,7 @@ fn details_query(
         let fleets = if let Some((combat, hour)) = roster {
             match fleet_reader.latest_event(combat, hour)? {
                 Some((_, value)) => {
-                    let read: FleetRead = serde_json::from_value(value)?;
+                    let read: FleetRead = serde_json::from_slice(&value)?;
                     if read.province == episode.province {
                         refused.merge(&read.refused);
                         read.fleets

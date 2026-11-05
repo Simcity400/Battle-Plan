@@ -421,7 +421,7 @@ impl Prepared {
                         .versions
                         .entry(id)
                         .or_default()
-                        .push(serde_json::from_value(row.row)?);
+                        .push(serde_json::from_slice(&row.row)?);
                 }
             }
             let Some(next) = page.cursor else {

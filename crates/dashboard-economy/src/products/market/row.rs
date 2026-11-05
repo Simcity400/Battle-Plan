@@ -485,7 +485,7 @@ impl Read for Published<'_, Field, Extra> {
             .into_iter()
             .next()
             .ok_or_else(|| invalid("A market occurrence chain is shorter than its count"))?;
-        let (sequence, hour, payload): (u64, i32, Value) = serde_json::from_value(row.row)?;
+        let (sequence, hour, payload): (u64, i32, Value) = serde_json::from_slice(&row.row)?;
         let payload = if index {
             Payload::Position(serde_json::from_value(payload)?)
         } else {

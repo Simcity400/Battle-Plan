@@ -544,7 +544,7 @@ pub struct OwnRefusals {
 }
 
 impl OwnRefusals {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.texts.is_empty()
             && self.readers.is_empty()
             && self.fallbacks.is_empty()

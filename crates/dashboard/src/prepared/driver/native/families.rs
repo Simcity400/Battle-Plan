@@ -1183,8 +1183,11 @@ impl Native for Leaders<'_> {
 
 struct Feed<'p> {
     replay: &'p Replay,
+    source: &'p crate::Source,
     /// Each branch's first and last hours, gaps included.
     bounds: BTreeMap<u64, (i32, i32)>,
+    /// The recorded content items are presented with; none without the game's content.
+    catalogue: Option<Arc<Catalogue>>,
 }
 
 fn feed<'p>(
@@ -1196,19 +1199,21 @@ fn feed<'p>(
     let bounds = content.extents.iter();
     let native = Feed {
         replay: content.source.replay_ref(),
+        source: content.source,
         bounds: bounds
             .map(|(branch, extent)| (branch, extent.bounds))
             .collect(),
+        catalogue: content.factions()?.clone(),
     };
     bound(id, native, stage, taken)
 }
 
-impl Native for Feed<'_> {
-    type Operator = event_feed::Projector;
+impl<'p> Native for Feed<'p> {
+    type Operator = event_feed::Projector<'p>;
     type Branch = Box<event_feed::Prepared>;
 
     fn tables(&self) -> &'static [TableId] {
-        event_feed::TABLES
+        event_feed::tables()
     }
 
     fn needs(&self) -> io::Result<Needs> {
@@ -1216,7 +1221,12 @@ impl Native for Feed<'_> {
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        event_feed::Projector::within(self.replay, self.bounds.clone())
+        event_feed::Projector::within(
+            self.replay,
+            self.bounds.clone(),
+            self.catalogue.clone(),
+            Some(self.source),
+        )
     }
 
     fn branch(&self, branch: u64, _: i32) -> io::Result<Self::Branch> {
@@ -1230,6 +1240,7 @@ impl Native for Feed<'_> {
             self.replay,
             branch,
             bounds,
+            self.catalogue.clone(),
         )))
     }
 
@@ -1240,7 +1251,7 @@ impl Native for Feed<'_> {
         _: u64,
         hour: event_feed::Hour,
     ) -> io::Result<()> {
-        state.observe_projected(hour)
+        state.observe_projected(hour, Some(self.source))
     }
 
     fn flush(

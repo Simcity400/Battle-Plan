@@ -1473,7 +1473,7 @@ fn sampled_events(
     let mut samples = BTreeMap::new();
     for hour in hours {
         if let Some((_, row)) = reader.latest_event(actor, hour)? {
-            let point: LossPoint = serde_json::from_value(row)?;
+            let point: LossPoint = serde_json::from_slice(&row)?;
             let value = point
                 .total_raw
                 .parse::<i128>()
@@ -1718,7 +1718,7 @@ fn read_scanned(
             ));
         }
         for row in page.rows {
-            let ship: ShipLoss = serde_json::from_value(row.row)?;
+            let ship: ShipLoss = serde_json::from_slice(&row.row)?;
             let delta = ship
                 .delta_raw
                 .parse::<i128>()
@@ -1893,7 +1893,7 @@ pub fn series_query(
                     ));
                 }
                 for row in page.rows {
-                    let ship: ShipLoss = serde_json::from_value(row.row)?;
+                    let ship: ShipLoss = serde_json::from_slice(&row.row)?;
                     if wanted.as_ref().is_some_and(|leaves| {
                         !leaves.contains(&(LossSource::SunkShips, ship.variant))
                     }) {
@@ -1937,7 +1937,7 @@ pub fn series_query(
             let page = reader.events(&actors, from, to, cursor, size)?;
             Ok(
                 json!({"firstOrdinal":page.first.to_string(), "total":page.total.to_string(), "cursor":page.cursor.map(|cursor| cursor.to_string()),
-                "rows": page.rows.into_iter().map(|row| json!({"key":row.key.to_string(), "hour":row.hour, "ordinal":row.ordinal.to_string(), "row":row.row})).collect::<Vec<_>>()}),
+                "rows": page.rows.into_iter().map(|row| Ok::<_, io::Error>(json!({"key":row.key.to_string(), "hour":row.hour, "ordinal":row.ordinal.to_string(), "row":serde_json::from_slice::<serde_json::Value>(&row.row)?}))).collect::<io::Result<Vec<_>>>()?}),
             )
         }
         "events-clusters" => {

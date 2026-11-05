@@ -586,6 +586,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // The event-choice and decision lists read the feed's own facts alone.
         gates: &["event-choices", "decisions"],
         sections: &["event-feed"],
+        // 2: facts presented in the walk, stored MessagePack behind their opener; recorder
+        // observations removed.
+        version: 2,
         ..family("event_feed")
     },
     Descriptor {

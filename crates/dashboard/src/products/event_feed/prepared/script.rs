@@ -202,16 +202,11 @@ fn edge(fact: &Fact) -> Operands {
 }
 
 fn decode(row: DatedRow) -> io::Result<Fact> {
-    Ok(serde_json::from_value(row.row)?)
+    decode_fact(&row.row)
 }
 
 fn fact_at(reader: &mut Reader<'_>, (key, ordinal): FactRef) -> io::Result<Fact> {
-    let mut page = reader.events(&[key], i32::MIN, i32::MAX, ordinal, 1)?;
-    decode(
-        page.rows
-            .pop()
-            .ok_or_else(|| crate::invalid("Prepared feed fact reference is missing"))?,
-    )
+    decode_fact(&reader.event_raw(key, ordinal)?.1)
 }
 
 /// The `limit` newest facts of `kinds` dated within `first..=live` and read
@@ -386,6 +381,7 @@ pub(crate) fn query(
     let edges_section = super::entries_section(branch);
     // The page and every card's joined facts, from one publication of the
     // feed's facts and entries.
+    let phase = replay_frame::cpu::scope_phase("sc-q:compose");
     let composed = entries::compose(store, key, &edges_section, cancelled, |links| {
         let Some(catalogue_facts) = catalogue_of(source, store, key, branch)? else {
             return Ok(None);
@@ -420,6 +416,7 @@ pub(crate) fn query(
         links.agrees(&facts_section)?;
         Ok(Some((catalogue_facts, held, joined)))
     })?;
+    drop(phase);
     let Some((catalogue_facts, held, mut joined)) = composed.flatten() else {
         return Ok(None);
     };
@@ -463,63 +460,25 @@ pub(crate) fn query(
         let opens = openers.contains(&fact.row.kind);
         (!joins && (opens || adapter.continuing().contains(&fact.row.kind))).then_some(opens)
     };
-    let texts = ScopedTexts::new(source, branch, cancelled);
-    if let Some(catalogue) = catalogue.as_deref() {
-        texts.prefetch(held.iter().filter_map(|(_, fact)| {
-            (fact.row.item.is_some() && fact.script.is_some() && super::super::names_decision(fact.row.kind))
-                .then_some(fact.row.name_hour)
-        }));
-        let mut presented = Vec::new();
-        for (placed, fact) in &held {
-            let Some(opens) = shown(fact) else {
-                continue;
-            };
-            presented.push(fact);
-            if opens {
-                presented.extend(
-                    joined
-                        .get(&(placed.key, placed.ordinal))
-                        .into_iter()
-                        .flatten()
-                        .filter(|fact| fact.row.read_hour <= live),
-                );
-            }
-        }
-        super::super::prefetch_script_events(
-            catalogue,
-            presented.into_iter().filter_map(|fact| {
-                Some((fact.row.kind, fact.item.as_ref().filter(|_| fact.row.item.is_some())?))
-            }),
-            cancelled,
-        );
-    }
-    let present = |builder: &mut Builder, fact: Fact| -> io::Result<ScriptEdge> {
+    let present = |builder: &mut Builder, mut fact: Fact| -> io::Result<ScriptEdge> {
         let (option, lifecycle, days, costs) = edge(&fact);
-        let mut row = fact.row;
-        if row.item.is_some() {
-            let mut item = fact
+        if fact.row.item.is_some() {
+            let item = fact
                 .item
+                .take()
                 .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?;
-            if let Some(catalogue) = catalogue.as_deref() {
-                super::super::script_presentation(
-                    builder,
-                    catalogue,
-                    row.kind,
-                    &mut item,
-                    fact.script.as_ref(),
-                    Some((&texts, row.name_hour)),
-                )?;
-            }
-            row.item = Some(builder.item(item)?);
+            std::mem::take(&mut fact.shown).show(builder);
+            fact.row.item = Some(builder.item(item)?);
         }
         Ok(ScriptEdge {
-            row,
+            row: fact.row,
             option,
             lifecycle,
             days,
             costs,
         })
     };
+    let phase = replay_frame::cpu::scope_phase("sc-q:present");
     let mut occurrences = Vec::new();
     for (placed, fact) in held.into_iter().rev() {
         check_cancel(cancelled)?;
@@ -542,6 +501,7 @@ pub(crate) fn query(
             edges,
         });
     }
+    drop(phase);
     if let Some(catalogue) = catalogue {
         for (reason, count) in catalogue.refusal_entries() {
             let count = count

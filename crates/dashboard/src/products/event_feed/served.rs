@@ -1,5 +1,5 @@
 //! The event feed's served replies: every page of the branch's feed through
-//! its end, with and without observations and in small pages, each category's
+//! its end, and in small pages, each category's
 //! first page, first pages from each hour and over each span; and the event
 //! choices' and decisions' pages likewise.
 
@@ -28,12 +28,11 @@ fn feed_page(
     branch: &str,
     (first, last): (Option<i32>, i32),
     categories: &[&str],
-    observations: bool,
     size: u32,
 ) -> Value {
     json!({
         "branchId": branch, "firstHour": first, "lastHour": last, "categories": categories,
-        "observations": observations, "cursor": null, "pageSize": size,
+        "cursor": null, "pageSize": size,
     })
 }
 
@@ -44,37 +43,31 @@ fn feed(ask: &mut dyn Ask) -> io::Result<()> {
         served::pages(
             ask,
             "event-feed",
-            feed_page(&id, whole, &CATEGORIES, false, PAGE),
+            feed_page(&id, whole, &CATEGORIES, PAGE),
             NEXT,
         )?;
         served::pages(
             ask,
             "event-feed",
-            feed_page(&id, whole, &CATEGORIES, true, PAGE),
-            NEXT,
-        )?;
-        served::pages(
-            ask,
-            "event-feed",
-            feed_page(&id, whole, &CATEGORIES, false, SMALL),
+            feed_page(&id, whole, &CATEGORIES, SMALL),
             NEXT,
         )?;
         for category in CATEGORIES {
             ask.ask(
                 "event-feed",
-                feed_page(&id, whole, &[category], false, PAGE),
+                feed_page(&id, whole, &[category], PAGE),
             )?;
         }
         for hour in branch.hours() {
             ask.ask(
                 "event-feed",
-                feed_page(&id, (None, hour), &CATEGORIES, false, PAGE),
+                feed_page(&id, (None, hour), &CATEGORIES, PAGE),
             )?;
         }
         for (from, to) in branch.spans() {
             ask.ask(
                 "event-feed",
-                feed_page(&id, (Some(from), to), &CATEGORIES, false, PAGE),
+                feed_page(&id, (Some(from), to), &CATEGORIES, PAGE),
             )?;
         }
     }

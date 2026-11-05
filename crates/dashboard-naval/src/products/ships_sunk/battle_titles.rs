@@ -955,7 +955,7 @@ pub fn prepared_query(
             .into_iter()
             .next()
             .ok_or_else(|| dashboard_core::invalid("Unknown ships sunk title row"))?;
-        let title: PreparedTitle = serde_json::from_value(value.row)?;
+        let title: PreparedTitle = serde_json::from_slice(&value.row)?;
         if let Some(error) = title.error {
             return Err(dashboard_core::invalid(error));
         }
@@ -977,7 +977,7 @@ pub fn prepared_query(
     }
     for hour in geography_reads {
         if let Some((_, value)) = notes.latest_event(0, hour)? {
-            let notes: TitleWarnings = serde_json::from_value(value)?;
+            let notes: TitleWarnings = serde_json::from_slice(&value)?;
             // The old builder reports geography once per request, across read hours.
             if !geography_written {
                 reply.warnings.extend(notes.geography);

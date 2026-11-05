@@ -1081,7 +1081,7 @@ fn theatre_membership(
         let (_, value) = events
             .latest_event(1, run.first_hour)?
             .ok_or_else(|| invalid("Prepared theatre operands are missing"))?;
-        let mut auxiliary: scan::Auxiliary = serde_json::from_value(value)?;
+        let mut auxiliary: scan::Auxiliary = serde_json::from_slice(&value)?;
         let mut at = run.first_hour;
         let mut cursor = 0;
         loop {
@@ -1093,7 +1093,7 @@ fn theatre_membership(
                         .push((at, row.hour - 1, Arc::new(auxiliary)));
                 }
                 at = row.hour;
-                auxiliary = serde_json::from_value(row.row)?;
+                auxiliary = serde_json::from_slice(&row.row)?;
             }
             let Some(next) = page.cursor else {
                 break;
