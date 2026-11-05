@@ -1487,3 +1487,56 @@ fn committing_fills_grows_nothing_once_warm() {
         }
     }
 }
+
+/// `held` after `edits`, as a reader applies a PATCH.
+fn patched<T: Copy>(held: &[T], edits: &[(u32, u32, u32)], new: &[T]) -> Vec<T> {
+    let (mut out, mut from, mut item) = (Vec::new(), 0, 0);
+    // A PATCH's inserted items are the new cell's, in order.
+    let mut inserted = Vec::new();
+    let mut at = 0;
+    for &(skip, _, added) in edits {
+        at += skip as usize;
+        inserted.extend_from_slice(&new[at..at + added as usize]);
+        at += added as usize;
+    }
+    for &(skip, removed, added) in edits {
+        out.extend_from_slice(&held[from..from + skip as usize]);
+        from += (skip + removed) as usize;
+        out.extend_from_slice(&inserted[item..item + added as usize]);
+        item += added as usize;
+    }
+    out.extend_from_slice(&held[from..]);
+    out
+}
+
+fn records(count: u32, first: u32) -> Vec<u8> {
+    let mut bytes = count.to_le_bytes().to_vec();
+    for record in first..first + count {
+        bytes.extend((0..24u32).flat_map(|word| (record * 31 + word).to_le_bytes()));
+    }
+    bytes
+}
+
+#[test]
+fn a_list_behind_a_changed_count_keeps_its_records() {
+    // Appended, pruned at the front and in the middle: a count first, then records.
+    let held = records(40, 0);
+    let mut pruned = records(30, 10);
+    pruned.splice(4 + 96 * 12..4 + 96 * 14, []);
+    pruned[0] = 28;
+    for new in [records(42, 0), records(40, 1), pruned] {
+        let mut edits = Vec::new();
+        assert!(hunks(&held, &new, 3, |_| 1, &mut edits).unwrap());
+        assert_eq!(patched(&held, &edits, &new), new);
+        let inserted: u32 = edits.iter().map(|edit| edit.2).sum();
+        assert!(inserted <= 4 + 2 * 96, "{edits:?}");
+    }
+    let (held, new): (Vec<u64>, Vec<u64>) = ((0..100).collect(), (3..120).collect());
+    let mut edits = Vec::new();
+    assert!(hunks(&held, &new, 1, varint_len, &mut edits).unwrap());
+    assert_eq!(patched(&held, &edits, &new), new);
+    let (held, new): (Vec<u32>, Vec<u32>) = ((0..100).collect(), (3..120).collect());
+    let mut edits = Vec::new();
+    assert!(hunks(&held, &new, 1, |item| varint_len(item.into()), &mut edits).unwrap());
+    assert_eq!(patched(&held, &edits, &new), new);
+}

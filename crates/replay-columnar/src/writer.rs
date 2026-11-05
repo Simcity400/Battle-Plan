@@ -556,24 +556,40 @@ present!(i32 => OptionalI32, u32 => OptionalU32, i64 => OptionalI64, u64 => Opti
 
 /// A list or opaque column's item type.
 trait Items: Copy + PartialEq {
+    /// The items one [`Matcher`] window holds: eight bytes of them.
+    const PROBE: usize;
     fn cell(items: &[Self]) -> Cell<'_>;
+    /// A window's [`Self::PROBE`] items as one word.
+    fn probe(items: &[Self]) -> u64;
 }
 
 impl Items for u32 {
+    const PROBE: usize = 2;
     fn cell(items: &[Self]) -> Cell<'_> {
         Cell::U32List(items)
+    }
+    fn probe(items: &[Self]) -> u64 {
+        u64::from(items[0]) | u64::from(items[1]) << 32
     }
 }
 
 impl Items for u64 {
+    const PROBE: usize = 1;
     fn cell(items: &[Self]) -> Cell<'_> {
         Cell::U64List(items)
+    }
+    fn probe(items: &[Self]) -> u64 {
+        items[0]
     }
 }
 
 impl Items for u8 {
+    const PROBE: usize = 8;
     fn cell(items: &[Self]) -> Cell<'_> {
         Cell::Opaque(items)
+    }
+    fn probe(items: &[Self]) -> u64 {
+        u64::from_le_bytes(items[..8].try_into().expect("a window of eight bytes"))
     }
 }
 
@@ -764,11 +780,25 @@ fn count(items: usize) -> io::Result<u32> {
     u32::try_from(items).map_err(|_| invalid_static("Cell items exceed 32 bits"))
 }
 
+/// The bytes `hunks` take as a PATCH's edits.
+fn edit_bytes(hunks: &[(u32, u32, u32)]) -> usize {
+    varint_len(hunks.len() as u64)
+        + hunks
+            .iter()
+            .map(|&(skip, removed, added)| {
+                varint_len(skip.into()) + varint_len(removed.into()) + varint_len(added.into())
+            })
+            .sum::<usize>()
+}
+
 /// Appends to `edits` the hunks turning `held` into `new`: equal lengths edit their
 /// differing runs, merged across fewer than `gap` equal items; otherwise one hunk replaces
-/// what lies between the common prefix and suffix. Whether those hunks and the items they
+/// what lies between the common prefix and suffix. When that leaves more than
+/// [`MATCH_FLOOR`] items to insert, [`Matcher`] also looks for the runs of `held` that
+/// `new` keeps elsewhere, such as behind a changed count, and its hunks are kept when
+/// cheaper and at most half `new` whole. Whether the kept hunks and the items they
 /// insert, `bytes` each, are shorter than `new` whole.
-fn hunks<T: Copy + PartialEq>(
+fn hunks<T: Items>(
     held: &[T],
     new: &[T],
     gap: usize,
@@ -786,9 +816,10 @@ fn hunks<T: Copy + PartialEq>(
         .take_while(|(a, b)| a == b)
         .count();
     let start = edits.len();
-    let mut inserted = 0;
+    let (mut inserted, mut added) = (0, 0);
     if held.len() != new.len() {
-        let (removed, added) = (held.len() - prefix - suffix, new.len() - prefix - suffix);
+        let removed = held.len() - prefix - suffix;
+        added = new.len() - prefix - suffix;
         push(edits, (count(prefix)?, count(removed)?, count(added)?))?;
         inserted = items(&new[prefix..prefix + added]);
     } else {
@@ -812,18 +843,128 @@ fn hunks<T: Copy + PartialEq>(
             let edited = count(stop - first)?;
             push(edits, (count(first - kept)?, edited, edited))?;
             inserted += items(&new[first..stop]);
+            added += stop - first;
             (kept, at) = (stop, stop);
         }
     }
-    let hunks = &edits[start..];
-    let edit_bytes = varint_len(hunks.len() as u64)
-        + hunks
-            .iter()
-            .map(|&(skip, removed, added)| {
-                varint_len(skip.into()) + varint_len(removed.into()) + varint_len(added.into())
-            })
-            .sum::<usize>();
-    Ok(edit_bytes + inserted < varint_len(new.len() as u64) + items(new))
+    let mut cost = edit_bytes(&edits[start..]) + inserted;
+    let whole = varint_len(new.len() as u64) + items(new);
+    if added > MATCH_FLOOR {
+        MATCHER.with(|matcher| {
+            let mut matcher = matcher.borrow_mut();
+            let found = matcher.find(held, new, (prefix, suffix), &items)?;
+            // Scattered hunks keeping under half the cell compress worse than the whole cell.
+            if found < cost && found * 2 <= whole {
+                edits.truncate(start);
+                extend(edits, &matcher.edits)?;
+                cost = found;
+            }
+            Ok::<_, io::Error>(())
+        })?;
+    }
+    Ok(cost < whole)
+}
+
+/// Items the cheap hunks may leave to insert before [`Matcher`] looks for moved runs.
+const MATCH_FLOOR: usize = 32;
+
+/// Chain positions a [`Matcher`] compares at one item of `new`.
+const MATCH_PROBES: usize = 8;
+
+const NO_POSITION: u32 = u32::MAX;
+
+thread_local! {
+    static MATCHER: std::cell::RefCell<Matcher> = std::cell::RefCell::default();
+}
+
+/// A greedy linear diff: each window of `new` copies the longest run among the nearest
+/// equal windows of `held` at or past the last copy, as PATCH hunks only move forward.
+#[derive(Default)]
+struct Matcher {
+    heads: Vec<u32>,
+    next: Vec<u32>,
+    edits: Vec<(u32, u32, u32)>,
+}
+
+impl Matcher {
+    /// Leaves in `edits` the hunks turning `held` into `new` around their common `prefix`
+    /// and `suffix` items, and returns the bytes they and their inserted items take.
+    fn find<T: Items>(
+        &mut self,
+        held: &[T],
+        new: &[T],
+        (prefix, suffix): (usize, usize),
+        items: &impl Fn(&[T]) -> usize,
+    ) -> io::Result<usize> {
+        let probe = T::PROBE;
+        let (start, held_end, new_end) = (prefix, held.len() - suffix, new.len() - suffix);
+        self.edits.clear();
+        let windows = (held_end - start + 1).saturating_sub(probe);
+        let bits = windows.next_power_of_two().trailing_zeros().max(4);
+        let bucket = |key: u64| (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - bits)) as usize;
+        self.heads.clear();
+        engine_allocation::resize(&mut self.heads, 1 << bits, NO_POSITION)?;
+        self.next.clear();
+        engine_allocation::resize(&mut self.next, windows, NO_POSITION)?;
+        for at in (start..start + windows).rev() {
+            let head = &mut self.heads[bucket(T::probe(&held[at..at + probe]))];
+            self.next[at - start] = *head;
+            *head = at as u32;
+        }
+        let (mut cursor, mut at, mut unmatched, mut kept, mut inserted) =
+            (start, start, start, prefix, 0);
+        while at + probe <= new_end {
+            let head = &mut self.heads[bucket(T::probe(&new[at..at + probe]))];
+            // Copies only move forward: a position before the last copy never matches again.
+            let mut position = *head;
+            while position != NO_POSITION && (position as usize) < cursor {
+                position = self.next[position as usize - start];
+            }
+            *head = position;
+            let (mut from, mut length) = (0, 0);
+            for _ in 0..MATCH_PROBES {
+                if position == NO_POSITION {
+                    break;
+                }
+                let candidate = position as usize;
+                let run = held[candidate..held_end]
+                    .iter()
+                    .zip(&new[at..new_end])
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                if run > length {
+                    (from, length) = (candidate, run);
+                }
+                position = self.next[candidate - start];
+            }
+            if length < probe {
+                at += 1;
+                continue;
+            }
+            if from != cursor || at != unmatched {
+                push(
+                    &mut self.edits,
+                    (count(kept)?, count(from - cursor)?, count(at - unmatched)?),
+                )?;
+                inserted += items(&new[unmatched..at]);
+                kept = 0;
+            }
+            kept += length;
+            (cursor, at, unmatched) = (from + length, at + length, at + length);
+        }
+        if cursor != held_end || unmatched != new_end {
+            push(
+                &mut self.edits,
+                (
+                    count(kept)?,
+                    count(held_end - cursor)?,
+                    count(new_end - unmatched)?,
+                ),
+            )?;
+            inserted += items(&new[unmatched..new_end]);
+        }
+        Ok(edit_bytes(&self.edits) + inserted)
+    }
 }
 
 impl Pending {
