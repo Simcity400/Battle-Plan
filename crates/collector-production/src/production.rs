@@ -26,7 +26,7 @@ use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
 
 mod variant_parts;
-pub use design_changes::{ColdSetupPart, ColdStorage};
+pub use design_changes::{ColdSetupPart, ColdStorage, SnapshotPart};
 pub use variant_parts::VariantPart;
 
 pub const N: usize = 23;
@@ -540,18 +540,6 @@ impl Variants {
         {
             rows.sort_unstable_by_key(|row| row.identity.id);
         }
-    }
-
-    /// Read variant fields from the current complete registry census.
-    fn capture_state(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        variants: Sources<'_, cequipment_variant::RegistryRow>,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_state_carried(memory, base, variants, hour, force_full, false)
     }
 
     fn capture_state_carried(

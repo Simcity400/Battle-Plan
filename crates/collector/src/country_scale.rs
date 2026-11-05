@@ -824,7 +824,7 @@ fn observe_politics_with_failures(
     let operative_memberships = demand(operatives.outcome)?
         .checked_sub(operatives.refused_rows as usize)
         .ok_or("operative refusal count exceeds demand")?;
-    let missions = engine_native::operative_missions::walk(memory, base, state, &mut [], &mut []);
+    let missions = collector_intel::intel::operative_mission_demand(memory, base, state);
     let operative_missions = demand(missions.outcome)?;
     let strategic =
         engine_intelligence::strategic_operatives::walk(memory, base, state, &mut [], &mut []);

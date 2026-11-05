@@ -4595,9 +4595,7 @@ fn grow_combat_hints(
             continue;
         }
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-        // Only these two packs can grow here. Walking unrelated governance,
-        // doctrine and ship-model heaps cannot change this accounting delta.
-        let (success, added) = frame
+        let success = frame
             .extended
             .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
         refused |= (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
@@ -4607,7 +4605,6 @@ fn grow_combat_hints(
         if success[1] {
             applied[index].naval = hint.naval;
         }
-        shared.pool_bytes.fetch_add(added as u64, Ordering::Relaxed);
         shared.restore_idle_frame_prepared(index);
     }
     refused
@@ -4616,6 +4613,7 @@ fn grow_combat_hints(
 /// Only the sizing side leases idle frames; the spool returns only its own frame.
 fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut BufferCapacities) {
     let live = unsafe { LiveMemory::new() };
+    crate::tick_gate::wait_live();
     let _ = capacities
         .extended
         .combat_progress
@@ -4629,9 +4627,8 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
             check(sizing, shared);
         }
         let idle = unsafe { &mut *shared.frames[idle_index].load(Ordering::Acquire) };
-        let before = idle.allocated_bytes();
         capacities.grow_frame(idle);
-        sizing.account_frame(shared, idle, before);
+        sizing.account_homes(shared);
         shared.restore_idle_frame_prepared(idle_index);
     }
 }
@@ -4710,10 +4707,7 @@ fn spool_status<'a>(
         state: if pinned { "pinned" } else { state },
         session: session.id,
         process_start_time: session.process_start_time,
-        pool_bytes: shared
-            .pool_bytes
-            .load(Ordering::Relaxed)
-            .saturating_add(crate::extended::air_histories::retained_bytes() as u64),
+        pool_bytes: shared.pool_total(),
         pool_buffers: sampling::BUFFERS,
         dropped_frames: shared.dropped.load(Ordering::Relaxed),
         startup_unattributed_callbacks: startup_unknown,
@@ -4844,7 +4838,11 @@ fn spool_loop(
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        let span = phases.span(Phase::Observers);
+        let span = {
+            // The clock's campaign-id length is a live read.
+            let _live = crate::tick_gate::live_reads();
+            phases.span(Phase::Observers)
+        };
         shared
             .prepare_clock_capture(&live)
             .map_err(|_| "clock preparation allocation failed")?;
@@ -4877,8 +4875,6 @@ fn spool_loop(
                     .map(|clock| clock.play_session_started_at),
                 failed_hour: frame.clock.as_ref().map(|clock| clock.hour),
             });
-            // Only this frame is owned across conversion; shared CountryIntel uses separate accounting.
-            let before_bytes = frame.allocated_bytes();
             if !shared.roster_ready.load(Ordering::Acquire) {
                 // A readable entry clock publishes the roster before its
                 // buffer. These early callbacks have no attributable
@@ -5010,7 +5006,7 @@ fn spool_loop(
             }
             sizing
                 .sizing
-                .recycle_frame(shared, index, before_bytes, &mut work);
+                .recycle_frame(shared, index, &mut work);
             work.buffer_service
                 .record_ticks(sampling::qpc() - service_started, shared.frequency);
             span.finish();
@@ -5039,6 +5035,10 @@ fn spool_loop(
                 last_warning = Some(error_reason(error, "command capture publication failed"));
             }
             history_requests.poll(&mut processor, &shared.history_frames);
+            // A sustained backlog must not starve sizing, the flush or the status.
+            if reported.elapsed() >= Duration::from_secs(1) {
+                break;
+            }
         }
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -5397,17 +5397,9 @@ impl SizingShared {
         });
     }
 
-    fn account_frame(&self, shared: &Shared, frame: &sampling::Captured, before: usize) {
-        let after = frame.allocated_bytes();
-        if after >= before {
-            shared
-                .pool_bytes
-                .fetch_add((after - before) as u64, Ordering::Relaxed);
-        } else {
-            shared
-                .pool_bytes
-                .fetch_sub((before - after) as u64, Ordering::Relaxed);
-        }
+    /// Frames are measured whenever their holder prepares them for reuse
+    /// ([`Shared::prepare_frame_for_reuse`]); this charges only the shared homes.
+    fn account_homes(&self, shared: &Shared) {
         // Homes are charged at their high-water marks; a stale or empty observation
         // never lowers one.
         for (bytes, accounted) in [
@@ -5434,30 +5426,25 @@ impl SizingShared {
     }
 
     /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.
-    fn recycle_frame(
-        &self,
-        shared: &Shared,
-        index: usize,
-        before_frame_bytes: usize,
-        work: &mut WorkerWork,
-    ) {
+    fn recycle_frame(&self, shared: &Shared, index: usize, work: &mut WorkerWork) {
         let mut proposal = *work.recycle_capacities(self, shared.frequency);
         let live = unsafe { LiveMemory::new() };
+        crate::tick_gate::wait_live();
         let _ = proposal
             .extended
             .combat_progress
             .presize(&live, shared.base);
-        let mut before = before_frame_bytes;
         loop {
             {
                 let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
                 proposal.grow_frame(frame);
-                self.account_frame(shared, frame, before);
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     shared.offer_country_cache(required_cells);
                 }
             }
+            // Measures the whole frame after growth, reset and clock preparation.
             shared.prepare_frame_for_reuse(index);
+            self.account_homes(shared);
             #[cfg(test)]
             if let Some(check) = lock(&self.before_recycle_publish).take() {
                 check(self, shared);
@@ -5470,7 +5457,6 @@ impl SizingShared {
             }
             proposal = *capacities;
             drop(capacities);
-            before = unsafe { &*shared.frames[index].load(Ordering::Acquire) }.allocated_bytes();
         }
     }
 
@@ -5685,6 +5671,8 @@ fn sizing_pass(
     phases: &'static crate::spool_phases::Totals,
     background: bool,
 ) -> Result<(), &'static str> {
+    // Every sizing observation reads live game memory: its spans wait out open ticks too.
+    let _live_reads = crate::tick_gate::live_reads();
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
@@ -7667,11 +7655,9 @@ mod tests {
         let (shared, sizing) = sizing_fixture();
         let mut work = WorkerWork::new();
         let returning = shared.take_frame(&mut 0).unwrap();
-        let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
-        let before = frame.allocated_bytes();
         sizing
             .sizing
-            .recycle_frame(&shared, returning, before, &mut work);
+            .recycle_frame(&shared, returning, &mut work);
         let recycle_calls =
             serde_json::to_value(work.recycle_capacities_wait.status()).unwrap()["calls"]
                 .as_u64()
@@ -7886,7 +7872,6 @@ mod tests {
             len: 0,
             unread_rows: factions as u32,
         };
-        let before = frame.allocated_bytes();
         let checked = Arc::new(AtomicBool::new(false));
         let check_seen = Arc::clone(&checked);
         *lock(&sizing.before_recycle_publish) = Some(Box::new(move |sizing, shared| {
@@ -7909,7 +7894,7 @@ mod tests {
             });
             check_seen.store(true, Ordering::Relaxed);
         }));
-        sizing.recycle_frame(&shared, returning, before, &mut WorkerWork::new());
+        sizing.recycle_frame(&shared, returning, &mut WorkerWork::new());
         assert!(checked.load(Ordering::Relaxed));
         assert!(!sizing.hint_demand.load(Ordering::Acquire));
         let capacities = *lock(&sizing.capacities);
@@ -7949,12 +7934,12 @@ mod tests {
         *lock(&sizing.before_idle_frame_growth) = Some(Box::new(|_, _| {
             panic!("sizing leased the game's last free frame for growth");
         }));
-        let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
+        let pool_before = shared.pool_owned();
         let waits = shared.buffer_wait_calls.load(Ordering::Relaxed);
         assert_eq!(shared.free.len(), 1);
         sizing.grow_idle(&shared);
         assert_eq!(shared.free.len(), 1);
-        assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), pool_before);
+        assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(
             unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes(),
             before
@@ -7963,7 +7948,7 @@ mod tests {
         assert_eq!(shared.take_frame(&mut wait), Some(idle));
         assert_eq!(wait, 0);
         assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
-        sizing.recycle_frame(&shared, idle, before, &mut WorkerWork::new());
+        sizing.recycle_frame(&shared, idle, &mut WorkerWork::new());
         assert!(
             unsafe { &*shared.frames[idle].load(Ordering::Acquire) }
                 .wars
@@ -7981,8 +7966,6 @@ mod tests {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let returning = shared.take_frame(&mut 0).unwrap();
-        let before =
-            unsafe { &*shared.frames[returning].load(Ordering::Acquire) }.allocated_bytes();
         let wars = lock(&sizing.capacities).core[5] + 8;
         sizing.raise(&shared, |capacities| capacities.core[5] = wars);
         let (leased, lease_seen) = std::sync::mpsc::channel();
@@ -8007,7 +7990,7 @@ mod tests {
                 })
                 .collect();
             assert!(shared.free.is_empty());
-            sizing.recycle_frame(&shared, returning, before, &mut WorkerWork::new());
+            sizing.recycle_frame(&shared, returning, &mut WorkerWork::new());
             let mut wait = u64::MAX;
             assert_eq!(shared.take_frame(&mut wait), Some(returning));
             assert_eq!(wait, 0);
@@ -8036,7 +8019,7 @@ mod tests {
                 + shared.country_intel.allocated_bytes()
         };
         let allocated_before = allocated_bytes();
-        let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
+        let pool_before = shared.pool_owned();
         let shared_before = shared.country_intel.allocated_bytes();
         let returning = shared.take_frame(&mut 0).unwrap();
         let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
@@ -8058,22 +8041,17 @@ mod tests {
         assert!(shared_after_idle > shared_before);
         let allocated_after_idle = allocated_bytes();
         assert!(allocated_after_idle - allocated_before > shared_after_idle - shared_before);
-        let pool_after_idle = shared.pool_bytes.load(Ordering::Relaxed);
+        let pool_after_idle = shared.pool_owned();
         assert_eq!(
             pool_after_idle - pool_before,
             (allocated_after_idle - allocated_before) as u64
         );
 
-        sizing.recycle_frame(
-            &shared,
-            returning,
-            before_frame_bytes,
-            &mut WorkerWork::new(),
-        );
+        sizing.recycle_frame(&shared, returning, &mut WorkerWork::new());
         assert_eq!(shared.country_intel.allocated_bytes(), shared_after_idle);
         let allocated_after_return = allocated_bytes();
         assert!(allocated_after_return > allocated_after_idle);
-        let pool_after_return = shared.pool_bytes.load(Ordering::Relaxed);
+        let pool_after_return = shared.pool_owned();
         assert_eq!(
             pool_after_return - pool_after_idle,
             (allocated_after_return - allocated_after_idle) as u64
@@ -8091,23 +8069,20 @@ mod tests {
         let sizing = &thread.sizing;
         let held: [_; 2] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
         let before = shared.country_intel.allocated_bytes();
-        let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
+        let pool_before = shared.pool_owned();
         let mut rows = lock(&sizing.capacities).extended.intel.rows[15] + 8;
         let mut loan = crate::extended::daily_intel::Loan::new(shared.country_intel.clone());
         loan.grow(&mut rows);
         let added = shared.country_intel.allocated_bytes() - before;
         assert!(added > 0);
         std::thread::scope(|scope| {
-            for index in held {
+            for _ in held {
                 let shared = &shared;
-                scope.spawn(move || {
-                    let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
-                    sizing.account_frame(shared, frame, frame.allocated_bytes());
-                });
+                scope.spawn(move || sizing.account_homes(shared));
             }
         });
         assert_eq!(
-            shared.pool_bytes.load(Ordering::Relaxed) - pool_before,
+            shared.pool_owned() - pool_before,
             added as u64
         );
         for index in held {
@@ -8593,7 +8568,7 @@ mod tests {
         }
         assert!(capacities == crate::extended::Capacities::default());
         // A later valid observation is retried, without the failed huge peak.
-        let before = shared.pool_bytes.load(Ordering::Relaxed);
+        let before = shared.pool_owned();
         let valid = CombatHints {
             land: Some(engine_native::cland_combat::DetailDemand {
                 rows: 600,
@@ -8616,7 +8591,7 @@ mod tests {
                 .iter()
                 .all(|state| state.land.is_some() && state.naval.is_some())
         );
-        assert!(shared.pool_bytes.load(Ordering::Relaxed) > before);
+        assert!(shared.pool_owned() > before);
         assert_eq!(shared.free.len(), sampling::BUFFERS);
     }
 
@@ -8642,7 +8617,7 @@ mod tests {
             failures: [None; 2],
         };
         let before = unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes();
-        let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
+        let pool_before = shared.pool_owned();
         let waits = shared.buffer_wait_calls.load(Ordering::Relaxed);
         assert_eq!(shared.free.len(), 1);
         assert!(!grow_combat_hints(
@@ -8653,7 +8628,7 @@ mod tests {
         ));
         assert_eq!(shared.free.len(), 1);
         assert!(applied == [CombatHintState::default(); sampling::BUFFERS]);
-        assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), pool_before);
+        assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(
             unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes(),
             before
@@ -8682,7 +8657,7 @@ mod tests {
         let shared = Shared::new(0, 0, 1);
         let capacities = crate::extended::Capacities::default();
         let mut applied = [CombatHintState::default(); sampling::BUFFERS];
-        let accounted = shared.pool_bytes.load(Ordering::Relaxed);
+        let accounted = shared.pool_owned();
         let frame_bytes = || {
             shared
                 .frames
@@ -8693,7 +8668,7 @@ mod tests {
         let bytes = frame_bytes();
         let check_accounting = || {
             assert_eq!(
-                shared.pool_bytes.load(Ordering::Relaxed) - accounted,
+                shared.pool_owned() - accounted,
                 (frame_bytes() - bytes) as u64,
             )
         };

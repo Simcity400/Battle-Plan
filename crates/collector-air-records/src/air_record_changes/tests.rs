@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 fn record(wing_id: u32, date: i32) -> AirCombatRecord {
     AirCombatRecord {
@@ -122,7 +123,12 @@ fn an_offered_set_installs_after_the_drain() {
 #[test]
 fn a_touched_vector_splices_the_tail_after_the_pruned_held_records() {
     let since = 100;
-    let mut held = vec![record(1, 70), record(2, 80), record(3, 100), record(4, 100)];
+    let mut held = Arc::new(vec![
+        record(1, 70),
+        record(2, 80),
+        record(3, 100),
+        record(4, 100),
+    ]);
     // Native: the prune removed one record; two remain before the tail,
     // whose records were updated and gained one.
     let tail = vec![record(3, 100), record(4, 100), record(5, 101)];
@@ -135,17 +141,20 @@ fn a_touched_vector_splices_the_tail_after_the_pruned_held_records() {
         [2, 3, 4, 5]
     );
     // An out-of-order older record stays in the prefix.
-    let mut held = vec![record(1, 120), record(2, 80), record(3, 100)];
+    let mut held = Arc::new(vec![record(1, 120), record(2, 80), record(3, 100)]);
+    let shared = Arc::clone(&held);
     assert_eq!(
         splice(&mut held, since, 2, [record(3, 100)].into_iter()),
         Some(false)
     );
+    // An unchanged vector stays the allocation a published table shares.
+    assert!(Arc::ptr_eq(&held, &shared));
     assert_eq!(
         held.iter().map(|r| r.wing_id).collect::<Vec<_>>(),
         [1, 2, 3]
     );
     // More native records before the tail than held is a missed write.
-    let mut held = vec![record(1, 70), record(3, 100)];
+    let mut held = Arc::new(vec![record(1, 70), record(3, 100)]);
     assert_eq!(splice(&mut held, since, 2, tail.into_iter()), None);
 }
 
@@ -163,7 +172,7 @@ fn touched_tail_reuses_equal_damage_and_matches_replacement_changes() {
             original[2..].to_vec(),
             vec![record(9, 101)],
         ] {
-            let mut held = original.clone();
+            let mut held = Arc::new(original.clone());
             let expected = 2usize.checked_sub(first).map(|pruned| {
                 let mut expected = original[pruned..].to_vec();
                 expected.truncate(first);
@@ -175,10 +184,10 @@ fn touched_tail_reuses_equal_damage_and_matches_replacement_changes() {
                 result,
                 expected.as_ref().map(|expected| *expected != original)
             );
-            assert_eq!(held, expected.unwrap_or_else(|| original.clone()));
+            assert_eq!(*held, expected.unwrap_or_else(|| original.clone()));
         }
     }
-    let mut held = original.clone();
+    let mut held = Arc::new(original.clone());
     let damage = held[2].first_damage.as_ptr();
     assert_eq!(
         splice(&mut held, 100, 2, original[2..].iter().cloned()),

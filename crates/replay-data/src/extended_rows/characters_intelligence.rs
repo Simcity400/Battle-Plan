@@ -348,7 +348,7 @@ value_struct!(OperativeEffectModifier { key: u32, value: i64, sources: Option<[s
 /// reads them every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StrategicOperativeRow {
-    pub mission_rosters: Option<[Vec<u64>; 5]>,
+    pub mission_rosters: Option<std::sync::Arc<[Vec<u64>; 5]>>,
     pub country: u32,
     pub slot: u32,
     pub mission_activity: i64,
@@ -358,7 +358,7 @@ pub struct StrategicOperativeRow {
 }
 typed_codec!(StrategicOperativeRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
  { 0 => (slot): U32, 1 => (mission_activity): I64, 2 => (operation_activity): I64, 3 => (trade_influence): Opaque, 4 => (diplomatic_pressure): Opaque, 5 => (mission_rosters): Opaque }, |_row| Ok(()));
-opaque_value!(Option<[Vec<u64>; 5]>);
+opaque_value!(Option<std::sync::Arc<[Vec<u64>; 5]>>);
 
 /// Logical saved propaganda entries. Real sequences retain their keys across
 /// daily appends/removals. The final sequence is an owner header: it preserves

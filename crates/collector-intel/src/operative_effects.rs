@@ -3,7 +3,8 @@ use collector_observers::{
     unit_leader_changes::{self, Changes},
 };
 use engine_native::{
-    Memory, ccountry, modifier_accumulator, modifier_breakdown, operative_missions, read,
+    Memory, ccountry, modifier_accumulator, modifier_breakdown, modifier_definition::NamedKey,
+    operative_missions, read,
 };
 use replay_data::rows::{OperativeEffect, OperativeEffectModifier};
 use std::{
@@ -31,12 +32,33 @@ struct HeldEffect {
     value: Arc<OperativeEffect>,
 }
 
-#[derive(Default)]
 struct Cache {
     generation: u64,
     roots: HashMap<(usize, u32), Held>,
     effects: HashMap<(u64, bool), HeldEffect>,
+    /// This hour's trade opinions by (target, owner); read live every hour.
     trade: HashMap<(u32, u32), Option<i64>>,
+    root_out: NamedKey,
+    /// Held entries this generation visited, to sweep only when some were not.
+    touched_roots: usize,
+    touched_effects: usize,
+    /// Held storage changed since [`BYTES`] was measured.
+    changed: bool,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            roots: HashMap::new(),
+            effects: HashMap::new(),
+            trade: HashMap::new(),
+            root_out: operative_missions::root_out_key(),
+            touched_roots: 0,
+            touched_effects: 0,
+            changed: true,
+        }
+    }
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -61,28 +83,40 @@ impl Cache {
             return Some(empty_tree());
         }
         let header = read::<[u8; 16]>(memory, root)?;
-        if let Some(held) = self.roots.get_mut(&(root, key))
+        let generation = self.generation;
+        let held = self.roots.get_mut(&(root, key));
+        let fresh = held
+            .as_ref()
+            .is_none_or(|held| held.generation != generation);
+        if let Some(held) = held
             && certificate.is_some()
             && held.tree.is_some()
             && held.certificate == certificate
             && held.header == header
             && held.value == value
         {
-            held.generation = self.generation;
+            if fresh {
+                held.generation = generation;
+                self.touched_roots += 1;
+            }
             return held.tree.clone();
         }
+        // Only what the breakdown prints: unrelated zero sources never change the row.
         let mut tree = modifier_breakdown::printed_nodes(memory, base, root, key)
             .ok()
             .filter(|tree| tree.first().is_some_and(|node| node.value == value))
+            .and_then(|tree| replay_data::rows::printed_tree(&tree).ok())
             .map(Arc::new);
-        if let (Some(previous), Some(current)) = (
-            self.roots
-                .get(&(root, key))
-                .and_then(|held| held.tree.as_ref()),
-            tree.as_ref(),
-        ) && **previous == **current
-        {
-            tree = Some(Arc::clone(previous));
+        let previous = self.roots.get(&(root, key)).and_then(|held| held.tree.as_ref());
+        match (previous, tree.as_ref()) {
+            (Some(previous), Some(current)) if **previous == **current => {
+                tree = Some(Arc::clone(previous));
+            }
+            (None, None) => {}
+            _ => self.changed = true,
+        }
+        if fresh {
+            self.touched_roots += 1;
         }
         self.roots.insert(
             (root, key),
@@ -106,8 +140,16 @@ impl Cache {
         row: &operative_missions::Row,
         pending: bool,
     ) -> Option<Arc<OperativeEffect>> {
-        let roots = operative_missions::effect_roots(memory, base, game, countries, row, pending)
-            .ok()??;
+        let roots = operative_missions::effect_roots(
+            memory,
+            base,
+            game,
+            countries,
+            row,
+            pending,
+            &mut self.root_out,
+        )
+        .ok()??;
         let owner = countries.resolve(row.owner_country).ok()?;
         let sequences = || {
             (
@@ -197,6 +239,7 @@ impl Cache {
             })
         {
             held.generation = self.generation;
+            self.touched_effects += 1;
             return Some(Arc::clone(&held.value));
         }
         let mut owned_modifiers = engine_allocation::vec(modifiers.len()).ok()?;
@@ -214,6 +257,8 @@ impl Cache {
                 value: Arc::clone(&value),
             },
         );
+        self.touched_effects += 1;
+        self.changed = true;
         Some(value)
     }
 
@@ -274,7 +319,14 @@ pub fn snapshot(
     };
     let cache = guard.get_or_insert_with(Cache::default);
     cache.generation = cache.generation.wrapping_add(1);
+    cache.touched_roots = 0;
+    cache.touched_effects = 0;
     cache.trade.clear();
+    let capacities = (
+        cache.roots.capacity(),
+        cache.effects.capacity(),
+        cache.trade.capacity(),
+    );
     let required = rows.len().saturating_mul(12);
     let additional = required.saturating_sub(cache.roots.len());
     let effects = rows
@@ -291,11 +343,22 @@ pub fn snapshot(
         *effects =
             [false, true].map(|pending| cache.effect(memory, base, game, &countries, row, pending));
     }
-    cache
-        .roots
-        .retain(|_, held| held.generation == cache.generation);
-    cache
-        .effects
-        .retain(|_, held| held.generation == cache.generation);
-    BYTES.store(cache.allocated_bytes(), Ordering::Relaxed);
+    let generation = cache.generation;
+    cache.changed |= capacities
+        != (
+            cache.roots.capacity(),
+            cache.effects.capacity(),
+            cache.trade.capacity(),
+        );
+    if cache.roots.len() > cache.touched_roots {
+        cache.roots.retain(|_, held| held.generation == generation);
+        cache.changed = true;
+    }
+    if cache.effects.len() > cache.touched_effects {
+        cache.effects.retain(|_, held| held.generation == generation);
+        cache.changed = true;
+    }
+    if std::mem::take(&mut cache.changed) {
+        BYTES.store(cache.allocated_bytes(), Ordering::Relaxed);
+    }
 }

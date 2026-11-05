@@ -1085,6 +1085,13 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
+    // This worker holds the frame alone, off the game thread: charge its whole size, capture
+    // and decode growth included, before the spool can queue it, and stamp the frame with it.
+    shared.measure_frame(job.index);
+    {
+        let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        frame.pool_bytes = shared.pool_total();
+    }
     failure::stage("publish ready", None);
     let published = publish_ready(
         &shared.ready,
@@ -1342,28 +1349,25 @@ fn process_job(
     service.presentation_returned(store_returned);
     failure::stage("owned capture tails", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-    let (ticks, bytes) = frame.extended.decode_capture_tails();
+    let ticks = frame.extended.decode_capture_tails();
     for (total, ticks) in CAPTURE_TAIL_DECODE_NS.iter().zip(ticks) {
         total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
     }
-    shared.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
     failure::stage("owned census publication", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     let start = sampling::qpc();
-    let bytes = frame.map.naval.decode_owned();
+    frame.map.naval.decode_owned();
     let ships = sampling::qpc().saturating_sub(start).max(0) as u64;
-    let ([map, governance, tasks, projects], extended_bytes) = frame.extended.decode_owned_censuses();
+    let [map, governance, tasks, projects] = frame.extended.decode_owned_censuses();
     for (total, ticks) in CENSUS_TAIL_DECODE_NS.iter().zip([ships, map, governance, tasks, projects]) {
         total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
     }
     crate::attach_diagnostics::project_variables_decoded(frame.qpc, shared.ns(projects as i64));
-    shared.pool_bytes.fetch_add(bytes.wrapping_add(extended_bytes), Ordering::Relaxed);
     failure::stage("owned mission tails", None);
-    let (ticks, bytes) = frame.extended.decode_mission_tails();
+    let ticks = frame.extended.decode_mission_tails();
     for (total, ticks) in MISSION_TAIL_DECODE_NS.iter().zip(ticks) {
         total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
     }
-    shared.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
     failure::stage("air copies", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.extended.decode_air_copies();
@@ -1403,13 +1407,8 @@ fn process_job(
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; CHARACTERS.len()];
         let characters = frame.extended.characters_pilot();
-        let before_bytes = characters.allocated_bytes();
         characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
         characters.remember_templates(payload);
-        shared.pool_bytes.fetch_add(
-            characters.allocated_bytes().saturating_sub(before_bytes) as u64,
-            Ordering::Relaxed,
-        );
         for (total, ticks) in CHARACTERS_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
                 total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
@@ -1441,13 +1440,10 @@ fn process_job(
         failure::stage("lexical", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
-        let lexical = frame.extended.lexical_pilot();
-        let before_bytes = lexical.allocated_bytes();
-        lexical.decode_lexical_payload(shared.base, payload, &mut decode_ticks);
-        shared.pool_bytes.fetch_add(
-            lexical.allocated_bytes().saturating_sub(before_bytes) as u64,
-            Ordering::Relaxed,
-        );
+        frame
+            .extended
+            .lexical_pilot()
+            .decode_lexical_payload(shared.base, payload, &mut decode_ticks);
         for (total, ticks) in LEXICAL_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
                 total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
@@ -1462,20 +1458,7 @@ fn process_job(
         failure::stage("divisions", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
-        let before_bytes = frame.extended.division_decode_allocated_bytes();
         sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
-        let after_bytes = frame.extended.division_decode_allocated_bytes();
-        // Payload ownership is charged by decode_divisions_payload. Account
-        // for this frame's side of the transfer, including any smaller swap.
-        if after_bytes >= before_bytes {
-            shared
-                .pool_bytes
-                .fetch_add((after_bytes - before_bytes) as u64, Ordering::Relaxed);
-        } else {
-            shared
-                .pool_bytes
-                .fetch_sub((before_bytes - after_bytes) as u64, Ordering::Relaxed);
-        }
         for (total, ticks) in DIVISIONS_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
                 total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
@@ -1603,17 +1586,11 @@ fn process_job(
         failure::stage("construction_rest", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 10];
-        let construction = frame.extended.construction_rest_pilot();
-        let before_bytes = construction.allocated_bytes();
-        construction.decode_construction_rest_payload(
+        frame.extended.construction_rest_pilot().decode_construction_rest_payload(
             shared.base,
             payload.game_state,
             payload,
             &mut decode_ticks,
-        );
-        shared.pool_bytes.fetch_add(
-            construction.allocated_bytes().saturating_sub(before_bytes) as u64,
-            Ordering::Relaxed,
         );
         for (total, ticks) in CONSTRUCTION_REST_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
@@ -1796,7 +1773,6 @@ fn process_job(
 fn decode_presentation(shared: &Shared, index: usize) -> bool {
     failure::stage("division presentation", None);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let before_bytes = frame.extended.presentation_allocated_bytes();
     let before = frame.extended.presentation_phase_ticks();
     for (total, ticks) in DIVISION_PRESENTATION_DECODE_NS
         .iter()
@@ -1806,11 +1782,6 @@ fn decode_presentation(shared: &Shared, index: usize) -> bool {
     }
     let after = frame.extended.presentation_phase_ticks();
     shared.record_owned_presentation(std::array::from_fn(|i| after[i].saturating_sub(before[i])));
-    let after_bytes = frame.extended.presentation_allocated_bytes();
-    shared.pool_bytes.fetch_add(
-        (after_bytes as u64).wrapping_sub(before_bytes as u64),
-        Ordering::Relaxed,
-    );
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
         true

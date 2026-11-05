@@ -444,6 +444,7 @@ macro_rules! packs {
             late_ticks: Option<[u64; TABLE_COUNT]>,
             late_spare: Option<Box<LatePacks>>,
             scores_rails_spare: Option<Box<ScoresRailsParts>>,
+            air_supply_spare: Option<Box<engine_map_air::map_air_supply::Capture>>,
             missions_spare: Option<Box<air::Captured>>,
             gated_ticks: Option<[u64; TABLE_COUNT]>,
             gated_spare: Option<Box<GatedPacks>>,
@@ -507,6 +508,7 @@ impl Captured {
                     late_ticks: None,
                     late_spare: LatePacks::spare(),
                     scores_rails_spare: ScoresRailsParts::spare(),
+                    air_supply_spare: if crate::allocation::failed() { None } else { Some(Box::default()) },
                     missions_spare: if crate::allocation::failed() { None } else { Some(Box::new(air::Captured::vacant())) },
                     gated_ticks: None,
                     gated_spare: GatedPacks::spare(),
@@ -1296,32 +1298,26 @@ impl Captured {
         &self.construction_ic
     }
 
-    /// Exact growth delta of the selected packs only, including any storage
-    /// retained after a failed advisory reserve. Other heaps are unchanged.
+    /// Grows the selected packs only; the holder measures the frame after.
     pub(crate) fn apply_combat_hints(
         &mut self,
         land: Option<&combat_details::Capacities>,
         naval: Option<&naval_details::Capacities>,
-    ) -> ([bool; 2], usize) {
+    ) -> [bool; 2] {
         let mut applied = [false; 2];
-        let mut added = 0;
         if let Some(capacity) = land {
-            let before = self.combat_details.allocated_bytes();
             applied[0] = self.combat_details.try_grow_hint(capacity).is_ok();
-            added += self.combat_details.allocated_bytes().saturating_sub(before);
             if !applied[0] {
                 crate::country_scale::note_combat_hint_failure(0);
             }
         }
         if let Some(capacity) = naval {
-            let before = self.naval_details.allocated_bytes();
             applied[1] = self.naval_details.try_grow_hint(capacity).is_ok();
-            added += self.naval_details.allocated_bytes().saturating_sub(before);
             if !applied[1] {
                 crate::country_scale::note_combat_hint_failure(1);
             }
         }
-        (applied, added)
+        applied
     }
 
     #[cfg(test)]
@@ -1366,6 +1362,7 @@ impl Captured {
         self.supply_trains.reset_selection(hour, force_full);
         self.hired_advisors.reset_selection(hour, force_full);
         self.air.prepare_hour(hour, force_full);
+        self.air.begin_supply_hour();
         self.fog.prepare_hour(hour, force_full);
         self.naval_history.prepare_hour(hour, force_full);
         self.session.prepare_hour(hour, force_full);
@@ -1388,15 +1385,7 @@ impl Captured {
     }
 
     /// No native-memory capability reaches the independent owned publication tails.
-    pub(crate) fn decode_owned_censuses(&mut self) -> ([u64; 4], u64) {
-        let bytes = |this: &Self| {
-            this.naval_bases.allocated_bytes()
-                + this.group_counters.allocated_bytes()
-                + this.governance.allocated_bytes()
-                + this.projects.allocated_bytes()
-                + this.naval_counters.allocated_bytes()
-        };
-        let before = bytes(self);
+    pub(crate) fn decode_owned_censuses(&mut self) -> [u64; 4] {
         let start = crate::sampling::qpc();
         self.naval_bases.decode_owned();
         self.group_counters.decode_owned();
@@ -1410,10 +1399,7 @@ impl Captured {
         let start = crate::sampling::qpc();
         self.projects.decode_owned();
         let projects = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
-        (
-            [map, governance, tasks, projects],
-            (bytes(self) as u64).wrapping_sub(before as u64),
-        )
+        [map, governance, tasks, projects]
     }
 
     pub(crate) fn discard_owned_censuses(&mut self) {
@@ -1422,35 +1408,19 @@ impl Captured {
 
     /// Independent, frame-owned mission tails. Native-demand indexes and
     /// certificate comparisons were completed before either pack returned.
-    pub(crate) fn decode_mission_tails(&mut self) -> ([u64; 2], u64) {
-        let before = self.naval_mission_inputs.allocated_bytes() + self.railway_guns.allocated_bytes();
+    pub(crate) fn decode_mission_tails(&mut self) -> [u64; 2] {
         let start = crate::sampling::qpc();
         self.naval_mission_inputs.decode_owned();
         let navies = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
         let start = crate::sampling::qpc();
         self.railway_guns.decode_owned();
         let railway = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
-        let after = self.naval_mission_inputs.allocated_bytes() + self.railway_guns.allocated_bytes();
-        ([navies, railway], (after as u64).wrapping_sub(before as u64))
+        [navies, railway]
     }
 
     /// Project owned operands after their single live acquisition has finished.
     pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
         self.division_presentation.decode_inputs()
-    }
-
-    pub(crate) fn presentation_allocated_bytes(&self) -> usize {
-        self.division_presentation.allocated_bytes()
-    }
-
-    /// Only these buffers can change during owned division installation.
-    pub(crate) fn division_decode_allocated_bytes(&self) -> usize {
-        self.division_counts.allocated_bytes()
-            + self.production.division_equipment.allocated_bytes()
-            + self.production.groups.allocated_bytes()
-            + self.production.requests.allocated_bytes()
-            + self.production.deliveries.allocated_bytes()
-            + self.production.produced.allocated_bytes()
     }
 
     pub(crate) fn observe_division_naming(
@@ -2306,6 +2276,9 @@ impl Captured {
                 .scores_rails_spare
                 .as_ref()
                 .map_or(0, |parts| parts.allocated_bytes())
+            + self.air_supply_spare.as_ref().map_or(0, |capture| {
+                size_of::<engine_map_air::map_air_supply::Capture>() + capture.allocated_bytes()
+            })
             + self.missions_spare.as_ref().map_or(0, |pack| {
                 size_of::<air::Captured>() + pack.allocated_bytes()
             })
@@ -2437,13 +2410,7 @@ impl Captured {
     }
 
     /// FIFO-owned tails of completed native acquisitions. None accepts Memory.
-    pub(crate) fn decode_capture_tails(&mut self) -> ([u64; 5], u64) {
-        let bytes = |this: &Self| {
-            this.division_templates.allocated_bytes()
-                + this.ship_models.owned_tail_allocated_bytes()
-                + this.combat_details.owned_tail_allocated_bytes()
-        };
-        let before = bytes(self);
+    pub(crate) fn decode_capture_tails(&mut self) -> [u64; 5] {
         let mut ticks = [0; 5];
         macro_rules! settle {
             ($index:expr, $capture:ident, $method:ident) => {{
@@ -2457,7 +2424,7 @@ impl Captured {
         settle!(2, resource_map, settle_owned);
         settle!(3, production, settle_variants_owned);
         settle!(4, combat_details, settle_owned);
-        (ticks, (bytes(self) as u64).wrapping_sub(before as u64))
+        ticks
     }
 
     /// The frame is dropped before decoding.

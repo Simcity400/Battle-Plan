@@ -51,6 +51,7 @@ pub(crate) struct ObserverBoundaryRequest {
     finished: [bool; N],
 }
 impl ObserverBoundaryRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> u64 {
         (self.land.allocated_bytes()
             + self.feed.allocated_bytes()

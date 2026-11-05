@@ -312,8 +312,13 @@ pub struct Captured {
     sorties: Sorties,
     ground_crews: CaptureRows<rows::AirGroundCrewRow>,
     ground_demand: Vec<ground_crews::Demand>,
-    ground_index: std::collections::HashMap<(u32, u32), usize>,
+    ground_merge: Vec<rows::AirGroundCrewRow>,
+    /// This hour's regional Air supply from its own job, installed at the
+    /// missions join; the Late job merges it into Ground Crews.
     supply: engine_map_air::map_air_supply::Capture,
+    supply_ok: bool,
+    /// No registered missions: Ground Crews stands without a stable flag certificate.
+    ground_lenient: bool,
     transfers: CaptureRows<rows::AirTransferInputRow>,
     transfer_demand: Vec<usize>,
     transfer_ticks: u64,
@@ -437,8 +442,10 @@ impl Captured {
             sorties: Sorties::with_capacities(&capacity.sorties),
             ground_crews: CaptureRows::new(capacity.wings),
             ground_demand: allocation::owned_vec(allocation::default_vec(capacity.wings)),
-            ground_index: Default::default(),
+            ground_merge: Vec::new(),
             supply: Default::default(),
+            supply_ok: false,
+            ground_lenient: false,
             transfers: CaptureRows::new(capacity.wings),
             transfer_demand: Vec::new(),
             transfer_ticks: 0,
@@ -515,7 +522,7 @@ impl Captured {
             + self.transfer_demand.capacity() * size_of::<usize>()
             + self.ground_demand.capacity() * size_of::<ground_crews::Demand>()
             + self.supply.allocated_bytes()
-            + self.ground_index.capacity() * std::mem::size_of::<((u32, u32), usize)>()
+            + self.ground_merge.capacity() * std::mem::size_of::<rows::AirGroundCrewRow>()
             + self.patrol_combats.allocated_bytes()
     }
 
@@ -552,6 +559,61 @@ impl Captured {
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.active =
             TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
+    }
+
+    /// A new frame hour: no AirSupply result yet. Late's own `prepare_hour` runs after the
+    /// result was installed and must keep it.
+    pub(crate) fn begin_supply_hour(&mut self) {
+        self.supply_ok = false;
+    }
+
+    /// The AirSupply job's capture, exchanged for the one this pack held.
+    pub(crate) fn install_supply(
+        &mut self,
+        capture: &mut engine_map_air::map_air_supply::Capture,
+        ok: bool,
+    ) {
+        std::mem::swap(&mut self.supply, capture);
+        self.supply_ok = ok;
+    }
+
+    /// The Late job: this hour's regional Air supply into the Ground Crews
+    /// rows the AirMissions job left, reading the flags of regions they lack.
+    pub(crate) fn merge_ground_supply(&mut self, memory: &impl Memory, base: usize) {
+        if !self.supply_ok || !self.active[14] {
+            return;
+        }
+        let Outcome::Rows { len } = self.ground_crews.outcome else {
+            return;
+        };
+        let begin = qpc();
+        let _reads = read_accounting::table(TableId::AirGroundCrews);
+        self.ground_crews.rows.truncate(len);
+        let (merged, stable) = crate::ground_crew_changes::with_flags(
+            memory,
+            base,
+            self.supply.rows.len(),
+            |flags| {
+                merge_supply(
+                    &mut self.ground_crews.rows,
+                    &mut self.ground_merge,
+                    &self.supply.rows,
+                    |country, region| flags.get(country, region),
+                )
+            },
+        );
+        self.ground_crews.outcome = match merged {
+            Err(reason) => Outcome::Unavailable { reason },
+            Ok(()) if stable || self.ground_lenient => Outcome::Rows {
+                len: self.ground_crews.rows.len(),
+            },
+            Ok(()) => Outcome::Unavailable {
+                reason: "Ground Crews writer certificate changed during acquisition",
+            },
+        };
+        if let Some(joins) = self.joins.as_mut() {
+            joins[2] = joins[2].saturating_add(elapsed(begin));
+        }
     }
 
     /// Whether this hour's registrations and combats were captured.
@@ -727,6 +789,7 @@ impl Captured {
         };
         ticks[0] = elapsed(begin);
         let begin = qpc();
+        self.ground_lenient = registered.is_some_and(<[_]>::is_empty);
         let ((ground_outcome, ground_ticks), stable) = crate::ground_crew_changes::with_flags(
             memory,
             base,
@@ -773,78 +836,13 @@ impl Captured {
                     .unwrap_or_else(|reason| Outcome::Unavailable { reason });
                     if let Outcome::Rows { len } = outcome {
                         self.ground_crews.rows.truncate(len);
-                        if self.supply.read(memory, base, game_state).is_ok() {
-                            self.ground_index.clear();
-                            if allocation::reserve_map(
-                                &mut self.ground_index,
-                                self.ground_crews.rows.len(),
-                            )
-                            .is_err()
-                            {
-                                return (
-                                    Outcome::Unavailable {
-                                        reason: "regional Air supply projection index allocation failed",
-                                    },
-                                    elapsed(begin_ground),
-                                );
-                            }
-                            self.ground_index.extend(
-                                self.ground_crews
-                                    .rows
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(index, row)| ((row.country, row.region), index)),
-                            );
-                            for sample in &self.supply.rows {
-                                let supply = Some(rows::AirSupplySummary {
-                                    severity: sample.severity,
-                                    needed: sample.needed,
-                                    supplied: sample.supplied,
-                                    deficit: sample.deficit,
-                                });
-                                if let Some(&index) =
-                                    self.ground_index.get(&(sample.country, sample.region))
-                                {
-                                    self.ground_crews.rows[index].supply = supply;
-                                } else if allocation::reserve(&mut self.ground_crews.rows, 1)
-                                    .is_ok()
-                                {
-                                    self.ground_crews.rows.push(rows::AirGroundCrewRow {
-                                        country: sample.country,
-                                        region: sample.region,
-                                        enabled: if sample.region == u32::MAX {
-                                            None
-                                        } else {
-                                            flags
-                                                .get(sample.country_pointer, sample.region_pointer)
-                                                .map(u32::from)
-                                        },
-                                        supply,
-                                    });
-                                } else {
-                                    return (
-                                        Outcome::Unavailable {
-                                            reason: "regional Air supply projection allocation failed",
-                                        },
-                                        elapsed(begin_ground),
-                                    );
-                                }
-                            }
-                        }
-                        self.ground_crews
-                            .rows
-                            .sort_unstable_by_key(|row| (row.country, row.region));
-                        Outcome::Rows {
-                            len: self.ground_crews.rows.len(),
-                        }
-                    } else {
-                        outcome
                     }
+                    outcome
                 };
                 (outcome, elapsed(begin_ground))
             },
         );
-        self.ground_crews.outcome = if stable || registered.is_some_and(<[_]>::is_empty) {
+        self.ground_crews.outcome = if stable || self.ground_lenient {
             ground_outcome
         } else {
             Outcome::Unavailable {
@@ -1257,25 +1255,7 @@ impl Captured {
                     friendly_missions: r.friendly_missions,
                     enemy_missions: r.enemy_missions,
                     air_spotting_scale: r.air_spotting_scale,
-                    menu: r.menu.as_ref().and_then(|menu| {
-                        let mut contributions = [Vec::new(), Vec::new()];
-                        for (output, input) in contributions.iter_mut().zip(&menu.contributions) {
-                            for row in input {
-                                if allocation::reserve_push_batch(output, 1).is_err() {
-                                    return None;
-                                }
-                                output.push(rows::AirPowerContribution {
-                                    country: row.country,
-                                    amount: row.amount,
-                                });
-                            }
-                        }
-                        Some(rows::AirPowerMenu {
-                            coverage: menu.coverage,
-                            reductions: menu.reductions,
-                            contributions,
-                        })
-                    }),
+                    menu: r.menu.clone(),
                 }
             }),
             table::<tables::AirGroundCrews, _>(outcomes[14], &self.ground_crews.rows, Clone::clone),
@@ -1407,6 +1387,54 @@ fn registered_wings<'a>(
             .map(|index| &wings[index])
             .map_err(|_| "registered mission missing from the wing census")
     }))
+}
+
+/// Merges the regional Air supply summaries, sorted by (country, region), into
+/// the Ground Crews rows, sorted by the same key. A summary without a Ground
+/// Crews row gets one carrying its region's flag.
+fn merge_supply(
+    ground: &mut Vec<rows::AirGroundCrewRow>,
+    merged: &mut Vec<rows::AirGroundCrewRow>,
+    supply: &[engine_map_air::map_air_supply::Summary],
+    mut flag: impl FnMut(usize, usize) -> Option<u8>,
+) -> Result<(), &'static str> {
+    debug_assert!(ground.is_sorted_by_key(|row| (row.country, row.region)));
+    debug_assert!(supply.is_sorted_by_key(|row| (row.country, row.region)));
+    merged.clear();
+    allocation::reserve(merged, ground.len().saturating_add(supply.len()))
+        .map_err(|_| "regional Air supply projection allocation failed")?;
+    let mut rows = ground.drain(..).peekable();
+    for sample in supply {
+        let key = (sample.country, sample.region);
+        while let Some(row) = rows.next_if(|row| (row.country, row.region) < key) {
+            merged.push(row);
+        }
+        let summary = Some(rows::AirSupplySummary {
+            severity: sample.severity,
+            needed: sample.needed,
+            supplied: sample.supplied,
+            deficit: sample.deficit,
+        });
+        match rows.next_if(|row| (row.country, row.region) == key) {
+            Some(mut row) => {
+                row.supply = summary;
+                merged.push(row);
+            }
+            None => merged.push(rows::AirGroundCrewRow {
+                country: sample.country,
+                region: sample.region,
+                enabled: if sample.region == u32::MAX {
+                    None
+                } else {
+                    flag(sample.country_pointer, sample.region_pointer).map(u32::from)
+                },
+                supply: summary,
+            }),
+        }
+    }
+    merged.extend(rows);
+    std::mem::swap(ground, merged);
+    Ok(())
 }
 
 /// Probe every wing's pool and transfer bases: local selection can ask for

@@ -31,16 +31,6 @@ pub(crate) struct CombatRequest {
 }
 
 impl CombatRequest {
-    pub(crate) fn allocated_bytes(&self) -> u64 {
-        self.land.allocated_bytes() as u64
-            + crate::raw_memory::vector_bytes(&self.land_participants)
-            + crate::raw_memory::vector_bytes(&self.land_classes)
-            + self.naval.allocated_bytes() as u64
-            + self.naval_participants.allocated_bytes() as u64
-            + crate::raw_memory::vector_bytes(&self.naval_groups)
-            + self.progress.allocated_bytes() as u64
-    }
-
     pub(crate) fn capture(&mut self, memory: &impl Memory) -> CombatReport {
         let mut report = CombatReport::default();
         let mut reads = crate::read_accounting::table(TableId::LandCombats);

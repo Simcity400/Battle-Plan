@@ -12,6 +12,8 @@ pub(crate) enum Work {
     Probe(Arc<std::sync::atomic::AtomicUsize>),
     Context(production::DesignContextPart),
     Setup(production::ColdSetupPart),
+    /// Speculative full-decode walks over copied spans; reads no native memory.
+    Snapshots(production::SnapshotPart),
     Storage {
         part: production::ColdStorage,
         workers: Dispatch,
@@ -50,6 +52,7 @@ impl Work {
             }
             Self::Setup(_) => 6,
             Self::Storage { .. } => 9,
+            Self::Snapshots(_) => 10,
             #[cfg(test)]
             Self::Probe(_) => 9,
         }
@@ -63,6 +66,7 @@ impl Work {
             }
             Self::Context(part) => part.capture(memory, base),
             Self::Setup(part) => part.capture(),
+            Self::Snapshots(part) => part.capture(),
             Self::Storage { part, workers } => {
                 part.capture(workers.lanes(), &mut |parts| {
                     workers.setup(parts, memory, base)
@@ -343,6 +347,28 @@ impl Dispatch {
             part
         }))
         .map_err(|_| "project worker result allocation failed")
+    }
+    /// A burst's speculative walks, only where they can run beside the parent: without
+    /// lanes the ordered pass decodes inline as before.
+    pub(super) fn snapshots(
+        &self,
+        parts: Vec<production::SnapshotPart>,
+        memory: &impl engine_native::Memory,
+        base: usize,
+    ) -> Result<Vec<production::SnapshotPart>, &'static str> {
+        if self.workers < 2 || self.executor.upgrade().is_none() {
+            return Err("variant snapshot lanes unavailable");
+        }
+        let parts = engine_allocation::collect_vec(parts.into_iter().map(Work::Snapshots))
+            .map_err(|_| "variant snapshot worker allocation failed")?;
+        let parts = self.acquire_work(parts, memory, base)?;
+        engine_allocation::collect_vec(parts.into_iter().map(|part| {
+            let Work::Snapshots(part) = part else {
+                unreachable!()
+            };
+            part
+        }))
+        .map_err(|_| "variant snapshot worker result allocation failed")
     }
     pub(super) fn setup(
         &self,

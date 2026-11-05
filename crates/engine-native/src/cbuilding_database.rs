@@ -5,7 +5,6 @@ pub const SINGLETON_RVA: usize = 0x033d_d268;
 /// Template-pointer array appending each parsed definition.
 pub const TEMPLATES: usize = 0x40;
 /// Template-pointer stride.
-#[cfg(test)]
 pub const TEMPLATE_STRIDE: usize = 8;
 /// Parallel key-record vector; key index i corresponds to template index i plus one.
 pub const KEYS: usize = 0x58;

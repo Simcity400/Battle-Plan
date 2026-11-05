@@ -3,6 +3,7 @@ mod copied;
 mod missions;
 mod retained;
 pub(super) use retained::{Retained, prune, release, retained};
+pub(super) mod speculative;
 mod witness;
 use profile::Outcome as CacheOutcome;
 use std::{
@@ -239,6 +240,9 @@ pub(super) struct Cache<'a> {
     counts: [u64; profile::CACHE_FIELDS],
     full_decode: profile::Cost,
     miss: Option<CacheOutcome>,
+    /// Speculative walks by event index, and the event being decoded.
+    speculative: Vec<Option<Box<speculative::Prepared>>>,
+    current: Option<usize>,
 }
 impl Drop for Cache<'_> {
     fn drop(&mut self) {
@@ -315,6 +319,53 @@ impl<'a> Cache<'a> {
         static NEXT_CHARGE: AtomicU64 = AtomicU64::new(1);
         cache.retained_charge = NEXT_CHARGE.fetch_add(1, Ordering::Relaxed);
         cache
+    }
+    /// Runs the burst's likely-miss walks on the lanes before the ordered pass.
+    pub fn speculate(
+        &mut self,
+        batch: &Batch,
+        base: usize,
+        hour: i32,
+        speculation: &mut super::Speculation<'_>,
+    ) {
+        self.speculative = speculative::speculate(batch, base, hour, speculation, &mut |event| {
+            self.retained_hit(batch, event)
+        });
+    }
+    /// Read-only: the ordered pass's retained-cache test would reuse this occurrence.
+    fn retained_hit(&mut self, batch: &Batch, event: &Event) -> bool {
+        if !self
+            .retained
+            .as_ref()
+            .is_some_and(|retained| retained.contains(event))
+        {
+            return false;
+        }
+        let range = event.start..event.end;
+        engine_allocation::advisory(|| {
+            if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
+                return None;
+            }
+            let memory = copied::MemoryView::new(&batch.log, range.clone(), &self.order);
+            self.retained
+                .as_ref()?
+                .find(&memory, event, &mut self.comparison)
+                .map(|_| ())
+        })
+        .is_some()
+    }
+    /// The next [`Self::decode`] is the batch's event `index`.
+    pub fn at(&mut self, index: usize) {
+        self.current = Some(index);
+    }
+    /// The walk speculated for the current event, when its inputs are byte-identical.
+    fn prepared(
+        &mut self,
+        log: &RawLog<1>,
+        range: std::ops::Range<usize>,
+    ) -> Option<Box<speculative::Prepared>> {
+        let prepared = self.speculative.get_mut(self.current.take()?)?.take()?;
+        prepared.matches(log, range).then_some(prepared)
     }
     pub fn remove(&mut self, variant: u64) {
         if let Some(heads) = self.source_heads.remove(&variant) {
@@ -811,8 +862,21 @@ impl<'a> Cache<'a> {
         let stamp = profile::Stamp::new();
         let result = (|| {
             let recorded = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
-            let memory = witness::Observed::new(&recorded, range.len());
-            let value = Arc::new(decode_snapshot(&memory, base, hour, event.pointer, false)?);
+            let (memory, value) = match self.prepared(&batch.log, range.clone()) {
+                // The lane walked identical spans; the ordered step runs every effect here.
+                Some(prepared) => {
+                    let (mut walk, state) = prepared.into_parts();
+                    let memory = witness::Observed::resume(&recorded, state);
+                    let value = complete_snapshot(&memory, base, false, &mut walk)?;
+                    (memory, value)
+                }
+                None => {
+                    let memory = witness::Observed::new(&recorded, range.len());
+                    let value = decode_snapshot(&memory, base, hour, event.pointer, false)?;
+                    (memory, value)
+                }
+            };
+            let value = Arc::new(value);
             shared.heap_bytes += value.allocated_bytes();
             if !value
                 .context

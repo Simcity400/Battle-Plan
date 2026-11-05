@@ -10,7 +10,9 @@ use crate::{
     read,
     walk::{Buffer, Outcome},
 };
-use engine_native::{coperation, cprovince, creference_registry, cstate};
+use engine_native::{
+    coperation, cprovince, creference_registry, cstate, modifier_definition::NamedKey,
+};
 
 /// Inline agency UI operation buffer in the authenticated executable image.
 pub const BUFFER_RVA: usize = 0x033e_b190;
@@ -18,6 +20,13 @@ pub const BUFFER_RVA: usize = 0x033e_b190;
 pub const BUCKET_OFFSETS: [usize; 5] = [0x00, 0x48, 0x18, 0x30, 0x60];
 /// UI buffer publication counter; used only to reject a changing observation.
 pub const REVISION: usize = 0xa8;
+/// Script name of the modifier that shortens an offered operation.
+pub const SPEED: &[u8] = b"intelligence_operation_speed";
+
+/// The offer speed modifier's key, unresolved until an offer is read.
+pub const fn speed_key() -> NamedKey {
+    NamedKey::new(SPEED)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
@@ -55,15 +64,18 @@ pub fn walk(
         state,
         Buffer::Fixed(rows),
         Buffer::Fixed(entries),
+        &mut speed_key(),
     )
 }
 
+/// `speed` is the caller's held key ([`speed_key`]), kept across walks.
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     state: usize,
     rows: &mut Vec<Row>,
     entries: &mut Vec<Entry>,
+    speed: &mut NamedKey,
 ) -> Walk {
     walk_buffer(
         memory,
@@ -71,6 +83,7 @@ pub fn walk_growing(
         state,
         Buffer::Growing(rows),
         Buffer::Growing(entries),
+        speed,
     )
 }
 
@@ -280,6 +293,7 @@ fn walk_buffer(
     state: usize,
     mut rows: Buffer<'_, Row>,
     mut entries: Buffer<'_, Entry>,
+    speed: &mut NamedKey,
 ) -> Walk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, state)?;
@@ -318,7 +332,6 @@ fn walk_buffer(
         let fits = !rows.is_empty() && entries.len() >= required;
         let mut resolver = creference_registry::ScopedResolver::new(base);
         let mut written = 0;
-        let mut speed_key = None;
         for (bucket, list) in lists.into_iter().enumerate() {
             for ordinal in 0..list.count {
                 if bucket == 4 {
@@ -327,9 +340,13 @@ fn walk_buffer(
                     let definition = coperation::definition(memory, base, pointer)?;
                     let country = word::<u32>(memory, entry, 8)?;
                     let state = offer_state(memory, base, state, &countries, country)?;
-                    let key = *speed_key.get_or_insert_with(|| engine_native::modifier_definition::keys_by_names_at(memory, base, &[b"intelligence_operation_speed"]).and_then(|keys| keys.0[0].ok_or("operation speed modifier absent")));
-                    let duration = key.and_then(|key| offer_duration(memory, base, &countries, viewing_country, pointer, definition, country, key)).ok();
+                    // A sizing walk keeps nothing, and the duration refuses only itself.
                     if fits {
+                        let duration = speed
+                            .get(memory, base)
+                            .and_then(|key| key.ok_or("operation speed modifier absent"))
+                            .and_then(|key| offer_duration(memory, base, &countries, viewing_country, pointer, definition, country, key))
+                            .ok();
                         entries[written] = Entry { definition, country, duration, operation: 0, state: Some(state) };
                     }
                     written += 1;
@@ -431,7 +448,7 @@ mod tests {
         memory.put(engine_native::ccountry::synthetic::START, &world.bytes);
         let mut rows = Vec::new();
         let mut entries = Vec::new();
-        let result = walk_growing(memory, 0, world.game_state(), &mut rows, &mut entries);
+        let result = walk_growing(memory, 0, world.game_state(), &mut rows, &mut entries, &mut speed_key());
         (result, rows, entries)
     }
 

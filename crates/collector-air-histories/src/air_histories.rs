@@ -35,6 +35,8 @@ pub struct Counts {
     /// Histories advanced without a read, and copied on their own.
     pub advanced: u64,
     pub refreshed: u64,
+    /// Histories whose daily current record alone was read.
+    pub patched: u64,
     /// Every part reused everything.
     pub quiet: bool,
     pub scenario_refusals: [u64; native::SCENARIO_REFUSALS.len()],
@@ -47,6 +49,7 @@ impl Counts {
         self.read += part.read;
         self.advanced += part.advanced;
         self.refreshed += part.refreshed;
+        self.patched += part.patched;
         self.quiet &= part.quiet;
         for (total, count) in self
             .scenario_refusals
@@ -186,8 +189,16 @@ pub struct Staging {
     removed: Vec<u32>,
     /// `(slot, region, advances)` applied without a read.
     advances: Vec<(u32, u32, u64)>,
+    /// Copied histories; a window with a menu copy carries no ring channels.
     windows: Vec<Window>,
     menus: Vec<Option<engine_air_history::menu_history::History>>,
+    /// Histories whose adds since the last hour changed only their daily
+    /// current record; grown in the hour, as few are touched at once.
+    patches: Vec<(u32, u32, engine_air_history::menu_history::Current)>,
+    /// `(slot, region)` histories gone from a refreshed country.
+    dropped: Vec<(u32, u32)>,
+    /// The hour read every country afresh.
+    fresh: bool,
     channels: Vec<[i64; 9]>,
     scenario_failures: Vec<Option<&'static str>>,
     counts: Counts,
@@ -231,6 +242,9 @@ impl Staging {
         self.advances.clear();
         self.windows.clear();
         self.menus.clear();
+        self.patches.clear();
+        self.dropped.clear();
+        self.fresh = false;
         self.channels.clear();
         self.scenario_failures.clear();
         self.counts = Counts::default();
@@ -255,31 +269,25 @@ impl Staging {
                 .menus
                 .iter()
                 .flatten()
-                .map(|menu| {
-                    menu.windows.capacity() * size_of::<engine_air_history::menu_history::Window>()
-                        + menu
-                            .windows
-                            .iter()
-                            .map(|window| {
-                                window.records.capacity()
-                                    * size_of::<[i64; replay_data::rows::AIR_MENU_CHANNELS]>()
-                            })
-                            .sum::<usize>()
-                })
+                .map(engine_air_history::menu_history::History::allocated_bytes)
                 .sum::<usize>()
+            + self.patches.capacity()
+                * size_of::<(u32, u32, engine_air_history::menu_history::Current)>()
+            + self.dropped.capacity() * size_of::<(u32, u32)>()
             + self.channels.capacity() * 72
             + self.scenario_failures.capacity() * size_of::<Option<&'static str>>()
     }
 
-    /// The copied windows of `histories`, each found at `(slot, region)`.
+    /// Copy `histories`, each found at `(slot, region)`: every window with all
+    /// channels, or for a history the menu refuses, its daily ring alone.
+    /// Leaves in `scratch.fallback`, ascending, the histories copied as a ring.
     fn copy_windows(
         &mut self,
         memory: &impl Memory,
         base: usize,
         histories: &[usize],
         found: &[(u32, u32)],
-        scratch: &mut native::WindowScratch,
-        menu_scratch: &mut engine_air_history::menu_history::Scratch,
+        scratch: &mut CopyScratch<'_>,
     ) -> Result<(), &'static str> {
         let Self {
             windows,
@@ -289,17 +297,61 @@ impl Staging {
             counts,
             ..
         } = self;
+        scratch.fallback.clear();
         reserve_pushes(windows, histories.len())?;
-        let menu_offset = menus.len();
         reserve_pushes(menus, histories.len())?;
-        menus.resize_with(menu_offset + histories.len(), || None);
-        native::history_windows(
+        let fallback = &mut *scratch.fallback;
+        engine_air_history::menu_history::capture(
             memory,
             base,
             histories,
-            scratch,
+            &mut *scratch.menus,
+            |at, menu| {
+                match menu {
+                    Ok(menu) => {
+                        let (slot, region) = found[at];
+                        let daily = menu.windows[0];
+                        windows.push(Window {
+                            slot,
+                            region,
+                            state: WindowState {
+                                history: histories[at],
+                                capacity: daily.capacity,
+                                current: daily.current,
+                                wrapped: daily.wrapped,
+                            },
+                            offset: channels.len(),
+                        });
+                        menus.push(Some(menu));
+                    }
+                    Err(reason) => {
+                        let index = engine_air_history::menu_history::REFUSALS
+                            .iter()
+                            .position(|&name| name == reason)
+                            .ok_or(reason)?;
+                        counts.menu_refusals[index] += 1;
+                        push(fallback, at)?;
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        if scratch.fallback.is_empty() {
+            return Ok(());
+        }
+        scratch.addresses.clear();
+        reserve(scratch.addresses, scratch.fallback.len())?;
+        scratch
+            .addresses
+            .extend(scratch.fallback.iter().map(|&at| histories[at]));
+        let fallback = &*scratch.fallback;
+        native::history_windows(
+            memory,
+            base,
+            &scratch.addresses[..],
+            &mut *scratch.windows,
             |at, state, copied, failures| {
-                let (slot, region) = found[at];
+                let (slot, region) = found[fallback[at]];
                 let count = channels
                     .len()
                     .checked_add(copied.len())
@@ -313,37 +365,63 @@ impl Staging {
                         .unwrap();
                     counts.scenario_refusals[index] += 1;
                 }
+                reserve_pushes(windows, 1)?;
+                reserve_pushes(menus, 1)?;
                 windows.push(Window {
                     slot,
                     region,
                     state,
                     offset: channels.len(),
                 });
+                menus.push(None);
                 channels.extend_from_slice(copied);
                 scenario_failures.extend_from_slice(failures);
                 Ok(())
             },
-        )?;
-        engine_air_history::menu_history::capture(
+        )
+    }
+
+    /// The daily current record of each of `histories` (held with every
+    /// window, changed only by adds); `retry` names, ascending, those to copy
+    /// whole instead.
+    fn patch(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        histories: &[usize],
+        found: &[(u32, u32)],
+        menus: &mut engine_air_history::menu_history::Scratch,
+        retry: &mut Vec<usize>,
+    ) -> Result<(), &'static str> {
+        retry.clear();
+        reserve_pushes(&mut self.patches, histories.len())?;
+        let (patches, counts) = (&mut self.patches, &mut self.counts);
+        engine_air_history::menu_history::capture_current(
             memory,
             base,
             histories,
-            menu_scratch,
-            |at, menu| {
-                match menu {
-                    Ok(menu) => menus[menu_offset + at] = Some(menu),
-                    Err(reason) => {
-                        let at = engine_air_history::menu_history::REFUSALS
-                            .iter()
-                            .position(|&name| name == reason)
-                            .ok_or(reason)?;
-                        counts.menu_refusals[at] += 1;
+            menus,
+            |at, current| {
+                match current {
+                    Ok(current) => {
+                        let (slot, region) = found[at];
+                        patches.push((slot, region, current));
+                        counts.patched += 1;
                     }
+                    Err(_) => push(retry, at)?,
                 }
                 Ok(())
             },
         )
     }
+}
+
+/// The buffers [`Staging::copy_windows`] borrows from a part's certificates.
+struct CopyScratch<'a> {
+    windows: &'a mut native::WindowScratch,
+    menus: &'a mut engine_air_history::menu_history::Scratch,
+    fallback: &'a mut Vec<usize>,
+    addresses: &'a mut Vec<usize>,
 }
 
 /// Whole-domain certificates shared by all parts at the hourly boundary.
@@ -355,6 +433,8 @@ pub struct Opening {
     quiet: Sequence,
     /// Per writer site, taken with it.
     sites: [Sequence; 2],
+    /// A forget since the last opening: it outlasts a settlement that races it.
+    forgotten: bool,
 }
 
 impl Default for Opening {
@@ -370,12 +450,14 @@ impl Opening {
             opened: false,
             quiet: None,
             sites: [None; 2],
+            forgotten: false,
         }
     }
 
     /// Nothing observed so far certifies anything: every part copies afresh.
     pub fn forget(&mut self) {
         self.complete = false;
+        self.forgotten = true;
     }
 
     /// The last opened hour failed or was dropped, so the next copies
@@ -400,7 +482,8 @@ pub fn supply(parts: &mut [Staging], changes: &impl Changes, opening: &mut Openi
     }
     let quiet = changes.quiet();
     let sites = [changes.site(0), changes.site(1)];
-    let complete = std::mem::replace(&mut opening.complete, false);
+    let complete = std::mem::replace(&mut opening.complete, false)
+        & !std::mem::replace(&mut opening.forgotten, false);
     let site =
         |index: usize| complete && sites[index].is_some() && sites[index] == opening.sites[index];
     let verdict = Verdict {
@@ -423,6 +506,10 @@ struct HistoryCertificate {
     region: u32,
     history: usize,
     sequence: Sequence,
+    /// Adds to this region of the country ([`history_changes::touch_key`]).
+    touch: Sequence,
+    /// The held copy has every window.
+    menu: bool,
 }
 
 #[derive(Default)]
@@ -459,11 +546,27 @@ pub struct Certificates {
 struct Scratch {
     roots: Vec<usize>,
     read: Vec<usize>,
+    /// Countries whose air object some add changed: only their touched,
+    /// new or doubted histories are read.
+    refresh: Vec<usize>,
     targets: Vec<usize>,
     doubted: Vec<(usize, usize, Sequence)>,
     addresses: Vec<usize>,
     found: Vec<(u32, u32)>,
-    sequences: Vec<Sequence>,
+    sequences: Vec<(Sequence, Sequence)>,
+    /// A refreshed country's histories as region slots name them: its
+    /// index in `refresh`, region and history.
+    listed: Vec<(usize, u32, usize)>,
+    /// Certificates being rebuilt for one refreshed country.
+    merged: Vec<HistoryCertificate>,
+    /// Copies and patches of refreshed histories: (country, position in its certificates).
+    owners: Vec<(usize, usize)>,
+    patch_addresses: Vec<usize>,
+    patch_found: Vec<(u32, u32)>,
+    patch_owners: Vec<(usize, usize)>,
+    retry: Vec<usize>,
+    fallback: Vec<usize>,
+    fallback_addresses: Vec<usize>,
     windows: native::WindowScratch,
     menus: engine_air_history::menu_history::Scratch,
 }
@@ -483,11 +586,21 @@ impl Certificates {
             scratch: Scratch {
                 roots: Vec::new(),
                 read: Vec::new(),
+                refresh: Vec::new(),
                 targets: Vec::new(),
                 doubted: Vec::new(),
                 addresses: Vec::new(),
                 found: Vec::new(),
                 sequences: Vec::new(),
+                listed: Vec::new(),
+                merged: Vec::new(),
+                owners: Vec::new(),
+                patch_addresses: Vec::new(),
+                patch_found: Vec::new(),
+                patch_owners: Vec::new(),
+                retry: Vec::new(),
+                fallback: Vec::new(),
+                fallback_addresses: Vec::new(),
                 windows: native::WindowScratch::new(),
                 menus: engine_air_history::menu_history::Scratch::new(),
             },
@@ -499,9 +612,19 @@ impl Certificates {
         (self.roots.capacity()
             + scratch.roots.capacity()
             + scratch.read.capacity()
+            + scratch.refresh.capacity()
             + scratch.targets.capacity()
-            + scratch.addresses.capacity())
+            + scratch.addresses.capacity()
+            + scratch.patch_addresses.capacity()
+            + scratch.retry.capacity()
+            + scratch.fallback.capacity()
+            + scratch.fallback_addresses.capacity())
             * size_of::<usize>()
+            + scratch.listed.capacity() * size_of::<(usize, u32, usize)>()
+            + scratch.merged.capacity() * size_of::<HistoryCertificate>()
+            + (scratch.owners.capacity() + scratch.patch_owners.capacity())
+                * size_of::<(usize, usize)>()
+            + scratch.patch_found.capacity() * size_of::<(u32, u32)>()
             + self.countries.capacity() * size_of::<CountryCertificate>()
             + self
                 .countries
@@ -510,7 +633,7 @@ impl Certificates {
                 .sum::<usize>()
             + scratch.doubted.capacity() * size_of::<(usize, usize, Sequence)>()
             + scratch.found.capacity() * size_of::<(u32, u32)>()
-            + scratch.sequences.capacity() * size_of::<Sequence>()
+            + scratch.sequences.capacity() * size_of::<(Sequence, Sequence)>()
             + scratch.windows.allocated_bytes()
             + scratch.menus.allocated_bytes()
     }
@@ -532,6 +655,7 @@ impl Certificates {
             roots,
             &mut scratch.roots,
             &mut scratch.read,
+            &mut scratch.refresh,
             &mut scratch.targets,
         ] {
             reserve(list, capacity.countries)?;
@@ -643,15 +767,41 @@ fn stage_part(
     certificates: &mut Certificates,
     staging: &mut Staging,
 ) -> Result<State, &'static str> {
+    enum Step {
+        Keep,
+        Advance(u64),
+        Patch,
+        Copy,
+    }
     let Certificates {
         roots,
         countries,
         scratch,
         ..
     } = certificates;
-    staging.slots =
-        native::country_air_roots(memory, base, game_state, part, PARTS, &mut scratch.roots)?;
-    staging.owned = scratch.roots.len();
+    let Scratch {
+        roots: live,
+        read,
+        refresh,
+        targets,
+        doubted,
+        addresses,
+        found,
+        sequences,
+        listed,
+        merged,
+        owners,
+        patch_addresses,
+        patch_found,
+        patch_owners,
+        retry,
+        fallback,
+        fallback_addresses,
+        windows,
+        menus,
+    } = scratch;
+    staging.slots = native::country_air_roots(memory, base, game_state, part, PARTS, live)?;
+    staging.owned = live.len();
     // A quiet hour may skip the part only when every receiver it holds is
     // watched: a refused one must still be read afresh every hour.
     let watched = || {
@@ -664,7 +814,7 @@ fn stage_part(
                         .all(|history| history.sequence.is_some()))
         })
     };
-    if verdict.quiet && scratch.roots == *roots && watched() {
+    if verdict.quiet && *live == *roots && watched() {
         staging.counts = Counts {
             reused: roots.iter().filter(|&&root| root != 0).count() as u64,
             quiet: true,
@@ -672,23 +822,27 @@ fn stage_part(
         };
         return Ok(State::Quiet);
     }
+    staging.fresh = !verdict.complete;
+    let mut copy = CopyScratch {
+        windows,
+        menus,
+        fallback,
+        addresses: fallback_addresses,
+    };
     let slot = |index: usize| (part + index * PARTS) as u32;
     let [roots_quiet, histories_quiet] = verdict.sites;
-    std::mem::swap(roots, &mut scratch.roots);
+    std::mem::swap(roots, live);
     if countries.len() < roots.len() {
         reserve(countries, roots.len())?;
         countries.resize_with(roots.len(), Default::default);
     }
     // Slots the registry no longer has certify nothing if it grows again.
-    for country in countries
-        .iter_mut()
-        .take(scratch.roots.len())
-        .skip(roots.len())
-    {
+    for country in countries.iter_mut().take(live.len()).skip(roots.len()) {
         country.reset(0, None);
     }
-    scratch.read.clear();
-    scratch.doubted.clear();
+    read.clear();
+    refresh.clear();
+    doubted.clear();
     let removed = roots
         .iter()
         .zip(countries.iter())
@@ -709,14 +863,23 @@ fn stage_part(
         } else {
             changes.sequence(root)
         };
-        // A changed air object is copied afresh.
-        if !(verdict.complete
-            && country.root == root
-            && sequence.is_some()
-            && sequence == country.sequence)
-        {
-            country.reset(root, sequence);
-            push(&mut scratch.read, index)?;
+        let held = verdict.complete && country.root == root && sequence.is_some();
+        if !(held && sequence == country.sequence) {
+            // Adds name their region: a held country whose every history's
+            // region is watched rereads only what changed.
+            if held
+                && country
+                    .histories
+                    .iter()
+                    .all(|history| history.touch.is_some())
+            {
+                country.sequence = sequence;
+                push(refresh, index)?;
+            } else {
+                // A changed or unwatched air object is copied afresh.
+                country.reset(root, sequence);
+                push(read, index)?;
+            }
             continue;
         }
         counts.reused += 1;
@@ -740,90 +903,209 @@ fn stage_part(
                     history.sequence = now;
                     counts.advanced += 1;
                 }
-                _ => push(&mut scratch.doubted, (index, at, now))?,
+                _ => push(doubted, (index, at, now))?,
             }
         }
     }
-    counts.refreshed = scratch.doubted.len() as u64;
-    counts.read = scratch.read.len() as u64;
-    reserve(&mut staging.replaced, scratch.read.len())?;
+    counts.refreshed = doubted.len() as u64;
+    counts.read = read.len() as u64;
+    counts.reused += refresh.len() as u64;
+    reserve(&mut staging.replaced, read.len())?;
     staging
         .replaced
-        .extend(scratch.read.iter().map(|&index| slot(index)));
+        .extend(read.iter().map(|&index| slot(index)));
     // Histories whose count was not observed, copied on their own.
-    scratch.addresses.clear();
-    scratch.found.clear();
-    reserve_pushes(&mut scratch.addresses, scratch.doubted.len())?;
-    reserve_pushes(&mut scratch.found, scratch.doubted.len())?;
-    for &(index, at, sequence) in &scratch.doubted {
+    addresses.clear();
+    found.clear();
+    reserve_pushes(addresses, doubted.len())?;
+    reserve_pushes(found, doubted.len())?;
+    for &(index, at, sequence) in doubted.iter() {
         let history = &mut countries[index].histories[at];
         history.sequence = sequence;
-        scratch.addresses.push(history.history);
-        scratch.found.push((slot(index), history.region));
+        addresses.push(history.history);
+        found.push((slot(index), history.region));
     }
-    staging.copy_windows(
+    staging.copy_windows(memory, base, addresses, found, &mut copy)?;
+    for (copied, &(index, at, _)) in doubted.iter().enumerate() {
+        countries[index].histories[at].menu = copy.fallback.binary_search(&copied).is_err();
+    }
+    // Countries read whole.
+    targets.clear();
+    reserve(targets, read.len())?;
+    targets.extend(read.iter().map(|&index| roots[index]));
+    if !read.is_empty() || !refresh.is_empty() {
+        let readers = ccountry::Reader::new(memory, base, game_state)?;
+        native::authenticate_roots(memory, base, &readers, targets, |at| slot(read[at]))?;
+        let refreshed = &mut *patch_addresses;
+        refreshed.clear();
+        reserve(refreshed, refresh.len())?;
+        refreshed.extend(refresh.iter().map(|&index| roots[index]));
+        native::authenticate_roots(memory, base, &readers, refreshed, |at| slot(refresh[at]))?;
+    }
+    addresses.clear();
+    found.clear();
+    sequences.clear();
+    native::region_slots(memory, targets, &[], |at, region, history| {
+        push(
+            sequences,
+            (
+                changes.sequence(history),
+                changes.sequence(history_changes::touch_key(targets[at], region)),
+            ),
+        )?;
+        push(addresses, history)?;
+        push(found, (slot(read[at]), region))?;
+        Ok(())
+    })?;
+    staging.copy_windows(memory, base, addresses, found, &mut copy)?;
+    for found in found.chunk_by(|a, b| a.0 == b.0) {
+        reserve_pushes(
+            &mut countries[found[0].0 as usize / PARTS].histories,
+            found.len(),
+        )?;
+    }
+    for (copied, ((&(slot, region), &history), &(sequence, touch))) in found
+        .iter()
+        .zip(addresses.iter())
+        .zip(sequences.iter())
+        .enumerate()
+    {
+        countries[slot as usize / PARTS]
+            .histories
+            .push(HistoryCertificate {
+                region,
+                history,
+                sequence,
+                touch,
+                menu: copy.fallback.binary_search(&copied).is_err(),
+            });
+    }
+    if refresh.is_empty() {
+        return Ok(State::Copied);
+    }
+    // Refreshed countries: each history as its region slot names it now,
+    // against its certificate.
+    targets.clear();
+    reserve(targets, refresh.len())?;
+    targets.extend(refresh.iter().map(|&index| roots[index]));
+    listed.clear();
+    native::region_slots(memory, targets, &[], |at, region, history| {
+        push(listed, (at, region, history))
+    })?;
+    addresses.clear();
+    found.clear();
+    owners.clear();
+    patch_addresses.clear();
+    patch_found.clear();
+    patch_owners.clear();
+    let mut cursor = 0;
+    for (at, &index) in refresh.iter().enumerate() {
+        let end = cursor
+            + listed[cursor..]
+                .iter()
+                .take_while(|entry| entry.0 == at)
+                .count();
+        let root = roots[index];
+        let country = &mut countries[index];
+        merged.clear();
+        reserve_pushes(merged, end - cursor)?;
+        let mut held = 0;
+        for &(_, region, history) in &listed[cursor..end] {
+            while country
+                .histories
+                .get(held)
+                .is_some_and(|certificate| certificate.region < region)
+            {
+                push(
+                    &mut staging.dropped,
+                    (slot(index), country.histories[held].region),
+                )?;
+                held += 1;
+            }
+            let previous = country
+                .histories
+                .get(held)
+                .filter(|certificate| certificate.region == region)
+                .copied();
+            if previous.is_some() {
+                held += 1;
+            }
+            let now = changes.sequence(history);
+            let touch = changes.sequence(history_changes::touch_key(root, region));
+            let mut certificate = HistoryCertificate {
+                region,
+                history,
+                sequence: now,
+                touch,
+                menu: false,
+            };
+            let step = match previous {
+                Some(old) if old.history == history => {
+                    certificate.menu = old.menu;
+                    let advanced = match (old.sequence, now) {
+                        (Some(before), Some(after)) if before == after => Some(0),
+                        (Some((epoch, before)), Some((current, after)))
+                            if epoch == current && after > before =>
+                        {
+                            Some(after - before)
+                        }
+                        _ => None,
+                    };
+                    // Adds write only the daily current record; with an
+                    // advance in the same hour the closed records may differ.
+                    match (advanced, touch.is_some() && touch == old.touch) {
+                        (Some(0), true) => Step::Keep,
+                        (Some(count), true) => Step::Advance(count),
+                        (Some(0), false) if old.menu && touch.is_some() => Step::Patch,
+                        _ => Step::Copy,
+                    }
+                }
+                _ => Step::Copy,
+            };
+            let position = merged.len();
+            match step {
+                Step::Keep => {}
+                Step::Advance(count) => {
+                    push(&mut staging.advances, (slot(index), region, count))?;
+                    staging.counts.advanced += 1;
+                }
+                Step::Patch => {
+                    push(patch_addresses, history)?;
+                    push(patch_found, (slot(index), region))?;
+                    push(patch_owners, (index, position))?;
+                }
+                Step::Copy => {
+                    push(addresses, history)?;
+                    push(found, (slot(index), region))?;
+                    push(owners, (index, position))?;
+                }
+            }
+            merged.push(certificate);
+        }
+        while let Some(certificate) = country.histories.get(held) {
+            push(&mut staging.dropped, (slot(index), certificate.region))?;
+            held += 1;
+        }
+        std::mem::swap(&mut country.histories, merged);
+        cursor = end;
+    }
+    staging.patch(
         memory,
         base,
-        &scratch.addresses,
-        &scratch.found,
-        &mut scratch.windows,
-        &mut scratch.menus,
+        patch_addresses,
+        patch_found,
+        &mut *copy.menus,
+        retry,
     )?;
-    let list = &scratch.read;
-    {
-        scratch.targets.clear();
-        reserve(&mut scratch.targets, list.len())?;
-        scratch
-            .targets
-            .extend(list.iter().map(|&index| roots[index]));
-        if !list.is_empty() {
-            let readers = ccountry::Reader::new(memory, base, game_state)?;
-            native::authenticate_roots(memory, base, &readers, &scratch.targets, |at| {
-                slot(list[at])
-            })?;
-        }
-        scratch.addresses.clear();
-        scratch.found.clear();
-        scratch.sequences.clear();
-        let (addresses, found, sequences) = (
-            &mut scratch.addresses,
-            &mut scratch.found,
-            &mut scratch.sequences,
-        );
-        native::region_slots(memory, &scratch.targets, &[], |at, region, history| {
-            push(sequences, changes.sequence(history))?;
-            push(addresses, history)?;
-            push(found, (slot(list[at]), region))?;
-            Ok(())
-        })?;
-        staging.copy_windows(
-            memory,
-            base,
-            &scratch.addresses,
-            &scratch.found,
-            &mut scratch.windows,
-            &mut scratch.menus,
-        )?;
-        for found in scratch.found.chunk_by(|a, b| a.0 == b.0) {
-            reserve_pushes(
-                &mut countries[found[0].0 as usize / PARTS].histories,
-                found.len(),
-            )?;
-        }
-        for ((&(slot, region), &history), &sequence) in scratch
-            .found
-            .iter()
-            .zip(&scratch.addresses)
-            .zip(&scratch.sequences)
-        {
-            countries[slot as usize / PARTS]
-                .histories
-                .push(HistoryCertificate {
-                    region,
-                    history,
-                    sequence,
-                });
-        }
+    // A history whose current record the menu refused is copied whole.
+    for &at in retry.iter() {
+        push(addresses, patch_addresses[at])?;
+        push(found, patch_found[at])?;
+        push(owners, patch_owners[at])?;
+    }
+    staging.copy_windows(memory, base, addresses, found, &mut copy)?;
+    for (copied, &(index, position)) in owners.iter().enumerate() {
+        countries[index].histories[position].menu = copy.fallback.binary_search(&copied).is_err();
     }
     Ok(State::Copied)
 }
@@ -893,7 +1175,8 @@ impl Captured {
             self.parts
                 .iter()
                 .map(|part| part.windows.len())
-                .sum::<usize>(),
+                .sum::<usize>()
+                .saturating_mul(2),
         )
     }
 
@@ -1017,10 +1300,12 @@ impl Captured {
             return;
         }
         history_changes::record(&counts);
-        if held.apply(&mut self.parts).is_err() {
-            self.rows.fail(Outcome::Unavailable {
-                reason: "collector allocation failed",
-            });
+        if let Err(reason) = held.apply(&mut self.parts) {
+            // The held copy no longer matches the game: the next opened hour
+            // reads every country, and until one decodes nothing publishes.
+            held.poisoned = true;
+            forget_certificates();
+            self.rows.fail(Outcome::Unavailable { reason });
             self.selection.invalidate(fingerprints);
             return;
         }
@@ -1115,9 +1400,9 @@ impl History {
     /// Apply `advances` steps: each moves the current slot
     /// by one, wrapping to zero and setting the wrap flag, and zeroes the
     /// record at the new current slot.
-    fn advance(&mut self, advances: u64) {
+    fn advance(&mut self, advances: u64) -> Result<(), &'static str> {
         if let Some(menu) = &mut self.menu {
-            menu.advance(advances);
+            menu.advance(advances)?;
         }
         let capacity = u64::from(self.state.capacity);
         let from = u64::from(self.state.current);
@@ -1135,6 +1420,7 @@ impl History {
         let next = from + advances;
         self.state.current = (next % capacity) as u32;
         self.state.wrapped |= next >= capacity;
+        Ok(())
     }
 }
 
@@ -1154,6 +1440,9 @@ pub struct Held {
     fingerprints: Option<Box<SliceFingerprints>>,
     /// Per slot, whether this hour changed its histories.
     changed: Vec<bool>,
+    /// An hour's copies did not fit the held histories: none is trusted
+    /// until an hour that read every country afresh.
+    poisoned: bool,
 }
 
 static HELD: Mutex<Held> = Mutex::new(Held::new());
@@ -1171,23 +1460,47 @@ impl Held {
             generation: 0,
             fingerprints: None,
             changed: Vec::new(),
+            poisoned: false,
         }
     }
 
     fn allocated_bytes(&self) -> usize {
-        self.countries.capacity() * size_of::<HeldCountry>() + self.changed.capacity() * size_of::<bool>()
-            + self.countries.iter().map(|country| {
-                country.histories.capacity() * size_of::<History>() + country.histories.iter().map(|history| {
-                    history.records.capacity() * size_of::<(u32, [i64; 9])>()
-                        + history.scenario_failures.capacity() * size_of::<(u32, &'static str)>()
-                        + history.menu.as_ref().map_or(0, |menu| menu.windows.capacity() * size_of::<engine_air_history::menu_history::Window>()
-                            + menu.windows.iter().map(|window| window.records.capacity() * size_of::<[i64; replay_data::rows::AIR_MENU_CHANNELS]>()).sum::<usize>())
-                }).sum::<usize>()
-            }).sum::<usize>()
+        self.countries.capacity() * size_of::<HeldCountry>()
+            + self.changed.capacity() * size_of::<bool>()
+            + self
+                .countries
+                .iter()
+                .map(|country| {
+                    country.histories.capacity() * size_of::<History>()
+                        + country
+                            .histories
+                            .iter()
+                            .map(|history| {
+                                history.records.capacity() * size_of::<(u32, [i64; 9])>()
+                                    + history.scenario_failures.capacity()
+                                        * size_of::<(u32, &'static str)>()
+                                    + history.menu.as_ref().map_or(
+                                        0,
+                                        engine_air_history::menu_history::History::allocated_bytes,
+                                    )
+                            })
+                            .sum::<usize>()
+                })
+                .sum::<usize>()
     }
 
     /// Apply one hour's parts, every one of which completed.
     fn apply(&mut self, parts: &mut [Staging]) -> Result<(), &'static str> {
+        if self.poisoned {
+            if !parts
+                .iter()
+                .all(|part| part.state == State::Copied && part.fresh)
+            {
+                return Err("air history copies await an hour read afresh");
+            }
+            self.countries.clear();
+            self.poisoned = false;
+        }
         // An hour every part reused changes nothing.
         let Some(_) = parts.iter().find(|part| part.state == State::Copied) else {
             return Ok(());
@@ -1208,19 +1521,46 @@ impl Held {
                     self.changed[slot as usize] = true;
                 }
             }
-            for &(slot, region, advances) in &part.advances {
+            for &(slot, region) in &part.dropped {
                 let histories = &mut self.countries[slot as usize].histories;
                 if let Ok(at) = histories.binary_search_by_key(&region, |history| history.region) {
-                    histories[at].advance(advances);
+                    histories.remove(at);
                     self.changed[slot as usize] = true;
                 }
             }
+            for &(slot, region, advances) in &part.advances {
+                let histories = &mut self.countries[slot as usize].histories;
+                let at = histories
+                    .binary_search_by_key(&region, |history| history.region)
+                    .map_err(|_| "air history advance has no held history")?;
+                histories[at].advance(advances)?;
+                self.changed[slot as usize] = true;
+            }
+            for (slot, region, current) in &part.patches {
+                let histories = &mut self.countries[*slot as usize].histories;
+                let history = histories
+                    .binary_search_by_key(region, |history| history.region)
+                    .ok()
+                    .and_then(|at| histories[at].menu.as_mut())
+                    .ok_or("air history current record has no held windows")?;
+                if history.apply_current(current)? {
+                    self.changed[*slot as usize] = true;
+                }
+            }
             for (menu_index, window) in part.windows.iter().enumerate() {
-                let channels =
-                    &part.channels[window.offset..window.offset + window.state.capacity as usize];
+                // A menu copy carries every window; only a ring copy has channels.
+                let len = if part.menus.get(menu_index).is_some_and(Option::is_some) {
+                    0
+                } else {
+                    window.state.capacity as usize
+                };
+                let channels = part
+                    .channels
+                    .get(window.offset..window.offset + len)
+                    .ok_or("air history channel arena incomplete")?;
                 let failures = part
                     .scenario_failures
-                    .get(window.offset..window.offset + window.state.capacity as usize)
+                    .get(window.offset..window.offset + len)
                     .ok_or("air history scenario refusal arena incomplete")?;
                 let mut history = History::copied(window.region, window.state, channels, failures)?;
                 history.menu = part.menus.get_mut(menu_index).and_then(Option::take);
@@ -1283,15 +1623,10 @@ impl Held {
                     .iter()
                     .try_fold(needed.checked_add(1)?, |needed, history| {
                         let rows = match &history.menu {
-                            Some(menu) => menu.windows.iter().try_fold(0usize, |rows, window| {
-                                rows.checked_add(1)?.checked_add(
-                                    window
-                                        .records
-                                        .iter()
-                                        .filter(|record| record.iter().any(|&value| value != 0))
-                                        .count(),
-                                )
-                            }),
+                            Some(menu) => menu
+                                .records
+                                .len()
+                                .checked_add(engine_air_history::menu_history::LEVELS),
                             None => history.records.len().checked_add(1),
                         }?;
                         needed.checked_add(rows)
@@ -1321,19 +1656,19 @@ impl Held {
             }
             for history in &country.histories {
                 if let Some(menu) = &history.menu {
+                    let mut records = menu.records.iter().peekable();
                     for (level, window) in menu.windows.iter().enumerate() {
-                        for (index, values) in window.records.iter().enumerate() {
-                            if values.iter().all(|&value| value == 0) {
-                                continue;
-                            }
+                        while let Some(record) =
+                            records.next_if(|record| usize::from(record.level) == level)
+                        {
                             let mut row = AirNavalPatrolHistoryRow {
                                 country: slot as u32,
                                 region: history.region,
                                 level: level as u8,
-                                index: index as u32,
+                                index: record.slot,
                                 ..Default::default()
                             };
-                            row.set_channels(values);
+                            row.set_channels(&record.values);
                             emit(row);
                         }
                         emit(AirNavalPatrolHistoryRow::window_marker(
@@ -1341,7 +1676,7 @@ impl Held {
                             history.region,
                             level as u8,
                             replay_data::rows::AirHistoryWindow {
-                                capacity: window.records.len() as u32,
+                                capacity: window.capacity,
                                 current: window.current,
                                 wrapped: window.wrapped,
                                 complete: true,
@@ -1485,7 +1820,7 @@ mod tests {
         let channels = [[1, 0], [2, 0], [0, 0], [4, 4], [5, 0]].map(test_channels);
         let mut history = History::new(7, state(3, false), &channels).unwrap();
         // Current 3 -> 4 -> 0: records 4 and 0 are zeroed and the window wraps.
-        history.advance(2);
+        history.advance(2).unwrap();
         assert_eq!(history.state, state(0, true));
         assert_eq!(
             history.records,
@@ -1493,11 +1828,11 @@ mod tests {
         );
         // A whole lap zeroes every record, the old current one last.
         let mut lap = History::new(7, state(3, true), &channels).unwrap();
-        lap.advance(5);
+        lap.advance(5).unwrap();
         assert_eq!(lap.state, state(3, true));
         assert!(lap.records.is_empty());
         let mut short = History::new(7, state(3, true), &channels).unwrap();
-        short.advance(4);
+        short.advance(4).unwrap();
         assert_eq!(short.records, [(3, test_channels([4, 4]))]);
     }
 
@@ -1592,7 +1927,7 @@ mod tests {
             held.countries[0].histories[0].scenario_failures,
             [(1, native::SCENARIO_REFUSALS[6])]
         );
-        held.countries[0].histories[0].advance(3);
+        held.countries[0].histories[0].advance(3).unwrap();
         assert!(held.countries[0].histories[0].scenario_failures.is_empty());
         assert_eq!(
             held.publish(&selection, &mut rows),
@@ -1629,7 +1964,7 @@ mod tests {
         assert_eq!(rows[1].index, 1);
         assert!(rows[2].is_menu());
         assert_eq!(rows[3], AirNavalPatrolHistoryRow::availability_witness(1));
-        held.countries[1].histories[0].advance(5);
+        held.countries[1].histories[0].advance(5).unwrap();
         assert_eq!(
             held.publish(&selection, &mut rows),
             Outcome::Rows { len: 3 }
@@ -1694,6 +2029,8 @@ mod tests {
                     region,
                     history: 0x1000 + region as usize,
                     sequence: Some((1, 2)),
+                    touch: None,
+                    menu: false,
                 })
                 .collect();
         }
@@ -1795,8 +2132,12 @@ mod tests {
                 BASE,
                 &histories,
                 &found,
-                &mut native::WindowScratch::new(),
-                &mut engine_air_history::menu_history::Scratch::new(),
+                &mut CopyScratch {
+                    windows: &mut native::WindowScratch::new(),
+                    menus: &mut engine_air_history::menu_history::Scratch::new(),
+                    fallback: &mut Vec::new(),
+                    addresses: &mut Vec::new(),
+                },
             )
             .unwrap();
         for window in &staging.windows {
@@ -1933,6 +2274,77 @@ mod tests {
             certificates.scratch.windows.size(1).unwrap();
         }
         assert_eq!(hour.allocated(&frame), before + scratch);
+    }
+
+    /// A history changed only by adds takes its daily current record alone;
+    /// one that moved without an observed advance refuses the hour, and the
+    /// held copy stays refused until an hour read every country afresh.
+    #[test]
+    fn a_current_record_patch_applies_only_where_the_held_windows_stand() {
+        use engine_air_history::menu_history::{
+            CHANNELS, Current, History as Menu, Window as Level,
+        };
+        let windows = [30, 12, 5].map(|capacity| Level {
+            capacity,
+            current: 2,
+            wrapped: false,
+        });
+        let daily = WindowState {
+            history: 0x1000,
+            capacity: 30,
+            current: 2,
+            wrapped: false,
+        };
+        let mut history = History::copied(7, daily, &[], &[]).unwrap();
+        history.menu = Some(Menu {
+            roll_up: 0,
+            windows,
+            records: Vec::new(),
+        });
+        let mut held = Held::new();
+        held.countries = vec![
+            HeldCountry::default(),
+            HeldCountry {
+                histories: vec![history],
+                generation: 1,
+            },
+        ];
+        let mut values = [0; CHANNELS];
+        values[3] = 11;
+        let mut part = Staging {
+            slots: 2,
+            state: State::Copied,
+            ..Staging::default()
+        };
+        part.patches.push((
+            1,
+            7,
+            Current {
+                roll_up: 0,
+                windows,
+                values,
+            },
+        ));
+        held.apply(std::slice::from_mut(&mut part)).unwrap();
+        let menu = held.countries[1].histories[0].menu.as_ref().unwrap();
+        assert_eq!(menu.records.len(), 1);
+        assert_eq!((menu.records[0].level, menu.records[0].slot), (0, 2));
+        assert!(held.changed[1]);
+        let mut moved = windows;
+        moved[0].current = 3;
+        part.patches[0].2.windows = moved;
+        assert!(held.apply(std::slice::from_mut(&mut part)).is_err());
+        held.poisoned = true;
+        part.patches.clear();
+        assert!(held.apply(std::slice::from_mut(&mut part)).is_err());
+        part.fresh = true;
+        held.apply(std::slice::from_mut(&mut part)).unwrap();
+        assert!(!held.poisoned);
+        assert!(
+            held.countries
+                .iter()
+                .all(|country| country.histories.is_empty())
+        );
     }
 
     #[test]
@@ -2119,33 +2531,7 @@ pub mod hour {
             let certificates: usize = self
                 .certificates
                 .iter()
-                .map(|certificates| {
-                    let Certificates {
-                        roots,
-                        countries,
-                        scratch,
-                        ..
-                    } = certificates;
-                    let words = [
-                        roots.capacity(),
-                        scratch.roots.capacity(),
-                        scratch.read.capacity(),
-                        scratch.targets.capacity(),
-                        scratch.addresses.capacity(),
-                        scratch.found.capacity(),
-                    ];
-                    let histories: usize = countries
-                        .iter()
-                        .map(|country| country.histories.capacity())
-                        .sum();
-                    words.iter().sum::<usize>() * 8
-                        + scratch.doubted.capacity() * size_of::<(usize, usize, Sequence)>()
-                        + scratch.sequences.capacity() * size_of::<Sequence>()
-                        + scratch.windows.allocated_bytes()
-                        + scratch.menus.allocated_bytes()
-                        + countries.capacity() * size_of::<CountryCertificate>()
-                        + histories * size_of::<HistoryCertificate>()
-                })
+                .map(Certificates::allocated_bytes)
                 .sum();
             frame.allocated_bytes() + certificates
         }

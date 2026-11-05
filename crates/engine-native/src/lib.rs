@@ -16,6 +16,7 @@ pub mod agency_upgrade_branch_database;
 pub mod agency_upgrade_levels;
 pub mod air_fuel_defines;
 pub mod air_mission;
+pub mod air_power_menu;
 pub mod template_hq_context;
 pub use engine_allocation as allocation;
 pub mod allocation_equipment_row;

@@ -101,6 +101,7 @@ pub(crate) struct GovernanceReport {
     pub buildings: u64,
 }
 impl GovernanceRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.captured.allocated_bytes() + self.buildings.allocated_bytes()
     }
@@ -123,6 +124,7 @@ pub(crate) struct VariantsRequest {
     pub workers: variant_workers::Dispatch,
 }
 impl VariantsRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.registry.allocated_bytes()
             + self.variants.allocated_bytes()
@@ -209,6 +211,7 @@ pub(crate) struct OrdinaryRequest {
     pub counters: Option<Box<crate::extended::country_counters::CounterStore>>,
 }
 impl OrdinaryRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.packs.allocated_bytes()
     }
@@ -229,6 +232,7 @@ pub(crate) struct OrdinaryPartRequest {
     pub part: crate::extended::OrdinaryPart,
 }
 impl OrdinaryPartRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.part.allocated_bytes()
     }
@@ -415,6 +419,19 @@ pub(crate) struct LateRequest {
 pub(crate) struct LateReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ScoresRailsReport;
+/// The regional Air supply, read from the game state alone in the first
+/// burst; its capture joins the air pack at the missions join, and the Late
+/// job merges it into Ground Crews.
+pub(crate) struct AirSupplyRequest {
+    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub capture: Box<engine_map_air::map_air_supply::Capture>,
+    /// The read completed; set by the job.
+    pub ok: bool,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AirSupplyReport;
 /// One OrdersPart job's part of this pass's census and plan walk
 /// ([`crate::orders_parts`]), returned to the census at the Orders join.
 pub(crate) struct OrdersPartRequest {
@@ -503,10 +520,6 @@ pub(crate) struct OrdersRequest {
     pub group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        self.orders.allocated_bytes() + self.plans.allocated_bytes()
-    }
-
     /// The OrdersStitch job: this pass's census and plan parts stitched into
     /// the single census and plans, then every other pass over them as the
     /// single Orders job made them; plans the next pass's split. A census a
@@ -704,10 +717,6 @@ pub(crate) struct PresentationRequest {
     pub army_stats: Option<division_presentation::held_store::Loan>,
 }
 impl PresentationRequest {
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        self.captured.allocated_bytes()
-    }
-
     /// Lend the movement pass to its own job, which runs beside this one.
     pub(crate) fn take_movement(&mut self) -> PresentationMovementRequest {
         PresentationMovementRequest {
@@ -778,6 +787,7 @@ pub(crate) struct PresentationSpeedTermsRequest {
     pub pass: division_presentation::SpeedTermsPass,
 }
 impl PresentationSpeedTermsRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.pass.allocated_bytes()
     }
@@ -789,11 +799,6 @@ pub(crate) struct PresentationMovementRequest {
     pub context: division_presentation::CaptureContext,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
     pub pass: division_presentation::MovementPass,
-}
-impl PresentationMovementRequest {
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        self.pass.allocated_bytes()
-    }
 }
 pub(crate) struct IntelRequest {
     pub countries: Arc<engine_native::country_memory::Cache>,
@@ -903,6 +908,7 @@ pub(crate) enum Job {
     AirHistories(AirHistoriesRequest),
     Late(LateRequest),
     ScoresRails(ScoresRailsRequest),
+    AirSupply(AirSupplyRequest),
     ArmyIcons(ArmyIconsRequest),
     DivisionModelInputs(DivisionModelInputsRequest),
     /// The Orders job: part 0 of this pass's census and plan walk.
@@ -989,6 +995,7 @@ pub(crate) enum Report {
     AirHistories(AirHistoriesReport),
     Late(LateReport),
     ScoresRails(ScoresRailsReport),
+    AirSupply(AirSupplyReport),
     ArmyIcons(ScoresRailsReport),
     DivisionModelInputs(DivisionModelInputsReport),
     Orders(OrdersReport),
@@ -1098,6 +1105,7 @@ pub(crate) enum Role {
     PresentationSettle,
     DivisionModelInputs,
     GatedProjects,
+    AirSupply,
 }
 
 impl Role {
@@ -1144,6 +1152,7 @@ impl Role {
                 | Role::Countries
                 | Role::Wars
                 | Role::States
+                | Role::AirSupply
         )
     }
 
@@ -1210,6 +1219,7 @@ impl Role {
             Self::AirHistories => T::AirNavalPatrolHistories,
             Self::Late => T::WingEquipment,
             Self::ScoresRails => T::RaidAirScores,
+            Self::AirSupply => T::AirGroundCrews,
             Self::ArmyIcons => T::ArmyIconInputs,
             Self::Orders | Self::OrderRoots => T::ArmyOrders,
             Self::OrdersPart => T::ArmyOrders,
@@ -1303,6 +1313,8 @@ impl Role {
             // Its join gates the Late dispatch, and through it FinalInputs, which ends the
             // hour: at priority 3 it started 9.3 ms in and its join held Late to 10.7 ms.
             | Self::ScoresRails
+            // Its join gates the missions join beside ScoresRails.
+            | Self::AirSupply
             // FinalInputs' sources: at priority 2 the residual started 7 ms in, after its
             // queueing at 0.8 ms, and ended 9 ms in.
             | Self::IntelResidual
@@ -1364,7 +1376,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 80;
+pub(crate) const ROLE_COUNT: usize = 81;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -1446,6 +1458,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::PresentationSettle,
     Role::DivisionModelInputs,
     Role::GatedProjects,
+    Role::AirSupply,
 ];
 impl Job {
     fn callback_help(&self) -> bool {
@@ -1578,6 +1591,7 @@ impl Job {
             Self::AirHistories(..) => Role::AirHistories,
             Self::Late(..) => Role::Late,
             Self::ScoresRails(..) => Role::ScoresRails,
+            Self::AirSupply(..) => Role::AirSupply,
             Self::ArmyIcons(..) => Role::ArmyIcons,
             Self::DivisionModelInputs(..) => Role::DivisionModelInputs,
             Self::OrderRoots(..) => Role::OrderRoots,
@@ -2077,6 +2091,7 @@ fn run_with_memory(
                     context.hour,
                     request.workers.lanes(),
                     |parts| request.workers.context(parts, memory, context.base),
+                    |parts| request.workers.snapshots(parts, memory, context.base),
                 );
             });
             request.changes_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
@@ -2372,7 +2387,23 @@ fn run_with_memory(
                 &request.packs.orders,
             );
             request.packs.ticks[replay_data::rows::TableId::DivisionMovement.index()] += cost;
+            request
+                .packs
+                .air
+                .merge_ground_supply(&request.countries.bytes_view(memory), request.base);
             Report::Late(LateReport)
+        }
+        Job::AirSupply(request) => {
+            // Countries resolve from the hour's snapshot bytes, as in the AirMissions joins.
+            request.ok = request
+                .capture
+                .read(
+                    &request.countries.bytes_view(memory),
+                    request.base,
+                    request.game_state,
+                )
+                .is_ok();
+            Report::AirSupply(AirSupplyReport)
         }
         Job::ScoresRails(request) => {
             let parts = &mut *request.parts;

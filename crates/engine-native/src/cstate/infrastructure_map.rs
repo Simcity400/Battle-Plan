@@ -1,5 +1,4 @@
-use crate::{Memory, cbuilding, cbuilding_database, cbuilding_status as status, cbuilding_template as template, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, modifier_accumulator, read};
-use std::collections::BTreeMap;
+use crate::{Memory, cbuilding, cbuilding_database, cbuilding_status as status, cbuilding_template as template, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, memory::{RecordField, RecordLayout, RecordSources, gather_records, packed_fields}, modifier_accumulator, read};
 
 const INFRASTRUCTURE_DEFINITIONS: usize = 0x280;
 const STATE_MAXIMUM: usize = 0x2b8;
@@ -34,6 +33,15 @@ const GLOBAL_BUILDING_SLOTS: u32 = 0xa1;
 const GLOBAL_BUILDING_SLOTS_FACTOR: u32 = 0xa2;
 const LOCAL_BUILDING_SLOTS: u32 = 0xa3;
 const LOCAL_BUILDING_SLOTS_FACTOR: u32 = 0xa4;
+/// The instance's operands no hooked writer covers: both construction queue headers and the level
+/// bonus, in one record.
+const QUEUE_FIELDS: [RecordField; 3] = packed_fields([(PRIMARY_CONSTRUCTION, 16), (SECONDARY_CONSTRUCTION, 16), (MAXIMUM_BONUS, 2)]);
+pub const QUEUE_BYTES: usize = 34;
+const QUEUE_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&QUEUE_FIELDS, QUEUE_BYTES) {
+    Some(layout) => layout,
+    None => panic!("valid infrastructure queue layout"),
+};
+pub type Queue = [u8; QUEUE_BYTES];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Infrastructure {
@@ -74,10 +82,36 @@ fn building(memory: &impl Memory, base: usize, status: usize, definition: usize)
 }
 
 fn construction(memory: &impl Memory, building: usize) -> Result<(i16, i16), &'static str> {
+    let headers = [PRIMARY_CONSTRUCTION, SECONDARY_CONSTRUCTION].map(|offset| array(memory, building, offset, 8));
+    construction_of(memory, [headers[0]?, headers[1]?])
+}
+
+fn queue(memory: &impl Memory, building: usize) -> Result<Queue, &'static str> {
+    let mut bytes = [0; QUEUE_BYTES];
+    if memory.copy_records(RecordSources::Pointers(&[building]), &QUEUE_LAYOUT, &mut bytes) != QUEUE_FIELDS.len() {
+        return Err("infrastructure map construction queue unreadable");
+    }
+    Ok(bytes)
+}
+
+fn queue_headers(queue: &Queue) -> Result<[Array; 2], &'static str> {
+    let header = |at: usize| Array::from_header(queue[at..at + 16].try_into().unwrap(), 8).ok_or("infrastructure map array invalid");
+    Ok([header(0)?, header(16)?])
+}
+
+fn queue_bonus(queue: &Queue) -> i16 {
+    i16::from_le_bytes([queue[32], queue[33]])
+}
+
+/// One gather of every instance's [`Queue`], `QUEUE_BYTES` per instance in `bytes`.
+pub fn gather_queues(memory: &impl Memory, instances: &[usize], bytes: &mut [u8], complete: &mut [bool]) {
+    gather_records(memory, instances, &QUEUE_LAYOUT, &mut bytes[..instances.len() * QUEUE_BYTES], &mut complete[..instances.len()]);
+}
+
+fn construction_of(memory: &impl Memory, headers: [Array; 2]) -> Result<(i16, i16), &'static str> {
     let mut ordinary = 0i16;
     let mut conversion = 0i16;
-    for (offset, sum) in [(PRIMARY_CONSTRUCTION, false), (SECONDARY_CONSTRUCTION, true)] {
-        let entries = array(memory, building, offset, 8)?;
+    for (entries, sum) in [(headers[0], false), (headers[1], true)] {
         let mut levels = 0i16;
         for index in 0..entries.count {
             let entry = entries.element(index, 8).and_then(|address| read::<u64>(memory, address)).filter(|&entry| entry != 0).ok_or("infrastructure map construction pointer invalid")? as usize;
@@ -168,8 +202,12 @@ fn free_slots(memory: &impl Memory, base: usize, game: usize, state: usize, coun
     Ok(maximum.wrapping_sub(occupied).max(0))
 }
 
-struct Inputs {
+/// The infrastructure definition's operands. Content, so a later hour reuses them while the
+/// database and definition pointers are unchanged.
+pub struct Plan {
+    database: usize,
     definition: usize,
+    ordinal: u32,
     token: u32,
     maximum: i32,
     state_maximum: i32,
@@ -180,105 +218,352 @@ struct Inputs {
     fort: bool,
 }
 
-impl Inputs {
-    fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+impl Plan {
+    fn locate(memory: &impl Memory, base: usize) -> Result<(usize, usize), &'static str> {
         let database = field::<u64>(memory, base, cbuilding_database::SINGLETON_RVA)? as usize;
         let definitions = array(memory, database, INFRASTRUCTURE_DEFINITIONS, 8)?;
         let definition = definitions.element(0, 8).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map definition unavailable")? as usize;
+        Ok((database, definition))
+    }
+
+    fn read(memory: &impl Memory, base: usize, (database, definition): (usize, usize)) -> Result<Self, &'static str> {
         authenticate(memory, base, definition, template::VTABLE_RVA)?;
-        let province_maximum = field::<i32>(memory, definition, PROVINCE_MAXIMUM)?;
+        // The game's province cap reads the province of the status, which a state's status has none of.
+        if field::<i32>(memory, definition, PROVINCE_MAXIMUM)? > 0 { return Err("infrastructure map province-capped definition unsupported"); }
         let state_maximum = field::<i32>(memory, definition, STATE_MAXIMUM)?;
-        let maximum = if province_maximum > 0 { province_maximum } else if state_maximum > 0 { state_maximum } else { field(memory, base, DEFAULT_MAXIMUM)? };
+        let maximum = if state_maximum > 0 { state_maximum } else { field(memory, base, DEFAULT_MAXIMUM)? };
         let entries = array(memory, definition, EXCLUSIVE, 4)?;
         let mut exclusive = Vec::new();
         crate::allocation::reserve(&mut exclusive, entries.count as usize).map_err(|_| "infrastructure map exclusivity allocation failed")?;
         for index in 0..entries.count {
             exclusive.push(entries.element(index, 4).and_then(|address| read(memory, address)).ok_or("infrastructure map exclusivity token unreadable")?);
         }
-        Ok(Self { definition, token: field(memory, definition, template::TYPE_ID)?, maximum, state_maximum, group: field(memory, definition, GROUP)?, exclusive, shares_slots: field::<u8>(memory, definition, SHARES_SLOTS)? != 0, technology: field::<i32>(memory, definition, ENABLE_TECHNOLOGIES)? != 0, fort: field::<i32>(memory, definition, FORT_WEIGHTS[0])? > 0 || field::<i32>(memory, definition, FORT_WEIGHTS[1])? > 0 })
+        Ok(Self {
+            database,
+            definition,
+            ordinal: field(memory, definition, template::DATABASE_ORDINAL)?,
+            token: field(memory, definition, template::TYPE_ID)?,
+            maximum,
+            state_maximum,
+            group: field(memory, definition, GROUP)?,
+            exclusive,
+            shares_slots: field::<u8>(memory, definition, SHARES_SLOTS)? != 0,
+            technology: field::<i32>(memory, definition, ENABLE_TECHNOLOGIES)? != 0,
+            fort: field::<i32>(memory, definition, FORT_WEIGHTS[0])? > 0 || field::<i32>(memory, definition, FORT_WEIGHTS[1])? > 0,
+        })
     }
 
-    fn state(&self, memory: &impl Memory, base: usize, game: usize, state: usize, countries: &ccountry::Reader<'_, impl Memory>, technologies: &mut BTreeMap<u32, i32>) -> Result<Infrastructure, &'static str> {
-        let status = state.checked_add(cstate::BUILDING_STATUS).ok_or("infrastructure map status overflow")?;
-        let instance = building(memory, base, status, self.definition)?;
-        let (level, aggregate, bonus) = match instance {
-            Some(building) => {
-                let level = field::<i16>(memory, building, cbuilding::LEVEL)?;
-                let (queued, conversion) = construction(memory, building)?;
-                (i32::from(level), i32::from(level.wrapping_add(queued).wrapping_add(conversion)), i32::from(field::<i16>(memory, building, MAXIMUM_BONUS)?))
-            }
-            None => (0, 0, 0),
+    fn allocated_bytes(&self) -> usize {
+        self.exclusive.capacity() * size_of::<u32>()
+    }
+}
+
+/// Whether an exclusive building type has levels queued in `status`: the game walks the building
+/// database from its second template and looks each instance up by ordinal.
+fn exclusive_queued(memory: &impl Memory, plan: &Plan, status: usize) -> Result<bool, &'static str> {
+    let templates = array(memory, plan.database, cbuilding_database::TEMPLATES, cbuilding_database::TEMPLATE_STRIDE)?;
+    let indices = array(memory, status, status::BUILDING_INDICES, 4)?;
+    let buildings = array(memory, status, status::BUILDINGS, 8)?;
+    for at in 1..templates.count {
+        let definition = templates.element(at, cbuilding_database::TEMPLATE_STRIDE).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map building template unreadable")? as usize;
+        if !plan.exclusive.contains(&field(memory, definition, template::TYPE_ID)?) { continue; }
+        let ordinal = field::<u32>(memory, definition, template::DATABASE_ORDINAL)?;
+        let index = indices.element(ordinal, 4).and_then(|address| read::<i32>(memory, address)).ok_or("infrastructure map building index invalid")?;
+        if index == status::NO_BUILDING_INDEX { continue; }
+        let candidate = u32::try_from(index).ok().and_then(|index| buildings.element(index, 8)).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map building pointer invalid")? as usize;
+        if candidate == 0 { continue; }
+        let (ordinary, conversion) = construction(memory, candidate)?;
+        if ordinary.wrapping_add(conversion) > 0 { return Ok(true); }
+    }
+    Ok(false)
+}
+
+/// What a fresh read learnt from the state's own building status that only hooked building
+/// writers change (the definition's instance, its level, whether the status names a country),
+/// and the controller, which only hooked territory writers change. Every such writer marks the
+/// state, so a state no writer marked since keeps them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    instance: Option<usize>,
+    level: i16,
+    country: bool,
+    controller: u32,
+}
+
+impl Held {
+    /// The building instance whose [`Queue`] proves a quiet hour.
+    pub fn instance(&self) -> Option<usize> {
+        self.instance
+    }
+}
+
+/// The operands one read used that no writer marks, and the value they gave: an hour whose
+/// operands are all equal publishes the value without reading the state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Proof {
+    queue: Option<Queue>,
+    category: u64,
+    fort: Option<i32>,
+    technology: Option<i32>,
+    value: Infrastructure,
+}
+
+impl Proof {
+    pub fn value(&self) -> Infrastructure {
+        self.value
+    }
+}
+
+/// Owned by the caller across hours: the plan and the storage of the hour-scoped caches.
+#[derive(Default)]
+pub struct Cache {
+    plan: Option<Plan>,
+    generation: u64,
+    /// By canonical slot: the hour that read the controller's limit, and the limit.
+    technologies: Vec<(u64, i32)>,
+    /// This hour's authenticated categories and their limits.
+    categories: Vec<(usize, i32)>,
+    /// This hour's resolved controllers by raw id.
+    controllers: Vec<(u32, ccountry::Country)>,
+}
+
+impl Cache {
+    /// The next hour reads the plan afresh.
+    pub fn forget(&mut self) {
+        self.plan = None;
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.plan.as_ref().map_or(0, Plan::allocated_bytes)
+            + self.technologies.capacity() * size_of::<(u64, i32)>()
+            + self.categories.capacity() * size_of::<(usize, i32)>()
+            + self.controllers.capacity() * size_of::<(u32, ccountry::Country)>()
+    }
+}
+
+/// One hour's infrastructure reads. Global operands are read once for the hour, a controller's
+/// resolution and technology limit and a category's limit once per distinct one.
+pub struct Hour<'a, M: Memory> {
+    memory: &'a M,
+    base: usize,
+    game: usize,
+    plan: &'a Plan,
+    generation: u64,
+    technologies: &'a mut Vec<(u64, i32)>,
+    categories: &'a mut Vec<(usize, i32)>,
+    controllers: &'a mut Vec<(u32, ccountry::Country)>,
+    countries: Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+    fort: Option<Result<i32, &'static str>>,
+    states: Option<Result<Array, &'static str>>,
+}
+
+impl<'a, M: Memory> Hour<'a, M> {
+    /// `reuse` keeps a held plan whose pointers still hold; otherwise the plan is read afresh.
+    pub fn new(memory: &'a M, base: usize, game: usize, cache: &'a mut Cache, reuse: bool) -> Result<Self, &'static str> {
+        let Cache { plan, generation, technologies, categories, controllers } = cache;
+        let located = Plan::locate(memory, base);
+        let held = reuse && matches!((&*plan, located), (Some(plan), Ok(at)) if (plan.database, plan.definition) == at);
+        if !held {
+            *plan = None;
+            *plan = Some(Plan::read(memory, base, located?)?);
+        }
+        let plan: &'a Plan = match plan {
+            Some(plan) => plan,
+            None => return Err("infrastructure map definition unavailable"),
         };
-        let category = field::<u64>(memory, state, cstate::CATEGORY)? as usize;
-        authenticate(memory, base, category, cstate::CATEGORY_VTABLE_RVA)?;
-        let mut maximum = self.maximum.min(category_limit(memory, category, self.token, self.maximum)?.wrapping_add(bonus));
-        if field::<i32>(memory, status, status::COUNTRY)? > 0 {
+        *generation = generation.wrapping_add(1);
+        categories.clear();
+        controllers.clear();
+        Ok(Self { memory, base, game, plan, generation: *generation, technologies, categories, controllers, countries: None, fort: None, states: None })
+    }
+
+    /// Whether every operand this plan reads is either held or in a [`Proof`]; a plan that walks
+    /// other buildings, provinces or slot modifiers reads each state every hour.
+    pub fn proves(&self) -> bool {
+        self.plan.exclusive.is_empty() && !self.plan.shares_slots && (self.plan.state_maximum <= 0 || self.plan.group == NO_GROUP)
+    }
+
+    fn countries(&mut self) -> Result<&ccountry::Reader<'a, M>, &'static str> {
+        let (memory, base, game) = (self.memory, self.base, self.game);
+        self.countries.get_or_insert_with(|| ccountry::Reader::new(memory, base, game)).as_ref().map_err(|reason| *reason)
+    }
+
+    fn fort(&mut self) -> Result<i32, &'static str> {
+        let (memory, game) = (self.memory, self.game);
+        *self.fort.get_or_insert_with(|| {
+            let rules = field::<u64>(memory, game, GAME_RULES)? as usize;
+            field::<i32>(memory, rules, FORT_MAXIMUM)
+        })
+    }
+
+    fn category(&mut self, category: usize) -> Result<i32, &'static str> {
+        if let Some(&(_, limit)) = self.categories.iter().find(|(held, _)| *held == category) {
+            return Ok(limit);
+        }
+        authenticate(self.memory, self.base, category, cstate::CATEGORY_VTABLE_RVA)?;
+        let limit = category_limit(self.memory, category, self.plan.token, self.plan.maximum)?;
+        if crate::allocation::reserve(self.categories, 1).is_ok() {
+            self.categories.push((category, limit));
+        }
+        Ok(limit)
+    }
+
+    fn controller(&mut self, raw: u32) -> Result<ccountry::Country, &'static str> {
+        if let Some(&(_, country)) = self.controllers.iter().find(|(held, _)| *held == raw) {
+            return Ok(country);
+        }
+        let country = self.countries()?.resolve(raw)?;
+        if crate::allocation::reserve(self.controllers, 1).is_ok() {
+            self.controllers.push((raw, country));
+        }
+        Ok(country)
+    }
+
+    fn technology(&mut self, raw: u32) -> Result<i32, &'static str> {
+        let controller = self.controller(raw)?;
+        let slot = controller.canonical_slot as usize;
+        if let Some(&(generation, limit)) = self.technologies.get(slot)
+            && generation == self.generation
+        {
+            return Ok(limit);
+        }
+        let status = field::<u64>(self.memory, controller.pointer, ccountry::TECHNOLOGY_STATUS)? as usize;
+        let limits = array(self.memory, status, TECHNOLOGY_LIMITS, 4)?;
+        let limit = limits.element(self.plan.ordinal, 4).and_then(|address| read::<i32>(self.memory, address)).ok_or("infrastructure map technology limit unavailable")?;
+        if slot < self.technologies.len() || crate::allocation::resize_default(self.technologies, slot + 1).is_ok() {
+            self.technologies[slot] = (self.generation, limit);
+        }
+        Ok(limit)
+    }
+
+    /// The state object of census row `id`, authenticated by its own identity.
+    pub fn state_of(&mut self, id: u32) -> Result<usize, &'static str> {
+        let (memory, game) = (self.memory, self.game);
+        let states = (*self.states.get_or_insert_with(|| array(memory, game, cgame_state::STATES, 8)))?;
+        let state = states.element(id, 8).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map state pointer unreadable")? as usize;
+        authenticate(memory, self.base, state, cstate::VTABLE_RVA)?;
+        if field::<u32>(memory, state, cstate::ID)? != id { return Err("infrastructure map state identity mismatch"); }
+        Ok(state)
+    }
+
+    /// The authenticated `state` read afresh, with what later hours may hold.
+    pub fn fresh(&mut self, state: usize) -> Result<(Held, Proof), &'static str> {
+        let status = state.checked_add(cstate::BUILDING_STATUS).ok_or("infrastructure map status overflow")?;
+        let instance = building(self.memory, self.base, status, self.plan.definition)?;
+        let level = match instance { Some(building) => field::<i16>(self.memory, building, cbuilding::LEVEL)?, None => 0 };
+        let country = field::<i32>(self.memory, status, status::COUNTRY)? > 0;
+        let controller = if self.plan.technology { field::<u32>(self.memory, state, cstate::CONTROLLER)? } else { 0 };
+        let held = Held { instance, level, country, controller };
+        Ok((held, self.carried(state, held)?))
+    }
+
+    /// Whether `proof` still holds for a state no writer marked since it was taken: `queue` is
+    /// its instance's gathered [`Queue`] (none without an instance) and `category` its category
+    /// pointer this hour. Reads no state; a queued construction is never proven, since its
+    /// entries are separate objects.
+    pub fn quiet(&mut self, held: &Held, proof: &Proof, queue: Option<&Queue>, category: u64) -> bool {
+        if !self.proves() || proof.category != category {
+            return false;
+        }
+        match (held.instance, queue, &proof.queue) {
+            (Some(_), Some(queue), Some(held_queue)) if queue == held_queue => {
+                if !queue_headers(queue).is_ok_and(|headers| headers.iter().all(|entries| entries.count == 0)) {
+                    return false;
+                }
+            }
+            (None, None, None) => {}
+            _ => return false,
+        }
+        if !held.country {
+            if self.plan.fort && self.fort().ok() != proof.fort {
+                return false;
+            }
+            if self.plan.technology && self.technology(held.controller).ok() != proof.technology {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `state` with `held` from an earlier hour, when no writer that marks it has run since;
+    /// everything else is read now.
+    pub fn carried(&mut self, state: usize, held: Held) -> Result<Proof, &'static str> {
+        let (memory, base, plan) = (self.memory, self.base, self.plan);
+        let status = state.checked_add(cstate::BUILDING_STATUS).ok_or("infrastructure map status overflow")?;
+        let (queued_record, queued, conversion, bonus) = match held.instance {
+            Some(building) => {
+                let record = queue(memory, building)?;
+                let (queued, conversion) = construction_of(memory, queue_headers(&record)?)?;
+                (Some(record), queued, conversion, i32::from(queue_bonus(&record)))
+            }
+            None => (None, 0, 0, 0),
+        };
+        let level = i32::from(held.level);
+        let aggregate = i32::from(held.level.wrapping_add(queued).wrapping_add(conversion));
+        let category = field::<u64>(memory, state, cstate::CATEGORY)?;
+        let mut maximum = plan.maximum.min(self.category(category as usize)?.wrapping_add(bonus));
+        let (mut fort_read, mut technology_read) = (None, None);
+        if held.country {
             maximum = i32::MAX;
         } else {
-            if self.fort {
-                let rules = field::<u64>(memory, game, GAME_RULES)? as usize;
-                let fort = field::<i32>(memory, rules, FORT_MAXIMUM)?;
+            if plan.fort {
+                let fort = self.fort()?;
+                fort_read = Some(fort);
                 if fort >= 0 { maximum = fort; }
             }
-            if self.technology {
-                let controller = countries.resolve(field::<u32>(memory, state, cstate::CONTROLLER)?)?;
-                let limit = if let Some(&limit) = technologies.get(&controller.canonical_slot) { limit } else {
-                    let status = field::<u64>(memory, controller.pointer, ccountry::TECHNOLOGY_STATUS)? as usize;
-                    let limits = array(memory, status, TECHNOLOGY_LIMITS, 4)?;
-                    let ordinal = field::<u32>(memory, self.definition, template::DATABASE_ORDINAL)?;
-                    let limit = limits.element(ordinal, 4).and_then(|address| read::<i32>(memory, address)).ok_or("infrastructure map technology limit unavailable")?;
-                    technologies.insert(controller.canonical_slot, limit);
-                    limit
-                };
+            if plan.technology {
+                let limit = self.technology(held.controller)?;
+                technology_read = Some(limit);
                 maximum = maximum.min(limit);
             }
         }
-        if !self.exclusive.is_empty() {
+        let proof = |value| Proof { queue: queued_record, category, fort: fort_read, technology: technology_read, value };
+        if !plan.exclusive.is_empty() {
             let mut blocked = false;
             let active = array(memory, status, status::ACTIVE_BUILDINGS, 8)?;
             for index in 0..active.count {
                 let building = active.element(index, 8).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map active building unreadable")? as usize;
                 authenticate(memory, base, building, cbuilding::VTABLE_RVA)?;
-                if self.exclusive.contains(&field(memory, building, cbuilding::TYPE_ID)?) { blocked = true; }
+                if plan.exclusive.contains(&field(memory, building, cbuilding::TYPE_ID)?) { blocked = true; }
             }
-            visit_buildings(memory, base, status, |candidate, definition| {
-                if self.exclusive.contains(&field(memory, definition, template::TYPE_ID)?)
-                    && building(memory, base, status, definition)? == Some(candidate)
-                    && { let (ordinary, conversion) = construction(memory, candidate)?; ordinary.wrapping_add(conversion) > 0 }
-                { blocked = true; }
-                Ok(())
-            })?;
-            if blocked { return Ok(Infrastructure { building_type: self.token, level, maximum: 0 }); }
+            if !blocked { blocked = exclusive_queued(memory, plan, status)?; }
+            if blocked { return Ok(proof(Infrastructure { building_type: plan.token, level, maximum: 0 })); }
         }
-        if self.state_maximum > 0 {
-            let mut used = grouped(memory, base, status, self.definition, self.group)?;
-            if self.group != NO_GROUP {
+        if plan.state_maximum > 0 {
+            // Ungrouped, the state's own instance is the only building counted.
+            let used = if plan.group == NO_GROUP {
+                level.wrapping_add(i32::from(queued))
+            } else {
+                let mut used = grouped(memory, base, status, plan.definition, plan.group)?;
                 let provinces = array(memory, state, cstate::PROVINCES, 8)?;
                 for index in 0..provinces.count {
                     let province = provinces.element(index, 8).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map province pointer unreadable")? as usize;
                     authenticate(memory, base, province, cprovince::VTABLE_RVA)?;
-                    used = used.wrapping_add(grouped(memory, base, province + cprovince::BUILDING_STATUS, self.definition, self.group)?);
+                    used = used.wrapping_add(grouped(memory, base, province + cprovince::BUILDING_STATUS, plan.definition, plan.group)?);
                 }
-            }
-            maximum = maximum.min(aggregate.wrapping_add(self.state_maximum.wrapping_add(bonus).wrapping_sub(used).max(0)));
+                used
+            };
+            maximum = maximum.min(aggregate.wrapping_add(plan.state_maximum.wrapping_add(bonus).wrapping_sub(used).max(0)));
         }
-        if self.shares_slots { maximum = maximum.min(aggregate.wrapping_add(free_slots(memory, base, game, state, countries)?)); }
-        Ok(Infrastructure { building_type: self.token, level, maximum })
+        if plan.shares_slots {
+            let game = self.game;
+            let slots = free_slots(memory, base, game, state, self.countries()?)?;
+            maximum = maximum.min(aggregate.wrapping_add(slots));
+        }
+        Ok(proof(Infrastructure { building_type: plan.token, level, maximum }))
     }
 }
 
+/// Every census row read afresh, holding nothing.
 pub fn snapshot(memory: &impl Memory, base: usize, game: usize, census: crate::walk::Outcome, rows: &mut [cstate::Row]) {
     let rows = &mut rows[..census.len()];
     for row in rows.iter_mut() { row.infrastructure = None; }
-    let load = || -> Result<_, &'static str> { Ok((Inputs::read(memory, base)?, ccountry::Reader::new(memory, base, game)?, array(memory, game, cgame_state::STATES, 8)?)) };
-    let Ok((inputs, countries, states)) = load() else { return; };
-    let mut technologies = BTreeMap::new();
+    let mut cache = Cache::default();
+    let Ok(mut hour) = Hour::new(memory, base, game, &mut cache, false) else { return; };
     for row in rows {
-        row.infrastructure = (|| {
-            let state = states.element(row.id, 8).and_then(|address| read::<u64>(memory, address)).ok_or("infrastructure map state pointer unreadable")? as usize;
-            authenticate(memory, base, state, cstate::VTABLE_RVA)?;
-            if field::<u32>(memory, state, cstate::ID)? != row.id { return Err("infrastructure map state identity mismatch"); }
-            inputs.state(memory, base, game, state, &countries, &mut technologies)
-        })().ok();
+        row.infrastructure = hour.state_of(row.id).and_then(|state| hour.fresh(state)).map(|(_, proof)| proof.value).ok();
     }
 }
+
+#[cfg(test)]
+mod tests;

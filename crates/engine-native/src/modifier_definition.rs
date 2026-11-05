@@ -636,6 +636,34 @@ pub fn keys_by_names_at<const N: usize>(
     Ok((found, before))
 }
 
+/// One script name's key, resolved by [`keys_by_names_at`] at most once per
+/// table header: later asks cost one header read while the header holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedKey {
+    name: &'static [u8],
+    held: Option<(Option<u32>, Array)>,
+}
+
+impl NamedKey {
+    pub const fn new(name: &'static [u8]) -> Self {
+        Self { name, held: None }
+    }
+
+    /// The key, or `None` when no registered row carries the name.
+    pub fn get(&mut self, memory: &impl Memory, base: usize) -> Result<Option<u32>, &'static str> {
+        let current = table(memory, base)?;
+        if let Some((key, header)) = self.held
+            && header == current
+        {
+            return Ok(key);
+        }
+        self.held = None;
+        let ([key], header) = keys_by_names_at(memory, base, &[self.name])?;
+        self.held = Some((key, header));
+        Ok(key)
+    }
+}
+
 /// A present entry's raw value is read only after feature eligibility.
 pub(crate) fn effective_lazy(
     memory: &impl Memory,

@@ -420,15 +420,13 @@ impl ShipCensus {
 
     /// The crew observations already include their writer certificates.
     /// Their next lookup index is built before this frame returns to the pool.
-    pub(crate) fn decode_owned(&mut self) -> u64 {
-        let before = self.allocated_bytes();
+    pub(crate) fn decode_owned(&mut self) {
         if let Some(owned) = self.management_owned.take() {
             self.management = owned.decode();
         }
         if std::mem::take(&mut self.owned_pending) {
             self.crew.finish();
         }
-        (self.allocated_bytes() as u64).wrapping_sub(before as u64)
     }
 
     pub(crate) fn discard_owned(&mut self) {

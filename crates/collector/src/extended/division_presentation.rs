@@ -638,6 +638,7 @@ pub(crate) struct SpeedTermsPass {
 }
 
 impl SpeedTermsPass {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.terms.allocated_bytes()
     }
@@ -686,6 +687,7 @@ impl MovementPass {
         self.status = false;
     }
 
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.land.allocated_bytes()
             + self.movement.allocated_bytes()

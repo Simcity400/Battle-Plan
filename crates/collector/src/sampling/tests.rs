@@ -630,9 +630,8 @@ fn a_stitch_settles_with_the_reason_of_its_join_segment() {
 }
 
 /// The callback carries the order census split from each stitched hour to
-/// the next through `Shared`, whichever pooled frame either hour uses, and
-/// charges the parts the root census job prepares; an hour whose stitch
-/// planned nothing leaves the next hour one part.
+/// the next through `Shared`, whichever pooled frame either hour uses; an
+/// hour whose stitch planned nothing leaves the next hour one part.
 #[test]
 fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
     use crate::extended::bench_world::{self, Shape};
@@ -648,16 +647,13 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
     let memory = world.slice();
     let shared = Shared::new(0, 0, 10_000_000);
     // One hour on `orders`, with `millis` of measured part work: the parts it
-    // prepares from the callback's split and the bytes they charged; `fail`
-    // fails it, as a failed job does, before its stitch.
+    // prepares from the callback's split; `fail` fails it, as a failed job
+    // does, before its stitch.
     let hour = |orders: &mut Orders, millis: u64, fail: bool| {
         // SAFETY: this test is the split's only reader and writer.
-        let before = unsafe { begin_order_parts(&shared, orders) };
+        unsafe { begin_order_parts(&shared, orders) };
         orders.walk_roots_growing(&memory, world.base);
         orders.prepare_parts();
-        let pool = shared.pool_bytes.load(Ordering::Relaxed);
-        charge_order_parts(&shared, orders, before);
-        let charged = shared.pool_bytes.load(Ordering::Relaxed) - pool;
         let count = orders.part_count();
         for index in 0..count {
             let mut part = orders.take_part(index).unwrap();
@@ -679,7 +675,7 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
         }
         // SAFETY: as above.
         unsafe { end_order_parts(&shared, orders) };
-        (count, charged)
+        count
     };
     let mut frames = [
         Orders::for_test(&MapCapacities::default()),
@@ -687,16 +683,14 @@ fn the_callback_carries_the_order_split_to_the_next_hour_on_any_frame() {
         Orders::for_test(&MapCapacities::default()),
     ];
     // The first hour walks one part and measures enough work for all of them.
-    assert_eq!(hour(&mut frames[0], 3, false).0, 1);
-    // The next, on a fresh frame, takes that split and charges its boxes.
-    let (count, charged) = hour(&mut frames[1], 0, true);
-    assert_eq!(count, MAX_PARTS);
-    assert!(charged >= (MAX_PARTS * size_of::<Part>()) as u64);
-    // It failed before planning: the next hour walks one part, on the first
-    // frame, whose one part it already holds, so it charges nothing.
-    assert_eq!(hour(&mut frames[0], 3, false), (1, 0));
+    assert_eq!(hour(&mut frames[0], 3, false), 1);
+    // The next, on a fresh frame, takes that split and prepares its boxes.
+    assert_eq!(hour(&mut frames[1], 0, true), MAX_PARTS);
+    assert!(frames[1].parts_allocated_bytes() >= MAX_PARTS * size_of::<Part>());
+    // It failed before planning: the next hour walks one part, on the first frame.
+    assert_eq!(hour(&mut frames[0], 3, false), 1);
     // And the hour after takes that hour's split on a third frame.
-    assert_eq!(hour(&mut frames[2], 0, false).0, MAX_PARTS);
+    assert_eq!(hour(&mut frames[2], 0, false), MAX_PARTS);
 }
 
 #[test]
@@ -1480,7 +1474,7 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
         ));
         bytes += frame.allocated_bytes();
     }
-    assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes as u64);
+    assert_eq!(shared.pool_owned(), bytes as u64);
 }
 
 #[test]
@@ -1499,7 +1493,7 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
     unsafe {
         (*original).qpc = 42;
     }
-    let bytes = shared.pool_bytes.load(Ordering::Relaxed);
+    let bytes = shared.pool_owned();
     let (send, receive) = mpsc::channel();
     let consumer = Arc::clone(&shared);
     let waiter = std::thread::spawn(move || {
@@ -1526,7 +1520,7 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
     assert_eq!(wait_ns, shared.buffer_wait_max_ns.load(Ordering::Relaxed));
     assert_eq!(shared.frames[held[0]].load(Ordering::Acquire), original);
     assert_eq!(unsafe { (*original).qpc }, 42);
-    assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes);
+    assert_eq!(shared.pool_owned(), bytes);
     assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
     for index in held {
         shared.recycle_frame(index);

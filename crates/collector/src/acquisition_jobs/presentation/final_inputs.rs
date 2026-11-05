@@ -17,7 +17,6 @@ struct State {
     last_publish: i64,
     request: Option<crate::extended::FinalInputsRequest>,
     pending: Option<RangeTicket>,
-    bytes: u64,
 }
 impl FinalInputsDispatch {
     pub(in crate::acquisition_jobs) fn new(
@@ -56,7 +55,6 @@ impl FinalInputsDispatch {
     ) {
         let mut state = lock_callback(&self.state, Site::FinalInputs);
         assert!(!state.closed && state.request.is_none() && state.pending.is_none());
-        state.bytes = request.allocated_bytes();
         state.request = Some(request);
         state.required = required;
         state.last_publish = state.last_publish.max(last_publish);
@@ -91,14 +89,10 @@ impl FinalInputsDispatch {
     }
     pub(crate) fn take(
         &self,
-    ) -> (
-        Option<RangeTicket>,
-        Option<crate::extended::FinalInputsRequest>,
-        u64,
-    ) {
+    ) -> (Option<RangeTicket>, Option<crate::extended::FinalInputsRequest>) {
         let mut state = lock_callback(&self.state, Site::FinalInputs);
         state.closed = true;
-        (state.pending.take(), state.request.take(), state.bytes)
+        (state.pending.take(), state.request.take())
     }
     pub(crate) fn close(&self) {
         lock_callback(&self.state, Site::FinalInputs).closed = true;

@@ -33,9 +33,11 @@ use crate::rows::TableId;
 /// and writer-certificate requirements. The division's supply ratio, exact
 /// ratio, grace and native exercise decision remain hourly. New occurrences
 /// read fresh; daily/full boundaries revoke column carry before dispatch.
+/// The three samples are independent whole-roster refreshes, kept six hours
+/// apart and off slot 0 so no one hour converts them all.
 pub const COMMANDER_PROGRESS_SLOT: u32 = 12;
-pub const COMBAT_LOG_NUMERIC_SLOT: u32 = 12;
-pub const DIVISION_STATUS_DAILY_SLOT: u32 = 12;
+pub const COMBAT_LOG_NUMERIC_SLOT: u32 = 6;
+pub const DIVISION_STATUS_DAILY_SLOT: u32 = 18;
 
 pub const STAGGER_PERIOD: i32 = 24;
 pub const SKIPPED_REASON: &str = "staggered off-hours; carry forward";
@@ -1175,8 +1177,14 @@ mod tests {
             cadence(TableId::UnitLeaderTraitExperience),
             Cadence::Daily(12)
         );
-        assert_eq!(COMMANDER_PROGRESS_SLOT, COMBAT_LOG_NUMERIC_SLOT);
-        assert_eq!(COMMANDER_PROGRESS_SLOT, DIVISION_STATUS_DAILY_SLOT);
+        // The whole-roster samples never share an hour, nor slot 0.
+        let slots = [
+            COMMANDER_PROGRESS_SLOT,
+            COMBAT_LOG_NUMERIC_SLOT,
+            DIVISION_STATUS_DAILY_SLOT,
+        ];
+        assert!(slots.iter().all(|&slot| slot != 0 && slot < STAGGER_PERIOD as u32));
+        assert!(slots[0] != slots[1] && slots[0] != slots[2] && slots[1] != slots[2]);
         for hour in -48..48 {
             assert_eq!(
                 should_walk(TableId::UnitLeaderTraitExperience, hour, false),
@@ -1185,7 +1193,11 @@ mod tests {
             assert!(should_walk(TableId::UnitLeaderTraitExperience, hour, true));
             assert_eq!(
                 Cadence::Daily(DIVISION_STATUS_DAILY_SLOT).is_refresh(hour),
-                hour.rem_euclid(24) == 12
+                hour.rem_euclid(24) == 18
+            );
+            assert_eq!(
+                Cadence::Daily(COMBAT_LOG_NUMERIC_SLOT).is_refresh(hour),
+                hour.rem_euclid(24) == 6
             );
             assert!(should_walk(TableId::DivisionStatus, hour, false));
         }

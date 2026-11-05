@@ -243,9 +243,8 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                     Ok(acquisition::Report::Characters(_))
                 ));
             }
-            let (pending, unrun, retained_bytes) = dispatch.take();
+            let (pending, unrun) = dispatch.take();
             assert!(unrun.is_none());
-            assert_eq!(retained_bytes, bytes);
             let (ticket, parked) = batch.adopt_presentation_ticket(pending.unwrap());
             assert!(!parked);
             let completed = unsafe {
@@ -331,11 +330,11 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
         dispatch.arm(request, 1 << 2, qpc());
         // Collection joins the failed producer but performs no successor admission.
         drop(unsafe { finish_acquisition(&shared, &mut batch, pending) });
-        let (pending, request, retained_bytes) = dispatch.take();
+        let (pending, request) = dispatch.take();
         assert!(pending.is_none());
         let request = request.unwrap();
         assert!(Arc::ptr_eq(&request.countries, &countries));
-        assert_eq!((request.allocated_bytes(), retained_bytes), (bytes, bytes));
+        assert_eq!(request.allocated_bytes(), bytes);
         assert_eq!(
             pool.calibration().roles[acquisition::Role::FinalInputs as usize]
                 .counters
@@ -358,7 +357,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     let request = final_request();
     let countries = Arc::clone(&request.countries);
     dispatch.arm(request, 0, qpc());
-    let (pending, request, _) = dispatch.take();
+    let (pending, request) = dispatch.take();
     assert!(request.is_none());
     let (ticket, parked) = batch.adopt_presentation_ticket(pending.unwrap());
     assert!(parked);

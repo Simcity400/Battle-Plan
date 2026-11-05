@@ -315,7 +315,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             drop(older.take());
         } else {
             assert_eq!(failure, None);
-            let (pending, movement, speed_terms, _, split) = dispatched.unwrap();
+            let (pending, movement, speed_terms, split) = dispatched.unwrap();
             assert!(!pending.parked && !split);
             let completion = executor.finish(pending.ticket).unwrap();
             assert!(matches!(completion.report, Ok(Report::Presentation(_))));

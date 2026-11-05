@@ -691,13 +691,15 @@ value_struct!(AirCombatEquipment {
 /// or its sampled check comes up, and carries the row otherwise. The daily pass prunes
 /// records the row still holds; playback derives that pruning
 /// ([`crate::air_region_derive`]). Allocated holders without records have no row.
+/// The record vectors are shared: a carried row is the same allocation hour to hour,
+/// encodes as the vector itself and compares by pointer first.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirRegionCombatRow {
     pub country: u32,
     pub region: u32,
     pub owner: u32,
-    pub own: Vec<AirCombatRecord>,
-    pub foreign: Vec<AirCombatRecord>,
+    pub own: std::sync::Arc<Vec<AirCombatRecord>>,
+    pub foreign: std::sync::Arc<Vec<AirCombatRecord>>,
 }
 typed_codec!(AirRegionCombatRow, 64, |row| (row.country as u128) << 32 | row.region as u128, |key| Self { country: (key >> 32) as u32, region: key as u32, ..Default::default() },
  { 0 => (owner): U32, 1 => (own): Opaque, 2 => (foreign): Opaque }, |_row| Ok(()));
@@ -820,7 +822,7 @@ typed_codec!(AirBaseRegistrationRow, 96, |row| (row.base as u128) << 32 | row.sl
 opaque_value!(Option<Vec<Option<i32>>>);
 opaque_value!(Vec<AirHistoryEntry>);
 opaque_value!(Vec<AirDamageEntry>);
-opaque_value!(Vec<AirCombatRecord>);
+opaque_value!(std::sync::Arc<Vec<AirCombatRecord>>);
 opaque_value!(Option<AceDeath>);
 value_struct!(AirWingRaidReference {
     raw: u64,

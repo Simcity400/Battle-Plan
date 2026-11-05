@@ -51,8 +51,9 @@ static FULL: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// holders found new, holders carried.
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
-static EQUIPMENT_REFUSALS: Mutex<std::collections::BTreeMap<&'static str, u64>> =
-    Mutex::new(std::collections::BTreeMap::new());
+/// Records read without their equipment, by [`native::EQUIPMENT_REFUSALS`].
+static EQUIPMENT_REFUSALS: [AtomicU64; native::EQUIPMENT_REFUSALS.len()] =
+    [const { AtomicU64::new(0) }; native::EQUIPMENT_REFUSALS.len()];
 
 /// Smallest touched-holder set: a set grows from live demand, never caps it.
 const MIN_SLOTS: usize = 1024;
@@ -243,19 +244,21 @@ struct Store {
     changed: bool,
     /// A larger touched-holder set for the next take.
     offered: Option<Box<Set>>,
+    /// Read buffers and the capture's variant identities.
+    reader: native::Reader,
+    /// The holder last read, kept for its arenas.
+    read: native::Holder,
 }
 
-fn convert(record: native::Record) -> AirCombatRecord {
-    if let Some(reason) = record.equipment_failure {
-        let mut counts = EQUIPMENT_REFUSALS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *counts.entry(reason).or_default() += 1;
+fn convert(holder: &native::Holder, record: &native::Record) -> AirCombatRecord {
+    let equipment = holder.equipment(record);
+    if let Err(index) = record.equipment {
+        EQUIPMENT_REFUSALS[usize::from(index)].fetch_add(1, Ordering::Relaxed);
     }
-    let [first, second] = record.damage;
-    let damage = |entries: Vec<native::Damage>| {
-        entries
-            .into_iter()
+    let damage = |channel: usize| {
+        holder
+            .damage(record, channel)
+            .iter()
             .map(|entry| AirCombatDamage {
                 cause: entry.cause,
                 amount: entry.amount,
@@ -271,13 +274,13 @@ fn convert(record: native::Record) -> AirCombatRecord {
         classification: record.classification,
         copied: record.copied,
         attributed_country: record.attributed_country,
-        first_damage: damage(first),
-        second_damage: damage(second),
-        equipment: record.equipment.map(|entries| {
+        first_damage: damage(0),
+        second_damage: damage(1),
+        equipment: equipment.ok().map(|entries| {
             entries
-                .into_iter()
+                .iter()
                 .map(|entry| replay_data::rows::AirCombatEquipment {
-                    variant: entry.variant_handle,
+                    variant: entry.variant,
                     amount_raw: entry.amount_raw,
                 })
                 .collect()
@@ -285,14 +288,25 @@ fn convert(record: native::Record) -> AirCombatRecord {
     }
 }
 
-fn row(country: u32, region: u32, holder: native::Holder) -> AirRegionCombatRow {
-    let [own, foreign] = holder.sides;
+fn row(country: u32, region: u32, holder: &native::Holder) -> AirRegionCombatRow {
+    let [own, foreign] = &holder.sides;
     AirRegionCombatRow {
         country,
         region,
         owner: holder.owner,
-        own: own.records.into_iter().map(convert).collect(),
-        foreign: foreign.records.into_iter().map(convert).collect(),
+        own: Arc::new(
+            own.records
+                .iter()
+                .map(|record| convert(holder, record))
+                .collect(),
+        ),
+        foreign: Arc::new(
+            foreign
+                .records
+                .iter()
+                .map(|record| convert(holder, record))
+                .collect(),
+        ),
     }
 }
 
@@ -309,33 +323,43 @@ fn suffix_start(records: &[AirCombatRecord], since: i32) -> usize {
 /// dated at or after `since`). The native records before `first` are the held
 /// records before their own suffix dated at or after `since`, less that
 /// leading run; fewer held than native ones is a write the store missed.
+/// An unchanged vector keeps its allocation, shared with the tables published from it.
 fn splice(
-    held: &mut Vec<AirCombatRecord>,
+    held: &mut Arc<Vec<AirCombatRecord>>,
     since: i32,
     first: usize,
     tail: impl Iterator<Item = AirCombatRecord>,
 ) -> Option<bool> {
-    let pruned = suffix_start(held, since).checked_sub(first)?;
+    let pruned = suffix_start(&held[..], since).checked_sub(first)?;
+    let mut tail = tail.peekable();
+    let mut len = first;
     // The native tail is dated at or after since. Removing an older prefix
     // therefore changes the row even if the replacement tail has equal values.
-    let mut changed = pruned != 0;
-    held.drain(..pruned);
-    let mut len = first;
+    if pruned == 0 {
+        while tail
+            .next_if(|record| held.get(len) == Some(record))
+            .is_some()
+        {
+            len += 1;
+        }
+        if tail.peek().is_none() && held.len() == len {
+            return Some(false);
+        }
+    }
+    let records = Arc::make_mut(held);
+    records.drain(..pruned);
     for record in tail {
-        if let Some(previous) = held.get_mut(len) {
+        if let Some(previous) = records.get_mut(len) {
             if *previous != record {
                 *previous = record;
-                changed = true;
             }
         } else {
-            held.push(record);
-            changed = true;
+            records.push(record);
         }
         len += 1;
     }
-    changed |= held.len() != len;
-    held.truncate(len);
-    Some(changed)
+    records.truncate(len);
+    Some(true)
 }
 
 /// Why an hour cannot carry: a capture-local difference poisons the family.
@@ -366,13 +390,14 @@ impl Store {
         state: usize,
     ) -> Result<(), &'static str> {
         let mut holders = Vec::new();
+        let (reader, read) = (&mut self.reader, &mut self.read);
         native::visit_holders(memory, base, state, |root| {
-            let holder = native::read_holder(memory, base, root.address, None)?;
+            native::read_holder_into(memory, base, root.address, None, reader, read)?;
             engine_allocation::reserve(&mut holders, 1)
                 .map_err(|_| "air region combat allocation failed")?;
             holders.push(Held {
                 address: root.address,
-                row: row(root.country, root.region, holder),
+                row: row(root.country, root.region, read),
             });
             Ok(())
         })?;
@@ -398,16 +423,28 @@ impl Store {
         since: i32,
     ) -> Result<(), Refusal> {
         let held = &mut self.holders[index];
-        let holder = native::read_holder(memory, base, held.address, Some(since))?;
+        let holder = &mut self.read;
+        native::read_holder_into(
+            memory,
+            base,
+            held.address,
+            Some(since),
+            &mut self.reader,
+            holder,
+        )?;
         if holder.owner != held.row.owner {
             return Err(Refusal::Mismatch);
         }
         COUNTS[1].fetch_add(1, Ordering::Relaxed);
-        let [own, foreign] = holder.sides;
-        for (side, records) in [(own, &mut held.row.own), (foreign, &mut held.row.foreign)] {
+        let holder = &*holder;
+        for (side, records) in holder
+            .sides
+            .iter()
+            .zip([&mut held.row.own, &mut held.row.foreign])
+        {
             COUNTS[2].fetch_add(side.records.len() as u64, Ordering::Relaxed);
             let first = side.first as usize;
-            let tail = side.records.into_iter().map(convert);
+            let tail = side.records.iter().map(|record| convert(holder, record));
             let Some(changed) = splice(records, since, first, tail) else {
                 return Err(Refusal::Mismatch);
             };
@@ -425,12 +462,19 @@ impl Store {
         state: usize,
         address: usize,
     ) -> Result<(), Refusal> {
-        let holder = native::read_holder(memory, base, address, None)?;
-        let Some(root) = native::locate(memory, base, state, holder.owner, address)? else {
+        native::read_holder_into(
+            memory,
+            base,
+            address,
+            None,
+            &mut self.reader,
+            &mut self.read,
+        )?;
+        let Some(root) = native::locate(memory, base, state, self.read.owner, address)? else {
             return Err(Refusal::Mismatch);
         };
         COUNTS[3].fetch_add(1, Ordering::Relaxed);
-        let row = row(root.country, root.region, holder);
+        let row = row(root.country, root.region, &self.read);
         let key = (row.country, row.region);
         match self
             .holders
@@ -526,6 +570,7 @@ pub fn capture(
         return Err("air region combat capture overlaps its store");
     };
     let store = guard.get_or_insert_with(Store::default);
+    store.reader.forget_variants();
     let mut touched = std::mem::take(&mut store.touched);
     touched.clear();
     let observed = TOUCHED.take(&mut touched, &mut store.offered);
@@ -578,7 +623,8 @@ pub fn status() -> impl serde::Serialize {
     let full = FULL.each_ref().map(|value| value.load(Ordering::Relaxed));
     let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
-        "equipment_refusals": EQUIPMENT_REFUSALS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+        "equipment_refusals": crate::status::map(native::EQUIPMENT_REFUSALS.into_iter()
+            .zip(EQUIPMENT_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "configured": cfg!(feature = "air_record_changes"),
         "poisoned": POISONED.load(Ordering::SeqCst),
         "calls": TOUCHED.calls.load(Ordering::Relaxed),

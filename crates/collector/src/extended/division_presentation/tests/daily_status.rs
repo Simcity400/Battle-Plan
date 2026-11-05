@@ -66,11 +66,12 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
     capture.status_packet = carmy::StatusPacket::vacant();
     capture.enable_owned_settlement();
     capture.status_workers = 2;
-    for hour in [1, 2, 12, 14] {
-        if hour == 14 {
+    let daily = replay_data::cadence::DIVISION_STATUS_DAILY_SLOT as i32;
+    for hour in [1, 2, daily, daily + 2] {
+        if hour == daily + 2 {
             // A forced-refresh request that never acquires the loan must still
             // revoke carry on the next off-slot request.
-            slot.prepare_hour(13, true);
+            slot.prepare_hour(daily + 1, true);
         }
         slot.prepare_hour(hour, false);
         let mut store = slot.take().unwrap();

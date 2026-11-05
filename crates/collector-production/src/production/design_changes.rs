@@ -13,6 +13,12 @@ mod snapshots;
 mod storage;
 pub use storage::SetupPart as ColdSetupPart;
 pub use storage::{ScratchPoolAccounting, account_scratch, presize};
+pub use snapshots::speculative::Part as SnapshotPart;
+/// The Variants lanes that run a burst's speculative full-decode walks.
+pub struct Speculation<'a> {
+    pub lanes: usize,
+    pub run: &'a mut dyn FnMut(Vec<SnapshotPart>) -> Result<Vec<SnapshotPart>, &'static str>,
+}
 mod source_hooks;
 mod sources;
 mod writers;
@@ -2231,12 +2237,23 @@ fn drain_with(
     snapshots.materialize(output)?;
     result
 }
+#[cfg(test)]
 fn drain_shared(
     memory: &impl Memory,
     base: usize,
     hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
     snapshots: &mut snapshots::Shared,
+) -> Result<usize, &'static str> {
+    drain_speculating(memory, base, hour, output, snapshots, None)
+}
+fn drain_speculating(
+    memory: &impl Memory,
+    base: usize,
+    hour: i32,
+    output: &mut Vec<rows::VariantChangeRow>,
+    snapshots: &mut snapshots::Shared,
+    speculation: Option<&mut Speculation<'_>>,
 ) -> Result<usize, &'static str> {
     let _phase = profile::Timer::new(profile::Phase::Drain);
     output.clear();
@@ -2285,7 +2302,7 @@ fn drain_shared(
         held::check_lifetimes(&batch.events)?;
         let mut retained = snapshots::retained(epoch, base);
         let mut cache = snapshots::Cache::with_retained(&mut retained);
-        decode_batch_with_cache(&batch, base, hour, output, snapshots, &mut cache)?;
+        decode_batch_with_cache(&batch, base, hour, output, snapshots, &mut cache, speculation)?;
         // Terminal repairs have no copied capacity witness; discard their earlier cached states.
         for watch in &repairs.watches {
             cache.remove(watch.id);
@@ -2745,9 +2762,12 @@ impl Captured {
     /// keeps held-design reuse closed until the drain's final proof succeeds;
     /// settle this verdict before the same worker decides its census read.
     pub fn capture(&mut self, base: usize, hour: i32) {
-        self.capture_with(base, hour, |memory| {
-            super::design_context::capture(memory, base)
-        });
+        self.capture_with(
+            base,
+            hour,
+            |memory| super::design_context::capture(memory, base),
+            None,
+        );
     }
     /// `capture`, with the dirty country context parts acquired by `acquire`.
     pub fn capture_partitioned(
@@ -2759,10 +2779,18 @@ impl Captured {
             Vec<super::design_context::CountryPart>,
         )
             -> Result<Vec<super::design_context::CountryPart>, &'static str>,
+        mut speculate: impl FnMut(Vec<SnapshotPart>) -> Result<Vec<SnapshotPart>, &'static str>,
     ) {
-        self.capture_with(base, hour, |memory| {
-            super::design_context::capture_partitioned(memory, base, lanes, &mut acquire)
-        });
+        let mut speculation = Speculation {
+            lanes,
+            run: &mut speculate,
+        };
+        self.capture_with(
+            base,
+            hour,
+            |memory| super::design_context::capture_partitioned(memory, base, lanes, &mut acquire),
+            Some(&mut speculation),
+        );
     }
     fn capture_with(
         &mut self,
@@ -2777,6 +2805,7 @@ impl Captured {
             ),
             &'static str,
         >,
+        speculation: Option<&mut Speculation<'_>>,
     ) {
         // Country accumulator admission is independent of the saved-design
         // observer. Its worker consumes only demanded, dirtied numeric owners.
@@ -2784,7 +2813,14 @@ impl Captured {
         self.fog = super::design_fog::capture(&memory, base);
         self.liveness = liveness::Observation::refused();
         self.repaired = 0;
-        let result = drain_shared(&memory, base, hour, &mut self.rows, &mut self.snapshots)
+        let result = drain_speculating(
+            &memory,
+            base,
+            hour,
+            &mut self.rows,
+            &mut self.snapshots,
+            speculation,
+        )
             .and_then(|repaired| {
                 self.repaired = repaired;
                 self.liveness = liveness::observation()?;
@@ -3076,6 +3112,7 @@ fn decode_batch_shared(
         output,
         snapshots,
         &mut snapshots::Cache::default(),
+        None,
     )
 }
 fn decode_batch_with_cache(
@@ -3085,11 +3122,17 @@ fn decode_batch_with_cache(
     output: &mut Vec<rows::VariantChangeRow>,
     snapshots: &mut snapshots::Shared,
     cache: &mut snapshots::Cache<'_>,
+    speculation: Option<&mut Speculation<'_>>,
 ) -> Result<(), &'static str> {
     let _phase = profile::Timer::new(profile::Phase::DecodeBatch);
     snapshots.reserve(batch.events.len())?;
+    if let Some(speculation) = speculation {
+        // Pure walks for the burst's likely misses run on the lanes first; the ordered
+        // pass below still makes every hit/miss decision and every shared effect.
+        cache.speculate(batch, base, hour, speculation);
+    }
     let mut preceding_sequence = 0;
-    for event in &batch.events {
+    for (index, event) in batch.events.iter().enumerate() {
         if event.sequence == 0 || event.sequence <= preceding_sequence {
             return Err("variant occurrences are not in native observation order");
         }
@@ -3167,6 +3210,7 @@ fn decode_batch_with_cache(
             });
             continue;
         }
+        cache.at(index);
         let snapshot = cache.decode(batch, event, base, hour, snapshots)?;
         snapshots.push(
             output.len() + snapshots.len(),
@@ -3191,25 +3235,260 @@ fn snapshot(
     let decoded = decode_snapshot(memory, base, hour, pointer, fresh)?;
     Ok(decoded.value)
 }
-fn decode_snapshot(
+thread_local! {
+    /// One thread's single-variant capture pack for the ordered completion step: only its
+    /// capacity carries between decodes, every reported row and text span is rewritten.
+    static DECODE_SCRATCH: std::cell::RefCell<Option<Box<Variants>>> =
+        const { std::cell::RefCell::new(None) };
+    /// One thread's walk storage for inline full decodes.
+    static WALK_SCRATCH: std::cell::RefCell<Option<Box<RawWalk>>> =
+        const { std::cell::RefCell::new(None) };
+}
+/// Lends [`DECODE_SCRATCH`] for one decode and returns it however the decode ends.
+struct DecodeScratch(Option<Box<Variants>>);
+impl DecodeScratch {
+    fn take() -> Self {
+        let mut scratch = DECODE_SCRATCH
+            .with(|scratch| scratch.borrow_mut().take())
+            .unwrap_or_else(|| Box::new(Variants::vacant()));
+        // A vacant pack's state: no reported rows, text or baseline.
+        scratch.reset();
+        Self(Some(scratch))
+    }
+}
+impl std::ops::Deref for DecodeScratch {
+    type Target = Variants;
+    fn deref(&self) -> &Variants {
+        self.0.as_deref().unwrap()
+    }
+}
+impl std::ops::DerefMut for DecodeScratch {
+    fn deref_mut(&mut self) -> &mut Variants {
+        self.0.as_deref_mut().unwrap()
+    }
+}
+impl Drop for DecodeScratch {
+    fn drop(&mut self) {
+        if let Some(scratch) = self.0.take() {
+            DECODE_SCRATCH.with(|slot| *slot.borrow_mut() = Some(scratch));
+        }
+    }
+}
+/// Lends [`WALK_SCRATCH`] for one inline decode.
+struct WalkScratch(Option<Box<RawWalk>>);
+impl WalkScratch {
+    fn take() -> Self {
+        Self(Some(
+            WALK_SCRATCH
+                .with(|scratch| scratch.borrow_mut().take())
+                .unwrap_or_else(|| Box::new(RawWalk::vacant())),
+        ))
+    }
+}
+impl std::ops::Deref for WalkScratch {
+    type Target = RawWalk;
+    fn deref(&self) -> &RawWalk {
+        self.0.as_deref().unwrap()
+    }
+}
+impl std::ops::DerefMut for WalkScratch {
+    fn deref_mut(&mut self) -> &mut RawWalk {
+        self.0.as_deref_mut().unwrap()
+    }
+}
+impl Drop for WalkScratch {
+    fn drop(&mut self) {
+        if let Some(scratch) = self.0.take() {
+            WALK_SCRATCH.with(|slot| *slot.borrow_mut() = Some(scratch));
+        }
+    }
+}
+type RawDefinition = native::DefinitionRow<Option<native::VariantDesignState>>;
+/// The pure part of one full decode: the registry row and the capture walks over its memory,
+/// with each design kept raw. It interns nothing and touches no shared state, so any thread
+/// may run it; [`complete_snapshot`] performs the effects in the decode's place in order.
+struct RawWalk {
+    sources: usize,
+    /// The child walks ran (the modules table was due), as did the MIO watch boundary.
+    details: bool,
+    definitions: CaptureRows<RawDefinition>,
+    definition_bytes: Arena<u8>,
+    modules: CaptureRows<engine_equipment::equipment_module_container::Row>,
+    stats: CaptureRows<native::StatsRow>,
+    upgrades: CaptureRows<engine_equipment::cequipment_upgrades_instance::Row>,
+}
+impl RawWalk {
+    fn vacant() -> Self {
+        Self {
+            sources: 0,
+            details: false,
+            definitions: CaptureRows::new(0),
+            definition_bytes: Arena::new(0),
+            modules: CaptureRows::new(0),
+            stats: CaptureRows::new(0),
+            upgrades: CaptureRows::new(0),
+        }
+    }
+    fn reset(&mut self) {
+        self.sources = 0;
+        self.details = false;
+        self.definitions.reset();
+        self.definition_bytes.reset();
+        self.modules.reset();
+        self.stats.reset();
+        self.upgrades.reset();
+    }
+    /// Every walk read its rows: nothing in it can stem from an optional allocation refusal.
+    fn complete(&self) -> bool {
+        self.sources == 1
+            && self.details
+            && [
+                self.definitions.outcome,
+                self.modules.outcome,
+                self.stats.outcome,
+                self.upgrades.outcome,
+            ]
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+    }
+}
+/// The capture an inline decode ran, as `Variants::capture_state` with a forced read.
+fn walk_snapshot(
     memory: &impl Memory,
     base: usize,
     hour: i32,
     pointer: usize,
-    fresh: bool,
-) -> Result<snapshots::Decoded, &'static str> {
+    walk: &mut RawWalk,
+) -> Result<(), &'static str> {
+    walk.reset();
     let source = [native::RegistryRow::read(memory, base, pointer)?];
-    let mut captured = Variants::vacant();
-    captured.capture_state(
-        memory,
-        base,
-        Sources {
-            rows: &source,
-            outcome: Outcome::Rows { len: 1 },
+    walk.sources = source.len();
+    let mut reads = crate::read_accounting::table(super::TABLES[3]);
+    super::capture_text(
+        &mut walk.definitions,
+        &mut walk.definition_bytes,
+        Ok(&source[..]),
+        |source, rows, arena| {
+            native::walk_definitions_carried(
+                memory,
+                base,
+                source,
+                rows,
+                arena,
+                |_| Ok(None),
+                |state| Ok(Some(state)),
+            )
         },
+    );
+    if !replay_data::cadence::should_walk(
+        replay_data::rows::TableId::VariantModules,
         hour,
         true,
-    );
+    ) {
+        let skipped = Outcome::Unavailable {
+            reason: replay_data::cadence::SKIPPED_REASON,
+        };
+        walk.modules.outcome = skipped;
+        walk.stats.outcome = skipped;
+        walk.upgrades.outcome = skipped;
+        return Ok(());
+    }
+    walk.details = true;
+    reads.select(super::TABLES[4]);
+    super::capture_source(&mut walk.modules, Ok(&source[..]), |source, rows| {
+        engine_equipment::equipment_module_container::walk(memory, base, source, rows)
+    });
+    // A forced read takes every MIO afresh; the certificate carry only records the reads.
+    super::capture_source(&mut walk.stats, Ok(&source[..]), |source, rows| {
+        native::walk_stats_carried(memory, source, rows, &mut ())
+    });
+    super::capture_source(&mut walk.upgrades, Ok(&source[..]), |source, rows| {
+        engine_equipment::cequipment_upgrades_instance::walk(memory, base, source, rows)
+    });
+    Ok(())
+}
+/// Interns each walked design in row order, as the definitions walk's mapping did.
+fn intern_definitions(
+    target: &mut CaptureRows<native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>>,
+    raw: &mut CaptureRows<RawDefinition>,
+) -> Result<(), &'static str> {
+    target.outcome = raw.outcome;
+    let len = raw.outcome.len();
+    let result = (|| {
+        if target.rows.len() < len {
+            engine_allocation::resize_default(&mut target.rows, len)
+                .map_err(|_| "variant definition allocation failed")?;
+        }
+        for (target, raw) in target.rows.iter_mut().zip(raw.rows.iter_mut()).take(len) {
+            let row = std::mem::take(raw);
+            let design = super::bonus_snapshots::intern(
+                row.design.ok_or("variant definition design missing")?,
+            )?;
+            *target = native::DefinitionRow {
+                identity: row.identity,
+                archetype_pointer: row.archetype_pointer,
+                organisation_pointer: row.organisation_pointer,
+                source_links: row.source_links,
+                display_name: row.display_name,
+                variant_name: row.variant_name,
+                explicit_entity: row.explicit_entity,
+                icon_active: row.icon_active,
+                icon_kind: row.icon_kind,
+                icon: row.icon,
+                version: row.version,
+                design: std::sync::Arc::new(design),
+            };
+        }
+        Ok(())
+    })();
+    if let Err(reason) = result {
+        target.outcome = Outcome::Unavailable { reason };
+    }
+    result
+}
+/// The ordered step of a full decode: the walks' shared effects in the order an inline
+/// capture runs them (interning, then the design-MIO watch boundary and each MIO read),
+/// then conversion and the snapshot's own observation.
+fn complete_snapshot(
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+    walk: &mut RawWalk,
+) -> Result<snapshots::Decoded, &'static str> {
+    let mut captured = DecodeScratch::take();
+    let interned = intern_definitions(&mut captured.definitions, &mut walk.definitions);
+    std::mem::swap(&mut captured.definition_bytes, &mut walk.definition_bytes);
+    if interned.is_err() {
+        // A failed mapping fails the definitions walk with no text.
+        captured.definition_bytes.len = 0;
+        captured.definition_bytes.required = 0;
+    }
+    if walk.details {
+        collector_observers::world_input_changes::prepare_design_mios(walk.sources, true);
+        for _ in 0..walk.stats.outcome.len() {
+            collector_observers::world_input_changes::record_daily(
+                collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
+                false,
+                true,
+            );
+        }
+    }
+    std::mem::swap(&mut captured.modules, &mut walk.modules);
+    std::mem::swap(&mut captured.stats, &mut walk.stats);
+    std::mem::swap(&mut captured.upgrades, &mut walk.upgrades);
+    let result = finish_snapshot(&mut captured, memory, base, fresh);
+    std::mem::swap(&mut captured.definition_bytes, &mut walk.definition_bytes);
+    std::mem::swap(&mut captured.modules, &mut walk.modules);
+    std::mem::swap(&mut captured.stats, &mut walk.stats);
+    std::mem::swap(&mut captured.upgrades, &mut walk.upgrades);
+    result
+}
+fn finish_snapshot(
+    captured: &mut Variants,
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+) -> Result<snapshots::Decoded, &'static str> {
     let definition = definitions(&captured.definitions, &captured.definition_bytes);
     let definition = match definition {
         TableView::Complete(rows::TableRows::VariantDefinitions(mut rows)) if rows.len() == 1 => {
@@ -3223,7 +3502,7 @@ fn decode_snapshot(
     {
         return Err("variant change children decode failed");
     }
-    let context = observe_snapshot(&captured, memory, base, fresh)?;
+    let context = observe_snapshot(captured, memory, base, fresh)?;
     let snapshot = rows::VariantSnapshot {
         definition: definition.into(),
         modules: captured.modules.rows[..captured.modules.outcome.len()]
@@ -3248,9 +3527,21 @@ fn decode_snapshot(
     };
     Ok(snapshots::Decoded {
         value: snapshot,
-        definition: captured.definitions.rows.remove(0),
+        // The next decode's mapping overwrites this slot whole.
+        definition: std::mem::take(&mut captured.definitions.rows[0]),
         context: Some(context),
     })
+}
+fn decode_snapshot(
+    memory: &impl Memory,
+    base: usize,
+    hour: i32,
+    pointer: usize,
+    fresh: bool,
+) -> Result<snapshots::Decoded, &'static str> {
+    let mut walk = WalkScratch::take();
+    walk_snapshot(memory, base, hour, pointer, &mut walk)?;
+    complete_snapshot(memory, base, fresh, &mut walk)
 }
 fn observe_snapshot(
     captured: &Variants,

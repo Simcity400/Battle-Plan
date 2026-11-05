@@ -89,7 +89,7 @@ impl Capacities {
             16,
             cintelligence_agency::walk_captured_operatives(memory, base, state, &mut [])
         );
-        let missions = operative_missions::walk(memory, base, state, &mut [], &mut []);
+        let missions = operative_mission_demand(memory, base, state);
         count!(13, 18, missions.outcome);
         raise(
             &mut self.operative_mission_bytes,

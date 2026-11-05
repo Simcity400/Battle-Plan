@@ -1391,7 +1391,7 @@ sample_struct!(DiplomaticPressure {
 sample_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
 sample_struct!(AgencyBufferedOffer { definition: u32, country: u32, state: Option<u32>, duration: Option<i32> });
 fixture!(AgencyOperationBuffersRow, |key| {snapshot: key as u8}, {completed: Vec<AgencyBufferedOperation>, running: Vec<AgencyBufferedOperation>, ready: Vec<AgencyBufferedOperation>, unready: Vec<AgencyBufferedOperation>, offers: Vec<AgencyBufferedOffer>});
-fixture!(StrategicOperativeRow, |key| {country: key as u32}, {slot: u32, mission_activity: i64, operation_activity: i64, trade_influence: Vec<TradeInfluence>, diplomatic_pressure: Vec<DiplomaticPressure>, mission_rosters: Option<[Vec<u64>; 5]>});
+fixture!(StrategicOperativeRow, |key| {country: key as u32}, {slot: u32, mission_activity: i64, operation_activity: i64, trade_influence: Vec<TradeInfluence>, diplomatic_pressure: Vec<DiplomaticPressure>, mission_rosters: Option<std::sync::Arc<[Vec<u64>; 5]>>});
 fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8, ordinal: u32});
 fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64, gain_raw: i64, gain_from_operatives_raw: i64, gain_from_adjacency_raw: i64, local_quiet: u8, gain_factor_raw: Option<i64>, strength_target_raw: Option<i64>, target_from_operatives_raw: Option<i64>, target_from_counterintelligence_raw: Option<i64>, subnetwork_quiet: u8});
 fixture!(IntelNetworkSummaryRow, |key| { owner_country: (key >> 32) as u32, target_country: key as u32 }, {
@@ -1592,7 +1592,7 @@ fixture!(AirBaseRow, |key| {id: key as u64}, {state: Option<u32>, province: Opti
 fixture!(WingCumulativeRow, |key| {id: key as u64}, {accidents: i32, experience: i64});
 fixture!(AirRegionHistoryRow, |key| {country: (key >> 32) as u32, region: key as u32}, {entries: Vec<AirHistoryEntry>});
 fixture!(AirRegionDamageRow, |key| {country: (key >> 32) as u32, region: key as u32}, {entries: Vec<AirDamageEntry>});
-fixture!(AirRegionCombatRow, |key| {country: (key >> 32) as u32, region: key as u32}, {owner: u32, own: Vec<AirCombatRecord>, foreign: Vec<AirCombatRecord>});
+fixture!(AirRegionCombatRow, |key| {country: (key >> 32) as u32, region: key as u32}, {owner: u32, own: std::sync::Arc<Vec<AirCombatRecord>>, foreign: std::sync::Arc<Vec<AirCombatRecord>>});
 sample_struct!(AirAcePortraitInputs {cached: Option<Vec<u8>>, culture: Option<Vec<u8>>, fallback: Option<Vec<u8>>});
 sample_struct!(AirAcePresentation {gender: u8, pool_index: i32, definition: Option<Vec<u8>>, portrait: Option<AirAcePortraitInputs>});
 fixture!(AirAceRow, |key| {id: key as u64}, {country: u32, ordinal: u32, aircraft_type_mask: u32, assigned_wing: u64, alive: u8, handled: u8, kill_type: u32, death: Option<AceDeath>, name: Vec<u8>, surname: Vec<u8>, callsign: Vec<u8>, presentation: Recorded<Option<AirAcePresentation>>});
@@ -1647,7 +1647,7 @@ sample_struct!(AirPowerContribution {
     amount: i64
 });
 sample_struct!(AirPowerMenu { coverage: i64, reductions: [i64; 4], contributions: [Vec<AirPowerContribution>; 2] });
-fixture!(RaidAirScoreRow, |key| {country: (key >> 32) as u32, region: key as u32}, {friendly: i64, enemy: i64, impact: Recorded<i64>, friendly_missions: u16, enemy_missions: u16, air_spotting_scale: Option<i64>, menu: Option<AirPowerMenu>});
+fixture!(RaidAirScoreRow, |key| {country: (key >> 32) as u32, region: key as u32}, {friendly: i64, enemy: i64, impact: Recorded<i64>, friendly_missions: u16, enemy_missions: u16, air_spotting_scale: Option<i64>, menu: Option<std::sync::Arc<AirPowerMenu>>});
 
 #[test]
 fn air_map_mission_counters_change_independently_of_the_superiority_weights() {
@@ -1793,7 +1793,7 @@ fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u3
 fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool, country_tags: Recorded<Option<Vec<Vec<u8>>>>});
 fixture!(BattleSoundRow, |key| {ordinal: key as u32}, {center_x: u32, center_z: u32, radius: u32, provinces: Vec<u32>, sounding: bool, object: u64});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
-fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>, air_detection: Recorded<Option<Option<i64>>>, map_modifiers_known: Recorded<bool>, naval_detection: Recorded<Option<i64>>, air_attack: Recorded<Option<i64>>, air_defence: Recorded<Option<i64>>, air_efficiency: Recorded<Option<Vec<ModifierBreakdownNode>>>});
+fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>, air_detection: Recorded<Option<Option<i64>>>, map_modifiers_known: Recorded<bool>, naval_detection: Recorded<Option<i64>>, air_attack: Recorded<Option<i64>>, air_defence: Recorded<Option<i64>>, air_efficiency: Recorded<Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>>});
 /// Slot 0 is never updated, so its fixtures always hold their clock.
 impl Fixture for WeatherProvinceRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -5851,7 +5851,18 @@ fn structured_fields_reject_hostile_inner_counts_tags_and_suffixes() {
     reject::<Vec<ScriptVariableEntry>>(&u32::MAX.to_le_bytes());
     reject::<Vec<AirHistoryEntry>>(&u32::MAX.to_le_bytes());
     reject::<Vec<AirDamageEntry>>(&u32::MAX.to_le_bytes());
-    reject::<Vec<AirCombatRecord>>(&u32::MAX.to_le_bytes());
+    reject::<std::sync::Arc<Vec<AirCombatRecord>>>(&u32::MAX.to_le_bytes());
+    // A shared record vector is written exactly as the vector it holds.
+    let records = vec![AirCombatRecord {
+        wing_id: 3,
+        first_damage: vec![AirCombatDamage { cause: 1, amount: -2 }],
+        equipment: Some(vec![AirCombatEquipment { variant: 70, amount_raw: 5 }]),
+        ..Default::default()
+    }];
+    let (mut plain, mut shared) = (Vec::new(), Vec::new());
+    crate::value::Value::encode(&records, &mut plain).unwrap();
+    crate::value::Value::encode(&std::sync::Arc::new(records), &mut shared).unwrap();
+    assert_eq!(plain, shared);
     reject::<Vec<SunkShipEntry>>(&u32::MAX.to_le_bytes());
     let mut nested = 1_u32.to_le_bytes().to_vec();
     nested.extend_from_slice(&u32::MAX.to_le_bytes());

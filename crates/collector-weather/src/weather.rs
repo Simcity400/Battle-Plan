@@ -371,11 +371,7 @@ impl Captured {
                     self.air_efficiency
                         .get(index)
                         .and_then(Option::as_ref)
-                        .map(|nodes| {
-                            engine_allocation::owned_vec(replay_data::value::Value::try_clone(
-                                nodes.as_ref(),
-                            ))
-                        }),
+                        .map(std::sync::Arc::clone),
                 ),
                 max_snow: r.max_snow,
                 light_rain: r.light_rain,

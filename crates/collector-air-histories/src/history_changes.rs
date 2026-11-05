@@ -19,7 +19,7 @@ use std::{
 
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
-static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 static SCENARIO_REFUSALS: [AtomicU64; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()] =
     [const { AtomicU64::new(0) }; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()];
 static MENU_REFUSALS: [AtomicU64; engine_air_history::menu_history::REFUSALS.len()] =
@@ -94,9 +94,18 @@ impl Watches {
 }
 
 /// Receivers to size the watches for: every country slot's air object and
-/// a history in each of the content's `regions`, the most an hour can want.
+/// a history in each of the content's `regions`. The table is kept a quarter
+/// full, so it also holds the adds receiver of every history that exists.
 fn watches_for(slots: usize, regions: usize) -> usize {
     slots.saturating_mul(regions.saturating_add(1))
+}
+
+/// The receiver an add to `region` of the country air object `air` notifies
+/// beside `air` itself. Its high bits are never set in a user-mode address,
+/// so it names no object; regions that share the low 16 bits share it, which
+/// only rereads more.
+pub fn touch_key(air: usize, region: u32) -> usize {
+    air ^ (((region as usize & 0xffff) + 1) << 48)
 }
 
 /// Notifications running now.
@@ -207,6 +216,7 @@ pub fn record(counts: &crate::air_histories::Counts) {
         counts.advanced,
         counts.refreshed,
         u64::from(counts.quiet),
+        counts.patched,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
@@ -249,6 +259,7 @@ pub fn status() -> impl serde::Serialize {
         "advanced_histories": reads[2],
         "refreshed_histories": reads[3],
         "quiet_hours": reads[4],
+        "patched_histories": reads[5],
         "scenario_refusals": crate::status::map(engine_air_history::air_kamikaze::SCENARIO_REFUSALS.into_iter()
             .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "retained_buffers": crate::air_histories::retained_buffers(),
@@ -261,7 +272,7 @@ pub fn status() -> impl serde::Serialize {
             "table_install": restarts[1],
             "failed_hour": restarts[2],
         },
-        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
+        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; a country with adds rereads only the regions they touched, and of a touched history without an advance only its daily current record (patched); a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
     })
 }
 
@@ -328,6 +339,8 @@ impl Drop for Hooks {
 unsafe extern "system" fn region_history(air: usize, region: i32) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::HistoryChanges);
     let _notification = WATCHES.notify(air, 0);
+    // The getter takes the history table's index, the region slot captures read.
+    let _region = WATCHES.registry.notify(touch_key(air, region as u32));
     let original: unsafe extern "system" fn(usize, i32) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(air, region) })

@@ -33,7 +33,6 @@ struct State {
     movement: Option<PresentationMovementRequest>,
     speed_terms: Option<PresentationSpeedTermsRequest>,
     split: bool,
-    bytes: usize,
     store_wait_ticks: u64,
     last_publish: i64,
     store: Option<Arc<division_presentation::held_store::Slot>>,
@@ -310,9 +309,6 @@ impl PresentationInputs {
         }
         state.movement = Some(request.take_movement());
         state.speed_terms = Some(request.take_speed_terms());
-        state.bytes = request.allocated_bytes()
-            + state.movement.as_ref().unwrap().allocated_bytes()
-            + state.speed_terms.as_ref().unwrap().allocated_bytes();
         let divisions = request
             .inputs
             .as_deref()
@@ -401,7 +397,6 @@ impl ClosedInputs<'_> {
         RangeTicket,
         PresentationMovementRequest,
         PresentationSpeedTermsRequest,
-        usize,
         bool,
     )> {
         let state = &mut self.0;
@@ -415,7 +410,6 @@ impl ClosedInputs<'_> {
                 .speed_terms
                 .take()
                 .expect("presentation speed terms retained"),
-            state.bytes,
             state.split,
         ))
     }

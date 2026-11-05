@@ -18,6 +18,10 @@
 //! clearing its site lists through two clearing operations. The caller
 //! certifies the carry with a token those two sites move ([`Held::certify`]),
 //! and a country is carried only under the raw id it was read with.
+//!
+//! Each entry's air-power menu is read with its pair. A menu equal to the one
+//! its row held keeps that allocation, and copying a row whose menu is
+//! unchanged touches no reference count.
 
 use crate::{
     Memory, cgame_state,
@@ -63,7 +67,31 @@ pub struct Row {
     pub friendly_missions: u16,
     pub enemy_missions: u16,
     pub air_spotting_scale: Option<i64>,
+    /// Shared with the recorded row; `None` when unreadable.
     pub menu: Option<Arc<Menu>>,
+    /// The menu's allocation, summed without dereferencing it; zero when shared.
+    menu_bytes: u32,
+}
+
+impl Row {
+    /// Takes `values` with `menu`, keeping this row's menu when it is the same allocation.
+    fn assign(&mut self, values: &Row, menu: Option<&Arc<Menu>>, menu_bytes: u32) {
+        self.country = values.country;
+        self.region = values.region;
+        self.slot = values.slot;
+        self.friendly = values.friendly;
+        self.enemy = values.enemy;
+        self.impact = values.impact;
+        self.friendly_missions = values.friendly_missions;
+        self.enemy_missions = values.enemy_missions;
+        self.air_spotting_scale = values.air_spotting_scale;
+        self.menu_bytes = menu_bytes;
+        match (self.menu.as_ref(), menu) {
+            (Some(kept), Some(menu)) if Arc::ptr_eq(kept, menu) => {}
+            (None, None) => {}
+            _ => self.menu = menu.cloned(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,6 +136,11 @@ pub struct Held {
     slots: Vec<u32>,
     /// The token the held table was read under.
     token: Option<u64>,
+    /// Every zero menu's one allocation.
+    zero: Option<Arc<Menu>>,
+    menu_scratch: menu::Scratch,
+    /// The held rows' menu allocations.
+    menu_bytes: usize,
 }
 
 impl Held {
@@ -148,12 +181,9 @@ impl Held {
             + (self.countries.capacity() + self.next_countries.capacity()) * size_of::<Country>()
             + self.slots.capacity() * size_of::<u32>()
             + self.rows.capacity() * size_of::<Row>()
-            + self
-                .rows
-                .iter()
-                .filter_map(|row| row.menu.as_ref())
-                .map(|menu| menu.allocated_bytes())
-                .sum::<usize>()
+            + self.menu_bytes
+            + self.zero.as_ref().map_or(0, |menu| menu.allocated_bytes())
+            + self.menu_scratch.allocated_bytes()
     }
 }
 
@@ -218,7 +248,16 @@ fn walk_buffer(
     walk.outcome = match result {
         Ok((len, period)) if len <= output.len() => {
             if len <= held.rows.len() && walk.countries <= held.next_countries.len() {
-                held.rows[..len].clone_from_slice(&output[..len]);
+                let mut menu_bytes = 0;
+                for (kept, row) in held.rows[..len].iter_mut().zip(&output[..len]) {
+                    kept.assign(row, row.menu.as_ref(), row.menu_bytes);
+                    menu_bytes += row.menu_bytes as usize;
+                }
+                let stale = held.row_len.max(len);
+                for row in &mut held.rows[len..stale] {
+                    row.menu = None;
+                }
+                held.menu_bytes = menu_bytes;
                 held.row_len = len;
                 std::mem::swap(&mut held.regions, &mut held.next_regions);
                 std::mem::swap(&mut held.countries, &mut held.next_countries);
@@ -304,6 +343,8 @@ fn read_table(
     let previous = &held.countries[..if carried { held.country_len } else { 0 }];
     let previous_rows = &held.rows[..held.row_len];
     let next = &mut held.next_countries;
+    let zero = &*held.zero.get_or_insert_with(|| Arc::new(Menu::default()));
+    let scratch = &mut held.menu_scratch;
     let (mut len, mut country, mut row) = (0, 0, 0);
     let mut countries = 0usize;
     cstrategic_air::visit(memory, base, game, |root| {
@@ -327,6 +368,7 @@ fn read_table(
             country: root.country,
             last,
             regions,
+            zero,
         };
         match previous.get(country).filter(|kept| {
             kept.canonical_slot == root.canonical_slot
@@ -343,10 +385,11 @@ fn read_table(
                     .get(row..row + kept.rows)
                     .ok_or("held raid air scores inconsistent")?,
                 phase,
+                scratch,
                 output,
                 &mut len,
             )?,
-            None => read_all(memory, scores, &target, output, &mut len)?,
+            None => read_all(memory, scores, &target, scratch, output, &mut len)?,
         }
         if output.is_growing() {
             Buffer::Growing(&mut *next).ensure(
@@ -462,18 +505,38 @@ struct Target<'a> {
     country: u32,
     last: usize,
     regions: &'a [Region],
+    zero: &'a Arc<Menu>,
 }
 
 impl Target<'_> {
+    /// `held` is the row this slot held before, whose menu an equal read keeps.
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &self,
         slot: usize,
         pair: &[u8],
         air_spotting_scale: Option<i64>,
-        menu: Option<Arc<Menu>>,
+        read: menu::Read,
+        held: Option<&Row>,
         output: &mut Buffer<'_, Row>,
         len: &mut usize,
     ) -> Result<(), &'static str> {
+        let changed;
+        let (menu, menu_bytes) = match read {
+            menu::Read::Unavailable => (None, 0),
+            menu::Read::Zero => (Some(self.zero), 0),
+            menu::Read::Same => match held {
+                Some(held) => (held.menu.as_ref(), held.menu_bytes),
+                None => return Err("raid air menu held row missing"),
+            },
+            menu::Read::Changed(menu) => {
+                changed = menu;
+                (
+                    Some(&changed),
+                    u32::try_from(changed.allocated_bytes()).unwrap_or(u32::MAX),
+                )
+            }
+        };
         let friendly = i64::from_le_bytes(pair[..8].try_into().unwrap());
         let enemy = i64::from_le_bytes(pair[8..16].try_into().unwrap());
         let impact = i64::from_le_bytes(pair[IMPACT..IMPACT + 8].try_into().unwrap());
@@ -488,7 +551,7 @@ impl Target<'_> {
             && friendly_missions == 0
             && enemy_missions == 0
             && air_spotting_scale == Some(0)
-            && menu.as_ref().is_some_and(|menu| menu.is_zero())
+            && menu.is_some_and(|menu| Arc::ptr_eq(menu, self.zero) || menu.is_zero())
             && slot != self.last
         {
             return Ok(());
@@ -496,7 +559,7 @@ impl Target<'_> {
         push(
             output,
             len,
-            Row {
+            &Row {
                 country: self.country,
                 region: self.regions[slot].id,
                 slot: slot as u32,
@@ -506,19 +569,33 @@ impl Target<'_> {
                 friendly_missions,
                 enemy_missions,
                 air_spotting_scale,
-                menu,
+                menu: None,
+                menu_bytes: 0,
             },
+            menu,
+            menu_bytes,
         )
     }
 }
 
-fn push(output: &mut Buffer<'_, Row>, len: &mut usize, row: Row) -> Result<(), &'static str> {
+/// Writes `row` with `menu` over the output's slot, which usually still holds the same menu.
+fn push(
+    output: &mut Buffer<'_, Row>,
+    len: &mut usize,
+    row: &Row,
+    menu: Option<&Arc<Menu>>,
+    menu_bytes: u32,
+) -> Result<(), &'static str> {
     output.ensure(len.checked_add(1).ok_or("raid air score count overflow")?)?;
     if let Some(slot) = output.get_mut(*len) {
-        *slot = row;
+        slot.assign(row, menu, menu_bytes);
     }
     *len = len.checked_add(1).ok_or("raid air score count overflow")?;
     Ok(())
+}
+
+fn carry_row(output: &mut Buffer<'_, Row>, len: &mut usize, row: &Row) -> Result<(), &'static str> {
+    push(output, len, row, row.menu.as_ref(), row.menu_bytes)
 }
 
 const PAIR: [RecordField; 1] = [field(0, 0, ENTRY)];
@@ -549,6 +626,7 @@ fn read_all(
     memory: &impl Memory,
     scores: Array,
     target: &Target<'_>,
+    scratch: &mut menu::Scratch,
     output: &mut Buffer<'_, Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
@@ -577,24 +655,22 @@ fn read_all(
                 .ok_or("raid air scale address overflow")?;
         }
         let scales = read_scales(memory, &addresses[..count]);
-        let mut menus = menu::read(memory, &addresses[..count]);
-        for (index, pair) in bytes[..count * ENTRY].chunks_exact(ENTRY).enumerate() {
+        let menus = menu::read(memory, &addresses[..count], &[], scratch);
+        for (index, (pair, read)) in bytes[..count * ENTRY]
+            .chunks_exact(ENTRY)
+            .zip(menus)
+            .enumerate()
+        {
             if target.regions[first + index].present {
-                target.push(
-                    first + index,
-                    pair,
-                    scales[index],
-                    menus[index].take(),
-                    output,
-                    len,
-                )?;
+                target.push(first + index, pair, scales[index], read, None, output, len)?;
             }
         }
     }
     Ok(())
 }
 
-/// Reads this hour's phase `slots` and keeps every other held pair.
+/// Reads this hour's phase `slots` and keeps every other held pair. Held rows
+/// and `slots` are both in slot order.
 #[allow(clippy::too_many_arguments)]
 fn carry(
     memory: &impl Memory,
@@ -603,13 +679,12 @@ fn carry(
     slots: &[u32],
     held: &[Row],
     phase: i32,
+    scratch: &mut menu::Scratch,
     output: &mut Buffer<'_, Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
-    let mut held = held
-        .iter()
-        .filter(|row| !target.regions[row.slot as usize].updated(row.slot as usize, phase))
-        .peekable();
+    let updated = |row: &Row| target.regions[row.slot as usize].updated(row.slot as usize, phase);
+    let mut next = 0;
     let mut addresses = [0_usize; BATCH];
     let mut bytes = [0; BATCH * ENTRY];
     for batch in slots.chunks(BATCH) {
@@ -627,27 +702,39 @@ fn carry(
             return Err("raid air score pair unreadable");
         }
         let scales = read_scales(memory, &addresses[..batch.len()]);
-        let mut menus = menu::read(memory, &addresses[..batch.len()]);
-        for (index, (slot, pair)) in batch
+        // Each slot's previous row, found ahead of the merge below.
+        let mut previous: [Option<&Row>; BATCH] = [None; BATCH];
+        let mut ahead = next;
+        for (found, slot) in previous.iter_mut().zip(batch) {
+            while held.get(ahead).is_some_and(|row| row.slot < *slot) {
+                ahead += 1;
+            }
+            *found = held.get(ahead).filter(|row| row.slot == *slot);
+        }
+        let mut menus: [Option<&Arc<Menu>>; BATCH] = [None; BATCH];
+        for (menu, row) in menus.iter_mut().zip(&previous) {
+            *menu = row.and_then(|row| row.menu.as_ref());
+        }
+        let reads = menu::read(memory, &addresses[..batch.len()], &menus[..batch.len()], scratch);
+        for (index, ((slot, pair), read)) in batch
             .iter()
             .zip(bytes[..batch.len() * ENTRY].chunks_exact(ENTRY))
+            .zip(reads)
             .enumerate()
         {
-            while let Some(row) = held.next_if(|row| row.slot < *slot) {
-                push(output, len, row.clone())?;
+            while let Some(row) = held.get(next).filter(|row| row.slot <= *slot) {
+                next += 1;
+                if row.slot < *slot && !updated(row) {
+                    carry_row(output, len, row)?;
+                }
             }
-            target.push(
-                *slot as usize,
-                pair,
-                scales[index],
-                menus[index].take(),
-                output,
-                len,
-            )?;
+            target.push(*slot as usize, pair, scales[index], read, previous[index], output, len)?;
         }
     }
-    for row in held {
-        push(output, len, row.clone())?;
+    for row in &held[next..] {
+        if !updated(row) {
+            carry_row(output, len, row)?;
+        }
     }
     Ok(())
 }
@@ -800,6 +887,65 @@ mod tests {
             self.bytes[at + 2..at + 4].copy_from_slice(&counts[1].to_le_bytes());
         }
 
+        fn entry(&self, country: usize, slot: usize) -> usize {
+            let data = u64::from_le_bytes(
+                self.bytes[self.air(country) + SCORES..][..8]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            data - MEMORY + slot * STRIDE
+        }
+
+        fn coverage(&mut self, country: usize, slot: usize, value: i64) {
+            let at = self.entry(country, slot) + 0x10;
+            self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        /// A fresh balanced contribution map for one side of an entry's menu.
+        fn contributions(&mut self, country: usize, slot: usize, side: usize, entries: &[(u32, i64)]) {
+            let head = self.bytes.len();
+            let nodes = head + 0x30;
+            self.bytes.resize(nodes + entries.len() * 0x30, 0);
+            let root = self.subtree(entries, 0, entries.len(), nodes, head, head);
+            let last = entries.len().saturating_sub(1);
+            let (left, right) = if entries.is_empty() {
+                (head, head)
+            } else {
+                (nodes, nodes + last * 0x30)
+            };
+            self.put(head, MEMORY + left);
+            self.put(head + 8, MEMORY + root);
+            self.put(head + 0x10, MEMORY + right);
+            self.bytes[head + 0x19] = 1;
+            let at = self.entry(country, slot) + 0x50 + side * 16;
+            self.put(at, MEMORY + head);
+            self.put(at + 8, entries.len());
+        }
+
+        fn subtree(
+            &mut self,
+            entries: &[(u32, i64)],
+            first: usize,
+            end: usize,
+            nodes: usize,
+            parent: usize,
+            head: usize,
+        ) -> usize {
+            if first == end {
+                return head;
+            }
+            let middle = (first + end) / 2;
+            let at = nodes + middle * 0x30;
+            let left = self.subtree(entries, first, middle, nodes, at, head);
+            let right = self.subtree(entries, middle + 1, end, nodes, at, head);
+            self.put(at, MEMORY + left);
+            self.put(at + 8, MEMORY + parent);
+            self.put(at + 0x10, MEMORY + right);
+            self.put32(at + 0x20, entries[middle].0);
+            self.bytes[at + 0x28..at + 0x30].copy_from_slice(&entries[middle].1.to_le_bytes());
+            at
+        }
+
         fn walk(&self, hour: i32, held: &mut Held, output: &mut [Row]) -> Walk {
             let memory = SliceMemory {
                 base: MEMORY,
@@ -820,6 +966,80 @@ mod tests {
             .iter()
             .map(|row| (row.country, row.region, row.friendly, row.enemy))
             .collect()
+    }
+
+    #[test]
+    fn menus_are_read_at_their_phase_and_an_unchanged_menu_keeps_its_allocation() {
+        let mut world = World::new(1, 12);
+        world.pair(1, 3, 5, 0);
+        world.coverage(1, 3, 70);
+        world.contributions(1, 3, 0, &[(2, 10), (5, 20), (9, 30)]);
+        world.pair(1, 4, 1, 0);
+        // An empty map is its count: its head is never read.
+        let empty = world.entry(1, 4) + 0x60;
+        world.put(empty, MEMORY + 0x0fff_0000);
+        let mut held = held(12, 1, 16);
+        held.certify(Some(1));
+        let mut rows: [Row; 16] = std::array::from_fn(|_| Row::default());
+        let menu = |walk: &Walk, rows: &[Row], slot: u32| {
+            rows[..walk.outcome.len()]
+                .iter()
+                .find(|row| row.slot == slot)
+                .and_then(|row| row.menu.clone())
+        };
+        let full = world.walk(HOUR - 1, &mut held, &mut rows);
+        assert!(full.full);
+        let read = menu(&full, &rows, 3).unwrap();
+        assert_eq!(read.coverage, 70);
+        assert_eq!(
+            read.contributions[0]
+                .iter()
+                .map(|row| (row.country, row.amount))
+                .collect::<Vec<_>>(),
+            [(2, 10), (5, 20), (9, 30)]
+        );
+        assert!(read.contributions[1].is_empty());
+        let zero = menu(&full, &rows, 4).unwrap();
+        assert!(zero.is_zero());
+        assert!(held.allocated_bytes() >= read.allocated_bytes());
+
+        // Phase three re-reads slot three: the equal menu is the same allocation.
+        let same = world.walk(HOUR, &mut held, &mut rows);
+        assert!(!same.full);
+        assert!(Arc::ptr_eq(&menu(&same, &rows, 3).unwrap(), &read));
+        assert!(Arc::ptr_eq(&menu(&same, &rows, 4).unwrap(), &zero));
+
+        // Off phase, a change is carried until the slot's own phase hour reads it.
+        world.contributions(1, 3, 0, &[(2, 10), (5, 25)]);
+        world.coverage(1, 4, 8);
+        let next = world.walk(HOUR + 1, &mut held, &mut rows);
+        assert!(Arc::ptr_eq(&menu(&next, &rows, 3).unwrap(), &read));
+        assert_eq!(menu(&next, &rows, 4).unwrap().coverage, 8);
+        for hour in HOUR + 2..HOUR + 8 {
+            assert!(!world.walk(hour, &mut held, &mut rows).full);
+        }
+        let phase = world.walk(HOUR + 8, &mut held, &mut rows);
+        let changed = menu(&phase, &rows, 3).unwrap();
+        assert!(!Arc::ptr_eq(&changed, &read));
+        assert_eq!(
+            changed.contributions[0]
+                .iter()
+                .map(|row| (row.country, row.amount))
+                .collect::<Vec<_>>(),
+            [(2, 10), (5, 25)]
+        );
+
+        // A node that does not name its parent makes the menu unreadable, never empty.
+        let at = world.entry(1, 3) + 0x50;
+        let head = u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap()) as usize - MEMORY;
+        let root = u64::from_le_bytes(world.bytes[head + 8..head + 16].try_into().unwrap()) as usize - MEMORY;
+        world.put(root + 8, MEMORY + root);
+        for hour in HOUR + 9..HOUR + 16 {
+            world.walk(hour, &mut held, &mut rows);
+        }
+        let broken = world.walk(HOUR + 16, &mut held, &mut rows);
+        let row = rows[..broken.outcome.len()].iter().find(|row| row.slot == 3).unwrap();
+        assert_eq!((row.friendly, row.menu.clone()), (5, None));
     }
 
     #[test]

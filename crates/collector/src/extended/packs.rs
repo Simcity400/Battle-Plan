@@ -1062,6 +1062,35 @@ impl Captured {
     /// every score pair next hour and forgets the rail store. Call after the
     /// map sample and with the air pack back from the AirMissions job.
     #[allow(clippy::type_complexity)]
+    /// Loan the spare regional Air supply capture to the AirSupply job, which
+    /// reads only the game state; the air pack keeps the other until its join.
+    pub(crate) fn take_air_supply_request(
+        &mut self,
+        countries: &std::sync::Arc<engine_native::country_memory::Cache>,
+        base: usize,
+        state: usize,
+    ) -> crate::acquisition_jobs::AirSupplyRequest {
+        crate::acquisition_jobs::AirSupplyRequest {
+            countries: std::sync::Arc::clone(countries),
+            base,
+            game_state: state,
+            capture: self.air_supply_spare.take().unwrap_or_default(),
+            ok: false,
+        }
+    }
+
+    /// The AirSupply job's capture into the air pack, back from the
+    /// AirMissions job; the pack's previous capture becomes the spare.
+    pub(crate) fn restore_air_supply_request(
+        &mut self,
+        request: crate::acquisition_jobs::AirSupplyRequest,
+        completed: bool,
+    ) {
+        let mut capture = request.capture;
+        self.air.install_supply(&mut capture, completed && request.ok);
+        self.air_supply_spare = Some(capture);
+    }
+
     pub(crate) fn restore_scores_rails_request(
         &mut self,
         request: crate::acquisition_jobs::ScoresRailsRequest,
@@ -2576,6 +2605,7 @@ pub(crate) struct FinalInputsRequest {
     finished: [bool; 14],
 }
 impl FinalInputsRequest {
+    #[cfg(test)]
     pub(crate) fn allocated_bytes(&self) -> u64 {
         (self.divisions.allocated_bytes()
             + self.new_divisions.allocated_bytes()

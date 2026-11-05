@@ -477,7 +477,7 @@ pub fn compare_region_combat(
             (state.own, state.foreign)
         } else {
             report.limitation(air_region_derive::UNPRUNED_CONTAINER, &label);
-            (&row.own, &row.foreign)
+            (&row.own[..], &row.foreign[..])
         };
         check(
             report,
@@ -753,6 +753,7 @@ mod tests {
                 cause: 4,
                 amount: 200_000,
             }],
+            equipment: None,
         };
         let stale = AirCombatRecord {
             date: 43_800_010,
@@ -762,15 +763,15 @@ mod tests {
             country: 112,
             region: 4,
             owner: 12,
-            own: vec![stale, kept],
-            foreign: vec![AirCombatRecord {
+            own: std::sync::Arc::new(vec![stale, kept]),
+            foreign: std::sync::Arc::new(vec![AirCombatRecord {
                 wing_id: 10,
                 date: 43_800_031,
                 planes: 2,
                 mission_mask: 1,
                 selection: 1,
                 ..Default::default()
-            }],
+            }]),
         };
         let state = StateRow {
             id: 1,
@@ -799,7 +800,7 @@ mod tests {
         else {
             unreachable!()
         };
-        rows[0].own[1].second_damage[0].amount += 1;
+        std::sync::Arc::make_mut(&mut rows[0].own)[1].second_damage[0].amount += 1;
         let mut report = Report::default();
         compare_region_combat(&frame, &save, &links, 24, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);

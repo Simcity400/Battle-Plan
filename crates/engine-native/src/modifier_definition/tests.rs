@@ -460,6 +460,35 @@ fn key_by_name_resolves_the_registered_index_through_the_lexer() {
 }
 
 #[test]
+fn named_key_resolves_once_per_table_header() {
+    let mut table = Table::new(&[
+        Some((0, 1, b"MODIFIER_NONE", b"", b"")),
+        None,
+        Some((2, 3, LONG, b"", b"")),
+        Some((3, 2, b"MODIFIER_WS", b"", b"")),
+    ]);
+    table.lexer(&[b"", b"none", b"war_support_factor", b"stability_factor"]);
+    let mut held = NamedKey::new(b"stability_factor");
+    let mut absent = NamedKey::new(b"stability");
+    assert_eq!(held.get(&table.memory, BASE), Ok(Some(2)));
+    assert_eq!(absent.get(&table.memory, BASE), Ok(None));
+    // Rows behind an unchanged header are not read again.
+    table
+        .memory
+        .put(TABLE + 2 * STRIDE + TOKEN, &9_u32.to_le_bytes());
+    assert_eq!(held.get(&table.memory, BASE), Ok(Some(2)));
+    assert_eq!(absent.get(&table.memory, BASE), Ok(None));
+    // A new header resolves again; a failed lookup holds nothing.
+    table.header(TABLE, 7, 3);
+    assert!(held.get(&table.memory, BASE).is_err());
+    table
+        .memory
+        .put(TABLE + 2 * STRIDE + TOKEN, &3_u32.to_le_bytes());
+    assert_eq!(held.get(&table.memory, BASE), Ok(Some(2)));
+    assert_eq!(absent.get(&table.memory, BASE), Ok(None));
+}
+
+#[test]
 fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populations() {
     struct Traced<'a> {
         source: &'a Fixture,

@@ -4,6 +4,18 @@ use std::{
     ops::Range,
 };
 
+/// An [`Observed`]'s reads and verdicts, without its memory.
+pub(super) struct State {
+    reads: Vec<Range<usize>>,
+    complete: bool,
+    allocation_failed: bool,
+    read_failed: bool,
+}
+impl State {
+    pub fn allocation_failed(&self) -> bool {
+        self.allocation_failed
+    }
+}
 pub(super) struct Observed<'a, M> {
     source: &'a M,
     reads: RefCell<Vec<Range<usize>>>,
@@ -25,6 +37,25 @@ impl<'a, M: Memory> Observed<'a, M> {
             complete: Cell::new(complete),
             allocation_failed: Cell::new(!complete),
             read_failed: Cell::new(false),
+        }
+    }
+    /// Continues another thread's observation of identical spans, its reads kept in order.
+    pub fn resume(source: &'a M, state: State) -> Self {
+        Self {
+            source,
+            reads: RefCell::new(state.reads),
+            complete: Cell::new(state.complete),
+            allocation_failed: Cell::new(state.allocation_failed),
+            read_failed: Cell::new(state.read_failed),
+        }
+    }
+    /// The reads and verdicts so far, for [`Self::resume`].
+    pub fn into_state(self) -> State {
+        State {
+            reads: self.reads.into_inner(),
+            complete: self.complete.get(),
+            allocation_failed: self.allocation_failed.get(),
+            read_failed: self.read_failed.get(),
         }
     }
     pub fn diagnostics(&self) -> (bool, bool, bool) {

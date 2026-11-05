@@ -463,14 +463,14 @@ mod tests {
         // An out-of-order record after the first kept one stays, as the
         // native forward scan stops at the first record it keeps.
         let row = AirRegionCombatRow {
-            own: vec![
+            own: std::sync::Arc::new(vec![
                 record(kept - 2, 1, 0, 1),
                 record(kept - 1, 1, 0, 1),
                 record(kept, 1, 0, 1),
                 record(kept - 9, 1, 0, 1),
                 record(HOUR, 1, 0, 1),
-            ],
-            foreign: vec![record(kept - 1, 1, 0, 1)],
+            ]),
+            foreign: std::sync::Arc::new(vec![record(kept - 1, 1, 0, 1)]),
             ..Default::default()
         };
         let state = retained(&row, HOUR, 24);
@@ -521,8 +521,8 @@ mod tests {
 
         let older = cutoff(pass - 48, 24);
         let row = AirRegionCombatRow {
-            own: vec![record(older - 1, 1, 0, 1), record(older, 1, 0, 1)],
-            foreign: vec![record(older - 5, 1, 0, 1)],
+            own: std::sync::Arc::new(vec![record(older - 1, 1, 0, 1), record(older, 1, 0, 1)]),
+            foreign: std::sync::Arc::new(vec![record(older - 5, 1, 0, 1)]),
             ..Default::default()
         };
         let state = retained_through(&row, Some(pass - 48), 24);
@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(last_pass(midnight), Some(midnight));
         assert_eq!(last_pass(Hour::MAX), Some(Hour::MAX - 7));
         let row = AirRegionCombatRow {
-            own: vec![record(Hour::MIN, 1, 0, 1)],
+            own: std::sync::Arc::new(vec![record(Hour::MIN, 1, 0, 1)]),
             ..Default::default()
         };
         assert_eq!(retained(&row, Hour::MIN, 24).own.len(), 1);

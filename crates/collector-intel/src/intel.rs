@@ -119,6 +119,82 @@ pub fn network_summary_boundary(invalidate: bool) {
         NETWORK_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
+/// Script-name keys the hourly walks resolve, kept across hours and frames.
+static ROOT_OUT_KEY: std::sync::Mutex<engine_native::modifier_definition::NamedKey> =
+    std::sync::Mutex::new(operative_missions::root_out_key());
+static OFFER_SPEED_KEY: std::sync::Mutex<engine_native::modifier_definition::NamedKey> =
+    std::sync::Mutex::new(agency_operation_buffers::speed_key());
+
+/// The held key, or a fresh one when another walk holds it.
+fn with_held_key<R>(
+    held: &std::sync::Mutex<engine_native::modifier_definition::NamedKey>,
+    fresh: engine_native::modifier_definition::NamedKey,
+    walk: impl FnOnce(&mut engine_native::modifier_definition::NamedKey) -> R,
+) -> R {
+    match held.try_lock() {
+        Ok(mut key) => walk(&mut key),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            let mut key = poisoned.into_inner();
+            *key = fresh;
+            walk(&mut key)
+        }
+        Err(std::sync::TryLockError::WouldBlock) => walk(&mut { fresh }),
+    }
+}
+
+type Rosters = std::sync::Arc<[Vec<u64>; 5]>;
+
+/// Each country's last converted mission rosters: an unchanged roster keeps its
+/// allocation, so its row compares by pointer.
+static HELD_ROSTERS: std::sync::Mutex<Option<std::collections::HashMap<u32, Rosters>>> =
+    std::sync::Mutex::new(None);
+
+fn held_rosters(
+    held: &mut std::collections::HashMap<u32, Rosters>,
+    country: u32,
+    entries: &[strategic_operatives::Entry],
+    counts: [usize; 5],
+) -> Rosters {
+    let mut start = 0;
+    let lists = counts.map(|count| {
+        let list = &entries[start..start + count];
+        start += count;
+        list
+    });
+    if let Some(rosters) = held.get(&country)
+        && rosters.iter().zip(lists).all(|(roster, list)| {
+            roster.len() == list.len()
+                && roster.iter().zip(list).all(|(&id, entry)| id == entry.operative)
+        })
+    {
+        return std::sync::Arc::clone(rosters);
+    }
+    let rosters: Rosters =
+        std::sync::Arc::new(lists.map(|list| list.iter().map(|entry| entry.operative).collect()));
+    if engine_allocation::reserve_map(held, 1).is_ok() {
+        held.insert(country, std::sync::Arc::clone(&rosters));
+    }
+    rosters
+}
+
+/// A sizing walk of every operative mission, with the held root-out key.
+pub fn operative_mission_demand(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> operative_missions::Walk {
+    with_held_key(&ROOT_OUT_KEY, operative_missions::root_out_key(), |key| {
+        operative_missions::walk_buffer(
+            memory,
+            base,
+            state,
+            engine_native::walk::Buffer::Fixed(&mut []),
+            engine_native::walk::Buffer::Fixed(&mut []),
+            key,
+        )
+    })
+}
+
 /// One residual worker owns the native census at a time. Frames share its
 /// aggregate cache so recycled frames never reread unchanged networks.
 static NETWORK_SUMMARY_CACHE: std::sync::Mutex<NetworkSummaryCache> =
@@ -1535,8 +1611,15 @@ impl Captured {
                     &mut self.operative_mission_bytes,
                     |rows, bytes| {
                         let _reads = read_accounting::table(TABLES[18]);
-                        let read =
-                            operative_missions::walk_growing(memory, base, state, rows, bytes);
+                        let read = with_held_key(
+                            &ROOT_OUT_KEY,
+                            operative_missions::root_out_key(),
+                            |key| {
+                                operative_missions::walk_growing(
+                                    memory, base, state, rows, bytes, key,
+                                )
+                            },
+                        );
                         self.operative_mission_failure = read.failed_operative;
                         ArenaRead {
                             outcome: read.outcome,
@@ -1655,8 +1738,14 @@ impl Captured {
                     &mut self.agency_operation_entries,
                     |rows, entries| {
                         let _reads = read_accounting::table(TABLES[20]);
-                        let read = agency_operation_buffers::walk_growing(
-                            memory, base, state, rows, entries,
+                        let read = with_held_key(
+                            &OFFER_SPEED_KEY,
+                            agency_operation_buffers::speed_key(),
+                            |key| {
+                                agency_operation_buffers::walk_growing(
+                                    memory, base, state, rows, entries, key,
+                                )
+                            },
                         );
                         ArenaRead {
                             outcome: read.outcome,
@@ -2430,21 +2519,21 @@ impl Captured {
             return unavailable("strategic operative entries lie outside captured arena");
         }
         let entries = &self.strategic_operative_entries.first;
-        table::<tables::StrategicOperatives, _>(outcome, &self.strategic_operatives.rows, |r| {
+        let mut guard = HELD_ROSTERS.lock().unwrap_or_else(|poisoned| {
+            let mut held = poisoned.into_inner();
+            *held = None;
+            held
+        });
+        let held = std::cell::RefCell::new(guard.get_or_insert_with(Default::default));
+        let view = table::<tables::StrategicOperatives, _>(outcome, &self.strategic_operatives.rows, |r| {
             let trade_end = r.entries_start + r.trade_len;
             rows::StrategicOperativeRow {
-                mission_rosters: {
-                    let mut start = trade_end + r.pressure_len;
-                    Some(r.mission_counts.map(|count| {
-                        let end = start + count;
-                        let roster = entries[start..end]
-                            .iter()
-                            .map(|entry| entry.operative)
-                            .collect();
-                        start = end;
-                        roster
-                    }))
-                },
+                mission_rosters: Some(held_rosters(
+                    &mut held.borrow_mut(),
+                    r.country,
+                    &entries[trade_end + r.pressure_len..],
+                    r.mission_counts,
+                )),
                 country: r.country,
                 slot: r.slot,
                 mission_activity: r.mission_activity,
@@ -2465,7 +2554,16 @@ impl Captured {
                     },
                 )),
             }
-        })
+        });
+        // Countries no longer converted release their rosters.
+        let held = held.into_inner();
+        if let Outcome::Rows { len } = outcome
+            && held.len() > len
+            && let Some(live) = self.strategic_operatives.rows.get(..len)
+        {
+            held.retain(|country, _| live.iter().any(|row| row.country == *country));
+        }
+        view
     }
 
     fn agency_upgrades_table(&self, outcome: Outcome) -> TableView {

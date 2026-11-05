@@ -297,8 +297,26 @@ pub struct Damage {
     pub amount: i64,
 }
 
-/// One `SAirWingCombatData` with both damage vectors in native order.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// One equipment-pool entry of a record: the variant's complete native
+/// reference and its signed fixed-point amount.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Equipment {
+    pub variant: u64,
+    pub amount_raw: i64,
+}
+
+/// Why a record's equipment pool was not read; its other fields stand.
+pub const EQUIPMENT_REFUSALS: [&str; 5] = [
+    "equipment pool vtable mismatch",
+    "equipment pool array invalid or unreadable",
+    "equipment entry unreadable",
+    "variant identity unreadable",
+    "variant vtable or reference type mismatch",
+];
+
+/// One `SAirWingCombatData`; its damage and equipment are ranges of the
+/// holder's arenas, in native order.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub wing_id: u32,
     pub date: i32,
@@ -308,10 +326,10 @@ pub struct Record {
     pub classification: u8,
     pub copied: u8,
     pub attributed_country: u32,
-    /// the first damage vector (causes 0, 1, 2, 6, 7) and the second (3, 4, 5, 9, 10).
-    pub damage: [Vec<Damage>; 2],
-    pub equipment: Option<Vec<engine_native::equipment_entry::Row>>,
-    pub equipment_failure: Option<&'static str>,
+    /// The first damage vector (causes 0, 1, 2, 6, 7) and the second (3, 4, 5, 9, 10).
+    pub damage: [std::ops::Range<usize>; 2],
+    /// The equipment entries, or the [`EQUIPMENT_REFUSALS`] index of why not.
+    pub equipment: Result<std::ops::Range<usize>, u8>,
 }
 
 /// One record vector of a holder: its native count, and the records from
@@ -323,20 +341,104 @@ pub struct Side {
     pub records: Vec<Record>,
 }
 
-/// One holder: its raw owner and both record vectors (the wings of the owner's country; the foreign
-/// vector, the others').
+/// One holder: its raw owner and both record vectors (the wings of the owner's
+/// country; the foreign vector, the others'), with the arenas their records
+/// index. Reused across reads, it keeps its capacity.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Holder {
     pub owner: u32,
     pub sides: [Side; 2],
+    pub damage: Vec<Damage>,
+    pub equipment: Vec<Equipment>,
+}
+
+impl Holder {
+    pub fn damage(&self, record: &Record, channel: usize) -> &[Damage] {
+        &self.damage[record.damage[channel].clone()]
+    }
+
+    pub fn equipment(&self, record: &Record) -> Result<&[Equipment], &'static str> {
+        record
+            .equipment
+            .clone()
+            .map(|range| &self.equipment[range])
+            .map_err(|index| EQUIPMENT_REFUSALS[usize::from(index)])
+    }
+
+    fn clear(&mut self) {
+        self.owner = 0;
+        for side in &mut self.sides {
+            side.count = 0;
+            side.first = 0;
+            side.records.clear();
+        }
+        self.damage.clear();
+        self.equipment.clear();
+    }
+}
+
+/// Reusable read buffers and the variant identities met since
+/// [`Reader::forget_variants`]: within one capture, while the game is parked,
+/// a variant's address names one variant.
+#[derive(Default)]
+pub struct Reader {
+    records: Vec<u8>,
+    entries: Vec<u8>,
+    /// By address: the variant's reference, or the refusal index.
+    variants: Vec<(usize, Result<u64, u8>)>,
+}
+
+impl Reader {
+    pub const fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            entries: Vec::new(),
+            variants: Vec::new(),
+        }
+    }
+
+    /// A new capture: no identity read before it certifies one.
+    pub fn forget_variants(&mut self) {
+        self.variants.clear();
+    }
+
+    fn variant(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        pointer: usize,
+    ) -> Result<Result<u64, u8>, &'static str> {
+        let at = match self
+            .variants
+            .binary_search_by_key(&pointer, |&(address, _)| address)
+        {
+            Ok(at) => return Ok(self.variants[at].1),
+            Err(at) => at,
+        };
+        let identity = match crate::read::<[u8; 16]>(memory, pointer) {
+            None => Err(3),
+            Some(bytes) => {
+                let expected = base
+                    .checked_add(engine_native::cequipment_variant::VTABLE_RVA)
+                    .ok_or("variant module address overflow")?;
+                engine_native::cequipment_variant::identity_from_header(expected, bytes)
+                    .map_err(|_| 4)
+            }
+        };
+        crate::allocation::reserve(&mut self.variants, 1)
+            .map_err(|_| "air combat equipment allocation failed")?;
+        self.variants.insert(at, (pointer, identity));
+        Ok(identity)
+    }
 }
 
 /// Reads a holder whose address an authenticated census or the record updater
 /// named. `since: None` reads every record; `Some(hour)` reads only each
 /// vector's maximal suffix dated at or after `hour`, the records record
 /// lookup's reverse scan can still reach and the updater can still change: one
-/// date read finds the suffix, then each record and its damage is read in
-/// native order. No allocation beyond the returned vectors (checked growth), no
+/// date read per record finds the suffix, then the suffix is copied in one
+/// read, and each record's damage and equipment vectors in one read each. No
+/// allocation beyond the holder's and reader's arenas (checked growth), no
 /// retry and no engine call.
 pub fn read_holder(
     memory: &impl Memory,
@@ -344,6 +446,28 @@ pub fn read_holder(
     address: usize,
     since: Option<i32>,
 ) -> Result<Holder, &'static str> {
+    let mut holder = Holder::default();
+    read_holder_into(
+        memory,
+        base,
+        address,
+        since,
+        &mut Reader::new(),
+        &mut holder,
+    )?;
+    Ok(holder)
+}
+
+/// [`read_holder`] into reused buffers.
+pub fn read_holder_into(
+    memory: &impl Memory,
+    base: usize,
+    address: usize,
+    since: Option<i32>,
+    reader: &mut Reader,
+    holder: &mut Holder,
+) -> Result<(), &'static str> {
+    holder.clear();
     let mut identity = [0_u8; ROOT_RECORD_BYTES];
     let copied = memory.copy_records(
         RecordSources::Pointers(&[address]),
@@ -359,10 +483,7 @@ pub fn read_holder(
     if copied < ROOT_FIELDS.len() {
         return Err("air combat region header unreadable");
     }
-    let mut holder = Holder {
-        owner: u32::from_le_bytes(identity[8..12].try_into().unwrap()),
-        ..Default::default()
-    };
+    holder.owner = u32::from_le_bytes(identity[8..12].try_into().unwrap());
     for (side, header) in [12_usize, 28].into_iter().enumerate() {
         let vector = Array::from_header(
             identity[header..header + 16].try_into().unwrap(),
@@ -387,82 +508,172 @@ pub fn read_holder(
         } else {
             first = 0;
         }
-        let out = &mut holder.sides[side];
-        out.count = vector.count;
-        out.first = first;
-        crate::allocation::reserve_exact(&mut out.records, (vector.count - first) as usize)
-            .map_err(|_| "air combat record allocation failed")?;
-        for ordinal in first..vector.count {
-            let record = vector
-                .element(ordinal, sair_wing_combat_data::STRIDE)
-                .ok_or("air combat record address overflow")?;
-            out.records.push(read_record(memory, base, record)?);
+        holder.sides[side].count = vector.count;
+        holder.sides[side].first = first;
+        let len = (vector.count - first) as usize;
+        if len == 0 {
+            continue;
         }
+        let bytes = len
+            .checked_mul(sair_wing_combat_data::STRIDE)
+            .ok_or("air combat record address overflow")?;
+        crate::allocation::resize(&mut reader.records, bytes, 0)
+            .map_err(|_| "air combat record allocation failed")?;
+        let start = vector
+            .element(first, sair_wing_combat_data::STRIDE)
+            .ok_or("air combat record address overflow")?;
+        if !memory.copy(start, &mut reader.records[..bytes]) {
+            return Err("air combat record fields unreadable");
+        }
+        crate::allocation::reserve(&mut holder.sides[side].records, len)
+            .map_err(|_| "air combat record allocation failed")?;
+        let records = std::mem::take(&mut reader.records);
+        let result = records
+            .chunks_exact(sair_wing_combat_data::STRIDE)
+            .try_for_each(|bytes| {
+                let record = read_record(memory, base, bytes, reader, holder)?;
+                holder.sides[side].records.push(record);
+                Ok(())
+            });
+        reader.records = records;
+        result?;
     }
-    Ok(holder)
+    Ok(())
 }
 
-fn read_record(memory: &impl Memory, base: usize, address: usize) -> Result<Record, &'static str> {
-    let row = sair_wing_combat_data::read_row(memory, base, address, 0, 0, 0, 0)?;
-    let mut damage: [Vec<Damage>; 2] = Default::default();
-    for (channel, offset) in [
-        sair_wing_combat_data::FIRST_DAMAGE,
-        sair_wing_combat_data::SECOND_DAMAGE,
-    ]
-    .into_iter()
-    .enumerate()
+fn read_record(
+    memory: &impl Memory,
+    base: usize,
+    bytes: &[u8],
+    reader: &mut Reader,
+    holder: &mut Holder,
+) -> Result<Record, &'static str> {
+    use sair_wing_combat_data as wing;
+    let qword = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let expected = base
+        .checked_add(wing::VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    if qword(0) != expected as u64 {
+        return Err("air combat record vtable mismatch");
+    }
+    let (selection, classification, copied) = (
+        bytes[wing::SELECTION_FLAG],
+        bytes[wing::CLASSIFICATION_FLAG],
+        bytes[wing::COPIED_FLAG],
+    );
+    if selection > 1 || classification > 1 || copied > 1 {
+        return Err("air combat record flag is not boolean");
+    }
+    let damage_vtable = base
+        .checked_add(sdamage_entry::VTABLE_RVA)
+        .ok_or("module address overflow")?;
+    let mut damage: [std::ops::Range<usize>; 2] = Default::default();
+    for (channel, offset) in [wing::FIRST_DAMAGE, wing::SECOND_DAMAGE]
+        .into_iter()
+        .enumerate()
     {
-        let header = address
-            .checked_add(offset)
-            .ok_or("air damage vector address overflow")?;
-        let entries = Array::read(memory, header, sdamage_entry::STRIDE)
-            .ok_or("air damage vector unreadable or invalid")?;
-        crate::allocation::reserve_exact(&mut damage[channel], entries.count as usize)
+        let entries = Array::from_header(
+            bytes[offset..offset + 16].try_into().unwrap(),
+            sdamage_entry::STRIDE,
+        )
+        .ok_or("air damage vector unreadable or invalid")?;
+        let len = entries.count as usize * sdamage_entry::STRIDE;
+        crate::allocation::resize(&mut reader.entries, len, 0)
             .map_err(|_| "air damage allocation failed")?;
-        for index in 0..entries.count {
-            let entry = entries
-                .element(index, sdamage_entry::STRIDE)
-                .ok_or("air damage entry address overflow")?;
-            let entry = sdamage_entry::read_row(memory, base, entry, row.key, channel as u8)?;
-            damage[channel].push(Damage {
-                cause: entry.cause,
-                amount: entry.amount,
+        if len != 0 && !memory.copy(entries.data, &mut reader.entries[..len]) {
+            return Err("air damage entry fields unreadable");
+        }
+        crate::allocation::reserve(&mut holder.damage, entries.count as usize)
+            .map_err(|_| "air damage allocation failed")?;
+        let begin = holder.damage.len();
+        for entry in reader.entries[..len].chunks_exact(sdamage_entry::STRIDE) {
+            if u64::from_le_bytes(entry[..8].try_into().unwrap()) != damage_vtable as u64 {
+                return Err("air damage entry vtable mismatch");
+            }
+            let at = sdamage_entry::CAUSE_TYPE;
+            let amount = sdamage_entry::AMOUNT;
+            holder.damage.push(Damage {
+                cause: u32::from_le_bytes(entry[at..at + 4].try_into().unwrap()),
+                amount: i64::from_le_bytes(entry[amount..amount + 8].try_into().unwrap()),
             });
         }
+        damage[channel] = begin..holder.damage.len();
     }
-    let equipment = (|| {
-        let pool = address
-            .checked_add(sair_wing_combat_data::EQUIPMENT_POOL)
-            .ok_or("air combat equipment pool overflow")?;
-        let entries = engine_native::cequipment_variant_pool::entries(memory, base, pool)?;
-        let mut out = Vec::new();
-        crate::allocation::reserve_exact(&mut out, entries.count as usize)
-            .map_err(|_| "air combat equipment allocation failed")?;
-        for at in 0..entries.count {
-            let entry = entries
-                .element(at, engine_native::equipment_entry::STRIDE)
-                .ok_or("air combat equipment entry overflow")?;
-            out.push(engine_native::equipment_entry::read(
-                memory, base, entry, at,
-            )?);
-        }
-        Ok::<_, &'static str>(out)
-    })();
-    let equipment_failure = equipment.as_ref().err().copied();
-    let equipment = equipment.ok();
+    let equipment = equipment(memory, base, bytes, reader, holder)?;
     Ok(Record {
-        wing_id: row.key.wing_id,
-        date: row.key.date,
-        planes: row.planes,
-        mission_mask: row.mission_mask,
-        selection: row.selection,
-        classification: row.key.classification,
-        copied: row.copied,
-        attributed_country: row.attributed_country,
+        wing_id: word(wing::WING_ID),
+        date: word(wing::DATE) as i32,
+        planes: word(wing::PLANE_COUNT) as i32,
+        mission_mask: word(wing::MISSION_MASK),
+        selection,
+        classification,
+        copied,
+        attributed_country: word(wing::ATTRIBUTED_COUNTRY),
         damage,
         equipment,
-        equipment_failure,
     })
+}
+
+/// The record's embedded equipment pool, its entries in one read and each
+/// distinct variant authenticated once per capture.
+fn equipment(
+    memory: &impl Memory,
+    base: usize,
+    bytes: &[u8],
+    reader: &mut Reader,
+    holder: &mut Holder,
+) -> Result<Result<std::ops::Range<usize>, u8>, &'static str> {
+    use engine_native::{cequipment_variant_pool as pool, equipment_entry as entry};
+    let at = sair_wing_combat_data::EQUIPMENT_POOL;
+    let expected = base
+        .checked_add(pool::VTABLE_RVA)
+        .ok_or("equipment pool vtable address overflow")?;
+    if u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) != expected as u64 {
+        return Ok(Err(0));
+    }
+    let header = at + pool::ITEMS;
+    let Some(entries) = Array::from_header(
+        bytes[header..header + 16].try_into().unwrap(),
+        entry::STRIDE,
+    ) else {
+        return Ok(Err(1));
+    };
+    let len = entries.count as usize * entry::STRIDE;
+    crate::allocation::resize(&mut reader.entries, len, 0)
+        .map_err(|_| "air combat equipment allocation failed")?;
+    if len != 0 && !memory.copy(entries.data, &mut reader.entries[..len]) {
+        return Ok(Err(2));
+    }
+    crate::allocation::reserve(&mut holder.equipment, entries.count as usize)
+        .map_err(|_| "air combat equipment allocation failed")?;
+    let begin = holder.equipment.len();
+    let rows = std::mem::take(&mut reader.entries);
+    let result = (|| {
+        for row in rows[..len].chunks_exact(entry::STRIDE) {
+            let variant =
+                u64::from_le_bytes(row[entry::VARIANT..entry::AMOUNT].try_into().unwrap());
+            let Ok(variant) = usize::try_from(variant) else {
+                return Ok(Err(3));
+            };
+            let variant = match reader.variant(memory, base, variant)? {
+                Ok(variant) => variant,
+                Err(index) => return Ok(Err(index)),
+            };
+            holder.equipment.push(Equipment {
+                variant,
+                amount_raw: i64::from_le_bytes(
+                    row[entry::AMOUNT..entry::STRIDE].try_into().unwrap(),
+                ),
+            });
+        }
+        Ok(Ok(begin..holder.equipment.len()))
+    })();
+    reader.entries = rows;
+    if !matches!(result, Ok(Ok(_))) {
+        holder.equipment.truncate(begin);
+    }
+    result
 }
 
 /// Every non-null holder of every authenticated country air object, in census and region order: the
@@ -1101,7 +1312,7 @@ mod tests {
         assert_eq!(whole.sides[0].records.len(), 2);
         assert_eq!(whole.sides[1].records[0].wing_id, 10);
         assert_eq!(
-            whole.sides[0].records[0].damage[0],
+            whole.damage(&whole.sides[0].records[0], 0),
             [
                 Damage {
                     cause: u32::MAX,
@@ -1113,11 +1324,80 @@ mod tests {
                 },
             ]
         );
-        assert!(whole.sides[0].records[0].damage[1].is_empty());
+        assert!(whole.damage(&whole.sides[0].records[0], 1).is_empty());
+        // The fixture's records hold no authenticated equipment pool.
+        assert_eq!(
+            whole.equipment(&whole.sides[0].records[0]),
+            Err(EQUIPMENT_REFUSALS[0])
+        );
         assert_eq!(
             read_holder(&memory, IMAGE_BASE, REGION + 8, None),
             Err("air combat region vtable mismatch or unreadable")
         );
+    }
+
+    /// A record's equipment is one read of its entries, each distinct variant
+    /// authenticated once per capture; an unauthenticated pool refuses only
+    /// that record's equipment.
+    #[test]
+    fn equipment_entries_are_read_once_and_variants_once_per_capture() {
+        use engine_native::{cequipment_variant as variant, cequipment_variant_pool as pool};
+        const ENTRIES: usize = 0x1900;
+        const VARIANT: usize = 0x1a00;
+        let mut bytes = fixture();
+        let at = FIRST + sair_wing_combat_data::EQUIPMENT_POOL;
+        put(
+            &mut bytes,
+            at,
+            &((IMAGE_BASE + pool::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        vector(&mut bytes, at + pool::ITEMS, ENTRIES, 2);
+        for (index, amount) in [5_i64, -7].into_iter().enumerate() {
+            put(
+                &mut bytes,
+                ENTRIES + index * 16,
+                &(VARIANT as u64).to_le_bytes(),
+            );
+            put(&mut bytes, ENTRIES + index * 16 + 8, &amount.to_le_bytes());
+        }
+        let handle = (9_u64 << 32) | u64::from(variant::REFERENCE_TYPE);
+        put(
+            &mut bytes,
+            VARIANT,
+            &((IMAGE_BASE + variant::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut bytes, VARIANT + 8, &handle.to_le_bytes());
+        let memory = SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &bytes,
+        };
+        let (mut reader, mut holder) = (Reader::new(), Holder::default());
+        read_holder_into(&memory, IMAGE_BASE, REGION, None, &mut reader, &mut holder).unwrap();
+        let records = &holder.sides[0].records;
+        assert_eq!(
+            holder.equipment(&records[0]),
+            Ok(&[
+                Equipment {
+                    variant: handle,
+                    amount_raw: 5
+                },
+                Equipment {
+                    variant: handle,
+                    amount_raw: -7
+                },
+            ][..])
+        );
+        assert_eq!(reader.variants.len(), 1);
+        assert_eq!(holder.equipment(&records[1]), Err(EQUIPMENT_REFUSALS[0]));
+        // A reused holder holds only its last read.
+        read_holder_into(&memory, IMAGE_BASE, REGION, None, &mut reader, &mut holder).unwrap();
+        assert_eq!(holder.equipment.len(), 2);
+        assert_eq!(
+            holder,
+            read_holder(&memory, IMAGE_BASE, REGION, None).unwrap()
+        );
+        reader.forget_variants();
+        assert!(reader.variants.is_empty());
     }
 
     /// The census visits every non-null holder with its container and

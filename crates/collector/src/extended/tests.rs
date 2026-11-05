@@ -107,6 +107,7 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         size_of::<StabilityPacks>(),
         size_of::<WarOverviewPacks>(),
         size_of::<ProductionDailyPacks>(),
+        size_of::<engine_map_air::map_air_supply::Capture>(),
     ];
     let assert_vacant = |captured: &Captured| {
         // The boxes remain reusable; none of their parked packs owns a
@@ -156,6 +157,8 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
                     .as_ref()
                     .unwrap()
                     .allocated_bytes(),
+                size_of::<engine_map_air::map_air_supply::Capture>()
+                    + captured.air_supply_spare.as_ref().unwrap().allocated_bytes(),
             ],
             box_bytes
         );

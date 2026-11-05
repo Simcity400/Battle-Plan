@@ -2233,3 +2233,55 @@ fn a_container_the_dense_list_lacks_is_missed_by_the_plan_alone() {
         );
     }
 }
+
+#[test]
+fn supply_merges_into_sorted_ground_crews_and_adds_flagged_rows() {
+    use engine_map_air::map_air_supply::Summary;
+    let crew = |country, region, enabled| rows::AirGroundCrewRow {
+        supply: None,
+        country,
+        region,
+        enabled,
+    };
+    let sample = |country, region, needed| Summary {
+        country_pointer: 0x100 * country as usize,
+        region_pointer: if region == u32::MAX { 0 } else { 0x10 * region as usize },
+        country,
+        region,
+        severity: 1,
+        needed,
+        supplied: 2,
+        deficit: 3,
+    };
+    let mut ground = vec![crew(1, 4, Some(1)), crew(1, 9, Some(1)), crew(3, 2, None)];
+    let supply = [
+        sample(1, 4, 10),
+        sample(1, 6, 11),
+        sample(1, u32::MAX, 0),
+        sample(2, u32::MAX, 0),
+    ];
+    let mut merged = Vec::new();
+    let mut asked = Vec::new();
+    super::merge_supply(&mut ground, &mut merged, &supply, |country, region| {
+        asked.push((country, region));
+        Some(1)
+    })
+    .unwrap();
+    let keys: Vec<_> = ground.iter().map(|row| (row.country, row.region, row.enabled)).collect();
+    assert_eq!(
+        keys,
+        [
+            (1, 4, Some(1)),
+            (1, 6, Some(1)),
+            (1, 9, Some(1)),
+            (1, u32::MAX, None),
+            (2, u32::MAX, None),
+            (3, 2, None),
+        ]
+    );
+    // Only the region without a Ground Crews row asks for its flag.
+    assert_eq!(asked, [(0x100, 0x60)]);
+    assert_eq!(ground[0].supply.as_ref().map(|supply| supply.needed), Some(10));
+    assert!(ground[2].supply.is_none());
+    assert!(ground[5].supply.is_none());
+}

@@ -834,7 +834,7 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                         .collect::<Vec<_>>(),
                     expected
                 );
-                let (pending, movement, speed_terms, _, split) =
+                let (pending, movement, speed_terms, split) =
                     handoff.take_dispatched().unwrap();
                 drop(handoff);
                 assert!(split);

@@ -17,13 +17,23 @@
 //! The take clears the marks, so a capture that does not complete holds
 //! nothing and a failed job forgets the store: the next hour reads every
 //! state. Allocation is advisory; a store that cannot grow holds nothing.
+//!
+//! Infrastructure ([`cstate::infrastructure_map`]) rides on the same carry: a
+//! carried, unmarked state keeps what only marking writers change (its
+//! status's building instance, level and country, and its controller). Its
+//! unmarked operands (construction queue headers and level bonus, category,
+//! fort rule and technology limit) are proven unchanged without reading the
+//! state: one gather per hour over every instance, the category pointer the
+//! carry's manpower record already read, and per-hour and per-controller
+//! reads. Queued construction, whose entries are separate objects, and plans
+//! that walk other buildings are read every hour.
 use super::Inputs;
 use crate::{
     extended::state_flags,
     territory_changes::{self, Changes, Counts, Table},
 };
 use engine_allocation as allocation;
-use engine_native::{Memory, cpdx_array::Array, cstate, walk::Outcome};
+use engine_native::{Memory, cpdx_array::Array, cstate, cstate::infrastructure_map, walk::Outcome};
 use engine_railways::crailway_manager::fresh_inputs::StateFractionRow;
 
 type Fraction = Result<i64, &'static str>;
@@ -79,6 +89,67 @@ struct Hour {
     complete: bool,
 }
 
+/// One hour's gather of the held instances' queue records
+/// ([`infrastructure_map::gather_queues`]).
+#[derive(Default)]
+struct Queues {
+    instances: Vec<usize>,
+    /// Per held row: its record's position, or `u32::MAX` when not gathered.
+    at: Vec<u32>,
+    bytes: Vec<u8>,
+    complete: Vec<bool>,
+}
+
+type HeldInfrastructure = Option<(infrastructure_map::Held, infrastructure_map::Proof)>;
+
+impl Queues {
+    /// Gathers the record of every unmarked held state's instance; false,
+    /// gathering nothing, when the scratch cannot grow.
+    fn gather(&mut self, memory: &impl Memory, held: &[HeldInfrastructure], reread: &[bool]) -> bool {
+        let rows = held.len();
+        let grown = allocation::advisory(|| {
+            self.instances.clear();
+            self.at.clear();
+            allocation::reserve(&mut self.instances, rows)?;
+            allocation::resize(&mut self.at, rows, u32::MAX)?;
+            allocation::resize(&mut self.bytes, rows * infrastructure_map::QUEUE_BYTES, 0)?;
+            allocation::resize(&mut self.complete, rows, false)
+        });
+        if grown.is_err() {
+            self.at.clear();
+            return false;
+        }
+        for (index, entry) in held.iter().enumerate() {
+            if let Some((state, _)) = entry
+                && !reread[index]
+                && let Some(instance) = state.instance()
+            {
+                self.at[index] = self.instances.len() as u32;
+                self.instances.push(instance);
+            }
+        }
+        infrastructure_map::gather_queues(memory, &self.instances, &mut self.bytes, &mut self.complete);
+        true
+    }
+
+    /// Row `index`'s complete record this hour.
+    fn queue(&self, index: usize) -> Option<&infrastructure_map::Queue> {
+        let at = *self.at.get(index)? as usize;
+        if !*self.complete.get(at)? {
+            return None;
+        }
+        let start = at * infrastructure_map::QUEUE_BYTES;
+        self.bytes.get(start..start + infrastructure_map::QUEUE_BYTES)?.try_into().ok()
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        self.instances.capacity() * size_of::<usize>()
+            + self.at.capacity() * size_of::<u32>()
+            + self.bytes.capacity()
+            + self.complete.capacity()
+    }
+}
+
 /// The States job's held rows and scratch.
 pub(crate) struct StateStore {
     changes: &'static dyn Changes,
@@ -98,6 +169,13 @@ pub(crate) struct StateStore {
     /// Per held row: read afresh.
     reread: Vec<bool>,
     counts: Counts,
+    /// This hour carried the held rows.
+    carried: bool,
+    /// Per held row: its infrastructure operands and proof, when read complete.
+    infrastructure: Vec<Option<(infrastructure_map::Held, infrastructure_map::Proof)>>,
+    infrastructure_cache: infrastructure_map::Cache,
+    queues: Queues,
+    infrastructure_bytes: usize,
 }
 
 impl StateStore {
@@ -115,6 +193,11 @@ impl StateStore {
             categories: Vec::new(),
             reread: Vec::new(),
             counts: Counts::default(),
+            carried: false,
+            infrastructure: Vec::new(),
+            infrastructure_cache: infrastructure_map::Cache::default(),
+            queues: Queues::default(),
+            infrastructure_bytes: 0,
         }
     }
 
@@ -126,7 +209,7 @@ impl StateStore {
 
     /// As of the last capture, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
-        self.bytes
+        self.bytes + self.infrastructure_bytes
     }
 
     /// Scripted-only operands are read only while their optional writer
@@ -149,7 +232,10 @@ impl StateStore {
     pub(super) fn begin(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
+            self.infrastructure.clear();
+            self.infrastructure_cache.forget();
         }
+        self.carried = false;
         self.counts = Counts::default();
         self.marked.clear();
         let marked = &mut self.marked;
@@ -324,7 +410,93 @@ impl StateStore {
         });
         self.count();
         self.hold(rows, names, walk, visitor, inputs);
+        self.carried = true;
         Some((census, walk))
+    }
+
+    /// Worker, after the census: every row's infrastructure. On a carried
+    /// hour an unmarked state keeps its held status operands, and one gather
+    /// of every held instance's construction queues and level bonus, with the
+    /// category pointer the carry already read, proves its held value without
+    /// reading it; any other row reads afresh. Held only for the rows this
+    /// hour held.
+    pub(super) fn infrastructure(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        census: Outcome,
+        rows: &mut [cstate::Row],
+    ) {
+        let len = census.len();
+        let rows = &mut rows[..len];
+        for row in rows.iter_mut() {
+            row.infrastructure = None;
+        }
+        let holds = self.held.epoch.is_some()
+            && self.held.rows.len() == len
+            && self.held.rows.iter().zip(rows.iter()).all(|(held, row)| held.id == row.id);
+        let carried = self.carried && holds && self.infrastructure.len() == len;
+        if !carried {
+            self.infrastructure.clear();
+        }
+        let hour = infrastructure_map::Hour::new(
+            memory,
+            base,
+            game_state,
+            &mut self.infrastructure_cache,
+            carried,
+        );
+        match hour {
+            Err(_) => self.infrastructure.clear(),
+            Ok(mut hour) if !holds => {
+                for row in rows.iter_mut() {
+                    row.infrastructure = hour
+                        .state_of(row.id)
+                        .and_then(|state| hour.fresh(state))
+                        .map(|(_, proof)| proof.value())
+                        .ok();
+                }
+            }
+            Ok(mut hour) => {
+                let held = &mut self.infrastructure;
+                let sized = carried
+                    || allocation::advisory(|| allocation::resize_default(held, len)).is_ok();
+                let gathered = carried
+                    && hour.proves()
+                    && self.queues.gather(memory, held, &self.reread);
+                for (index, row) in rows.iter_mut().enumerate() {
+                    let pointer = self.held.pointers[index];
+                    let kept = if carried && !self.reread[index] { held[index] } else { None };
+                    let next = match kept {
+                        Some((state, proof))
+                            if gathered
+                                && hour.quiet(
+                                    &state,
+                                    &proof,
+                                    self.queues.queue(index),
+                                    self.manpower[index].category,
+                                ) =>
+                        {
+                            Ok((state, proof))
+                        }
+                        Some((state, _)) => hour.carried(pointer, state).map(|proof| (state, proof)),
+                        None => hour.fresh(pointer),
+                    };
+                    row.infrastructure = next.as_ref().ok().map(|(_, proof)| proof.value());
+                    if sized {
+                        held[index] = next.ok();
+                    }
+                }
+                if !sized {
+                    held.clear();
+                }
+            }
+        }
+        self.infrastructure_bytes = self.infrastructure.capacity()
+            * size_of::<Option<(infrastructure_map::Held, infrastructure_map::Proof)>>()
+            + self.infrastructure_cache.allocated_bytes()
+            + self.queues.allocated_bytes();
     }
 
     fn count(&mut self) {

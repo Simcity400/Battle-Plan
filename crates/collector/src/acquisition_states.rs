@@ -339,7 +339,22 @@ impl Request {
             }
             walk.outcome
         });
-        cstate::infrastructure_map::snapshot(memory, base, game_state, report.result, &mut census.payload);
+        match store.as_deref_mut() {
+            Some(store) => store.infrastructure(
+                memory,
+                base,
+                game_state,
+                report.result,
+                &mut census.payload,
+            ),
+            None => cstate::infrastructure_map::snapshot(
+                memory,
+                base,
+                game_state,
+                report.result,
+                &mut census.payload,
+            ),
+        }
         let ticks = sampling::qpc() - begin;
         let occupation_begin = sampling::qpc();
         let (sources, source_outcome, _) = visitor.completed_sources();

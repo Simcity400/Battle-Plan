@@ -1298,7 +1298,8 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     *frame.extended.characters_pilot() =
         crate::extended::characters::Captured::with_capacities(&initial);
     let family_bytes_before = frame.extended.characters_pilot().allocated_bytes();
-    let pool_bytes_before = shared.pool_bytes.load(Ordering::Relaxed);
+    shared.measure_frame(index);
+    let pool_bytes_before = shared.pool_owned();
     let (trait_rows, trait_bytes) = direct.trait_capture_capacities();
     let ctx = CharactersCopyContext {
         force_full: false,
@@ -1373,10 +1374,10 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     characters_test_kit::assert_matches_direct(frame.extended.characters_pilot(), &direct);
     let grown = frame.extended.characters_pilot().allocated_bytes() - family_bytes_before;
     assert!(grown > 0);
-    assert_eq!(
-        shared.pool_bytes.load(Ordering::Relaxed),
-        pool_bytes_before + grown as u64
-    );
+    // Decode grows the frame; its holder measures it at the spool handoff or recycle.
+    assert_eq!(shared.pool_owned(), pool_bytes_before);
+    shared.measure_frame(index);
+    assert_eq!(shared.pool_owned(), pool_bytes_before + grown as u64);
     // The worker clears the raw-mode gate it consumed.
     assert!(
         !frame
@@ -1788,8 +1789,9 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     assert!(report.raw_ok);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame.extended.test_division_detail().groups.rows = Vec::new();
-    let before_bytes = frame.extended.allocated_bytes();
-    let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
+    let before_bytes = frame.allocated_bytes();
+    shared.measure_frame(index);
+    let pool_before = shared.pool_owned();
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         queued_qpc: 0,
@@ -1843,9 +1845,10 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 47);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    shared.measure_frame(index);
     assert_eq!(
-        shared.pool_bytes.load(Ordering::Relaxed),
-        pool_before + (frame.extended.allocated_bytes() - before_bytes) as u64
+        shared.pool_owned(),
+        pool_before + (frame.allocated_bytes() - before_bytes) as u64
     );
     assert_eq!(frame.divisions_result, direct.divisions_outcome);
     assert_eq!(

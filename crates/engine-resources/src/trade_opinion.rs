@@ -105,20 +105,39 @@ fn quotient(a: i64, b: i64) -> i64 {
         .unwrap_or(i64::from(u32::MAX))
 }
 
+/// Border unit owners gathered per read.
+const BATCH: usize = 64;
+const UNIT_OWNER_FIELDS: [engine_native::memory::RecordField; 1] =
+    engine_native::memory::packed_fields([(UNIT_OWNER, 4)]);
+const UNIT_OWNER_LAYOUT: engine_native::memory::RecordLayout<'static> =
+    match engine_native::memory::RecordLayout::new(&UNIT_OWNER_FIELDS, 4) {
+        Some(layout) => layout,
+        None => panic!("valid trade influence unit owner layout"),
+    };
+
 struct Context<'a, M: Memory> {
     memory: &'a M,
     base: usize,
     game: usize,
     countries: &'a ccountry::Reader<'a, M>,
+    /// Raw links resolved during this one read, and `friendly` verdicts by
+    /// (owner, other) canonical slots; the world does not move within a read.
+    canonical: std::cell::RefCell<Vec<(u32, u32)>>,
+    friendly: std::cell::RefCell<Vec<((u32, u32), bool)>>,
 }
 
 impl<M: Memory> Context<'_, M> {
+    fn canonical(&self, raw: u32) -> Result<u32, &'static str> {
+        if let Some(&(_, slot)) = self.canonical.borrow().iter().find(|(held, _)| *held == raw) {
+            return Ok(slot);
+        }
+        let slot = self.countries.resolve(raw)?.canonical_slot;
+        self.canonical.borrow_mut().push((raw, slot));
+        Ok(slot)
+    }
+
     fn equal(&self, a: u32, b: u32) -> Result<bool, &'static str> {
-        Ok(a == b
-            || (a != 0
-                && b != 0
-                && self.countries.resolve(a)?.canonical_slot
-                    == self.countries.resolve(b)?.canonical_slot))
+        Ok(a == b || (a != 0 && b != 0 && self.canonical(a)? == self.canonical(b)?))
     }
 
     fn diplomacy(&self, p: usize) -> Result<usize, &'static str> {
@@ -168,6 +187,20 @@ impl<M: Memory> Context<'_, M> {
     }
 
     fn friendly(
+        &self,
+        owner: ccountry::Country,
+        other: ccountry::Country,
+    ) -> Result<bool, &'static str> {
+        let key = (owner.canonical_slot, other.canonical_slot);
+        if let Some(&(_, verdict)) = self.friendly.borrow().iter().find(|(held, _)| *held == key) {
+            return Ok(verdict);
+        }
+        let verdict = self.friendly_uncached(owner, other)?;
+        self.friendly.borrow_mut().push((key, verdict));
+        Ok(verdict)
+    }
+
+    fn friendly_uncached(
         &self,
         owner: ccountry::Country,
         other: ccountry::Country,
@@ -292,14 +325,38 @@ impl<M: Memory> Context<'_, M> {
 
     fn border_units(&self, provinces: Array, country: u32) -> Result<i32, &'static str> {
         let mut count = 0i32;
+        let mut handles = [0_u8; BATCH * 8];
+        let mut units = [0_usize; BATCH];
+        let mut owners = [0_u8; BATCH * 4];
         for index in 0..provinces.count {
             let p = element::<u64>(self.memory, provinces, index, 8)? as usize;
-            let units = array(self.memory, p, PROVINCE_UNITS, 8)?;
-            for index in 0..units.count {
-                let unit = element::<u64>(self.memory, units, index, 8)? as usize;
-                if self.equal(field(self.memory, unit, UNIT_OWNER)?, country)? {
-                    count = count.wrapping_add(1);
+            let list = array(self.memory, p, PROVINCE_UNITS, 8)?;
+            let mut first = 0;
+            while first < list.count {
+                let len = ((list.count - first) as usize).min(BATCH);
+                let at = list
+                    .element(first, 8)
+                    .ok_or("trade influence element unreadable")?;
+                if !engine_native::read_slice(self.memory, at, &mut handles[..len * 8]) {
+                    return Err("trade influence element unreadable");
                 }
+                for (unit, handle) in units.iter_mut().zip(handles[..len * 8].chunks_exact(8)) {
+                    *unit = u64::from_le_bytes(handle.try_into().unwrap()) as usize;
+                }
+                if self.memory.copy_records(
+                    engine_native::memory::RecordSources::Pointers(&units[..len]),
+                    &UNIT_OWNER_LAYOUT,
+                    &mut owners[..len * 4],
+                ) != len
+                {
+                    return Err("trade influence operand unreadable");
+                }
+                for owner in owners[..len * 4].chunks_exact(4) {
+                    if self.equal(u32::from_le_bytes(owner.try_into().unwrap()), country)? {
+                        count = count.wrapping_add(1);
+                    }
+                }
+                first += len as u32;
             }
         }
         Ok(count)
@@ -647,6 +704,8 @@ pub fn read_current<M: Memory>(
         base,
         game,
         countries,
+        canonical: Default::default(),
+        friendly: Default::default(),
     };
     let diplomacy = c.diplomacy(source.pointer)?;
     let relation = c.relation(diplomacy, other)?;

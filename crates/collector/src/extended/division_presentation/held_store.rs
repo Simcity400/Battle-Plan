@@ -253,7 +253,8 @@ mod tests {
             secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
             ..Default::default()
         };
-        for (hour, full) in [(12, false), (13, true)] {
+        let daily = replay_data::cadence::DIVISION_STATUS_DAILY_SLOT as i32;
+        for (hour, full) in [(daily, false), (daily + 1, true)] {
             let slot = Slot::new(Box::new(ArmyStatStore::new()));
             let mut older = slot.take().unwrap();
             let sample = Sample::owned(None, None, None).unwrap();

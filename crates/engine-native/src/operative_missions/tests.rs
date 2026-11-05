@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     cgame_state, coperative_leader,
     memory::SliceMemory,
+    modifier_definition,
     operative_action_implementation::{COUNTRY_GETTER_RVA, COUNTRY_GETTER_SLOT, VTABLE_RVAS},
 };
 

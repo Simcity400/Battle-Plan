@@ -748,7 +748,8 @@ fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recove
     let recovered = daily_capture(&memory, &world, 16, false);
     assert_eq!(observer_row(&recovered, event::ACTIVITY_DAMAGE, 0).a, 303);
     let mut rejected = Captured::with_capacities(&Capacities::default());
-    for (hour, full, value) in [(36, false, 404), (38, true, 505)] {
+    let slot = 24 + replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT as i32;
+    for (hour, full, value) in [(slot, false, 404), (slot + 2, true, 505)] {
         World::q(&mut damage, 8, value);
         rejected.prepare_hour(hour, full); // No native acquisition follows.
         let recovered = daily_capture(&memory, &world, hour + 1, false);

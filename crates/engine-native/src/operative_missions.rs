@@ -20,14 +20,14 @@ use crate::{
     cstate,
     csubject_relation::{Name, NameWalk},
     memory::Raw,
-    modifier_accumulator, modifier_definition, operative_action, operative_action_implementation,
-    read,
+    modifier_accumulator, modifier_definition::NamedKey, operative_action,
+    operative_action_implementation, read,
     walk::Outcome,
 };
 
 /// Script name of the modifier whose effective values scale a
-/// root-out-resistance mission. Its key is resolved by name once per walk
-/// that meets such a mission.
+/// root-out-resistance mission. Its key is resolved by name when first asked
+/// and held while the definition table header holds ([`root_out_key`]).
 pub const ROOT_OUT_FACTOR: &[u8] = b"root_out_resistance_effectiveness_factor";
 /// The embedded state resistance's raw country link, relative to
 /// `cstate::RESISTANCE` (engine-occupation's `cresistance::COUNTRY`).
@@ -145,15 +145,18 @@ pub fn walk(
         game_state,
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(bytes),
+        &mut root_out_key(),
     )
 }
 
+/// `root_out` is the caller's held key ([`root_out_key`]), kept across walks.
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     output: &mut Vec<Row>,
     bytes: &mut Vec<u8>,
+    root_out: &mut NamedKey,
 ) -> Walk {
     walk_buffer(
         memory,
@@ -161,6 +164,7 @@ pub fn walk_growing(
         game_state,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(bytes),
+        root_out,
     )
 }
 
@@ -170,19 +174,25 @@ pub fn walk_buffer(
     game_state: usize,
     output: crate::walk::Buffer<'_, Row>,
     bytes: crate::walk::Buffer<'_, u8>,
+    root_out: &mut NamedKey,
 ) -> Walk {
-    let mut resolved = None;
     walk_keyed(memory, base, game_state, output, bytes, &mut || {
-        *resolved.get_or_insert_with(|| root_out_key(memory, base))
+        resolve_root_out(root_out, memory, base)
     })
 }
 
-/// The root-out factor's key, resolved by its script name.
-fn root_out_key(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
-    match modifier_definition::keys_by_names_at(memory, base, &[ROOT_OUT_FACTOR])?.0 {
-        [Some(key)] => Ok(key),
-        [None] => Err("root out resistance factor modifier is not registered"),
-    }
+/// The root-out factor's key by its script name, unresolved until first asked.
+pub const fn root_out_key() -> NamedKey {
+    NamedKey::new(ROOT_OUT_FACTOR)
+}
+
+fn resolve_root_out(
+    key: &mut NamedKey,
+    memory: &impl Memory,
+    base: usize,
+) -> Result<u32, &'static str> {
+    key.get(memory, base)?
+        .ok_or("root out resistance factor modifier is not registered")
 }
 
 /// [`walk_buffer`] with the root-out factor's key supplied by `root_out`,
@@ -519,6 +529,7 @@ pub fn effect_roots<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     row: &Row,
     pending: bool,
+    root_out: &mut NamedKey,
 ) -> Result<Option<EffectRoots>, &'static str> {
     let (variant, target, state) = if pending {
         (row.pending_variant, row.pending_country, row.pending_state)
@@ -534,7 +545,7 @@ pub fn effect_roots<M: Memory>(
     let (keys, key_count) = match variant {
         operative_action::BUILD_NETWORK => ([0x212, 0x213], 2),
         operative_action::COUNTER_INTELLIGENCE => ([0x1ff, 0], 1),
-        operative_action::ROOT_OUT_RESISTANCE => ([root_out_key(memory, base)?, 0], 1),
+        operative_action::ROOT_OUT_RESISTANCE => ([resolve_root_out(root_out, memory, base)?, 0], 1),
         operative_action::BOOST_IDEOLOGY => ([0x20e, 0], 1),
         operative_action::CONTROL_TRADE => ([0x20b, 0], 1),
         operative_action::DIPLOMATIC_PRESSURE => ([0x20c, 0], 1),
