@@ -1,7 +1,9 @@
 //! Special projects' emit: each country's observations on the family's series publication
 //! (each a run of its ordinal, with the observation as an event), its holder's identity and
-//! each project's progress as runs; for the family, the hours Projects was read complete, the
-//! dictionary's revision, and each project completion the event feed lists, as an event.
+//! each project's progress as runs, and its episodes as the reply builds them ([`ledger`]: what
+//! each hour adds as an event, each piece a run of its ordinal); for the family, the hours
+//! Projects was read complete, the dictionary's revision, and each project completion the event
+//! feed lists, as an event.
 //!
 //! A country's runs go on while it keeps its holder and every hour is walked. A holder change
 //! and an hour not walked start a segment, and the country is observed whole. A country the
@@ -12,6 +14,7 @@ use super::{
     completion_look, completions,
     facts::{self, Project, Seen},
     history::{Name, NameKey},
+    ledger::{self, Entry, Observation, Track},
     take_refusals,
 };
 use dashboard_series::{
@@ -20,7 +23,10 @@ use dashboard_series::{
     codec::Decode,
     family::{self, Actors, Directory, Place, Scalar},
 };
-use dashboard_base::catalogue::{self, Catalogue};
+use dashboard_base::{
+    catalogue::{self, Catalogue},
+    prepared::codec,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -31,11 +37,14 @@ use std::{
 /// The family's keys are spelled under it.
 pub const SCHEMA: u64 = 1;
 /// A country's observation ordinal, each observation an [`kind::OBSERVATION`] event; its
-/// holder (canonical slot above country id); and each project's progress, by local id above
-/// definition id.
+/// holder (canonical slot above country id); each project's progress, by local id above
+/// definition id; its ledger, each hour's entries an [`kind::LEDGER`] event; and its ledger's
+/// pieces, each a run of its ordinal.
 pub const OBSERVED: u64 = 0;
 pub const IDENTITY: u64 = 1;
 pub const PROGRESS: u64 = 2;
+pub const LEDGER: u64 = 3;
+pub const PIECES: u64 = 4;
 /// The family's keys: the hours Projects was read complete, the dictionary's revision, and
 /// the completions.
 pub const READS: u64 = 0;
@@ -50,10 +59,14 @@ const DOMAIN: u64 = 0;
 
 /// Event kinds.
 pub mod kind {
-    /// `[Text observation]`, its JSON, on a country's OBSERVED key.
+    /// `[Text observation]`, its stored row ([`dashboard_base::prepared::codec`]), on a
+    /// country's OBSERVED key.
     pub const OBSERVATION: u64 = 0;
-    /// `[Text change]`, a [`super::Change`]'s JSON, on the family's COMPLETIONS key.
+    /// `[Text change]`, a [`super::Change`]'s stored row, on the family's COMPLETIONS key.
     pub const CHANGE: u64 = 1;
+    /// `[Text entries]`, the stored row of an hour's [`super::Entry`] list, on a country's
+    /// LEDGER key.
+    pub const LEDGER: u64 = 2;
 }
 
 fn invalid() -> io::Error {
@@ -472,6 +485,8 @@ struct Country {
     tag: Arc<str>,
     /// OBSERVED and IDENTITY.
     keys: [KeyHandle; 2],
+    ledger: KeyHandle,
+    pieces: KeyHandle,
     /// Each project's PROGRESS key, by its dimension.
     progress: Vec<(u64, KeyHandle)>,
     /// Its last observation's digest and ordinal.
@@ -489,6 +504,25 @@ struct Country {
 /// A project's PROGRESS dimension.
 pub fn dimension(local_id: u32, definition_id: u32) -> u64 {
     u64::from(local_id) << 32 | u64::from(definition_id)
+}
+
+/// `entries`, what an hour added to a country's ledger, as the event of its LEDGER key `key`.
+fn entries_event(writer: &mut Writer<'_>, key: KeyHandle, at: i32, entries: &[Entry]) -> io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let bytes = codec::encode(entries)?;
+    let text = writer.blob(&mut &bytes[..], bytes.len() as u64)?;
+    let fields = writer.cells([Cell::Text(text)])?;
+    let sequence = writer.sequence()?;
+    writer.event(Event {
+        key,
+        native_hour: at,
+        read_hour: None,
+        sequence,
+        kind: kind::LEDGER,
+        fields,
+    })
 }
 
 /// The family's emit on one branch.
@@ -511,6 +545,12 @@ pub struct Emit {
     completions: Completions,
     /// The provisional names the last hour gave a value.
     provisional: BTreeSet<NameKey>,
+    /// Each country's ledger, by actor.
+    tracks: Vec<Track>,
+    /// The countries whose observation or progress began a run this hour, or that ended.
+    moved: Vec<u64>,
+    /// The countries whose piece began the hour before and waits for its second hour.
+    due: Vec<u64>,
     /// The scalars changed since the last cut.
     stale: bool,
     last: Option<i32>,
@@ -535,6 +575,9 @@ impl Emit {
             available: false,
             completions: Completions::default(),
             provisional: BTreeSet::new(),
+            tracks: Vec::new(),
+            moved: Vec::new(),
+            due: Vec::new(),
             stale: true,
             last: None,
             first: None,
@@ -574,9 +617,11 @@ impl Emit {
         let index = actor as usize;
         if index >= self.countries.len() {
             self.countries.resize(index + 1, Country::default());
+            let start = self.start;
+            self.tracks.resize_with(index + 1, || Track::new(start));
         }
-        let mut keys = [0; 2];
-        for (key, measure) in keys.iter_mut().zip([OBSERVED, IDENTITY]) {
+        let mut keys = [0; 4];
+        for (key, measure) in keys.iter_mut().zip([OBSERVED, IDENTITY, LEDGER, PIECES]) {
             *key = self.key(
                 writer,
                 Place {
@@ -586,8 +631,11 @@ impl Emit {
                 },
             )?;
         }
-        self.countries[index].keys = keys;
-        self.countries[index].tag = Arc::from(tag);
+        let country = &mut self.countries[index];
+        country.keys = [keys[0], keys[1]];
+        country.ledger = keys[2];
+        country.pieces = keys[3];
+        country.tag = Arc::from(tag);
         Ok(actor)
     }
 
@@ -650,19 +698,23 @@ impl Emit {
             }
             digest
         });
+        // A revision's run starting splits every country's piece, as a reply reads them.
+        let mut revised = false;
         if let Some(digest) = digest
             && self.dictionary != Some(digest)
         {
             self.dictionary = Some(digest);
             self.revision += 1;
-            self.carry
+            revised = self
+                .carry
                 .value(writer, lexical, at, Some(i128::from(self.revision)), !adjacent)?;
         } else if !adjacent {
-            self.carry
+            revised = self
+                .carry
                 .value(writer, lexical, at, Some(i128::from(self.revision)), true)?;
         }
         let Some(facts) = hour.facts else {
-            return Ok(());
+            return self.advance(writer, at, revised);
         };
         let facts::Facts {
             full,
@@ -784,7 +836,7 @@ impl Emit {
         order(&mut changes);
         let [_, _, key] = self.family(writer)?;
         for change in changes {
-            let bytes = serde_json::to_vec(&change)?;
+            let bytes = codec::encode(&change)?;
             let text = writer.blob(&mut &bytes[..], bytes.len() as u64)?;
             let fields = writer.cells([Cell::Text(text)])?;
             let sequence = writer.sequence()?;
@@ -797,7 +849,101 @@ impl Emit {
                 fields,
             })?;
         }
+        self.advance(writer, at, revised)
+    }
+
+    /// Each country's ledger at `at`, once the hour's observations are kept: a piece begins
+    /// where a country's observation or progress began a run, or the revision's did (`revised`),
+    /// and the piece before ends; a piece begun the hour before and going on takes its second
+    /// hour.
+    fn advance(&mut self, writer: &mut Writer<'_>, at: i32, revised: bool) -> io::Result<()> {
+        let mut moved = std::mem::take(&mut self.moved);
+        if revised {
+            moved.extend(
+                (0_u64..)
+                    .zip(&self.tracks)
+                    .filter(|(_, track)| track.piece.is_some())
+                    .map(|(actor, _)| actor),
+            );
+        }
+        moved.sort_unstable();
+        moved.dedup();
+        let due = std::mem::take(&mut self.due);
+        for &actor in &moved {
+            self.begin(writer, at, actor)?;
+        }
+        for actor in due {
+            if moved.binary_search(&actor).is_ok() {
+                continue;
+            }
+            let index = actor as usize;
+            let tag = Arc::clone(&self.countries[index].tag);
+            let entries = self.tracks[index].second(&tag, at)?;
+            entries_event(writer, self.countries[index].ledger, at, &entries)?;
+        }
+        moved.clear();
+        self.moved = moved;
         Ok(())
+    }
+
+    /// `actor`'s piece from `at` on, the one before ending at the hour before.
+    fn begin(&mut self, writer: &mut Writer<'_>, at: i32, actor: u64) -> io::Result<()> {
+        let index = actor as usize;
+        let country = &self.countries[index];
+        let track = &mut self.tracks[index];
+        let ended = match at.checked_sub(1) {
+            Some(before) => track.end(before),
+            None => track.piece.take().is_some(),
+        };
+        let identity = match (country.identity, &track.observation) {
+            (Some(_), Some(observation)) => Some(observation.identity),
+            _ => None,
+        };
+        let Some(identity) = identity else {
+            if ended {
+                self.carry.value(writer, country.pieces, at, None, false)?;
+            }
+            return Ok(());
+        };
+        let projects = track
+            .observation
+            .as_ref()
+            .and_then(|observation| observation.projects.as_ref());
+        let Some(projects) = projects else {
+            track.unobserved(identity);
+            if ended {
+                self.carry.value(writer, country.pieces, at, None, false)?;
+            }
+            return Ok(());
+        };
+        // Each project's progress is its PROGRESS key's, as a reply reads it.
+        if projects.len() != country.active.len() {
+            return Err(dashboard_core::invalid(
+                "A projects observation does not hold its progress",
+            ));
+        }
+        let mut facts = Vec::with_capacity(projects.len());
+        for ((project, _), &key) in projects.iter().zip(&country.active) {
+            let mut fact = project.clone();
+            fact.progress = self
+                .carry
+                .held(key)
+                .and_then(|progress| i32::try_from(progress).ok())
+                .ok_or_else(|| dashboard_core::invalid("A project's progress is not held"))?;
+            facts.push(fact);
+        }
+        let ordinal = track.next_piece();
+        self.carry
+            .value(writer, country.pieces, at, Some(i128::from(ordinal)), false)?;
+        let entries = track.begin(&country.tag, at, ordinal, facts, self.revision)?;
+        if track
+            .piece
+            .as_ref()
+            .is_some_and(|piece| piece.second.is_some())
+        {
+            self.due.push(actor);
+        }
+        entries_event(writer, country.ledger, at, &entries)
     }
 
     /// `observed` from `at` on: its holder, each project's progress, and its observation where it
@@ -821,10 +967,15 @@ impl Emit {
                         "A projects progress does not go on from the country's last observation",
                     ));
                 }
+                let mut began = false;
                 for (at_key, &value) in progress.iter().enumerate() {
                     let key = self.countries[index].active[at_key];
-                    self.carry
+                    began |= self
+                        .carry
                         .value(writer, key, at, Some(i128::from(value)), false)?;
+                }
+                if began {
+                    self.moved.push(actor);
                 }
                 return Ok(actor);
             }
@@ -840,10 +991,11 @@ impl Emit {
             self.carry.value(writer, identity, at, Some(holder), true)?;
         }
         let mut active = Vec::new();
+        let mut began = false;
         for project in projects.iter().flatten() {
             let dimension = dimension(project.facts.local_id, project.facts.definition_id);
             let key = self.progress(writer, actor, dimension)?;
-            self.carry.value(
+            began |= self.carry.value(
                 writer,
                 key,
                 at,
@@ -858,7 +1010,7 @@ impl Emit {
             }
         }
         self.countries[index].active = active;
-        let bytes = serde_json::to_vec(&Stored {
+        let bytes = codec::encode(&Stored {
             identity: observed.identity,
             projects: projects.as_ref().map(|projects| {
                 projects
@@ -871,8 +1023,22 @@ impl Emit {
         let country = &mut self.countries[index];
         country.identity = Some(observed.identity);
         if continuing && country.hash == Some(hash) {
+            if began {
+                self.moved.push(actor);
+            }
             return Ok(actor);
         }
+        // The ledger goes on with the observation as its event holds it.
+        self.tracks[index].observation = Some(Observation {
+            identity: observed.identity,
+            projects: projects.as_ref().map(|projects| {
+                projects
+                    .iter()
+                    .map(|project| (project.facts.clone(), project.look.clone()))
+                    .collect()
+            }),
+        });
+        self.moved.push(actor);
         country.hash = Some(hash);
         country.version += 1;
         let version = country.version;
@@ -898,6 +1064,7 @@ impl Emit {
         let Some(held) = country.identity.take() else {
             return Ok(());
         };
+        self.moved.push(actor);
         self.completions.release(held, &country.tag, at - 1);
         let active = std::mem::take(&mut country.active);
         for key in country.keys.into_iter().chain(active) {
@@ -914,6 +1081,10 @@ impl Emit {
             country.identity = None;
             country.active.clear();
         }
+        for track in &mut self.tracks {
+            track.close(last);
+        }
+        self.due.clear();
         Ok(())
     }
 
@@ -1020,6 +1191,13 @@ impl Emit {
         let json = serde_json::to_vec(&saved)?;
         out.extend_from_slice(&(json.len() as u64).to_le_bytes());
         out.extend_from_slice(&json);
+        let tracks: Vec<(u64, ledger::Saved)> = (0_u64..)
+            .zip(&self.tracks)
+            .filter_map(|(actor, track)| track.save().map(|saved| (actor, saved)))
+            .collect();
+        let tracks = codec::encode(&tracks)?;
+        out.extend_from_slice(&(tracks.len() as u64).to_le_bytes());
+        out.extend_from_slice(&tracks);
         self.carry.save(out)
     }
 
@@ -1035,12 +1213,17 @@ impl Emit {
         emit.stale = false;
         emit.actors = Actors::resume(SCHEMA, directory)?;
         emit.countries = vec![Country::default(); directory.actors.len()];
+        emit.tracks = std::iter::repeat_with(|| Track::new(start))
+            .take(directory.actors.len())
+            .collect();
         for (actor, country) in emit.countries.iter_mut().enumerate() {
             country.tag = Arc::from(String::from_utf8_lossy(&directory.actors[actor].name).as_ref());
             let actor = actor as u64;
             for (key, measure) in country.keys.iter_mut().zip([OBSERVED, IDENTITY]) {
                 *key = directory.key(actor, measure, None).ok_or_else(invalid)?;
             }
+            country.ledger = directory.key(actor, LEDGER, None).ok_or_else(invalid)?;
+            country.pieces = directory.key(actor, PIECES, None).ok_or_else(invalid)?;
             country.progress = directory.dimensions(actor, PROGRESS).to_vec();
         }
         let mut family = [0; 3];
@@ -1051,6 +1234,8 @@ impl Emit {
         let mut d = Decode::new(bytes);
         let length = usize::try_from(d.u64()?).map_err(|_| invalid())?;
         let saved: Saved = serde_json::from_slice(d.bytes(length)?)?;
+        let length = usize::try_from(d.u64()?).map_err(|_| invalid())?;
+        let tracks: Vec<(u64, ledger::Saved)> = codec::decode(d.bytes(length)?)?;
         let at = d.position();
         emit.carry = Carry::load(&bytes[at..])?;
         emit.last = saved.last;
@@ -1061,6 +1246,13 @@ impl Emit {
         emit.named = saved.named;
         emit.completions = saved.completions;
         emit.provisional = saved.provisional.into_iter().collect();
+        for (actor, track) in tracks {
+            let held = emit.tracks.get_mut(actor as usize).ok_or_else(invalid)?;
+            *held = Track::load(start, track)?;
+            if held.piece.as_ref().is_some_and(|piece| piece.second.is_some()) {
+                emit.due.push(actor);
+            }
+        }
         for country in saved.countries {
             let held = emit
                 .countries

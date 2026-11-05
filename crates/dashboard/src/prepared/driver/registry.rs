@@ -793,7 +793,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["special-projects"],
         // 2: observations and completions on the segment driver, published as a series root.
         // 3: stored project names: is_country_leader is now evaluated.
-        version: 3,
+        // 4: each country's episodes built in preparation as a ledger; events stored binary.
+        version: 4,
         ..family("projects")
     },
     // Its series queries route by the family kind `war-casualties`.

@@ -466,6 +466,24 @@ impl Refusals {
         }
     }
 
+    /// [`Self::merge`], returning what it added: merging that instead gives the same.
+    pub fn merge_new(&mut self, other: &Self) -> Self {
+        let mut added = Self::default();
+        for (reason, identities) in &other.0 {
+            let fresh = !self.0.contains_key(reason);
+            let held = self.0.entry(reason.clone()).or_default();
+            let new: BTreeSet<String> = identities
+                .iter()
+                .filter(|identity| held.insert((*identity).clone()))
+                .cloned()
+                .collect();
+            if fresh || !new.is_empty() {
+                added.0.insert(reason.clone(), new);
+            }
+        }
+        added
+    }
+
     /// Counts `identity` under `reason` once, however often it is met.
     pub fn note(&mut self, reason: impl Into<String>, identity: impl Into<String>) {
         self.0

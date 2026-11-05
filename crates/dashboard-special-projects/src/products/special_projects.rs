@@ -46,6 +46,7 @@ mod details;
 pub mod emit;
 pub mod facts;
 mod history;
+mod ledger;
 pub use details::*;
 pub mod query;
 #[cfg(any(test, feature = "test-support"))]

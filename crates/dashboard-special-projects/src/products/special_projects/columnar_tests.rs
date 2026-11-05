@@ -562,6 +562,20 @@ fn the_publication_answers_what_the_row_recording_answers_across_segments_cuts_a
                 serde_json::to_value(&expected).unwrap(),
                 "{label}: {params:?}"
             );
+            // Through every hour, the ledger preparation built answers what building the
+            // episodes again from the observations answers.
+            for through in 99..=131 {
+                let ledger =
+                    query::reply(&mut snapshot, &directory, &params, through, &cancelled).unwrap();
+                let rebuilt =
+                    query::rebuilt_reply(&mut snapshot, &directory, &params, through, &cancelled)
+                        .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&ledger).unwrap(),
+                    serde_json::to_value(&rebuilt).unwrap(),
+                    "{label}: {params:?} through {through}"
+                );
+            }
             // Through an earlier hour, nothing after it is read.
             let early = query::reply(&mut snapshot, &directory, &params, 112, &cancelled).unwrap();
             assert!(early.read_hours.iter().all(|&hour| hour <= 112), "{label}");

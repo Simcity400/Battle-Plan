@@ -1,22 +1,20 @@
 //! Special projects' replies, read from the family's series publication ([`super::emit`]): a
-//! country's episodes, presentations and people built from its observations through an hour,
-//! and the event feed's completions.
+//! country's episodes, presentations and people through an hour, read from the ledger
+//! preparation built ([`super::ledger`]), and the event feed's completions.
 
 use super::{
-    Builder, Look, ProjectDate, ProjectFacts, ProjectState,
-    SpecialProjectRun, SpecialProjectsParams, SpecialProjectsReply, append_identities,
-    build_reply,
+    Builder, SpecialProjectsParams, SpecialProjectsReply, append_identities, build_reply,
     emit::{
-        COMPLETIONS, Change, FAMILY, IDENTITY, LEXICAL, METADATA, Metadata, OBSERVED, PROGRESS,
-        READS, dimension, kind,
+        COMPLETIONS, Change, FAMILY, IDENTITY, LEDGER, LEXICAL, METADATA, Metadata, OBSERVED,
+        PIECES, PROGRESS, READS, dimension, kind,
     },
+    ledger::{self, Entry, Observation},
 };
 use dashboard_base::{
     catalogue,
-    prepared::{engine, series::LateIndex},
+    prepared::{codec, engine, series::LateIndex},
     products::{
         MAX_PRODUCT_REPLY_BYTES,
-        country_groups::HourSpan,
         country_history::{self, CountryIdentityRun},
     },
 };
@@ -24,7 +22,6 @@ use dashboard_series::{
     Cell, EventOrder, EventQuery, PageRead, Selection, Snapshot, Span, family::Directory,
     query::EventView,
 };
-use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io,
@@ -49,13 +46,6 @@ fn metadata(directory: &Directory) -> io::Result<Option<Metadata>> {
             Ok(serde_json::from_slice(text)?)
         })
         .transpose()
-}
-
-/// An observation as its event holds it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Observation {
-    identity: (u32, u32),
-    projects: Option<Vec<(ProjectFacts, Look)>>,
 }
 
 /// An observation and the hours it holds.
@@ -143,7 +133,7 @@ fn intervals<P: PageRead>(
         result.push(Interval {
             first: hour,
             last: last.min(through),
-            observation: serde_json::from_slice(&bytes)?,
+            observation: codec::decode(&bytes)?,
         });
     }
     Ok(result)
@@ -167,106 +157,6 @@ fn identities<P: PageRead>(
         .collect())
 }
 
-fn apply_interval(
-    builder: &mut Builder,
-    tag: &str,
-    interval: &Interval,
-    first: i32,
-    last: i32,
-    facts: &[ProjectFacts],
-    refusals: &mut catalogue::Refusals,
-) {
-    let Some(projects) = &interval.observation.projects else {
-        builder.last = Some((interval.observation.identity, last));
-        builder.admitted = false;
-        return;
-    };
-    if builder
-        .identity
-        .is_some_and(|old| old != interval.observation.identity)
-    {
-        builder.open.clear();
-    }
-    builder.identity = Some(interval.observation.identity);
-    // Admit the first hour before processing the attribution boundary. Extending
-    // coverage now would make that second observation overlap the whole interval.
-    if builder
-        .available
-        .last()
-        .is_some_and(|span| span.last_hour.checked_add(1) == Some(first))
-    {
-        builder.available.last_mut().unwrap().last_hour = first;
-    } else {
-        builder.available.push(HourSpan {
-            first_hour: first,
-            last_hour: first,
-        });
-    }
-    builder.last = Some((interval.observation.identity, first));
-    let mut present = |builder: &mut Builder,
-                       ordinal: usize,
-                       _index: usize,
-                       fact: &ProjectFacts,
-                       previous: Option<&SpecialProjectRun>,
-                       _: Option<&ProjectDate>| {
-        let look = &projects[ordinal].1;
-        let id = builder.present_look(
-            look,
-            fact.definition_id,
-            tag,
-            fact.state == ProjectState::Completed,
-            first,
-            previous,
-            refusals,
-        );
-        if let Some(count) = fact.iterations
-            && !builder.iteration_texts.contains_key(&count)
-        {
-            builder
-                .iteration_texts
-                .insert(count, look.iteration_text.clone());
-            refusals.merge(&look.iteration_refusals);
-        }
-        id
-    };
-    builder.observe_projects(first, facts, &mut present);
-    // A completion first seen with a real scientist gains dated attribution on
-    // its next consecutive observation. Process that boundary once, then extend.
-    let second_needed = last > first
-        && builder.open.values().any(|index| {
-            let run = builder.episodes[*index].runs.last().unwrap();
-            let info = &builder.presentations[run.presentation as usize];
-            run.state == ProjectState::Completed
-                && info.scientist_as_of.is_none()
-                && builder.people[info.scientist as usize].id.is_some()
-        });
-    let processed = if second_needed {
-        let second = first + 1;
-        let one = Interval {
-            first: second,
-            last: second,
-            observation: interval.observation.clone(),
-        };
-        apply_interval(builder, tag, &one, second, second, facts, refusals);
-        second
-    } else {
-        first
-    };
-    for fact in facts {
-        let key = (fact.local_id, fact.definition_id);
-        if let Some(&index) = builder.open.get(&key) {
-            builder.episodes[index].runs.last_mut().unwrap().last_hour = last;
-            if let Some(reason) = &fact.warning {
-                *builder.warnings.entry(reason.clone()).or_default() +=
-                    usize::try_from(i64::from(last) - i64::from(processed))
-                        .expect("nonnegative interval");
-            }
-        }
-    }
-    builder.available.last_mut().unwrap().last_hour = last;
-    builder.last = Some((interval.observation.identity, last));
-}
-
 /// The reply of a branch the family has not published: nothing read yet.
 pub fn unprepared(params: &SpecialProjectsParams) -> SpecialProjectsReply {
     build_reply(Builder::default(), &params.country(), false, Vec::new()).0
@@ -282,6 +172,30 @@ pub fn reply<P: PageRead>(
     through: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<SpecialProjectsReply> {
+    reply_with(snapshot, directory, params, through, false, cancelled)
+}
+
+/// [`reply`], its episodes built again from the country's observations where `rebuilt`, as
+/// a selection of some of its holders builds them.
+#[cfg(test)]
+pub(super) fn rebuilt_reply<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    params: &SpecialProjectsParams,
+    through: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<SpecialProjectsReply> {
+    reply_with(snapshot, directory, params, through, true, cancelled)
+}
+
+fn reply_with<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    params: &SpecialProjectsParams,
+    through: i32,
+    rebuilt: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<SpecialProjectsReply> {
     let Some(metadata) = metadata(directory)? else {
         return Ok(unprepared(params));
     };
@@ -289,10 +203,6 @@ pub fn reply<P: PageRead>(
         directory
             .actor(tag.as_bytes())
             .and_then(|actor| directory.key(actor, measure, None))
-    };
-    let selected_intervals = match key(&params.tag, OBSERVED) {
-        Some(key) => intervals(snapshot, key, through, cancelled)?,
-        None => Vec::new(),
     };
     let mut history = country_history::RecordedHistories::default();
     let mut all_ids = match key(&params.tag, IDENTITY) {
@@ -315,88 +225,47 @@ pub fn reply<P: PageRead>(
         }
     }
     let selected = country_history::selected_identities(&history, &params.selection_tags);
+    // Every observation by then is of a holder its identities hold by then.
+    let whole = params.selection_tags.is_empty()
+        || all_ids
+            .iter()
+            .all(|id| selected.contains(&(id.slot, id.country_id)));
     all_ids.retain(|id| {
         params.selection_tags.is_empty() || selected.contains(&(id.slot, id.country_id))
     });
-    let actor = directory.actor(params.tag.as_bytes());
     let family = |measure: u64| directory.key(FAMILY, measure, None);
     let mut builder = Builder {
         campaign_start: Some(metadata.start),
         ..Default::default()
     };
-    let mut lexical = None;
     let mut refusals = catalogue::Refusals::default();
-    let cpu = replay_frame::cpu::scope_phase("projects:query_episodes");
-    for interval in &selected_intervals {
-        let _cpu = replay_frame::cpu::scope_phase("projects:query_interval");
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        if !params.selection_tags.is_empty() && !selected.contains(&interval.observation.identity) {
-            builder.last = None;
-            builder.admitted = false;
-            continue;
-        }
-        let Some(projects) = &interval.observation.projects else {
-            if builder
-                .identity
-                .is_some_and(|old| old != interval.observation.identity)
-            {
-                builder.open.clear();
-            }
-            builder.identity = Some(interval.observation.identity);
-            builder.last = Some((interval.observation.identity, interval.last));
-            builder.admitted = false;
-            continue;
-        };
-        // The branch's read marker dates each complete read; the interval holds an
-        // observation through every hour of it.
-        let mut hour = interval.first;
-        loop {
-            let mut end = interval.last;
-            let (revision, until) = match family(LEXICAL) {
-                Some(key) => run_at(snapshot, key, hour)?,
-                None => None,
-            }
-            .ok_or_else(|| invalid("Prepared project lexical revision is missing"))?;
-            if lexical != Some(revision) {
-                builder.content_ids.clear();
-                lexical = Some(revision);
-            }
-            end = end.min(until);
-            let mut facts: Vec<_> = projects.iter().map(|(facts, _)| facts.clone()).collect();
-            for fact in &mut facts {
-                let key = actor
-                    .and_then(|actor| {
-                        directory.key(
-                            actor,
-                            PROGRESS,
-                            Some(dimension(fact.local_id, fact.definition_id)),
-                        )
-                    })
-                    .ok_or_else(|| invalid("Prepared project progress is missing"))?;
-                let (progress, until) = run_at(snapshot, key, hour)?
-                    .ok_or_else(|| invalid("Prepared project progress is missing"))?;
-                fact.progress = i32::try_from(progress)
-                    .map_err(|_| invalid("Prepared project progress is invalid"))?;
-                end = end.min(until);
-            }
-            apply_interval(
+    if whole && !rebuilt {
+        if let Some(ledger) = key(&params.tag, LEDGER) {
+            let pieces = key(&params.tag, PIECES)
+                .ok_or_else(|| invalid("Prepared project pieces are missing"))?;
+            replay(
+                snapshot,
+                (ledger, pieces),
+                through,
                 &mut builder,
-                &params.tag,
-                interval,
-                hour,
-                end,
-                &facts,
                 &mut refusals,
-            );
-            if end == interval.last {
-                break;
-            }
-            hour = end
-                .checked_add(1)
-                .ok_or_else(|| invalid("Project interval overflow"))?;
+                cancelled,
+            )?;
         }
+    } else if !all_ids.is_empty() {
+        // Some of its holders alone: the episodes of the others' hours are not the selection's,
+        // and those of the selected holders go on over them.
+        rebuild(
+            snapshot,
+            directory,
+            params,
+            (!whole).then_some(&selected),
+            through,
+            &mut builder,
+            &mut refusals,
+            cancelled,
+        )?;
     }
-    drop(cpu);
     let _cpu = replay_frame::cpu::scope_phase("projects:query_reads_finish");
     if let Some(key) = family(READS) {
         for span in &builder.available {
@@ -454,6 +323,131 @@ pub fn reply<P: PageRead>(
     }
     append_identities(&mut reply, &all_ids.iter().collect::<Vec<_>>())?;
     Ok(reply)
+}
+
+/// The country's ledger (`keys`: its LEDGER and PIECES keys) through `through`: every entry
+/// dated by then, each piece clipped to it.
+fn replay<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    (ledger, pieces): (u64, u64),
+    through: i32,
+    builder: &mut Builder,
+    refusals: &mut catalogue::Refusals,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let _cpu = replay_frame::cpu::scope_phase("projects:query_ledger");
+    // Each piece's ordinal and last hour; ordinals rise with their hours.
+    let ends: Vec<(i128, i32)> = engine::runs(snapshot, pieces, i32::MIN, through)?
+        .into_iter()
+        .map(|run| (run.value, run.span.last))
+        .collect();
+    let end = |piece: u64| {
+        let piece = i128::from(piece);
+        ends.binary_search_by_key(&piece, |&(ordinal, _)| ordinal)
+            .ok()
+            .map(|at| ends[at].1)
+    };
+    for (_, bytes) in events(snapshot, ledger, through, kind::LEDGER, cancelled)? {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let entries: Vec<Entry> = codec::decode(&bytes)?;
+        for entry in entries {
+            entry.apply(builder, refusals, end)?;
+        }
+    }
+    Ok(())
+}
+
+/// The country's episodes built again from its observations through `through`, those of a
+/// holder `selected` does not hold left out.
+#[allow(clippy::too_many_arguments)]
+fn rebuild<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    params: &SpecialProjectsParams,
+    selected: Option<&std::collections::BTreeSet<(u32, u32)>>,
+    through: i32,
+    builder: &mut Builder,
+    refusals: &mut catalogue::Refusals,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let actor = directory.actor(params.tag.as_bytes());
+    let Some(key) = actor.and_then(|actor| directory.key(actor, OBSERVED, None)) else {
+        return Ok(());
+    };
+    let selected_intervals = intervals(snapshot, key, through, cancelled)?;
+    let family = |measure: u64| directory.key(FAMILY, measure, None);
+    let mut lexical = None;
+    let _cpu = replay_frame::cpu::scope_phase("projects:query_episodes");
+    for interval in &selected_intervals {
+        let _cpu = replay_frame::cpu::scope_phase("projects:query_interval");
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        if selected.is_some_and(|selected| !selected.contains(&interval.observation.identity)) {
+            builder.last = None;
+            builder.admitted = false;
+            continue;
+        }
+        let Some(projects) = &interval.observation.projects else {
+            if builder
+                .identity
+                .is_some_and(|old| old != interval.observation.identity)
+            {
+                builder.open.clear();
+            }
+            builder.identity = Some(interval.observation.identity);
+            builder.last = Some((interval.observation.identity, interval.last));
+            builder.admitted = false;
+            continue;
+        };
+        // The branch's read marker dates each complete read; the interval holds an
+        // observation through every hour of it.
+        let mut hour = interval.first;
+        loop {
+            let mut end = interval.last;
+            let (revision, until) = match family(LEXICAL) {
+                Some(key) => run_at(snapshot, key, hour)?,
+                None => None,
+            }
+            .ok_or_else(|| invalid("Prepared project lexical revision is missing"))?;
+            if lexical != Some(revision) {
+                builder.content_ids.clear();
+                lexical = Some(revision);
+            }
+            end = end.min(until);
+            let mut facts: Vec<_> = projects.iter().map(|(facts, _)| facts.clone()).collect();
+            for fact in &mut facts {
+                let key = actor
+                    .and_then(|actor| {
+                        directory.key(
+                            actor,
+                            PROGRESS,
+                            Some(dimension(fact.local_id, fact.definition_id)),
+                        )
+                    })
+                    .ok_or_else(|| invalid("Prepared project progress is missing"))?;
+                let (progress, until) = run_at(snapshot, key, hour)?
+                    .ok_or_else(|| invalid("Prepared project progress is missing"))?;
+                fact.progress = i32::try_from(progress)
+                    .map_err(|_| invalid("Prepared project progress is invalid"))?;
+                end = end.min(until);
+            }
+            ledger::apply_interval(
+                builder,
+                &params.tag,
+                &interval.observation,
+                hour,
+                end,
+                &facts,
+                refusals,
+            );
+            if end == interval.last {
+                break;
+            }
+            hour = end
+                .checked_add(1)
+                .ok_or_else(|| invalid("Project interval overflow"))?;
+        }
+    }
+    Ok(())
 }
 
 /// The key every completion is listed under.
@@ -527,7 +521,7 @@ pub fn feed<P: PageRead>(
     if let Some(key) = directory.key(FAMILY, COMPLETIONS, None) {
         let through = snapshot.publication().accepted.last;
         for (_, bytes) in events(snapshot, key, through, kind::CHANGE, cancelled)? {
-            changes.push(serde_json::from_slice(&bytes)?);
+            changes.push(codec::decode(&bytes)?);
         }
     }
     Ok(Feed::of(
