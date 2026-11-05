@@ -18,7 +18,7 @@ function fixture(size: number, fail = false) {
   const client = { preparedQuery: async (_source: unknown, product: string, params: any) => {
     counted(product);
     if (product === 'focus-static-text') return { texts: params.tokens.map((token: string) => ({ token, name: 'Observed', description: 'Static details', baseDurationDays: 7, icon: null })), warnings: [] };
-    if (product === 'focus-hour') return { ...row, hour: Math.min(params.hour, 12), at: params.hour };
+    if (product === 'focus-hour') return { focus: { ...row, hour: Math.min(params.hour, 12), at: params.hour } };
     const start = Number(params.page) * 128;
     if (product === 'focus-order-page') return Array.from({ length: Math.min(128, size - start) - (fail ? 1 : 0) }, (_, i) =>
       ({ ordinal: start + i, token: 'repeat', completedByHour: (start + i) % 2 ? null : 8 }));
@@ -73,7 +73,7 @@ for (const size of [0, 47]) for (const moment of [false, true]) for (const opene
   const client = { preparationStatus: async (request: any) => { statuses++; return { ...request, state: 'ready', sections: [] }; },
     preparedQuery: async (_source: unknown, product: string, params: any) => {
       calls.push({ product, params });
-      if (product === 'focus-hour') return row;
+      if (product === 'focus-hour') return { focus: row };
       if (product === 'focus-order-page') return Array.from({ length: size }, (_, ordinal) => ({ ordinal, token: token(ordinal), completedByHour: null }));
       if (product === 'focus-static-text') return { texts: params.tokens.map((name: string) => art(name, 'Static details')), warnings: [] };
       throw new Error(product);

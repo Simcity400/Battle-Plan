@@ -1949,3 +1949,88 @@ fn drafts_store_and_read_back_their_facts() {
         }
     }
 }
+
+#[test]
+fn feed_and_occurrence_pages_outside_their_branch_answer_empty_over_the_hours_they_ask() {
+    let frames: Vec<_> = [100, 600, 720].map(|hour| quiet_frame(hour, 3)).into();
+    let source = super::super::tests::opened(frames.clone());
+    let flag = AtomicBool::new(false);
+    let mut fixture = Fixture::new();
+    let mut state = Sources::new(&source);
+    for frame in &frames {
+        state.observe(frame, &source, &flag).unwrap();
+    }
+    state.publish(&mut fixture, &source, false, &flag);
+    let context = LoadContext { content: None };
+    let feed = |first: Option<i32>, last: i32, cursor: Option<&str>| query::Params {
+        branch_id: "1".into(),
+        first_hour: first,
+        last_hour: last,
+        cursor: cursor.map(str::to_owned),
+        page_size: 256,
+        categories: BTreeSet::from([
+            EventFeedCategory::WarsPeace,
+            EventFeedCategory::Diplomacy,
+            EventFeedCategory::Politics,
+            EventFeedCategory::Milestones,
+        ]),
+    };
+    let occurrences = |adapter, first: Option<i32>, last: i32, cursor: Option<&str>| {
+        script::query(
+            adapter,
+            &source,
+            script::ScriptPageParams {
+                branch_id: "1".into(),
+                first_hour: first,
+                last_hour: last,
+                cursor: cursor.map(str::to_owned),
+                page_size: 256,
+                kinds: BTreeSet::new(),
+            },
+            &context,
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+    };
+    let adapters = [script::Adapter::EventChoices, script::Adapter::Decisions];
+    // The branch holds hours 100 to 720: the spans just before and after it hold no event.
+    for (first, last) in [(52, 99), (721, 768)] {
+        let page = query(
+            &source,
+            feed(Some(first), last, None),
+            &context,
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        let cold = query::empty(&source, &feed(Some(first), last, None)).unwrap();
+        for page in [page, cold] {
+            assert_eq!((page.reply.first_hour, page.reply.last_hour), (first, last));
+            assert!(page.reply.rows.is_empty() && page.next_cursor.is_none());
+        }
+        for adapter in adapters {
+            let page = occurrences(adapter, Some(first), last, None).unwrap().unwrap();
+            assert_eq!((page.reply.first_hour, page.reply.last_hour), (first, last));
+            assert!(page.reply.occurrences.is_empty() && page.next_cursor.is_none());
+        }
+    }
+    // Hours ending before they start, and a continuation outside the branch, are refused.
+    for (first, last, cursor) in [(Some(300), 299, None), (None, 99, None), (Some(721), 768, Some("{}"))] {
+        let refused = query(
+            &source,
+            feed(first, last, cursor),
+            &context,
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        );
+        assert_eq!(refused.err().unwrap().kind(), io::ErrorKind::InvalidData);
+        for adapter in adapters {
+            let refused = occurrences(adapter, first, last, cursor);
+            assert_eq!(refused.err().unwrap().kind(), io::ErrorKind::InvalidData);
+        }
+    }
+}

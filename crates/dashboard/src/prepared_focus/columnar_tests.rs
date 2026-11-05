@@ -384,12 +384,17 @@ fn check(built: &Built, prepared: &Prepared, frames: &[DecodedFrame], label: &st
         .collect();
     let asked: Vec<i32> = (98..=193).collect();
     let mut observed = 0;
+    let mut answered_without = [0; 2];
     for hour in asked.iter().copied() {
         let row = row::query::query_unavailable(&prepared.store, &prepared.key, 1, hour, &cancelled)
             .unwrap();
         let native = query::unavailable(&mut snapshot, &directory, hour).unwrap();
+        // A prepared hour without refusals is answered: a null reply is one still pending.
+        let reply = serde_json::to_value(&native).unwrap();
+        assert!(reply.is_object(), "{label}: refusals at {hour}: {reply}");
+        answered_without[0] += usize::from(native.refused.is_none());
         assert_eq!(
-            serde_json::to_value(&native).unwrap(),
+            serde_json::to_value(&native.refused).unwrap(),
             serde_json::to_value(&row).unwrap(),
             "{label}: refusals at {hour}"
         );
@@ -407,8 +412,12 @@ fn check(built: &Built, prepared: &Prepared, frames: &[DecodedFrame], label: &st
             )
             .unwrap();
             let native = query::hour(&mut snapshot, &directory, tag, hour).unwrap();
+            // A country not observed at a prepared hour is answered: a null reply is one pending.
+            let reply = serde_json::to_value(&native).unwrap();
+            assert!(reply.is_object(), "{label}: {tag} at {hour}: {reply}");
+            answered_without[1] += usize::from(native.focus.is_none());
             assert_eq!(
-                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&native.focus).unwrap(),
                 serde_json::to_value(&row).unwrap(),
                 "{label}: {tag} at {hour}"
             );
@@ -445,6 +454,10 @@ fn check(built: &Built, prepared: &Prepared, frames: &[DecodedFrame], label: &st
         );
     }
     assert!(observed > 300, "{label}: {observed} observed country-hours");
+    assert!(
+        answered_without.iter().all(|&count| count > 0),
+        "{label}: hours without refusals and unobserved country-hours, each answered: {answered_without:?}"
+    );
     assert_eq!(
         query::feed(&mut snapshot, &directory).unwrap(),
         row::feed(prepared.source.replay_ref(), 1, &cancelled).unwrap(),

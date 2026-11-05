@@ -3,7 +3,8 @@
 //! four tables' refusals at an hour, and the event feed's completions.
 
 use super::{
-    FocusEntry, Hour, PAGE_ROWS, Pages, StateSchema, TableRefusal, UnavailableHour,
+    FocusEntry, Hour, HourReply, PAGE_ROWS, Pages, StateSchema, TableRefusal, UnavailableHour,
+    UnavailableReply,
     emit::{CHAIN, COMPLETIONS, FAMILY, GAIN, OBSERVED, ORDER, PROGRESS, REASONS, REFUSALS, UNAVAILABLE, kind},
 };
 use super::art::CompletionArt;
@@ -215,8 +216,19 @@ fn order_at<P: PageRead>(
     Ok(Some((event.native_hour, ordinal, order, presence)))
 }
 
-/// A country's focus at `hour`, None where it was not observed.
+/// A country's focus at `hour`, none where it was not observed.
 pub fn hour<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    tag: &str,
+    hour: i32,
+) -> io::Result<HourReply> {
+    Ok(HourReply {
+        focus: focus_at(snapshot, directory, tag, hour)?,
+    })
+}
+
+fn focus_at<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
     tag: &str,
@@ -260,17 +272,17 @@ pub fn hour<P: PageRead>(
     }))
 }
 
-/// The four focus tables' refusals at `hour`, with the hours they hold.
+/// The four focus tables' refusals at `hour`, with the hours they hold; none where none refused.
 pub fn unavailable<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
     hour: i32,
-) -> io::Result<Option<UnavailableHour>> {
+) -> io::Result<UnavailableReply> {
     let Some(key) = directory.key(FAMILY, REFUSALS, None) else {
-        return Ok(None);
+        return Ok(UnavailableReply { refused: None });
     };
     let Some((run, _)) = engine::run_at(snapshot, key, hour)? else {
-        return Ok(None);
+        return Ok(UnavailableReply { refused: None });
     };
     let id = u64::try_from(run.value).map_err(|_| malformed())?;
     let set = directory
@@ -278,12 +290,14 @@ pub fn unavailable<P: PageRead>(
         .and_then(Scalar::text)
         .ok_or_else(|| invalid("A prepared focus refusal names no reasons"))?;
     let reasons: Vec<TableRefusal> = serde_json::from_slice(set)?;
-    Ok((!reasons.is_empty()).then(|| UnavailableHour {
-        schema: StateSchema,
-        first_hour: run.span.first,
-        last_hour: run.span.last,
-        reasons,
-    }))
+    Ok(UnavailableReply {
+        refused: (!reasons.is_empty()).then(|| UnavailableHour {
+            schema: StateSchema,
+            first_hour: run.span.first,
+            last_hour: run.span.last,
+            reasons,
+        }),
+    })
 }
 
 /// One page of `tag`'s completed focuses at `hour`, read from its completion chain; `requested`

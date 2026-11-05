@@ -42,9 +42,13 @@ const optionalText = (value: unknown) => value === null || typeof value === 'str
 const pagesValid = (value: FocusPages) => !!value && natural(value.first) && natural(value.count) && natural(value.rows)
   && (value.sampled === undefined || typeof value.sampled === 'boolean')
   && BigInt(value.count) === (BigInt(value.rows) + 127n) / 128n;
+/** A `focus-hour` reply's focus: null for a pending (null) reply, and where the country was not observed. */
 export function validatePreparedHour(value: unknown, hour: number): PreparedFocusHour | null {
   if (value === null) return null;
-  const row = value as PreparedFocusHour;
+  const reply = value as { focus?: unknown } | undefined;
+  if (!reply || typeof reply !== 'object' || reply.focus === undefined) throw new Error('Invalid prepared focus hour.');
+  if (reply.focus === null) return null;
+  const row = reply.focus as PreparedFocusHour;
   if (!row || row.schema !== PREPARED_FOCUS_SCHEMA || !Number.isInteger(row.slot) || row.slot < 0 || !Number.isInteger(row.countryId) || row.countryId < 0 || !Number.isInteger(row.hour) || !Number.isInteger(row.lastHour)
     || row.hour > hour || row.lastHour < hour || row.at !== hour || !(row.orderFirstHour === null && row.preparing?.includes('orderFirstHour') || Number.isInteger(row.orderFirstHour) && row.orderFirstHour! <= row.hour) || !optionalText(row.current) || !optionalText(row.continuous)
     || row.preparing !== undefined && (!Array.isArray(row.preparing) || !row.preparing.every(field => typeof field === 'string'))
@@ -153,21 +157,23 @@ export async function waitForFocusPreparation(client: FocusPreparedClient, sourc
   throw new DOMException('Focus preparation cancelled', 'AbortError');
 }
 
-/** Null is missing coverage only once preparation has finished; an accepted
- * prefix can grow while this particular requested hour is still unprepared. */
+/** A null reply is an hour still preparing, and missing coverage once preparation has finished; an
+ * accepted prefix can grow while this particular requested hour is still unprepared. An answered
+ * hour names no focus where the country was not observed. */
 export async function loadPreparedFocusHour(client: FocusPreparedClient, source: DashboardSource, branchId: string, tag: string,
   hour: number, signal: AbortSignal, restart = false, wait: (signal: AbortSignal) => Promise<void> = pause): Promise<PreparedFocusHour | null> {
   if (!client.preparedQuery) throw new Error('Prepared focus queries are unavailable.');
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
-  const ready = validatePreparedHour(await client.preparedQuery<unknown>(source, 'focus-hour', { branchId, tag, hour }, { signal }), hour);
+  const read = () => client.preparedQuery!<unknown>(source, 'focus-hour', { branchId, tag, hour }, { signal });
+  const ready = await read();
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
-  if (ready || !client.preparationStatus) return ready;
+  if (ready !== null || !client.preparationStatus) return validatePreparedHour(ready, hour);
   await waitForFocusPreparation(client, source, signal, restart, wait);
   let progress: string | undefined;
   while (!signal.aborted) {
-    const row = validatePreparedHour(await client.preparedQuery<unknown>(source, 'focus-hour', { branchId, tag, hour }, { signal }), hour);
+    const reply = await read();
     if (signal.aborted) break;
-    if (row || !client.preparationStatus) return row;
+    if (reply !== null || !client.preparationStatus) return validatePreparedHour(reply, hour);
     const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
     const status = await client.preparationStatus(request, signal);
     if (signal.aborted) break;
@@ -198,9 +204,13 @@ export interface FocusUnavailableHour {
   schema: number; firstHour: number; lastHour: number;
   reasons: { table: string; reason: string | null; missingRows: string | null }[];
 }
+/** A `focus-unavailable` reply's refusals: none for a pending (null) reply, and where none refused. */
 export function validateUnavailableFocus(value: unknown, hour: number): string[] {
   if (value === null) return [];
-  const row = value as FocusUnavailableHour;
+  const reply = value as { refused?: unknown } | undefined;
+  if (!reply || typeof reply !== 'object' || reply.refused === undefined) throw new Error('Invalid prepared focus unavailable read.');
+  if (reply.refused === null) return [];
+  const row = reply.refused as FocusUnavailableHour;
   if (!row || row.schema !== PREPARED_FOCUS_SCHEMA || !Number.isInteger(row.firstHour) || !Number.isInteger(row.lastHour)
     || row.firstHour > hour || row.lastHour < hour || !Array.isArray(row.reasons)
     || !row.reasons.every(item => item && typeof item.table === 'string' && optionalText(item.reason)

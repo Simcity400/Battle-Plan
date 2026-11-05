@@ -1011,29 +1011,20 @@ pub(crate) fn cursor_live(cursor: &str) -> Option<i32> {
         .map(|cursor| cursor.live)
 }
 
-/// A cold page has no events or cursor; its requested extent is still pending.
-pub(crate) fn empty(source: &Source, params: &Params) -> io::Result<Page> {
-    let branch: u64 = params
-        .branch_id
-        .parse()
-        .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
-    let start = source
-        .replay_ref()
-        .branches
-        .iter()
-        .find(|start| start.id == branch)
-        .ok_or_else(|| crate::invalid("Unknown prepared feed branch"))?;
-    let (first, last) = branch_bounds(source.replay_ref(), start);
-    let first = params.first_hour.unwrap_or(first).max(first);
-    let last = params.last_hour.min(last);
-    if first > last
-        || params.page_size == 0
-        || params.page_size == u32::MAX
-        || params.cursor.is_some()
-    {
+/// The hours a page reads, `first` through `last`: those it asks within its branch's `bounds`, or
+/// None where it asks only hours outside them. Asked hours that end before they start refuse.
+fn page_hours(params: &Params, (first, last): (i32, i32)) -> io::Result<Option<(i32, i32)>> {
+    let asked = params.first_hour.unwrap_or(first);
+    if asked > params.last_hour || params.page_size == 0 || params.page_size == u32::MAX {
         return Err(crate::invalid("Invalid prepared feed page"));
     }
-    Ok(Page {
+    let (first, last) = (asked.max(first), params.last_hour.min(last));
+    Ok((first <= last).then_some((first, last)))
+}
+
+/// A page of no events or cursor over `first` through `last`.
+fn blank(params: &Params, first: i32, last: i32) -> Page {
+    Page {
         reply: EventFeedReply {
             branch_id: params.branch_id.clone(),
             first_hour: first,
@@ -1047,7 +1038,44 @@ pub(crate) fn empty(source: &Source, params: &Params) -> io::Result<Page> {
             warnings: Vec::new(),
         },
         next_cursor: None,
-    })
+    }
+}
+
+/// The page's branch and that branch's first and last hours.
+fn branch_of(source: &Source, params: &Params) -> io::Result<(u64, (i32, i32))> {
+    let branch = params
+        .branch_id
+        .parse::<u64>()
+        .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
+    let start = source
+        .replay_ref()
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .ok_or_else(|| crate::invalid("Unknown prepared feed branch"))?;
+    Ok((branch, branch_bounds(source.replay_ref(), start)))
+}
+
+/// A page outside its branch's hours, which hold no event, over the hours it asks.
+fn outside(params: &Params, bounds: (i32, i32)) -> io::Result<Page> {
+    if params.cursor.is_some() {
+        return Err(crate::invalid("Invalid prepared feed page"));
+    }
+    Ok(blank(
+        params,
+        params.first_hour.unwrap_or(bounds.0),
+        params.last_hour,
+    ))
+}
+
+/// A cold page has no events or cursor; its requested extent within its branch is still pending.
+pub(crate) fn empty(source: &Source, params: &Params) -> io::Result<Page> {
+    let (_, bounds) = branch_of(source, params)?;
+    match page_hours(params, bounds)? {
+        Some(_) if params.cursor.is_some() => Err(crate::invalid("Invalid prepared feed page")),
+        Some((first, last)) => Ok(blank(params, first, last)),
+        None => outside(params, bounds),
+    }
 }
 
 pub(crate) fn query(
@@ -1060,22 +1088,10 @@ pub(crate) fn query(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Page>> {
     check_cancel(cancelled)?;
-    let branch = params
-        .branch_id
-        .parse::<u64>()
-        .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
-    let start = source
-        .replay_ref()
-        .branches
-        .iter()
-        .find(|start| start.id == branch)
-        .ok_or_else(|| crate::invalid("Unknown prepared feed branch"))?;
-    let (branch_first, branch_last) = branch_bounds(source.replay_ref(), start);
-    let first = params.first_hour.unwrap_or(branch_first).max(branch_first);
-    let live = params.last_hour.min(branch_last);
-    if first > live || params.page_size == 0 || params.page_size == u32::MAX {
-        return Err(crate::invalid("Invalid prepared feed page"));
-    }
+    let (branch, bounds) = branch_of(source, &params)?;
+    let Some((first, live)) = page_hours(&params, bounds)? else {
+        return outside(&params, bounds).map(Some);
+    };
     let cursor: Option<Cursor> = params
         .cursor
         .as_deref()

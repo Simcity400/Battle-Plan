@@ -433,8 +433,10 @@ export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
 export type PreparedFocusPages = { first: string, count: string, rows: string, };
 export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
+export type PreparedFocusHourReply = { focus: PreparedFocusHour | null, };
 export type PreparedFocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
 export type PreparedFocusUnavailableHour = { schema: number, firstHour: number, lastHour: number, reasons: Array<PreparedFocusTableRefusal>, };
+export type PreparedFocusUnavailableReply = { refused: PreparedFocusUnavailableHour | null, };
 export type ChartBucket = {
 /**
  * Sum of absolute raw value times covered hours, at the series decimal scale.

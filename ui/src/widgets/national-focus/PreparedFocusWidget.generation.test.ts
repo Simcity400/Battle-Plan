@@ -64,15 +64,15 @@ test('an obsolete focus page failure cannot replace a newer successful generatio
     };
     const settle = async () => { for (let step = 0; step < 4; step++) await new Promise(resolve => setImmediate(resolve)); };
     render();
-    state.publish!(row); await settle();
+    state.publish!({ focus: row }); await settle();
     assert.equal(pages, 1);
     // A newer reply has an empty, successfully loaded completion page.
-    state.publish!({ ...row, completed: { first: '0', count: '0', rows: '0' } }); await settle();
+    state.publish!({ focus: { ...row, completed: { first: '0', count: '0', rows: '0' } } }); await settle();
     const accepted = render();
     assert.match(accepted, /No completed focuses recorded at this point/);
     rejectOld(new Error('Obsolete page failed')); await settle();
     assert.equal(render(), accepted, 'failure ownership matches success ownership');
-    state.publish!({ ...row, progressRaw: '1' }); await settle();
+    state.publish!({ focus: { ...row, progressRaw: '1' } }); await settle();
     assert.match(render(), /data-detail="Current page failed"/);
     assert.equal(pages, 2, 'a current failure is still reported');
   } finally {

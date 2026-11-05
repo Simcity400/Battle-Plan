@@ -25,7 +25,10 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                     "focus-hour",
                     json!({ "branchId": id, "tag": tag, "hour": hour }),
                 )?;
-                let Some(pages) = reply.as_ref().and_then(|reply| reply.get("completed")) else {
+                let Some(pages) = reply
+                    .as_ref()
+                    .and_then(|reply| reply.get("focus")?.get("completed"))
+                else {
                     continue;
                 };
                 let count = pages

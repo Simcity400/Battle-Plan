@@ -303,7 +303,8 @@ fn newest(
     Ok(held)
 }
 
-/// A cold page: no occurrences or cursor; its extent is still pending.
+/// A page of no occurrences or cursor over `first` through `last`: a cold one, whose extent is
+/// still pending, or one outside its branch's hours.
 pub(crate) fn empty(params: &ScriptPageParams, first: i32, last: i32) -> ScriptOccurrencePage {
     ScriptOccurrencePage {
         reply: ScriptOccurrenceReply {
@@ -338,9 +339,8 @@ pub(crate) fn query(
         .find(|start| start.id == branch)
         .ok_or_else(|| crate::invalid("Unknown prepared occurrence branch"))?;
     let (branch_first, branch_last) = branch_bounds(source.replay_ref(), start);
-    let first = params.first_hour.unwrap_or(branch_first).max(branch_first);
-    let live = params.last_hour.min(branch_last);
-    if first > live || params.page_size == 0 || params.page_size == u32::MAX {
+    let asked = params.first_hour.unwrap_or(branch_first);
+    if asked > params.last_hour || params.page_size == 0 || params.page_size == u32::MAX {
         return Err(crate::invalid("Invalid prepared occurrence page"));
     }
     if params
@@ -349,6 +349,15 @@ pub(crate) fn query(
         .any(|kind| !adapter.openers().contains(kind))
     {
         return Err(crate::invalid("Unknown opening kind for this list"));
+    }
+    let first = asked.max(branch_first);
+    let live = params.last_hour.min(branch_last);
+    // Hours wholly outside the branch hold no occurrence.
+    if first > live {
+        if params.cursor.is_some() {
+            return Err(crate::invalid("Invalid prepared occurrence page"));
+        }
+        return Ok(Some(empty(&params, asked, params.last_hour)));
     }
     let openers: Vec<EventFeedKind> = adapter
         .openers()

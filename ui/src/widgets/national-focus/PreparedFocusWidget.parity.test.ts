@@ -76,7 +76,7 @@ test('the prepared widget supplies its settled page and description to one parit
     const client = { preparationStatus: async (request: any) => { fixture.statuses++; return { ...request, state: 'ready', sections: [] }; },
       preparedQuery: async (_source: unknown, product: string, params: any) => {
         fixture.calls.push(product);
-        if (product === 'focus-hour') return { ...row, at: params.hour };
+        if (product === 'focus-hour') return { focus: { ...row, at: params.hour } };
         if (product === 'focus-order-page') return Array.from({length:Math.min(128, size()-Number(params.page)*128)}, (_, index) => entry(Number(params.page)*128+index));
         if (product === 'focus-static-text') return { texts: params.tokens.map(staticArt), warnings: [] };
         throw new Error(product);

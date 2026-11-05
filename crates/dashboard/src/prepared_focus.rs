@@ -123,6 +123,14 @@ pub struct Hour {
     pub daily_gain_raw: Option<String>,
 }
 
+/// `focus-hour` at a prepared hour: the country's focus there, none where it was not observed.
+/// A null reply is the hour not prepared yet.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(rename = "PreparedFocusHourReply")]
+pub struct HourReply {
+    pub focus: Option<Hour>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparedFocusUnavailableHour")]
@@ -132,6 +140,14 @@ pub struct UnavailableHour {
     pub first_hour: i32,
     pub last_hour: i32,
     pub reasons: Vec<TableRefusal>,
+}
+
+/// `focus-unavailable` at a prepared hour: the tables' refusals there, none where none refused.
+/// A null reply is the hour not prepared yet.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(rename = "PreparedFocusUnavailableReply")]
+pub struct UnavailableReply {
+    pub refused: Option<UnavailableHour>,
 }
 
 pub mod art;

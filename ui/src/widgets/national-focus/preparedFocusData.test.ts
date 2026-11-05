@@ -11,8 +11,8 @@ const source = { id: 'source', revision: 'v1' } as DashboardSource;
 
 test('focus first views accept a pending order date without inventing a completion date', () => {
   const sampled = { ...row, orderFirstHour: null, preparing: ['orderFirstHour', 'completedByHour'], completed: { sampled: true, first: '0', count: '1', rows: '1' } };
-  assert.equal(validatePreparedHour(sampled, row.at), sampled);
-  assert.throws(() => validatePreparedHour({ ...sampled, preparing: [] }, row.at), /Invalid prepared focus hour/);
+  assert.equal(validatePreparedHour({ focus: sampled }, row.at), sampled);
+  assert.throws(() => validatePreparedHour({ focus: { ...sampled, preparing: [] } }, row.at), /Invalid prepared focus hour/);
   const entries = validatePreparedOrder([{ ordinal: 0, token: 'mod/focus', completedByHour: null }], sampled.completed, 0n);
   assert.equal(entries[0].completedByHour, null);
 });
@@ -27,10 +27,13 @@ const artClient = (requests: { product: string; params: any }[], named: (token: 
   },
 });
 test('prepared focus validates exact integers, intervals and uncapped opaque values', () => {
-  assert.equal(validatePreparedHour(row, 101), row);
+  assert.equal(validatePreparedHour({ focus: row }, 101), row);
+  // A pending reply, and a prepared hour the country was not observed at.
   assert.equal(validatePreparedHour(null, 101), null);
+  assert.equal(validatePreparedHour({ focus: null, coverage: { schema: 1, firstHour: 0, lastHour: 200, complete: true }, pending: [] }, 101), null);
+  assert.throws(() => validatePreparedHour(row, 101), /Invalid prepared focus hour/);
   for (const value of [{ ...row, schema: 1 }, { ...row, schema: 5 }, { ...row, hour: 102 }, { ...row, lastHour: 100 }, { ...row, progressRaw: '1.5' },
-    { ...row, at: 100 }, { ...row, completed: { ...row.completed, count: '2' } }]) assert.throws(() => validatePreparedHour(value, 101));
+    { ...row, at: 100 }, { ...row, completed: { ...row.completed, count: '2' } }]) assert.throws(() => validatePreparedHour({ focus: value }, 101));
   const long = 'mod/'.repeat(1000);
   assert.equal(validatePreparedOrder([{ ordinal: 0, token: long, completedByHour: null }], { first: '0', count: '1', rows: '1' }, 0n)[0].token, long);
   assert.equal(validatePreparedArt([art(long)])[0].artwork.token, long);
@@ -203,16 +206,18 @@ test('unavailable focus diagnostics preserve producer reasons and exact missing 
     { table: 'Focus', reason: 'mod reader refused form: exact reason', missingRows: null },
     { table: 'CompletedFocuses', reason: null, missingRows: '9007199254740993' },
   ] };
-  assert.deepEqual(validateUnavailableFocus(value, 101), ['Focus: mod reader refused form: exact reason', 'CompletedFocuses: 9007199254740993 missing rows']);
-  assert.throws(() => validateUnavailableFocus(value, 103));
-  assert.throws(() => validateUnavailableFocus({ ...value, schema: 5 }, 101));
-  assert.throws(() => validateUnavailableFocus({ ...value, reasons: [{ table: 'Focus', reason: null, missingRows: null }] }, 101));
+  assert.deepEqual(validateUnavailableFocus({ refused: value }, 101), ['Focus: mod reader refused form: exact reason', 'CompletedFocuses: 9007199254740993 missing rows']);
+  assert.deepEqual(validateUnavailableFocus({ refused: null }, 101), []);
+  assert.throws(() => validateUnavailableFocus(value, 101));
+  assert.throws(() => validateUnavailableFocus({ refused: value }, 103));
+  assert.throws(() => validateUnavailableFocus({ refused: { ...value, schema: 5 } }, 101));
+  assert.throws(() => validateUnavailableFocus({ refused: { ...value, reasons: [{ table: 'Focus', reason: null, missingRows: null }] } }, 101));
 });
 test('null before accepted coverage remains pending until the requested extent grows', async () => {
   let queries = 0, waits = 0;
   const client = { preparationStatus: async (request: any) => ({ ...request, state: 'preparing', sections: [
     { id: 'focus', state: 'ready', label: 'Focus', done: '1', total: '2', error: null }], backgroundEnabled: true, bytes: '0', error: null }),
-    preparedQuery: async () => ++queries === 1 ? null : row,
+    preparedQuery: async () => ++queries === 1 ? null : { focus: row },
   } as unknown as FocusPreparedClient;
   const answer = await loadPreparedFocusHour(client, source, '1', 'tag', 101, new AbortController().signal, true, async () => { waits++; });
   assert.equal(answer, row); assert.equal(queries, 2); assert.equal(waits, 0);
@@ -238,7 +243,7 @@ test('pending focus hour keeps paced polling through an unchanged ready prefix',
       assert.ok(++statuses <= 3);
       return { ...request, state: 'preparing', sections: [{ id: 'focus', state: 'ready', done: '1', total: '2' }], backgroundEnabled: true, bytes: '0', error: null };
     },
-    preparedQuery: async () => { assert.ok(++queries <= 4); return queries < 4 ? null : row; },
+    preparedQuery: async () => { assert.ok(++queries <= 4); return queries < 4 ? null : { focus: row }; },
   } as unknown as FocusPreparedClient;
   assert.equal(await loadPreparedFocusHour(client, source, '1', 'tag', 101, new AbortController().signal, false,
     async () => { waits++; await new Promise(resolve => setTimeout(resolve, 500)); }), row);
@@ -250,7 +255,7 @@ test('focus hour polling accepts a growing prefix and stops after cancellation',
   const client = {
     preparationStatus: async (request: object) => ({ ...request, state: 'preparing', sections: [
       { id: 'focus', state: 'ready', done: String(++statuses), total: '5' }], backgroundEnabled: true, bytes: '0', error: null }),
-    preparedQuery: async () => ++queries === 4 ? row : null,
+    preparedQuery: async () => ++queries === 4 ? { focus: row } : null,
   } as unknown as FocusPreparedClient;
   assert.equal(await loadPreparedFocusHour(client, source, '1', 'tag', 101, controller.signal, false, async () => { waits++; }), row);
   assert.deepEqual({ queries, statuses, waits }, { queries: 4, statuses: 3, waits: 2 });
@@ -269,7 +274,7 @@ test('focus readiness and pending hour replies cannot complete after cancellatio
   const pointController = new AbortController();
   const pointClient = {
     preparationStatus: async (request: object) => { statuses++; return { ...request, state: 'ready', sections: [] }; },
-    preparedQuery: async () => { if (++queries === 1) return null; pointController.abort(); return row; },
+    preparedQuery: async () => { if (++queries === 1) return null; pointController.abort(); return { focus: row }; },
   } as unknown as FocusPreparedClient;
   await assert.rejects(loadPreparedFocusHour(pointClient, source, '1', 'tag', 101, pointController.signal), { name: 'AbortError' });
   assert.deepEqual({ queries, statuses }, { queries: 2, statuses: 1 });
@@ -285,7 +290,7 @@ test('null after ready is genuinely missing coverage and stops polling', async (
 
 test('an accepted focus hour reads immediately without a preparation status request', async () => {
   let queries = 0;
-  const client = { preparedQuery: async () => { queries++; return row; },
+  const client = { preparedQuery: async () => { queries++; return { focus: row }; },
     preparationStatus: async () => { throw new Error('accepted hours need no readiness probe'); },
   } as unknown as FocusPreparedClient;
   assert.equal(await loadPreparedFocusHour(client, source, '1', 'tag', 101, new AbortController().signal), row);
