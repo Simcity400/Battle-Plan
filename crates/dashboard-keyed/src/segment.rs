@@ -117,6 +117,18 @@ pub struct Hour<S: Segmented> {
     bytes: usize,
 }
 
+impl<S: Segmented> Hour<S> {
+    /// An hour as an operator hands it on, holding `bytes`: what a test's own walk gives an emit.
+    pub fn new(hour: i32, dated: bool, read: Option<S::Read>, bytes: usize) -> Self {
+        Self {
+            hour,
+            dated,
+            read,
+            bytes,
+        }
+    }
+}
+
 impl<S: Segmented> Item for Hour<S> {
     fn heap(&self) -> usize {
         self.bytes

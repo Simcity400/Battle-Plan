@@ -734,10 +734,26 @@ fn runs<P: PageRead>(
     from: i32,
     to: i32,
 ) -> io::Result<Vec<Vec<Run>>> {
-    keys.iter()
+    let held: Vec<Option<KeyHandle>> = keys
+        .iter()
+        .map(|&key| usize::try_from(key).ok().and_then(|at| handles.get(at)).copied())
+        .collect();
+    held_runs(snapshot, &held, from, to)
+}
+
+/// Each of `handles`' runs over `from..=to`, clipped to it, as the walk's pages hold them; none
+/// where a key is not held.
+pub(crate) fn held_runs<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    handles: &[Option<KeyHandle>],
+    from: i32,
+    to: i32,
+) -> io::Result<Vec<Vec<Run>>> {
+    handles
+        .iter()
         .map(
-            |&key| match usize::try_from(key).ok().and_then(|at| handles.get(at)) {
-                Some(&handle) => {
+            |handle| match *handle {
+                Some(handle) => {
                     let mut runs: Vec<Run> = engine::runs(snapshot, handle, from, to)?
                         .into_iter()
                         .map(|run| Run {

@@ -6,7 +6,7 @@ use super::{Emit, Native, SCHEMA, catalogued, changes, runs};
 use crate::{
     KNOWN, Observer, READ, Scan,
     query::{self, KeyedWindow, windowed},
-    segment::{self, needs},
+    segment::{self, Segmented, needs},
 };
 use dashboard_series::{
     Blob, Budget, Cache, Identity, Observation, PageRead, Publication, Snapshot, Span, Writer,
@@ -108,20 +108,32 @@ pub fn operate_bound<O: Observer>(
     write: fn(&mut Synthetic, &DecodedFrame),
     binding: Option<&Binding<O>>,
 ) -> Vec<segment::Hour<Native<O>>> {
+    operate_segmented(frames, starts, write, || bound_operator::<O>(binding))
+}
+
+/// The hours `frames` give the operators `operator` makes of the keyed family `S`: a segment
+/// starts at each of `starts` (frame indices), and the walk again after each gap. `write` writes
+/// a frame's tables.
+pub fn operate_segmented<S: Segmented>(
+    frames: &[DecodedFrame],
+    starts: &[usize],
+    write: fn(&mut Synthetic, &DecodedFrame),
+    operator: impl Fn() -> segment::Operator<S>,
+) -> Vec<segment::Hour<S>> {
     let format = FormatVersion::CURRENT;
-    let needs = needs::<Native<O>>().unwrap();
+    let needs = needs::<S>().unwrap();
     let mut walk: Option<Synthetic> = None;
     let mut world = None;
-    let mut operator = bound_operator::<O>(binding);
+    let mut current = operator();
     let mut hours = Vec::new();
     for (ordinal, frame) in frames.iter().enumerate() {
         let gap = ordinal > 0 && frames[ordinal - 1].hour + 1 != frame.hour;
         if walk.is_none() || gap {
-            walk = Some(Synthetic::new(O::TABLES, frame.branch, frame.hour).unwrap());
+            walk = Some(Synthetic::new(S::TABLES, frame.branch, frame.hour).unwrap());
         }
         let cold = ordinal == 0 || gap || starts.contains(&ordinal);
         if cold {
-            operator = bound_operator::<O>(binding);
+            current = operator();
         }
         let walk = walk.as_mut().unwrap();
         write(walk, frame);
@@ -136,7 +148,7 @@ pub fn operate_bound<O: Observer>(
                 manifest,
             )
             .unwrap();
-            operator
+            current
                 .hour(
                     &driver::Hour {
                         branch: frame.branch,

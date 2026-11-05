@@ -417,13 +417,9 @@ pub(crate) static REGISTERED: &[Registered] = &[
         bind: observed::<air_missions::AirMissionsObserver>,
     },
     Registered {
-        name: <air_statistics::AirStatisticsObserver as dashboard_keyed::Observer>::NAME,
-        load: |content| {
-            content
-                .keyed::<air_statistics::AirStatisticsObserver>()
-                .map(drop)
-        },
-        bind: observed::<air_statistics::AirStatisticsObserver>,
+        name: air_statistics::NAME,
+        load: free,
+        bind: air_statistics_family,
     },
     Registered {
         name: "raids",
@@ -722,6 +718,7 @@ emits!(
     stability_parts::emit::Emit => stability_parts::facts::Hour,
     military_air_ledger::emit::Emit => military_air_ledger::facts::Hour,
     navy::emit::Emit => navy::facts::Hour,
+    air_statistics::emit::Emit => keyed::Hour<air_statistics::segment::Segments>,
 );
 
 // Its hours are kept with the recording their completions are presented from ([`Focus`]).
@@ -1876,6 +1873,81 @@ impl<V: View> Native for Yard<V> {
     ) -> io::Result<Self::Branch> {
         let directory = directory(stage, branch, published, yards::layout::SCHEMA)?;
         let emit = yards::emit::Emit::load(self.format, &directory, saved)?;
+        Ok(Series::new(Box::new(emit), published.frontier.first_hour))
+    }
+}
+
+/// Air statistics: their operators observe their hours a segment at a time
+/// ([`air_statistics::segment`]), handing on what each observation moved, and each branch's emit
+/// orders those and writes them into the series its stage opens for the batch.
+struct AirStatistics {
+    format: FormatVersion,
+}
+
+fn air_statistics_family<'p>(
+    id: FamilyId,
+    content: &'p Content<'p>,
+    stage: Stage<'p, 'p>,
+    taken: Taken<'p>,
+) -> Made<'p> {
+    let format = content.source.replay_ref().format;
+    bound(id, AirStatistics { format }, stage, taken)
+}
+
+impl Native for AirStatistics {
+    type Operator = keyed::Operator<air_statistics::segment::Segments>;
+    type Branch = Series<Box<air_statistics::emit::Emit>>;
+
+    fn tables(&self) -> &'static [TableId] {
+        air_statistics::segment::TABLES
+    }
+
+    fn needs(&self) -> io::Result<Needs> {
+        keyed::needs::<air_statistics::segment::Segments>()
+    }
+
+    fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
+        keyed::Operator::new(self.format)
+    }
+
+    fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
+        Ok(Series::new(Box::new(air_statistics::emit::Emit::new()), first))
+    }
+
+    fn observe(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        hour: keyed::Hour<air_statistics::segment::Segments>,
+    ) -> io::Result<()> {
+        state.observe(stage, branch, hour.hour, hour)
+    }
+
+    fn flush(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        _: Option<i32>,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        state.flush(stage, branch)
+    }
+
+    fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
+        state.save()
+    }
+
+    fn resume(
+        &self,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        published: &Published,
+        saved: &[u8],
+    ) -> io::Result<Self::Branch> {
+        let directory = directory(stage, branch, published, air_statistics::emit::SCHEMA)?;
+        let emit = air_statistics::emit::Emit::load(&directory, saved)?;
         Ok(Series::new(Box::new(emit), published.frontier.first_hour))
     }
 }

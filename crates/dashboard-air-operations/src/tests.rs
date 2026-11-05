@@ -1,6 +1,6 @@
 use crate::products::{
     air_missions::{self, AirMissions, AirMissionsObserver},
-    air_statistics::{self, AirStatistics, AirStatisticsObserver},
+    air_statistics::{self, AirStatistics},
 };
 use dashboard_base::{
     Source,
@@ -107,12 +107,14 @@ fn source(frames: Vec<DecodedFrame>) -> Source {
     )
     .unwrap()
 }
-fn answer(
+/// `reply` of `params` on the recording of `frames`, its pages in `fixture` and the gate's prefix
+/// through `through`.
+fn replied(
     fixture: &Fixture,
     frames: Vec<DecodedFrame>,
     params: Value,
-    stats: bool,
     through: Option<i32>,
+    reply: impl FnOnce(&Query<'_>) -> std::io::Result<Value>,
 ) -> Value {
     let source = source(frames);
     let bounds = &source.metadata().unwrap().branches[0];
@@ -138,12 +140,17 @@ fn answer(
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    if stats {
-        air_statistics::answer(&query, &|| query.open::<AirStatisticsObserver>())
-    } else {
-        air_missions::answer(&query, &|| query.open::<AirMissionsObserver>())
-    }
-    .unwrap()
+    reply(&query).unwrap()
+}
+fn answer(
+    fixture: &Fixture,
+    frames: Vec<DecodedFrame>,
+    params: Value,
+    through: Option<i32>,
+) -> Value {
+    replied(fixture, frames, params, through, |query| {
+        air_missions::answer(query, &move || query.open::<AirMissionsObserver>())
+    })
 }
 fn runs<'a>(reply: &'a Value, name: &str) -> &'a Value {
     &reply["window"]["series"]
@@ -273,137 +280,6 @@ fn missions_runs_absence_unknown_gaps_dates_and_saved_continuation() {
 }
 
 #[test]
-fn statistics_all_24_signed_channels_ring_state_and_both_divisors() {
-    let channels = std::array::from_fn(|channel| {
-        if channel == 0 {
-            i64::MIN
-        } else if channel == 23 {
-            i64::MAX
-        } else {
-            -(channel as i64)
-        }
-    });
-    let mut row = stat(3, channels);
-    row.year_slot = 7;
-    row.year_window_wrapped = 1;
-    let v = values::<AirStatisticsObserver>(&statistics(100, vec![row]));
-    assert_eq!(v.len(), 26);
-    for (channel, raw) in channels.into_iter().enumerate() {
-        assert_eq!(v[&format!("GER@7|3|c{channel}")], i128::from(raw));
-    }
-    assert_eq!(v["GER@7|3|slot"], 7);
-    assert_eq!(v["GER@7|3|wrapped"], 1);
-    assert_eq!(air_statistics::divisor(0), 1000);
-    for channel in 1..12 {
-        assert_eq!(air_statistics::divisor(channel), 100_000);
-    }
-}
-
-#[test]
-fn statistics_absent_is_not_zero_and_wrap_is_not_subtracted() {
-    let fixture = Fixture::new();
-    let mut wrapped = stat(3, [0; 24]);
-    wrapped.year_slot = 1;
-    wrapped.year_window_wrapped = 1;
-    let mut unknown = statistics(103, vec![]);
-    *unknown.tables[TableId::AirStatistics.index()] = TableView::Unavailable {
-        reason: "synthetic missing statistics".into(),
-    };
-    let frames = vec![
-        statistics(100, vec![stat(3, [0; 24])]),
-        statistics(101, vec![]),
-        statistics(102, vec![wrapped]),
-        unknown,
-    ];
-    publish::<AirStatisticsObserver>(&fixture, &frames);
-    let reply = answer(
-        &fixture,
-        frames,
-        json!({"branchId":"1","tag":"GER","channel":2}),
-        true,
-        None,
-    );
-    assert_eq!(
-        runs(&reply, "GER@7|3|c2"),
-        &json!([[100, 100, "0", true], [102, 102, "0", true]])
-    );
-    assert_eq!(
-        runs(&reply, "GER@7|3|wrapped"),
-        &json!([[100, 100, "0", true], [102, 102, "1", true]])
-    );
-    assert_eq!(reply["window"]["series"].as_array().unwrap().len(), 4);
-    assert_eq!(
-        reply["window"]["known"],
-        json!([{"firstHour":100,"lastHour":102}])
-    );
-}
-
-#[test]
-fn queries_select_one_country_and_pair_and_clip_accepted_prefix() {
-    let fixture = Fixture::new();
-    let frames = vec![
-        statistics(
-            100,
-            vec![
-                stat(3, [10; 24]),
-                AirStatisticsRow {
-                    country: 21,
-                    ..stat(4, [90; 24])
-                },
-            ],
-        ),
-        statistics(101, vec![stat(3, [20; 24])]),
-    ];
-    publish::<AirStatisticsObserver>(&fixture, &frames);
-    let reply = answer(
-        &fixture,
-        frames,
-        json!({"branchId":"1","tag":"GER@7","channel":10}),
-        true,
-        Some(100),
-    );
-    assert_eq!(
-        runs(&reply, "GER@7|3|c10"),
-        &json!([[100, 100, "10", true]])
-    );
-    assert_eq!(reply["window"]["series"].as_array().unwrap().len(), 4);
-    assert_eq!(reply["regions"].as_array().unwrap().len(), 1);
-    assert!(
-        reply["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|line| line.as_str().unwrap().contains("Game folders"))
-    );
-    assert!(
-        reply["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|c| c["ours"] == "Channel name unavailable")
-    );
-}
-
-#[test]
-fn cold_prefix_has_empty_window_not_zero_and_keeps_channel_choices() {
-    let fixture = Fixture::new();
-    let frames = vec![
-        statistics(100, vec![stat(3, [0; 24])]),
-        statistics(101, vec![]),
-    ];
-    let reply = answer(
-        &fixture,
-        frames,
-        json!({"branchId":"1","tag":"GER","channel":3}),
-        true,
-        Some(99),
-    );
-    assert_eq!(reply["window"]["known"], json!([]));
-    assert_eq!(reply["window"]["series"], json!([]));
-    assert_eq!(reply["channels"].as_array().unwrap().len(), 12);
-}
-
-#[test]
 fn out_of_range_channels_and_views_are_refused() {
     let invalid = serde_json::from_value(json!({"branchId":"1","tag":"GER","channel":12})).unwrap();
     assert!(AirStatistics::validate(&invalid).is_err());
@@ -464,41 +340,6 @@ fn reached_wings_use_shared_frame_cache_preserve_handles_order_and_counted_refus
 }
 
 #[test]
-fn cancellation_is_respected_before_any_content_or_page_read() {
-    let fixture = Fixture::new();
-    let source = source(vec![statistics(100, vec![])]);
-    let params = json!({"branchId":"1","tag":"GER","channel":3});
-    let prefix = Prefix::new(
-        &source,
-        1,
-        Coverage {
-            schema: 1,
-            first_hour: 100,
-            last_hour: 100,
-            complete: true,
-        },
-        None,
-    );
-    let cancelled = AtomicBool::new(true);
-    let query = Query {
-        source: &source,
-        params: &params,
-        content: None,
-        store: &fixture.store,
-        key: &fixture.key,
-        branch: 1,
-        prefix: &prefix,
-        cancelled: &cancelled,
-    };
-    assert_eq!(
-        air_statistics::answer(&query, &|| query.open::<AirStatisticsObserver>())
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::Interrupted
-    );
-}
-
-#[test]
 fn tag_reuse_keeps_country_slots_separate() {
     let first = missions(100, vec![wing(1, 2, 1)], &[1]);
     let mut second = missions(101, vec![wing(1, 3, 1)], &[1]);
@@ -520,36 +361,10 @@ fn tag_reuse_keeps_country_slots_separate() {
         &fixture,
         vec![first, second],
         json!({"branchId":"1","tag":"GER"}),
-        false,
         None,
     );
     assert_eq!(runs(&reply, "GER@7|3|m0"), &json!([[100, 100, "2", true]]));
     assert_eq!(runs(&reply, "GER@9|3|m0"), &json!([[101, 101, "3", true]]));
-}
-
-#[test]
-fn equal_daily_statistics_carry_the_actual_supplying_read() {
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let cancelled = AtomicBool::new(false);
-    let mut scan = Scan::<AirStatisticsObserver>::default();
-    scan.prepare(
-        FormatVersion::CURRENT,
-        &statistics(100, vec![stat(3, [0; 24])]),
-        true,
-    )
-    .unwrap();
-    scan.advance_quiet(101, false).unwrap();
-    scan.advance_quiet(102, true).unwrap();
-    scan.flush(&mut writer, 1, &cancelled).unwrap();
-    writer.commit().unwrap();
-    let window = query::open::<AirStatisticsObserver>(&fixture.store, &fixture.key, 1, &cancelled)
-        .unwrap()
-        .unwrap()
-        .window(100, 102, None, |name| name.ends_with("|c0"))
-        .unwrap();
-    assert_eq!(window.reads, [(100, 101, 100), (102, 102, 102)]);
-    assert_eq!(window.series[0].runs, [(100, 102, "0".into(), true)]);
 }
 
 #[test]
@@ -569,7 +384,6 @@ fn reached_wing_efficiency_override_is_exact_unclamped_and_independent_of_names(
         &fixture,
         vec![frame],
         json!({"branchId":"1","tag":"GER","view":"wings","hour":100,"region":3}),
-        false,
         None,
     );
     assert_eq!(reply["wings"][0]["efficiency"], "125000");
@@ -612,7 +426,6 @@ fn theatre_membership_is_joined_at_one_reached_hour_not_unioned_over_history() {
         &fixture,
         vec![frame],
         json!({"branchId":"1","tag":"GER","hour":100}),
-        false,
         None,
     );
     assert_eq!(reply["theatres"][0]["id"], "900");
@@ -702,7 +515,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
     .unwrap();
     let fixture = Fixture::new();
     publish::<AirMissionsObserver>(&fixture, &frames);
-    publish::<AirStatisticsObserver>(&fixture, &frames);
+    let stored = statistics::published(&frames);
     let prefix = Prefix::new(
         &source,
         1,
@@ -726,7 +539,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let stats = air_statistics::answer(&query, &|| query.open::<AirStatisticsObserver>()).unwrap();
+    let stats = air_statistics::answer(&query, Some(&stored.open())).unwrap();
     assert_eq!(stats["regions"][0]["name"], "Authored region");
     assert_eq!(stats["channels"][2]["ours"], "Authored channel 3");
     assert_eq!(stats["channels"][2]["enemy"], "Authored channel 15");
@@ -951,6 +764,7 @@ fn reached_wing_efficiency_matches_viewer_for_sorties_overrides_and_missing_fuel
     }));
 }
 
+mod statistics;
 mod statistics_read_binding;
 
 fn native_mission_tables(
@@ -1028,10 +842,10 @@ fn native_statistics() -> Vec<DecodedFrame> {
         .collect()
 }
 
-/// The native publications hold the runs, known hours, reads and names the walk's scans hold
-/// of the same hours, whatever segments start, wherever the publisher cuts and after a resume.
+/// The native publication holds the runs, known hours, reads and names the walk's scan holds of
+/// the same hours, whatever segments start, wherever the publisher cuts and after a resume.
 #[test]
-fn the_native_publications_hold_what_the_walks_scans_hold() {
+fn the_native_publication_holds_what_the_walks_scan_holds() {
     use dashboard_keyed::native::testing::assert_published_as_walked;
     for (starts, cuts, resume) in [
         (&[][..], &[130][..], None),
@@ -1054,19 +868,6 @@ fn the_native_publications_hold_what_the_walks_scans_hold() {
         assert_eq!(
             native.observer.refusals, walked.observer.refusals,
             "missions: {label}"
-        );
-        let cuts: Vec<i32> = cuts.iter().map(|cut| (cut + 2).min(132)).collect();
-        let (native, walked) = assert_published_as_walked::<AirStatisticsObserver>(
-            &native_statistics(),
-            native_statistics_tables,
-            starts,
-            &cuts,
-            resume.map(|hour| hour + 2),
-            &format!("statistics: {label}"),
-        );
-        assert_eq!(
-            native.observer.refusals, walked.observer.refusals,
-            "statistics: {label}"
         );
     }
 }

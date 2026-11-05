@@ -2690,6 +2690,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-keyed",
+ "dashboard-series",
  "dashboard-text",
  "dpi",
  "engine-air-history",

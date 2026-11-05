@@ -21,6 +21,7 @@ dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
 dashboard-keyed = { path = "../dashboard-keyed" }
+dashboard-series.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 ts-rs = "11.1"

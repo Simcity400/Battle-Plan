@@ -60,10 +60,31 @@ pub fn window(
     windowed(keyed, runs, from, to, through)
 }
 
+/// The window `from..=to` of a native publication's series, read only through `through`: its
+/// known hours' and reads' keys `own`, then each name's key, none where it is not held yet.
+pub fn published_window(
+    opened: &dashboard_base::prepared::published::Opened,
+    own: [Option<dashboard_series::KeyHandle>; 2],
+    keyed: Vec<(String, Option<dashboard_series::KeyHandle>)>,
+    (from, to): (i32, i32),
+    through: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<KeyedWindow> {
+    if from > to {
+        return Ok(empty(from, to));
+    }
+    let mut handles = own.to_vec();
+    handles.extend(keyed.iter().map(|(_, handle)| *handle));
+    let runs = opened.read(cancelled, |snapshot, _| {
+        native::held_runs(snapshot, &handles, from, to)
+    })?;
+    windowed(keyed, runs, from, to, through)
+}
+
 /// The window `from..=to` of `keyed` series, given KNOWN's runs, READ's and then each of
 /// theirs, read only through `through`.
-pub(crate) fn windowed(
-    keyed: Vec<(String, u64)>,
+pub(crate) fn windowed<K>(
+    keyed: Vec<(String, K)>,
     runs: Vec<Vec<Run>>,
     from: i32,
     to: i32,

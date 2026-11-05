@@ -131,7 +131,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["air-statistics"],
         // 2: the scan's runs on the segment driver, published as a series root.
         // 3: refused observations on unchanged hours are counted again.
-        version: 3,
+        // 4: its operators observe and hand on what moved; each unit an actor of 26 measures.
+        version: 4,
         ..family("air-statistics")
     },
     Descriptor {

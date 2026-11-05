@@ -1,7 +1,7 @@
 //! Keyed observation families: a family prepared on its own whose observer
 //! turns each hour's frame into a set of named exact values (a region's
-//! planes on one mission, a country's mines in one sea, one channel of one
-//! region's air statistics), and whose prepared pages hold each name's runs.
+//! planes on one mission, a country's mines in one sea), and whose prepared
+//! pages hold each name's runs.
 //!
 //! One crate above `dashboard-base` shared by the
 //! product crates whose widgets look values up at playback: each declares an
@@ -169,15 +169,6 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
         Ok(())
     }
 
-    /// The supplying read of the values the last [`Self::observe`] returned,
-    /// when the observer itself holds that evidence. A scan resuming straight
-    /// after refused hours dates its values by it, but only when it is the read
-    /// the scan last held; None (the default) leaves a resumed observation
-    /// undated until a fresh read.
-    fn supplying_read(&self) -> Option<i32> {
-        None
-    }
-
     /// The values `frame` reads. Ok(false) when its inputs are not recorded
     /// at this hour: every name is then unknown, not absent.
     fn observe(
@@ -253,10 +244,6 @@ pub struct Scan<O, B = Accumulator> {
     current: BTreeMap<u64, i128>,
     last_hour: Option<i32>,
     last_read: Option<i32>,
-    /// The read held when consecutive refused hours closed the observation;
-    /// a resumption straight after them may date its values by it.
-    #[serde(default)]
-    refused_read: Option<i32>,
     open: bool,
     batch: B,
     #[serde(skip)]
@@ -427,7 +414,7 @@ impl<O: Observer, B: Batch> Scan<O, B> {
                     Ok(true)
                 }
                 Ok(Some(false)) => {
-                    self.refused(hour, continuous);
+                    self.refused(hour);
                     Ok(true)
                 }
                 Ok(None) => Ok(false),
@@ -450,20 +437,16 @@ impl<O: Observer, B: Batch> Scan<O, B> {
             }
         };
         if !known {
-            self.refused(hour, continuous);
+            self.refused(hour);
             self.values = values;
             return Ok(());
         }
         if read {
             self.last_read = Some(hour);
         } else if starts {
-            // The values carry an earlier read: the one held before refused hours
-            // just ended, when the observer vouches for it; otherwise undated.
-            self.last_read = self
-                .refused_read
-                .filter(|&held| continuous && self.observer.supplying_read() == Some(held));
+            // The values carry an earlier read, undated until a fresh one.
+            self.last_read = None;
         }
-        self.refused_read = None;
         let mut next = BTreeMap::new();
         for (name, value) in values.iter() {
             let key = self.number(name);
@@ -506,7 +489,7 @@ impl<O: Observer, B: Batch> Scan<O, B> {
     }
 
     /// An hour whose inputs are not recorded: every name becomes unknown.
-    fn refused(&mut self, hour: i32, continuous: bool) {
+    fn refused(&mut self, hour: i32) {
         if self.open {
             for key in [READ, KNOWN]
                 .into_iter()
@@ -519,12 +502,6 @@ impl<O: Observer, B: Batch> Scan<O, B> {
         for (key, value) in std::mem::take(&mut self.current) {
             self.touch(key, Some(value), None);
         }
-        // Keep the read only across consecutive refused hours, never a gap.
-        self.refused_read = if continuous {
-            self.last_read.or(self.refused_read)
-        } else {
-            None
-        };
         self.open = false;
         self.last_read = None;
         self.batch.through(hour);
@@ -545,7 +522,6 @@ impl<O: Observer, B: Batch> Scan<O, B> {
         if read {
             self.last_read = Some(hour);
         }
-        self.refused_read = None;
         let mut changed = std::mem::take(&mut self.changed);
         changed.clear();
         for name in &delta.removed {
@@ -628,7 +604,7 @@ impl<O: Observer, B: Batch> Scan<O, B> {
             return Ok(());
         }
         self.last_hour = Some(hour);
-        self.refused(hour, continuous);
+        self.refused(hour);
         Ok(())
     }
 
@@ -649,9 +625,8 @@ impl<O: Observer, B: Batch> Scan<O, B> {
     /// a new one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn unreadable_block(&mut self) {
-        self.catalogue_pending |= self.open || self.refused_read.is_some();
+        self.catalogue_pending |= self.open;
         self.open = false;
-        self.refused_read = None;
     }
 }
 
