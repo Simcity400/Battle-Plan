@@ -24,7 +24,7 @@ use replay_data::{rows::OperationRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::atomic::AtomicBool,
 };
@@ -248,9 +248,25 @@ impl Builder {
         *self.warnings.entry(reason.into()).or_default() += 1;
     }
 
+    /// Observes `frame`'s completions, as [`Self::observe_completions_read`] does their read.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_completions_countries(
         &mut self,
         frame: &DecodedFrame,
+        replay: &Replay,
+        branch: u64,
+        countries: &super::operative_rows::CountryInputs,
+    ) -> io::Result<()> {
+        let read = completions(frame);
+        self.observe_completions_read(frame.hour, read.as_deref(), replay, branch, countries)
+    }
+
+    /// Observes the completions `rows` read at `hour`, each with its definition's name: none
+    /// where OperationCompletions is incomplete.
+    fn observe_completions_read(
+        &mut self,
+        hour: i32,
+        rows: Option<&[Completion]>,
         replay: &Replay,
         branch: u64,
         countries: &super::operative_rows::CountryInputs,
@@ -261,16 +277,10 @@ impl Builder {
         {
             return Ok(());
         }
-        let rows = match frame.complete::<tables::OperationCompletions>() {
-            Ok(rows) => rows,
-            Err(_) => {
-                self.warn(
-                    "OperationCompletions unavailable or incomplete; completion coverage unknown",
-                );
-                return Ok(());
-            }
+        let Some(rows) = rows else {
+            self.warn("OperationCompletions unavailable or incomplete; completion coverage unknown");
+            return Ok(());
         };
-        let hour = frame.hour;
         if let Some(span) = self
             .completions
             .last_mut()
@@ -291,7 +301,7 @@ impl Builder {
             .unwrap_or(&replay.identity.language);
         let mut repeated: BTreeMap<i32, Vec<&replay_data::rows::OperationCompletionRow>> =
             BTreeMap::new();
-        for row in rows {
+        for (row, key) in rows {
             #[cfg(test)]
             super::intelligence_prepared::work(|work| work.row_visits += 1);
             let reference = super::operation_description::OperationDescriptionRef {
@@ -314,7 +324,7 @@ impl Builder {
             if self.changed.is_some() {
                 self.new_completions.push((row.owner, row.sequence));
             }
-            let key = super::intelligence_capture::literal(frame, Some(row.definition_token));
+            let key = key.clone();
             if let Some(key) = &key {
                 self.types.insert(key.clone());
             }
@@ -404,17 +414,33 @@ impl Builder {
         }
     }
 
+    /// Observes `frame`'s operations, as [`Self::observe_operations`] does their read.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_countries(
         &mut self,
         frame: &DecodedFrame,
         countries: &super::operative_rows::CountryInputs,
     ) {
-        let Ok(rows) = frame.complete::<tables::Operations>() else {
+        let census = Census::of(frame);
+        let read = (census.complete && census.read).then(|| census_read(frame, countries));
+        self.observe_operations(frame.hour, census, read.as_ref(), countries)
+            .expect("the row path reads each census");
+    }
+
+    /// Observes `hour`'s operations from the census `read`, given at an operations read of
+    /// a complete table.
+    fn observe_operations(
+        &mut self,
+        hour: i32,
+        census: Census,
+        read: Option<&CensusRead>,
+        countries: &super::operative_rows::CountryInputs,
+    ) -> io::Result<()> {
+        if !census.complete {
             self.warn("Operations unavailable or incomplete; values and endings unknown");
-            return;
-        };
-        let hour = frame.hour;
-        if !operations_read(frame) {
+            return Ok(());
+        }
+        if !census.read {
             // Decoder carries the successful daily census on skipped hours.
             // Extend only consecutive recorded hours; do not recompute phases,
             // dates or progress and never resume a carry after a gap/failed read.
@@ -434,54 +460,23 @@ impl Builder {
                 }
                 self.mark_available(hour);
             }
-            return;
+            return Ok(());
         }
+        let read = read.ok_or_else(|| io::Error::other("The operations census was not read"))?;
         // A malformed duplicate census is not evidence of absence or zero.
-        let mut ids = BTreeSet::new();
-        if rows.iter().any(|row| !ids.insert(row.id)) {
+        let Some(rows) = read.rows.as_ref() else {
             self.warn("Duplicate operation handles refused");
-            return;
-        }
+            return Ok(());
+        };
+        let ids: HashSet<u64> = rows.iter().map(|operation| operation.id).collect();
         let labels = countries.complete().is_some();
         if !labels {
             self.warn("Country identities unavailable at operation read");
         }
         self.reads.push(hour);
         self.mark_available(hour);
-        let lexical = frame.complete::<tables::LexicalTokens>().ok();
-        if lexical.is_none() {
+        if !read.lexical {
             self.warn("LexicalTokens unavailable at operation read");
-        }
-        let assignments = frame.complete::<tables::OperationAssignments>().ok();
-        let mut assigned: HashMap<u64, Vec<_>> = HashMap::new();
-        if let Some(assignments) = assignments {
-            for assignment in assignments {
-                assigned
-                    .entry(assignment.operation)
-                    .or_default()
-                    .push(assignment);
-            }
-        }
-        for slots in assigned.values_mut() {
-            slots.sort_unstable_by_key(|slot| slot.ordinal);
-        }
-        let mut named: HashMap<u64, Option<&replay_data::rows::OperativeMembershipRow>> =
-            HashMap::new();
-        let names_read = frame
-            .complete::<tables::OperativeMemberships>()
-            .ok()
-            .filter(|_| membership_read(frame));
-        if let Some(rows) = names_read {
-            for row in rows {
-                named
-                    .entry(row.id)
-                    .and_modify(|previous| {
-                        if previous.is_some_and(|previous| previous.name != row.name) {
-                            *previous = None;
-                        }
-                    })
-                    .or_insert(Some(row));
-            }
         }
         let absent: Vec<_> = self
             .open
@@ -523,118 +518,18 @@ impl Builder {
         for row in rows {
             #[cfg(test)]
             super::intelligence_prepared::work(|work| work.row_visits += 1);
-            let name = lexical.and_then(|tokens| {
-                tokens
-                    .binary_search_by_key(&row.definition_token, |token| token.token)
-                    .ok()
-                    .map(|index| &tokens[index])
-            });
-            let key = match name {
-                None => {
-                    if lexical.is_some() {
-                        self.warn(format!(
-                            "Operation definition token {} not recorded",
-                            row.definition_token
-                        ));
-                    }
-                    None
-                }
-                Some(token) => match std::str::from_utf8(&token.literal) {
-                    Ok("") => {
-                        self.warn(format!(
-                            "Operation definition token {} has an empty recorded name",
-                            row.definition_token
-                        ));
-                        None
-                    }
-                    Ok(text) => Some(text.to_owned()),
-                    Err(_) => {
-                        self.warn(format!("Operation definition token {} has unsupported non-text recorded name bytes", row.definition_token));
-                        None
-                    }
-                },
-            };
-            if let Some(key) = &key {
+            if let Some(warning) = &row.warning {
+                self.warn(warning.clone());
+            }
+            if let Some(key) = &row.run.type_key {
                 self.types.insert(key.clone());
             }
-            let slots = assigned.get(&row.id);
-            let operatives = assignments.and_then(|_| {
-                let slots = slots.map(Vec::as_slice).unwrap_or_default();
-                // The capture retains empty slots. A missing ordinal is unknown.
-                (slots.len() == row.assigned_slots as usize
-                    && slots
-                        .iter()
-                        .enumerate()
-                        .all(|(i, slot)| slot.ordinal as usize == i))
-                .then(|| {
-                    slots
-                        .iter()
-                        .filter(|slot| slot.operative != 0)
-                        .map(|slot| slot.operative.to_string())
-                        .collect::<Vec<_>>()
-                })
-            });
-            let operative_names = names_read.and(operatives.as_ref()).map(|operatives| {
-                operatives
-                    .iter()
-                    .map(|id| {
-                        let bytes = named
-                            .get(&id.parse::<u64>().expect("recorded handle"))
-                            .copied()
-                            .flatten()
-                            .ok_or_else(|| {
-                                "Assigned operative name missing or contradictory at this read"
-                                    .to_owned()
-                            })
-                            .and_then(|row| row.name.require("OperativeMemberships.name"))
-                            .and_then(|bytes| {
-                                std::str::from_utf8(installed_content_core::parser::c_string(bytes))
-                                    .map(str::to_owned)
-                                    .map_err(|_| {
-                                        "Assigned operative name has non-text bytes".to_owned()
-                                    })
-                            });
-                        match bytes {
-                            Ok(name) => EspionageOperativeName {
-                                id: id.clone(),
-                                name: Some(name),
-                                unavailable: None,
-                            },
-                            Err(reason) => EspionageOperativeName {
-                                id: id.clone(),
-                                name: None,
-                                unavailable: Some(reason),
-                            },
-                        }
-                    })
-                    .collect()
-            });
-            let owner_tag = labels
-                .then(|| countries.labels.get(&row.owner).cloned())
-                .flatten();
-            let target_tag = labels
-                .then(|| countries.labels.get(&row.target).cloned())
-                .flatten();
-            let run = EspionageOperationRun {
-                first_hour: hour,
-                last_hour: hour,
-                read_hour: hour,
-                preparation_ratio: preparation_ratio(row),
-                owner_tag: owner_tag.clone(),
-                target_tag: target_tag.clone(),
-                type_key: key,
-                phase_count: row.phase_count,
-                auto_repeat: row.auto_repeat != 0,
-                duration_days: row.duration_days,
-                assigned_slots: row.assigned_slots,
-                elapsed_days: elapsed_days(row, hour),
-                current_phase: current_phase(row, hour),
-                terminal: row.terminal != 0,
-                auto_commence: row.flag_40 != 0,
-                start_hour: (row.duration_days != 0).then_some(row.start_hour),
-                operatives,
-                operative_names,
-            };
+            let mut run = row.run.clone();
+            run.first_hour = hour;
+            run.last_hour = hour;
+            run.read_hour = hour;
+            let owner_tag = run.owner_tag.clone();
+            let target_tag = run.target_tag.clone();
             let fingerprint = (row.owner, row.target, row.definition_token);
             let continuing = self
                 .open
@@ -725,13 +620,10 @@ impl Builder {
                 operation.start_known_at = Some(hour);
             }
             if run.terminal && operation.end.is_none() {
-                let description = row
-                    .effect_description
-                    .require("Operations.effect_description")
-                    .ok();
+                let (bonus, detected, description) = row.outcome;
                 let (outcome, outcome_unrecorded) = outcome_at_end(
-                    row.bonus.require("Operations.bonus").ok().copied(),
-                    row.detected.require("Operations.detected").ok().copied(),
+                    bonus,
+                    detected,
                     description.map(|_| super::operation_description::OperationDescriptionRef {
                         hour,
                         id: row.id.to_string(),
@@ -739,7 +631,7 @@ impl Builder {
                         sequence: None,
                     }),
                     None,
-                    description.map(|bytes| bytes.len() as u64),
+                    description,
                     Some(&self.language),
                     &mut self.warnings,
                 );
@@ -766,7 +658,277 @@ impl Builder {
                 operation.runs.push(run);
             }
         }
+        Ok(())
     }
+}
+
+/// What an hour tells the espionage log of Operations: whether it is complete, and was read.
+#[derive(Clone, Copy)]
+pub(crate) struct Census {
+    pub(crate) complete: bool,
+    pub(crate) read: bool,
+}
+
+impl Census {
+    pub(crate) fn of(frame: &DecodedFrame) -> Self {
+        Self {
+            complete: frame.complete::<tables::Operations>().is_ok(),
+            read: operations_read(frame),
+        }
+    }
+}
+
+/// An operations read of a complete table.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CensusRead {
+    /// Each operation, in row order; none where two rows hold one handle.
+    pub(crate) rows: Option<Vec<OperationRead>>,
+    /// LexicalTokens was complete.
+    pub(crate) lexical: bool,
+}
+
+/// An operation as read: its run at the read, its hours left to the hour observing it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OperationRead {
+    pub(crate) id: u64,
+    owner: u32,
+    target: u32,
+    definition_token: u32,
+    /// Why its definition's name is not shown.
+    warning: Option<String>,
+    run: EspionageOperationRun,
+    /// Its stored bonus and detection, and its description's length, where recorded.
+    outcome: (Option<u8>, Option<u8>, Option<u64>),
+}
+
+impl OperationRead {
+    pub(crate) fn heap(&self) -> usize {
+        let run = &self.run;
+        [&self.warning, &run.owner_tag, &run.target_tag, &run.type_key]
+            .into_iter()
+            .map(|text| text.as_ref().map_or(0, String::capacity))
+            .sum::<usize>()
+            + run.operatives.as_ref().map_or(0, |operatives| {
+                operatives
+                    .iter()
+                    .map(|id| std::mem::size_of::<String>() + id.capacity())
+                    .sum()
+            })
+            + run.operative_names.as_ref().map_or(0, |names| {
+                names
+                    .iter()
+                    .map(|name| {
+                        std::mem::size_of::<EspionageOperativeName>()
+                            + name.id.capacity()
+                            + name.name.as_ref().map_or(0, String::capacity)
+                            + name.unavailable.as_ref().map_or(0, String::capacity)
+                    })
+                    .sum()
+            })
+    }
+}
+
+/// The operations read in `frame`, an operations read of a complete table, whose countries are
+/// `countries`.
+pub(crate) fn census_read(
+    frame: &DecodedFrame,
+    countries: &super::operative_rows::CountryInputs,
+) -> CensusRead {
+    let rows = frame
+        .complete::<tables::Operations>()
+        .expect("a complete operations census");
+    let lexical = frame.complete::<tables::LexicalTokens>().ok();
+    let mut ids = BTreeSet::new();
+    if rows.iter().any(|row| !ids.insert(row.id)) {
+        return CensusRead {
+            rows: None,
+            lexical: lexical.is_some(),
+        };
+    }
+    let hour = frame.hour;
+    let labels = countries.complete().is_some();
+    let assignments = frame.complete::<tables::OperationAssignments>().ok();
+    let mut assigned: HashMap<u64, Vec<_>> = HashMap::new();
+    if let Some(assignments) = assignments {
+        for assignment in assignments {
+            assigned
+                .entry(assignment.operation)
+                .or_default()
+                .push(assignment);
+        }
+    }
+    for slots in assigned.values_mut() {
+        slots.sort_unstable_by_key(|slot| slot.ordinal);
+    }
+    let mut named: HashMap<u64, Option<&replay_data::rows::OperativeMembershipRow>> =
+        HashMap::new();
+    let names_read = frame
+        .complete::<tables::OperativeMemberships>()
+        .ok()
+        .filter(|_| membership_read(frame));
+    if let Some(rows) = names_read {
+        for row in rows {
+            named
+                .entry(row.id)
+                .and_modify(|previous| {
+                    if previous.is_some_and(|previous| previous.name != row.name) {
+                        *previous = None;
+                    }
+                })
+                .or_insert(Some(row));
+        }
+    }
+    let rows = rows
+        .iter()
+        .map(|row| {
+            let name = lexical.and_then(|tokens| {
+                tokens
+                    .binary_search_by_key(&row.definition_token, |token| token.token)
+                    .ok()
+                    .map(|index| &tokens[index])
+            });
+            let (key, warning) = match name {
+                None => (
+                    None,
+                    lexical.is_some().then(|| {
+                        format!(
+                            "Operation definition token {} not recorded",
+                            row.definition_token
+                        )
+                    }),
+                ),
+                Some(token) => match std::str::from_utf8(&token.literal) {
+                    Ok("") => (
+                        None,
+                        Some(format!(
+                            "Operation definition token {} has an empty recorded name",
+                            row.definition_token
+                        )),
+                    ),
+                    Ok(text) => (Some(text.to_owned()), None),
+                    Err(_) => (
+                        None,
+                        Some(format!("Operation definition token {} has unsupported non-text recorded name bytes", row.definition_token)),
+                    ),
+                },
+            };
+            let slots = assigned.get(&row.id);
+            let operatives = assignments.and_then(|_| {
+                let slots = slots.map(Vec::as_slice).unwrap_or_default();
+                // The capture retains empty slots. A missing ordinal is unknown.
+                (slots.len() == row.assigned_slots as usize
+                    && slots
+                        .iter()
+                        .enumerate()
+                        .all(|(i, slot)| slot.ordinal as usize == i))
+                .then(|| {
+                    slots
+                        .iter()
+                        .filter(|slot| slot.operative != 0)
+                        .map(|slot| slot.operative.to_string())
+                        .collect::<Vec<_>>()
+                })
+            });
+            let operative_names = names_read.and(operatives.as_ref()).map(|operatives| {
+                operatives
+                    .iter()
+                    .map(|id| {
+                        let bytes = named
+                            .get(&id.parse::<u64>().expect("recorded handle"))
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| {
+                                "Assigned operative name missing or contradictory at this read"
+                                    .to_owned()
+                            })
+                            .and_then(|row| row.name.require("OperativeMemberships.name"))
+                            .and_then(|bytes| {
+                                std::str::from_utf8(installed_content_core::parser::c_string(bytes))
+                                    .map(str::to_owned)
+                                    .map_err(|_| {
+                                        "Assigned operative name has non-text bytes".to_owned()
+                                    })
+                            });
+                        match bytes {
+                            Ok(name) => EspionageOperativeName {
+                                id: id.clone(),
+                                name: Some(name),
+                                unavailable: None,
+                            },
+                            Err(reason) => EspionageOperativeName {
+                                id: id.clone(),
+                                name: None,
+                                unavailable: Some(reason),
+                            },
+                        }
+                    })
+                    .collect()
+            });
+            let tag = |raw: u32| labels.then(|| countries.labels.get(&raw).cloned()).flatten();
+            OperationRead {
+                id: row.id,
+                owner: row.owner,
+                target: row.target,
+                definition_token: row.definition_token,
+                warning,
+                run: EspionageOperationRun {
+                    first_hour: 0,
+                    last_hour: 0,
+                    read_hour: 0,
+                    preparation_ratio: preparation_ratio(row),
+                    owner_tag: tag(row.owner),
+                    target_tag: tag(row.target),
+                    type_key: key,
+                    phase_count: row.phase_count,
+                    auto_repeat: row.auto_repeat != 0,
+                    duration_days: row.duration_days,
+                    assigned_slots: row.assigned_slots,
+                    elapsed_days: elapsed_days(row, hour),
+                    current_phase: current_phase(row, hour),
+                    terminal: row.terminal != 0,
+                    auto_commence: row.flag_40 != 0,
+                    start_hour: (row.duration_days != 0).then_some(row.start_hour),
+                    operatives,
+                    operative_names,
+                },
+                outcome: (
+                    row.bonus.require("Operations.bonus").ok().copied(),
+                    row.detected.require("Operations.detected").ok().copied(),
+                    row.effect_description
+                        .require("Operations.effect_description")
+                        .ok()
+                        .map(|bytes| bytes.len() as u64),
+                ),
+            }
+        })
+        .collect();
+    CensusRead {
+        rows: Some(rows),
+        lexical: lexical.is_some(),
+    }
+}
+
+/// A completion row with its definition's name.
+pub(crate) type Completion = (replay_data::rows::OperationCompletionRow, Option<String>);
+
+/// What a completion holds.
+pub(crate) fn completion_heap((row, key): &Completion) -> usize {
+    row.effect_description.capacity() + key.as_ref().map_or(0, String::capacity)
+}
+
+/// `frame`'s completions, each with its definition's name: none where the table is incomplete.
+pub(crate) fn completions(frame: &DecodedFrame) -> Option<Vec<Completion>> {
+    let rows = frame.complete::<tables::OperationCompletions>().ok()?;
+    Some(
+        rows.iter()
+            .map(|row| {
+                (
+                    row.clone(),
+                    super::intelligence_capture::literal(frame, Some(row.definition_token)),
+                )
+            })
+            .collect(),
+    )
 }
 
 impl EspionageOperationRun {

@@ -59,6 +59,7 @@ impl Prepared {
         self.test_countries = countries;
         result
     }
+    /// Observes `frame` of the row path, its census read where the scan reads it.
     pub fn observe_bound(
         &mut self,
         frame: &DecodedFrame,
@@ -69,20 +70,79 @@ impl Prepared {
             dashboard_text::catalogue::ContentError,
         >,
     ) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:placements");
-        let previous = self.last;
-        let is_read = operative_rows::membership_read(frame);
-        let changed = countries.changed
-            || previous.is_none_or(|last| last.checked_add(1) != Some(frame.hour))
+        let census = Census::of(frame);
+        let read = if self.reads(frame.hour, census, changes, countries) {
+            let captured = recorded_operatives(frame).expect("a complete census");
+            self.scan.load(content, captured.is_empty())?;
+            Some(read(
+                captured,
+                countries,
+                self.scan
+                    .catalogue
+                    .as_ref()
+                    .map(|catalogue| catalogue.localisation.as_ref()),
+            ))
+        } else {
+            None
+        };
+        self.observe_read(frame.hour, census, changes, countries, content, read.as_ref())
+    }
+
+    /// Whether `hour` (whose census is `census`) is observed from the census read.
+    fn reads(
+        &self,
+        hour: i32,
+        census: Census,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+    ) -> bool {
+        let (changed, needs_read) = self.changes(hour, census, changes, countries.changed);
+        (changed || needs_read) && census.resolves(countries)
+    }
+
+    /// Whether `hour` changed what the scan observes, and whether it needs the census read.
+    fn changes(
+        &self,
+        hour: i32,
+        census: Census,
+        changes: &FrameChanges,
+        countries_changed: bool,
+    ) -> (bool, bool) {
+        let changed = countries_changed
+            || self.last.is_none_or(|last| last.checked_add(1) != Some(hour))
             || [TableId::SimulationFeatures, TableId::OperativeMemberships]
                 .iter()
                 .any(|table| changes.rows_changed[table.index()]);
+        let dirty = self.membership_dirty
+            || countries_changed
+            || changes.rows_changed[TableId::OperativeMemberships.index()];
+        let needs_read = census.read
+            && (dirty || self.scan.history.held.is_none())
+            && census.feature == Some(true);
+        (changed, needs_read)
+    }
+
+    /// Observes `hour`, whose change facts are `changes`, its census `read` given where
+    /// [`Self::reads`].
+    pub(crate) fn observe_read(
+        &mut self,
+        hour: i32,
+        census: Census,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        content: &Result<
+            Option<std::sync::Arc<dashboard_text::catalogue::Catalogue>>,
+            dashboard_text::catalogue::ContentError,
+        >,
+        read: Option<&PlacementRead>,
+    ) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:placements");
+        let previous = self.last;
+        let is_read = census.read;
+        let (changed, needs_read) = self.changes(hour, census, changes, countries.changed);
         self.membership_dirty |=
             countries.changed || changes.rows_changed[TableId::OperativeMemberships.index()];
-        let needs_read = is_read
-            && (self.membership_dirty || self.scan.history.held.is_none())
-            && operative_rows::agency_feature(frame) == Some(true);
-        self.values.advance(frame.hour)?;
+        self.values.advance(hour)?;
         if changed || needs_read {
             if let Some(previous) = previous {
                 for key in &self.active {
@@ -99,48 +159,49 @@ impl Prepared {
                     }
                 }
             }
-            self.scan.observe_bound(frame, countries, content)?;
+            self.scan
+                .observe_read(hour, census, countries, content, read)?;
         } else {
-            self.scan.history.last_hour = Some(frame.hour);
+            self.scan.history.last_hour = Some(hour);
             self.scan
                 .history
                 .periods
                 .last_mut()
                 .expect("placement period")
-                .last_hour = frame.hour;
+                .last_hour = hour;
             if is_read && self.scan.history.held.is_some() {
-                self.scan.history.reads.push(frame.hour);
+                self.scan.history.reads.push(hour);
             }
         }
         if is_read {
             self.membership_dirty = false;
         }
-        self.first.get_or_insert(frame.hour);
-        self.last = Some(frame.hour);
+        self.first.get_or_insert(hour);
+        self.last = Some(hour);
         let history = &mut self.scan.history;
         let period = history.periods.last().expect("observed placement coverage");
-        let starts = period.first_hour == frame.hour;
+        let starts = period.first_hour == hour;
         if starts {
             self.values.observe(
                 COVERAGE,
-                frame.hour,
+                hour,
                 Some(i128::from(period.first_hour)),
                 true,
             );
-            self.values.event(COVERAGE, frame.hour, period)?;
+            self.values.event(COVERAGE, hour, period)?;
         }
         let read = history
             .reads
             .last()
             .copied()
             .filter(|_| period.availability == PlacementAvailability::Recorded);
-        if starts || read == Some(frame.hour) {
+        if starts || read == Some(hour) {
             self.values
-                .observe(MEMBERSHIP_READ, frame.hour, read.map(i128::from), starts);
+                .observe(MEMBERSHIP_READ, hour, read.map(i128::from), starts);
         }
-        if read == Some(frame.hour) {
+        if read == Some(hour) {
             self.values
-                .event(MEMBERSHIP_READ, frame.hour, &frame.hour)?;
+                .event(MEMBERSHIP_READ, hour, &hour)?;
         }
         if changed || needs_read {
             let active: std::collections::BTreeSet<_> = history
@@ -153,7 +214,7 @@ impl Prepared {
             for removed in self.active.difference(&active) {
                 let pair = &history.pairs[removed];
                 self.values
-                    .observe(self.keys[&pair.id], frame.hour, None, false);
+                    .observe(self.keys[&pair.id], hour, None, false);
             }
             for pair_key in &active {
                 let pair = history
@@ -166,18 +227,18 @@ impl Prepared {
                     .ok_or_else(|| io::Error::other("Too many placement pairs"))?;
                 let key = *self.keys.entry(pair.id.clone()).or_insert(next);
                 let run = pair.runs.last().expect("live placement run");
-                if run.first_hour == frame.hour || !self.active.contains(pair_key) {
+                if run.first_hour == hour || !self.active.contains(pair_key) {
                     self.values.observe(
                         key,
-                        frame.hour,
+                        hour,
                         Some(i128::from(run.first_hour)),
-                        run.first_hour == frame.hour,
+                        run.first_hour == hour,
                     );
                 }
-                if run.first_hour == frame.hour {
+                if run.first_hour == hour {
                     #[cfg(test)]
                     super::super::intelligence_prepared::work(|work| work.emitted += 1);
-                    self.values.event(key, frame.hour, run)?;
+                    self.values.event(key, hour, run)?;
                 }
                 if pair.runs.len() > 1 {
                     pair.runs.drain(..pair.runs.len() - 1);

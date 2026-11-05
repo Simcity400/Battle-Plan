@@ -90,6 +90,7 @@ impl Prepared {
             }
         }
     }
+    /// Observes `frame` of the row path, its tables read by the scan's reader.
     pub fn observe_changes(
         &mut self,
         source: &Source,
@@ -97,10 +98,62 @@ impl Prepared {
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
     ) -> io::Result<()> {
+        self.observe_with(
+            frame.hour,
+            changes,
+            countries,
+            Census::of(frame),
+            |scan, active| {
+                scan.observe_frame_countries(
+                    frame,
+                    source.replay_ref(),
+                    countries,
+                    Some(changes),
+                    active,
+                )
+            },
+        )
+    }
+
+    /// Observes `hour`, whose change facts are `changes`, from the agency scan's `read` of it.
+    pub(crate) fn observe_read(
+        &mut self,
+        source: &Source,
+        hour: i32,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        census: Census,
+        read: &AgencyRead,
+    ) -> io::Result<()> {
+        self.observe_with(hour, changes, countries, census, |scan, active| {
+            scan.observe_read(
+                hour,
+                source.replay_ref(),
+                countries,
+                census,
+                Some(read),
+                active,
+            )
+        })
+    }
+
+    /// Observes `hour`, the scan observing the hour where it changed what it reads.
+    #[allow(clippy::type_complexity)]
+    fn observe_with(
+        &mut self,
+        hour: i32,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        census: Census,
+        scan: impl FnOnce(
+            &mut ScannedAgencies,
+            (&mut BTreeMap<String, Identity>, bool),
+        ) -> io::Result<(usize, BTreeMap<u8, usize>)>,
+    ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("intelligence:agencies");
         let previous = self.last;
         let changed = countries.changed
-            || previous.is_none_or(|last| last.checked_add(1) != Some(frame.hour))
+            || previous.is_none_or(|last| last.checked_add(1) != Some(hour))
             || [
                 TableId::IntelligenceAgencies,
                 TableId::AgencyUpgradeLevels,
@@ -109,12 +162,11 @@ impl Prepared {
             ]
             .iter()
             .any(|table| changes.rows_changed[table.index()]);
-        let read =
-            membership_read(frame) && frame.complete::<tables::OperativeMemberships>().is_ok();
+        let read = census.read && census.complete;
         self.membership_dirty |=
             countries.changed || changes.rows_changed[TableId::OperativeMemberships.index()];
         let changed = changed || (read && self.membership_dirty);
-        self.values.advance(frame.hour)?;
+        self.values.advance(hour)?;
         let active = if changed {
             if let Some(previous) = previous {
                 self.materialize(previous);
@@ -129,13 +181,7 @@ impl Prepared {
             } else {
                 std::mem::take(&mut self.active)
             };
-            let (per_read, unsupported) = self.scan.observe_frame_countries(
-                frame,
-                source.replay_ref(),
-                countries,
-                Some(changes),
-                (&mut active, fresh),
-            )?;
+            let (per_read, unsupported) = scan(&mut self.scan, (&mut active, fresh))?;
             self.unresolved_per_hour = self.scan.unresolved_rows - unresolved - per_read;
             self.untext_per_hour = self.scan.untext_tags - untext;
             if read {
@@ -147,7 +193,7 @@ impl Prepared {
             self.scan.unresolved_rows += self.unresolved_per_hour;
             self.scan.untext_tags += self.untext_per_hour;
             if read {
-                self.scan.note_roster_read(frame.hour);
+                self.scan.note_roster_read(hour);
                 self.scan.unresolved_rows += self.unresolved_per_read;
                 for (kind, count) in &self.unsupported_per_read {
                     *self.scan.unsupported_rosters.entry(*kind).or_default() += count;
@@ -159,35 +205,35 @@ impl Prepared {
                 .last_mut()
                 .filter(|span| Some(span.last_hour) == previous)
             {
-                span.last_hour = frame.hour;
+                span.last_hour = hour;
             }
             None
         };
         if read {
             self.membership_dirty = false;
         }
-        self.first.get_or_insert(frame.hour);
-        self.last = Some(frame.hour);
+        self.first.get_or_insert(hour);
+        self.last = Some(hour);
         let observed = self
             .scan
             .observed
             .last()
-            .filter(|span| span.last_hour == frame.hour);
+            .filter(|span| span.last_hour == hour);
         if changed {
             self.values.observe(
                 OBSERVED,
-                frame.hour,
+                hour,
                 observed.map(|span| i128::from(span.first_hour)),
-                observed.is_some_and(|span| span.first_hour == frame.hour),
+                observed.is_some_and(|span| span.first_hour == hour),
             );
         }
         let read = self.scan.operative_read_hours.last().copied();
-        if changed || read == Some(frame.hour) || self.first == Some(frame.hour) {
+        if changed || read == Some(hour) || self.first == Some(hour) {
             self.values
-                .observe(OPERATIVE_READ, frame.hour, read.map(i128::from), false);
+                .observe(OPERATIVE_READ, hour, read.map(i128::from), false);
         }
-        if read == Some(frame.hour) {
-            self.values.event(OPERATIVE_READ, frame.hour, &frame.hour)?;
+        if read == Some(hour) {
+            self.values.event(OPERATIVE_READ, hour, &hour)?;
         }
         if let Some((active, fresh)) = active {
             for tag in self
@@ -197,7 +243,7 @@ impl Prepared {
             {
                 for field in ["agency", "roster"] {
                     if let Some(&key) = self.keys.get(&series::field_key(tag, field)) {
-                        self.values.observe(key, frame.hour, None, false);
+                        self.values.observe(key, hour, None, false);
                     }
                 }
             }
@@ -228,9 +274,9 @@ impl Prepared {
                 let entry = track
                     .entries
                     .last()
-                    .filter(|entry| entry.last_hour == frame.hour);
+                    .filter(|entry| entry.last_hour == hour);
                 let value = entry.map(|entry| i128::from(entry.first_hour));
-                if entry.is_some_and(|entry| entry.first_hour == frame.hour)
+                if entry.is_some_and(|entry| entry.first_hour == hour)
                     || self
                         .values
                         .state(key)
@@ -241,23 +287,23 @@ impl Prepared {
                 {
                     self.values.observe(
                         key,
-                        frame.hour,
+                        hour,
                         value,
-                        entry.is_some_and(|entry| entry.first_hour == frame.hour),
+                        entry.is_some_and(|entry| entry.first_hour == hour),
                     );
                 }
-                if let Some(entry) = entry.filter(|entry| entry.first_hour == frame.hour) {
+                if let Some(entry) = entry.filter(|entry| entry.first_hour == hour) {
                     #[cfg(test)]
                     super::super::intelligence_prepared::work(|work| work.emitted += 1);
-                    self.values.event(key, frame.hour, entry)?;
+                    self.values.event(key, hour, entry)?;
                 }
                 let key = roster_key;
                 let roster = track
                     .rosters
                     .last()
-                    .filter(|roster| roster.last_hour == frame.hour);
+                    .filter(|roster| roster.last_hour == hour);
                 let value = roster.map(|roster| i128::from(roster.first_hour));
-                if roster.is_some_and(|roster| roster.first_hour == frame.hour)
+                if roster.is_some_and(|roster| roster.first_hour == hour)
                     || self
                         .values
                         .state(key)
@@ -268,15 +314,15 @@ impl Prepared {
                 {
                     self.values.observe(
                         key,
-                        frame.hour,
+                        hour,
                         value,
-                        roster.is_some_and(|roster| roster.first_hour == frame.hour),
+                        roster.is_some_and(|roster| roster.first_hour == hour),
                     );
                 }
-                if let Some(roster) = roster.filter(|roster| roster.first_hour == frame.hour) {
+                if let Some(roster) = roster.filter(|roster| roster.first_hour == hour) {
                     #[cfg(test)]
                     super::super::intelligence_prepared::work(|work| work.emitted += 1);
-                    self.values.event(key, frame.hour, roster)?;
+                    self.values.event(key, hour, roster)?;
                 }
                 if track.entries.len() > 1 {
                     track.entries.drain(..track.entries.len() - 1);

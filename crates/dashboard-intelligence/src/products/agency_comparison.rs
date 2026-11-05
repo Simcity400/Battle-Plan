@@ -123,7 +123,7 @@ pub struct AgencyUpgrades {
 /// [`AgencyUpgrades`] as scanned. A run whose acquired list did not change
 /// shares the previous run's items instead of copying them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct ScannedUpgrades {
+pub(crate) struct ScannedUpgrades {
     read_hour: Option<i32>,
     unavailable: Option<String>,
     nonnegative_level_sum: Option<String>,
@@ -360,13 +360,198 @@ struct ScannedAgencies {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     native_countries: super::operative_rows::CountryInputs,
+    /// The row path's reads ([`Self::observe_frame_countries`]).
     #[serde(skip)]
-    agency_slots: Option<(HashMap<u32, Option<usize>>, usize)>,
-    /// The agencies' view `agency_slots` was built from: the same view gives the same slots.
-    #[serde(skip)]
-    agency_view: Option<replay_frame::frame::SharedView>,
-    #[serde(skip)]
-    acquired: Option<(HashMap<u32, ScannedUpgrades>, ScannedUpgrades)>,
+    reader: Reader,
+}
+
+/// A membership read's active operatives by slot, with the rows it could not count and those
+/// of unsupported rosters by kind.
+pub(crate) type RosterCounts = (HashMap<u32, u32>, usize, BTreeMap<u8, usize>);
+
+/// Each slot's acquired upgrade levels, and those of a slot holding none.
+pub(crate) type Acquired = (HashMap<u32, ScannedUpgrades>, ScannedUpgrades);
+
+/// What an hour's tables give the agency scan beside its countries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgencyRead {
+    /// IntelligenceAgencies was complete.
+    pub(crate) complete: bool,
+    /// Each slot's agency row as read (none where the slot holds more than one), and the rows
+    /// no slot takes.
+    pub(crate) slots: HashMap<u32, Option<IntelligenceAgencyRow>>,
+    pub(crate) refused: usize,
+    /// At a membership read of complete memberships, its counts.
+    pub(crate) roster: Option<RosterCounts>,
+    pub(crate) acquired: Result<Acquired, (io::ErrorKind, String)>,
+}
+
+impl Default for AgencyRead {
+    fn default() -> Self {
+        Self {
+            complete: false,
+            slots: HashMap::new(),
+            refused: 0,
+            roster: None,
+            acquired: Err((io::ErrorKind::Other, "Acquired levels were not read".into())),
+        }
+    }
+}
+
+/// What one slot's agency row holds.
+pub(crate) fn agency_heap(row: &Option<IntelligenceAgencyRow>) -> usize {
+    row.as_ref().map_or(0, |row| row.name.capacity())
+}
+
+/// What one slot's acquired levels hold.
+pub(crate) fn upgrades_heap(upgrades: &ScannedUpgrades) -> usize {
+    upgrades.unavailable.as_ref().map_or(0, String::capacity)
+        + upgrades
+            .nonnegative_level_sum
+            .as_ref()
+            .map_or(0, String::capacity)
+        + upgrades.items.len() * std::mem::size_of::<AgencyUpgradeItem>()
+        + upgrades
+            .items
+            .iter()
+            .map(|item| {
+                item.definition_pointer.capacity()
+                    + item.branch_pointer.capacity()
+                    + item.branch_token.as_ref().map_or(0, String::capacity)
+                    + item.token.as_ref().map_or(0, String::capacity)
+                    + item.identity_refusal.as_ref().map_or(0, String::capacity)
+            })
+            .sum::<usize>()
+}
+
+/// Reads the agency scan's tables, each of the agencies and acquired levels again only where
+/// its inputs changed.
+#[derive(Default)]
+pub(crate) struct Reader {
+    read: AgencyRead,
+    built: bool,
+    /// The agencies' view the slots were built from: the same view gives the same slots.
+    view: Option<replay_frame::frame::SharedView>,
+    acquired: bool,
+    /// Whether the last read built the slots, and the acquired levels, again.
+    rebuilt: (bool, bool),
+}
+
+impl Reader {
+    pub(crate) fn current(&self) -> &AgencyRead {
+        &self.read
+    }
+
+    /// Whether the last read built the slots, and the acquired levels, again.
+    pub(crate) fn rebuilt(&self) -> (bool, bool) {
+        self.rebuilt
+    }
+
+    /// Reads `frame`, whose countries `inputs` are complete; `changes` None reads every table
+    /// again. The roster is counted at each membership read.
+    pub(crate) fn read(
+        &mut self,
+        frame: &replay_frame::frame::DecodedFrame,
+        inputs: &super::operative_rows::CountryInputs,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<&AgencyRead> {
+        let (_, links) = inputs.complete().expect("complete agency countries");
+        let rows = frame.complete::<tables::IntelligenceAgencies>().ok();
+        self.read.complete = rows.is_some();
+        self.rebuilt = (false, false);
+        let view = &frame.tables[TableId::IntelligenceAgencies.index()];
+        if !self.built
+            || inputs.changed
+            || changes.is_none_or(|changes| {
+                changes.rows_changed[TableId::IntelligenceAgencies.index()]
+                    && self
+                        .view
+                        .as_ref()
+                        .is_none_or(|built| !replay_frame::frame::SharedView::ptr_eq(built, view))
+            })
+        {
+            self.view = changes.is_some().then(|| view.clone());
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| {
+                work.row_visits += rows.map_or(0, |rows| rows.len())
+            });
+            let by_slot = unique_by_slot(rows.into_iter().flatten(), links, |row| row.country);
+            self.read.slots = by_slot
+                .rows
+                .into_iter()
+                .map(|(slot, row)| (slot, row.cloned()))
+                .collect();
+            self.read.refused =
+                by_slot.unresolved_rows + by_slot.duplicate_rows + by_slot.ambiguous_slots;
+            self.built = true;
+            self.rebuilt.0 = true;
+        }
+        let memberships = frame.complete::<tables::OperativeMemberships>().ok();
+        self.read.roster = if membership_read(frame) {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| {
+                work.row_visits += memberships.map_or(0, |rows| rows.len())
+            });
+            memberships.map(|rows| roster_counts(rows, links))
+        } else {
+            None
+        };
+        if !self.acquired
+            || inputs.changed
+            || changes.is_none_or(|changes| {
+                [TableId::AgencyUpgradeLevels, TableId::LexicalTokens]
+                    .iter()
+                    .any(|table| changes.rows_changed[table.index()])
+            })
+        {
+            self.acquired = true;
+            self.rebuilt.1 = true;
+            self.read.acquired = acquired(frame, links)
+                .map_err(|error| (error.kind(), error.to_string()));
+        }
+        Ok(&self.read)
+    }
+}
+
+/// Each slot's acquired upgrade levels in `frame`, and those of a slot holding none.
+fn acquired(
+    frame: &replay_frame::frame::DecodedFrame,
+    links: &[replay_data::rows::CountryLinkRow],
+) -> io::Result<Acquired> {
+    let mut acquired: HashMap<u32, Vec<&replay_data::rows::AgencyUpgradeLevelRow>> =
+        HashMap::new();
+    let mut acquired_unavailable = frame
+        .complete::<tables::AgencyUpgradeLevels>()
+        .err()
+        .map(|error| format!("Acquired agency levels incomplete or unavailable: {error:?}"));
+    let levels = dashboard_text::metadata::recorded_rows::<tables::AgencyUpgradeLevels>(frame)?;
+    #[cfg(test)]
+    super::intelligence_prepared::work(|work| work.row_visits += levels.len());
+    for row in levels {
+        if let Some(slot) = link_slot(links, row.country) {
+            acquired.entry(slot).or_default().push(row);
+        } else {
+            acquired_unavailable.get_or_insert_with(|| {
+                "Acquired agency entry has an unresolved country link".into()
+            });
+        }
+    }
+    let project = |rows: &[&replay_data::rows::AgencyUpgradeLevelRow]| {
+        let read = acquired_read(frame, rows, acquired_unavailable.clone());
+        ScannedUpgrades {
+            // Each observation dates the levels by its own hour; equal reads stay equal.
+            read_hour: None,
+            unavailable: read.unavailable,
+            nonnegative_level_sum: read.nonnegative_level_sum,
+            items: read.items.into(),
+        }
+    };
+    let default = project(&[]);
+    let acquired = acquired
+        .into_iter()
+        .map(|(slot, rows)| (slot, project(&rows)))
+        .collect();
+    Ok((acquired, default))
 }
 
 impl From<AgencyUpgrades> for ScannedUpgrades {
@@ -568,10 +753,25 @@ fn roster_counts(
     (counts, unresolved, unsupported)
 }
 
+/// What an hour tells the agency scan beside its read: whether the memberships were read, and
+/// whether they are complete.
+#[derive(Clone, Copy)]
+pub(crate) struct Census {
+    pub(crate) read: bool,
+    pub(crate) complete: bool,
+}
+
+impl Census {
+    pub(crate) fn of(frame: &replay_frame::frame::DecodedFrame) -> Self {
+        Self {
+            read: membership_read(frame),
+            complete: frame.complete::<tables::OperativeMemberships>().is_ok(),
+        }
+    }
+}
+
 impl ScannedAgencies {
-    /// Observes `frame`'s agencies into the tracks. Into `active`, each tag the countries resolve
-    /// with its identity, where `fresh`; else `active` is the map an earlier hour of the same
-    /// countries gave, kept as it is.
+    /// Observes `frame`'s agencies into the tracks, as [`Self::observe_read`] does its read.
     #[allow(clippy::type_complexity)]
     fn observe_frame_countries(
         &mut self,
@@ -581,81 +781,77 @@ impl ScannedAgencies {
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         (active, fresh): (&mut BTreeMap<String, Identity>, bool),
     ) -> io::Result<(usize, BTreeMap<u8, usize>)> {
+        let mut reader = std::mem::take(&mut self.reader);
+        let read = if inputs.complete().is_some() {
+            reader.read(frame, inputs, changes).map(Some)
+        } else {
+            Ok(None)
+        };
+        let result = read.and_then(|read| {
+            self.observe_read(
+                frame.hour,
+                replay,
+                inputs,
+                Census::of(frame),
+                read,
+                (active, fresh),
+            )
+        });
+        self.reader = reader;
+        result
+    }
+
+    /// Observes `hour`'s agencies into the tracks from `read`, given where its countries `inputs`
+    /// are complete. Into `active`, each tag the countries resolve with its identity, where
+    /// `fresh`; else `active` is the map an earlier hour of the same countries gave, kept as it
+    /// is.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn observe_read(
+        &mut self,
+        hour: i32,
+        replay: &Replay,
+        inputs: &super::operative_rows::CountryInputs,
+        census: Census,
+        read: Option<&AgencyRead>,
+        (active, fresh): (&mut BTreeMap<String, Identity>, bool),
+    ) -> io::Result<(usize, BTreeMap<u8, usize>)> {
         if fresh {
             active.clear();
         }
         let mut roster_unresolved = 0;
         let mut roster_unsupported = BTreeMap::new();
-        let roster_read = membership_read(frame);
-        let memberships = frame.complete::<tables::OperativeMemberships>().ok();
-        if roster_read && memberships.is_some() {
-            self.note_roster_read(frame.hour);
+        if census.read && census.complete {
+            self.note_roster_read(hour);
         }
-        let Some((countries, links)) = inputs.complete() else {
+        let Some((countries, _)) = inputs.complete() else {
             return Ok((roster_unresolved, roster_unsupported));
         };
+        let read = read.ok_or_else(|| io::Error::other("The agencies were not read"))?;
         self.held_rosters
-            .retain(|_, held| held.hour.checked_add(1) == Some(frame.hour));
-        let rows = frame.complete::<tables::IntelligenceAgencies>().ok();
-        self.available |= rows.is_some();
-        if rows.is_some() {
+            .retain(|_, held| held.hour.checked_add(1) == Some(hour));
+        self.available |= read.complete;
+        if read.complete {
             match self.observed.last_mut() {
-                Some(span) if span.last_hour.checked_add(1) == Some(frame.hour) => {
-                    span.last_hour = frame.hour
+                Some(span) if span.last_hour.checked_add(1) == Some(hour) => {
+                    span.last_hour = hour
                 }
                 _ => self.observed.push(HourSpan {
-                    first_hour: frame.hour,
-                    last_hour: frame.hour,
+                    first_hour: hour,
+                    last_hour: hour,
                 }),
             }
         }
-        let view = &frame.tables[TableId::IntelligenceAgencies.index()];
-        if self.agency_slots.is_none()
-            || inputs.changed
-            || changes.is_none_or(|changes| {
-                changes.rows_changed[TableId::IntelligenceAgencies.index()]
-                    && self
-                        .agency_view
-                        .as_ref()
-                        .is_none_or(|built| !replay_frame::frame::SharedView::ptr_eq(built, view))
-            })
-        {
-            self.agency_view = changes.is_some().then(|| view.clone());
-            #[cfg(test)]
-            super::intelligence_prepared::work(|work| {
-                work.row_visits += rows.map_or(0, |rows| rows.len())
-            });
-            let by_slot = unique_by_slot(rows.into_iter().flatten(), links, |row| row.country);
-            let slots = by_slot
-                .rows
-                .into_iter()
-                .map(|(slot, row)| {
-                    (
-                        slot,
-                        row.map(|row| {
-                            rows.expect("complete agency rows")
-                                .binary_search_by_key(&row.country, |row| row.country)
-                                .expect("agency native row key")
-                        }),
-                    )
-                })
-                .collect();
-            self.agency_slots = Some((
-                slots,
-                by_slot.unresolved_rows + by_slot.duplicate_rows + by_slot.ambiguous_slots,
-            ));
-        }
-        self.unresolved_rows += self.agency_slots.as_ref().expect("agency current slots").1;
-        let roster = if roster_read {
-            #[cfg(test)]
-            super::intelligence_prepared::work(|work| {
-                work.row_visits += memberships.map_or(0, |rows| rows.len())
-            });
-            memberships.map(|rows| roster_counts(rows, links))
+        self.unresolved_rows += read.refused;
+        let roster = if census.read && census.complete {
+            Some(
+                read.roster
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("The roster was not counted"))?,
+            )
         } else {
             None
         };
-        if let Some((_, unresolved, unsupported)) = &roster {
+        if let Some((_, unresolved, unsupported)) = roster {
             self.unresolved_rows += unresolved;
             roster_unresolved = *unresolved;
             roster_unsupported = unsupported.clone();
@@ -663,53 +859,12 @@ impl ScannedAgencies {
                 *self.unsupported_rosters.entry(*kind).or_default() += count;
             }
         }
-        if self.acquired.is_none()
-            || inputs.changed
-            || changes.is_none_or(|changes| {
-                [TableId::AgencyUpgradeLevels, TableId::LexicalTokens]
-                    .iter()
-                    .any(|table| changes.rows_changed[table.index()])
-            })
-        {
-            let mut acquired: HashMap<u32, Vec<&replay_data::rows::AgencyUpgradeLevelRow>> =
-                HashMap::new();
-            let mut acquired_unavailable = frame
-                .complete::<tables::AgencyUpgradeLevels>()
-                .err()
-                .map(|error| {
-                    format!("Acquired agency levels incomplete or unavailable: {error:?}")
-                });
-            let levels =
-                dashboard_text::metadata::recorded_rows::<tables::AgencyUpgradeLevels>(frame)?;
-            #[cfg(test)]
-            super::intelligence_prepared::work(|work| work.row_visits += levels.len());
-            for row in levels {
-                if let Some(slot) = link_slot(links, row.country) {
-                    acquired.entry(slot).or_default().push(row);
-                } else {
-                    acquired_unavailable.get_or_insert_with(|| {
-                        "Acquired agency entry has an unresolved country link".into()
-                    });
-                }
-            }
-            let project = |rows: &[&replay_data::rows::AgencyUpgradeLevelRow]| {
-                let read = acquired_read(frame, rows, acquired_unavailable.clone());
-                ScannedUpgrades {
-                    read_hour: read.read_hour,
-                    unavailable: read.unavailable,
-                    nonnegative_level_sum: read.nonnegative_level_sum,
-                    items: read.items.into(),
-                }
-            };
-            let default = project(&[]);
-            let acquired = acquired
-                .into_iter()
-                .map(|(slot, rows)| (slot, project(&rows)))
-                .collect();
-            self.acquired = Some((acquired, default));
-        }
+        let acquired = read
+            .acquired
+            .as_ref()
+            .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))?;
+        let memberships = census.complete;
         // Each country's acquired levels are copied only where they differ from those held.
-        let acquired = self.acquired.take();
         for (tag, lookup) in &inputs.tagged {
             let Some((index, slot)) = *lookup else {
                 continue;
@@ -724,9 +879,9 @@ impl ScannedAgencies {
                     .slots
                     .get(&slot)
                     .is_some_and(|row| row.id == country.id);
-            let count = if !known_identity || memberships.is_none() {
+            let count = if !known_identity || !memberships {
                 Some(None)
-            } else if let Some((counts, unresolved, _)) = &roster {
+            } else if let Some((counts, unresolved, _)) = roster {
                 // A complete world roster proves an empty active list, except
                 // when a nonempty raw country reference could name this slot.
                 Some((*unresolved == 0).then(|| counts.get(&slot).copied().unwrap_or(0)))
@@ -737,29 +892,21 @@ impl ScannedAgencies {
                 active.insert(tag.to_owned(), (slot, country.id));
             }
             self.observe(
-                frame.hour,
+                hour,
                 tag,
                 (slot, country.id),
-                self.agency_slots
-                    .as_ref()
-                    .expect("agency current slots")
-                    .0
-                    .get(&slot)
-                    .copied()
-                    .flatten()
-                    .map(|index| &rows.expect("complete agency rows")[index]),
+                read.slots.get(&slot).and_then(Option::as_ref),
                 count,
             );
             if TableId::AgencyUpgradeLevels
                 .last_change()
                 .present(replay.format.version())
             {
-                let (acquired, default) = acquired.as_ref().expect("current acquired levels");
+                let (acquired, default) = acquired;
                 let read = acquired.get(&slot).unwrap_or(default);
-                self.observe_upgrades_read(frame.hour, tag, read, Some(frame.hour));
+                self.observe_upgrades_read(hour, tag, read, Some(hour));
             }
         }
-        self.acquired = acquired;
         Ok((roster_unresolved, roster_unsupported))
     }
 }

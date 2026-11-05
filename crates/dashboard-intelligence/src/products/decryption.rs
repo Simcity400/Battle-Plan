@@ -305,10 +305,203 @@ struct Scan {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     native_countries: super::operative_rows::CountryInputs,
+    /// The row path's reads ([`Self::frame`]).
+    #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
+    reader: Reader,
+}
+
+/// How a target's cipher threshold is known at a read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Threshold {
+    Known(i64),
+    /// The cipher defines were refused.
+    Defines,
+    NoOwner,
+    Unrecorded,
+}
+
+impl Threshold {
+    fn result<'a>(self, defines: Result<cryptology::Defines, &'a str>) -> Result<i64, &'a str> {
+        match self {
+            Self::Known(value) => Ok(value),
+            Self::Defines => Err(defines.err().unwrap_or_default()),
+            Self::NoOwner => Err("RaidIntelInputs has no authenticated target cryptology owner"),
+            Self::Unrecorded => Err("target RaidIntelInputs was not recorded at this hour"),
+        }
+    }
+}
+
+/// What the hour's countries join to a Cryptology row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Joined {
+    key: (u32, u32),
+    /// A tag the JSON contract cannot name keeps its bytes.
+    owner_tag: Result<String, Vec<u8>>,
+    target_tag: Result<String, Vec<u8>>,
+    threshold: Threshold,
+    /// The progress division overflows.
+    overflow: bool,
+}
+
+/// A Cryptology row as read: unjoined when a country link or country is not recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PairRead {
+    row: CryptologyRow,
+    joined: Option<Joined>,
+}
+
+impl PairRead {
+    pub(crate) fn key(&self) -> (u32, u32) {
+        (self.row.owner_country, self.row.target_country)
+    }
+
+    pub(crate) fn heap(&self) -> usize {
+        self.joined.as_ref().map_or(0, |joined| {
+            [&joined.owner_tag, &joined.target_tag]
+                .into_iter()
+                .map(|tag| match tag {
+                    Ok(tag) => tag.capacity(),
+                    Err(bytes) => bytes.capacity(),
+                })
+                .sum()
+        })
+    }
+}
+
+/// What the cipher scan reads of an hour.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CipherRead {
+    /// No hour was read.
+    Unread,
+    /// The countries could not be identified.
+    Countries(String),
+    /// A table the scan reads was not recorded.
+    Failed(io::ErrorKind, String),
+    Rows {
+        /// Why the cipher table is incomplete.
+        incomplete: Option<String>,
+        pairs: Vec<PairRead>,
+    },
+}
+
+impl Default for CipherRead {
+    fn default() -> Self {
+        Self::Unread
+    }
+}
+
+/// Reads the cipher scan's tables, keeping each target's cryptology strength until its inputs
+/// change.
+#[derive(Default)]
+pub(crate) struct Reader {
     raw_strength: Option<BTreeMap<u32, Option<i64>>>,
-    #[serde(skip)]
     strength: BTreeMap<u32, Option<i64>>,
+}
+
+impl Reader {
+    /// What `frame` gives the scan, where `inputs` are its countries; `changes` None reads
+    /// every table again.
+    pub(crate) fn read(
+        &mut self,
+        frame: &DecodedFrame,
+        defines: Option<cryptology::Defines>,
+        inputs: &super::operative_rows::CountryInputs,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> CipherRead {
+        match self.rows(frame, defines, inputs, changes) {
+            Ok(read) => read,
+            Err(error) => CipherRead::Failed(error.kind(), error.to_string()),
+        }
+    }
+
+    fn rows(
+        &mut self,
+        frame: &DecodedFrame,
+        defines: Option<cryptology::Defines>,
+        inputs: &super::operative_rows::CountryInputs,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<CipherRead> {
+        let countries = match inputs.strict.as_ref().expect("country operands reached") {
+            Ok(countries) => countries,
+            Err(error) => return Ok(CipherRead::Countries(error.clone())),
+        };
+        let links = inputs.links.as_deref().expect("complete cipher links");
+        let incomplete = table_reason(frame, TableId::Cryptology);
+        let raw_changed = self.raw_strength.is_none()
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::RaidIntelInputs.index()]);
+        if raw_changed {
+            let intel = recorded_rows::<tables::RaidIntelInputs>(frame)?;
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.row_visits += intel.len());
+            self.raw_strength = Some(
+                intel
+                    .iter()
+                    .map(|row| (row.country, row.crypto_strength))
+                    .collect(),
+            );
+        }
+        if inputs.changed || raw_changed {
+            self.strength = self
+                .raw_strength
+                .as_ref()
+                .expect("target cryptology operands")
+                .iter()
+                .filter_map(|(&raw, &value)| {
+                    metadata::link_slot(links, raw).map(|slot| (slot, value))
+                })
+                .collect();
+        }
+        let rows = recorded_rows::<tables::Cryptology>(frame)?;
+        let mut pairs = Vec::with_capacity(rows.len());
+        for row in rows {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.row_visits += 1);
+            let identity = metadata::link_slot(links, row.owner_country)
+                .zip(metadata::link_slot(links, row.target_country));
+            let named = identity.and_then(|(owner, target)| {
+                countries
+                    .get(&owner)
+                    .zip(countries.get(&target))
+                    .map(|(a, b)| ((owner, target), (a, b)))
+            });
+            let joined = named.map(|(key, (owner, target))| {
+                let tag = |country: &CountryRow| match std::str::from_utf8(&country.tag) {
+                    Ok(tag) if !tag.is_empty() && !tag.contains('\0') => Ok(tag.to_owned()),
+                    _ => Err(country.tag.clone()),
+                };
+                let threshold = match (defines, self.strength.get(&key.1)) {
+                    (None, _) => Threshold::Defines,
+                    (Some(defines), Some(Some(value))) => {
+                        Threshold::Known(cryptology::threshold(*value, defines))
+                    }
+                    (Some(_), Some(None)) => Threshold::NoOwner,
+                    (Some(_), None) => Threshold::Unrecorded,
+                };
+                let overflow = match threshold {
+                    Threshold::Known(required) => cryptology::progress_percent(
+                        row.amount_raw,
+                        row.bonus_active,
+                        required,
+                    )
+                    .is_none(),
+                    _ => false,
+                };
+                Joined {
+                    key,
+                    owner_tag: tag(owner),
+                    target_tag: tag(target),
+                    threshold,
+                    overflow,
+                }
+            });
+            pairs.push(PairRead {
+                row: row.clone(),
+                joined,
+            });
+        }
+        Ok(CipherRead::Rows { incomplete, pairs })
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -343,65 +536,31 @@ impl Scan {
         self.previous_complete = complete.then_some(hour);
     }
 
-    fn frame_countries(
+    /// Observes the scan's `read` of `hour`, `defines` naming why thresholds are unknown.
+    fn observe_read(
         &mut self,
-        frame: &DecodedFrame,
+        hour: i32,
+        read: &CipherRead,
         defines: Result<cryptology::Defines, &str>,
-        inputs: &super::operative_rows::CountryInputs,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<Vec<ObservedPair>> {
-        let hour = frame.hour;
         let previous_complete =
             self.previous_complete.and_then(|last| last.checked_add(1)) == Some(hour);
-        let countries = match inputs.strict.as_ref().expect("country operands reached") {
-            Ok(countries) => countries,
-            Err(error) => {
+        let (incomplete, pairs) = match read {
+            CipherRead::Unread => return Err(io::Error::other("The cipher tables were not read")),
+            CipherRead::Countries(error) => {
                 self.cover(
                     hour,
                     Some(format!("Country identity not recorded: {error}")),
                 );
                 return Ok(Vec::new());
             }
+            CipherRead::Failed(kind, message) => return Err(io::Error::new(*kind, message.clone())),
+            CipherRead::Rows { incomplete, pairs } => (incomplete, pairs),
         };
-        let links = inputs.links.as_deref().expect("complete cipher links");
-        let mut incomplete = table_reason(frame, TableId::Cryptology);
-        let raw_changed = self.raw_strength.is_none()
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::RaidIntelInputs.index()]);
-        if raw_changed {
-            let intel = recorded_rows::<tables::RaidIntelInputs>(frame)?;
-            #[cfg(test)]
-            super::intelligence_prepared::work(|work| work.row_visits += intel.len());
-            self.raw_strength = Some(
-                intel
-                    .iter()
-                    .map(|row| (row.country, row.crypto_strength))
-                    .collect(),
-            );
-        }
-        if inputs.changed || raw_changed {
-            self.strength = self
-                .raw_strength
-                .as_ref()
-                .expect("target cryptology operands")
-                .iter()
-                .filter_map(|(&raw, &value)| {
-                    metadata::link_slot(links, raw).map(|slot| (slot, value))
-                })
-                .collect();
-        }
-        let mut observed = Vec::new();
-        for row in recorded_rows::<tables::Cryptology>(frame)? {
-            #[cfg(test)]
-            super::intelligence_prepared::work(|work| work.row_visits += 1);
-            let identity = metadata::link_slot(links, row.owner_country)
-                .zip(metadata::link_slot(links, row.target_country));
-            let named = identity.and_then(|(owner, target)| {
-                countries
-                    .get(&owner)
-                    .zip(countries.get(&target))
-                    .map(|(a, b)| ((owner, target), (a, b)))
-            });
-            let Some((key, (owner, target))) = named else {
+        let mut incomplete = incomplete.clone();
+        let mut observed = Vec::with_capacity(pairs.len());
+        for PairRead { row, joined } in pairs {
+            let Some(joined) = joined else {
                 let reason = "Cryptology country link or country is not recorded";
                 self.refusals.note(
                     reason,
@@ -410,24 +569,20 @@ impl Scan {
                 incomplete = Some(reason.into());
                 continue;
             };
-            let mut tag = |country: &CountryRow, slot: u32| match std::str::from_utf8(&country.tag)
-            {
-                Ok(tag) if !tag.is_empty() && !tag.contains('\0') => Some(tag.to_owned()),
-                _ => {
+            let key = joined.key;
+            let mut tag = |tag: &Result<String, Vec<u8>>, slot: u32| match tag {
+                Ok(tag) => Some(tag.clone()),
+                Err(bytes) => {
                     self.refusals.note(
                             "country tag cannot be represented as a nonempty non-NUL JSON string; cipher data retained with country ID",
-                            format!("country {slot}, tag bytes {:?}", country.tag),
+                            format!("country {slot}, tag bytes {bytes:?}"),
                         );
                     None
                 }
             };
-            let owner_tag = tag(owner, key.0);
-            let target_tag = tag(target, key.1);
-            let threshold = defines.and_then(|defines| match self.strength.get(&key.1) {
-                Some(Some(value)) => Ok(cryptology::threshold(*value, defines)),
-                Some(None) => Err("RaidIntelInputs has no authenticated target cryptology owner"),
-                None => Err("target RaidIntelInputs was not recorded at this hour"),
-            });
+            let owner_tag = tag(&joined.owner_tag, key.0);
+            let target_tag = tag(&joined.target_tag, key.1);
+            let threshold = joined.threshold.result(defines);
             if let Err(reason) = threshold {
                 self.refusals.note(
                     format!("progress unknown: {reason}"),
@@ -435,9 +590,7 @@ impl Scan {
                 );
             }
             let run = run(hour, row, threshold);
-            if threshold.is_ok_and(|required| {
-                cryptology::progress_percent(row.amount_raw, run.bonus_active(), required).is_none()
-            }) {
+            if joined.overflow {
                 self.refusals.note(
                     "progress unknown: native signed division overflow",
                     format!("country {} → country {}", key.0, key.1),

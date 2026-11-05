@@ -102,6 +102,85 @@ pub struct OperativePlacementReply {
     pub warnings: Vec<String>,
 }
 
+/// What a membership read gives the placements: each pair's operatives, or why none can be
+/// placed, with the warnings their names add and whether the read holds any membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlacementRead {
+    resolved: Result<BTreeMap<PairKey, Vec<PlacedOperative>>, String>,
+    warnings: Vec<String>,
+    empty: bool,
+}
+
+impl PlacementRead {
+    pub(crate) fn heap(&self) -> usize {
+        let resolved = match &self.resolved {
+            Ok(pairs) => pairs
+                .iter()
+                .map(|(key, operatives)| {
+                    key.owner.2.capacity()
+                        + key.target.2.capacity()
+                        + operatives
+                            .iter()
+                            .map(|operative| {
+                                std::mem::size_of::<PlacedOperative>()
+                                    + operative.id.capacity()
+                                    + operative.name.as_ref().map_or(0, String::capacity)
+                            })
+                            .sum::<usize>()
+                })
+                .sum(),
+            Err(reason) => reason.capacity(),
+        };
+        resolved + self.warnings.iter().map(String::capacity).sum::<usize>()
+    }
+}
+
+/// The placements `captured` gives, its countries `inputs` (complete), its names localised by
+/// `localisation`.
+pub(crate) fn read(
+    captured: &[OperativeMembershipRow],
+    inputs: &operative_rows::CountryInputs,
+    localisation: Option<&installed_content_localisation::localisation::Localisation>,
+) -> PlacementRead {
+    #[cfg(test)]
+    super::intelligence_prepared::work(|work| work.row_visits += captured.len());
+    let (_, links) = inputs.complete().expect("complete placement countries");
+    let mut warnings = std::collections::BTreeSet::new();
+    let resolved = (inputs.unresolved.is_empty() && inputs.text)
+        .then_some(&inputs.slots)
+        .ok_or_else(|| "Unresolved operative country catalogue".to_owned())
+        .and_then(|countries| resolve_rows(captured, countries, links, localisation, &mut warnings));
+    PlacementRead {
+        resolved,
+        warnings: warnings.into_iter().collect(),
+        empty: captured.is_empty(),
+    }
+}
+
+/// What an hour tells the placements beside their read: whether the memberships were read, the
+/// agency feature, and whether the memberships are complete.
+#[derive(Clone, Copy)]
+pub(crate) struct Census {
+    pub(crate) read: bool,
+    pub(crate) feature: Option<bool>,
+    pub(crate) complete: bool,
+}
+
+impl Census {
+    pub(crate) fn of(frame: &DecodedFrame) -> Self {
+        Self {
+            read: operative_rows::membership_read(frame),
+            feature: operative_rows::agency_feature(frame),
+            complete: recorded_operatives(frame).is_some(),
+        }
+    }
+
+    /// Whether the hour's census is resolved, given its countries.
+    pub(crate) fn resolves(self, inputs: &operative_rows::CountryInputs) -> bool {
+        self.feature == Some(true) && self.read && self.complete && inputs.complete().is_some()
+    }
+}
+
 fn recorded_operatives(frame: &DecodedFrame) -> Option<&[OperativeMembershipRow]> {
     // Snapshots keep target/name with the roster. Assignment 3 keeps its
     // mission target even with a reservation; only assignment 4 reads
@@ -371,6 +450,26 @@ struct Scan {
     native_countries: operative_rows::CountryInputs,
 }
 impl Scan {
+    /// The catalogue a census holding memberships (not `empty`) names them by, as bound.
+    fn load(
+        &mut self,
+        bound: &Result<
+            Option<std::sync::Arc<dashboard_text::catalogue::Catalogue>>,
+            dashboard_text::catalogue::ContentError,
+        >,
+        empty: bool,
+    ) -> io::Result<()> {
+        if self.catalogue.is_none() && !empty {
+            self.catalogue = bound
+                .as_ref()
+                .map_err(dashboard_text::catalogue::ContentError::error)?
+                .clone();
+        }
+        Ok(())
+    }
+
+    /// Observes `decoded` of the row path, its census read where [`Census::resolves`].
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_bound(
         &mut self,
         decoded: &DecodedFrame,
@@ -380,52 +479,56 @@ impl Scan {
             dashboard_text::catalogue::ContentError,
         >,
     ) -> io::Result<()> {
-        let Self {
-            history,
-            warnings,
-            catalogue,
-            ..
-        } = self;
+        let census = Census::of(decoded);
+        let read = match recorded_operatives(decoded).filter(|_| census.resolves(inputs)) {
+            Some(captured) => {
+                self.load(bound, captured.is_empty())?;
+                Some(read(
+                    captured,
+                    inputs,
+                    self.catalogue
+                        .as_ref()
+                        .map(|catalogue| catalogue.localisation.as_ref()),
+                ))
+            }
+            None => None,
+        };
+        self.observe_read(decoded.hour, census, inputs, bound, read.as_ref())
+    }
+
+    /// Observes `hour`, its census `read` given where [`Census::resolves`].
+    fn observe_read(
+        &mut self,
+        hour: i32,
+        census: Census,
+        inputs: &operative_rows::CountryInputs,
+        bound: &Result<
+            Option<std::sync::Arc<dashboard_text::catalogue::Catalogue>>,
+            dashboard_text::catalogue::ContentError,
+        >,
+        read: Option<&PlacementRead>,
+    ) -> io::Result<()> {
         let mut observation = Observation::Unavailable(PlacementAvailability::TablesNotRecorded);
-        let is_read = operative_rows::membership_read(decoded);
-        if let Some(feature) = operative_rows::agency_feature(decoded) {
+        let is_read = census.read;
+        if let Some(feature) = census.feature {
             if !feature {
                 observation = Observation::Unavailable(PlacementAvailability::FeatureAbsent);
-            } else if is_read
-                && let (Some((_, links)), Some(captured)) =
-                    (inputs.complete(), recorded_operatives(decoded))
-            {
-                if catalogue.is_none() && !captured.is_empty() {
-                    *catalogue = bound
-                        .as_ref()
-                        .map_err(dashboard_text::catalogue::ContentError::error)?
-                        .clone();
-                }
-                #[cfg(test)]
-                super::intelligence_prepared::work(|work| work.row_visits += captured.len());
-                let resolved = (inputs.unresolved.is_empty() && inputs.text)
-                    .then_some(&inputs.slots)
-                    .ok_or_else(|| "Unresolved operative country catalogue".to_owned())
-                    .and_then(|countries| {
-                        resolve_rows(
-                            captured,
-                            countries,
-                            links,
-                            catalogue
-                                .as_ref()
-                                .map(|catalogue| catalogue.localisation.as_ref()),
-                            warnings,
-                        )
-                    });
-                match resolved {
+            } else if census.resolves(inputs) {
+                let read = read.ok_or_else(|| io::Error::other("The census was not read"))?;
+                self.load(bound, read.empty)?;
+                self.warnings.extend(read.warnings.iter().cloned());
+                match &read.resolved {
                     Ok(resolved) => {
-                        observation = Observation::Read(resolved);
+                        observation = Observation::Read(resolved.clone());
                     }
                     Err(reason) => {
-                        warnings.insert(reason);
+                        self.warnings.insert(reason.clone());
                     }
                 }
-            } else if !is_read && decoded.complete::<tables::OperativeMemberships>().is_ok() {
+            } else if !is_read && census.complete {
+                let Self {
+                    history, warnings, ..
+                } = self;
                 // Complete held rows (including keyframes) retain the last
                 // read's date. An unavailable/truncated table ends the hold,
                 // including a scheduled failure with no measured walk.
@@ -450,7 +553,7 @@ impl Scan {
                 }
             }
         }
-        history.update(decoded.hour, observation);
+        self.history.update(hour, observation);
         Ok(())
     }
     fn reply(&self, branch: u64) -> OperativePlacementReply {

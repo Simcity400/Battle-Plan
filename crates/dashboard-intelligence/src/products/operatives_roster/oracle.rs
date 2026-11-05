@@ -66,14 +66,17 @@ impl Scan {
     ) -> io::Result<()> {
         let mut countries = std::mem::take(&mut self.native_countries);
         countries.update(frame, None);
+        let read = self.frame_read(frame, content, &countries, None, false);
         let result = self.observe_indices(
-            frame,
+            frame.hour,
+            Flags::of(frame),
             content,
             selected_identities,
             None,
             None,
             (false, true),
             &countries,
+            &read,
         );
         self.native_countries = countries;
         result

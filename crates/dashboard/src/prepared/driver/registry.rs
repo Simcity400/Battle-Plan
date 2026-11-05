@@ -772,7 +772,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "operatives-roster",
         ],
         // 2: its observers on the segment driver, their pages published as the walk did.
-        version: 2,
+        // 3: its operators hand on what their reads changed, never tables beside the countries.
+        version: 3,
         ..family("intelligence")
     },
     // Its series and events route by the family kind `research`.

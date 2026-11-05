@@ -1,14 +1,14 @@
 //! A branch of the intelligence family in its ordered emit: the observers hourly preparation
-//! kept, told each projected hour ([`super::facts::Hour`]) on a frame of every table as last
+//! kept, told each projected hour ([`super::facts::Hour`]) from the reads and countries as last
 //! handed on, publishing what they publish where hourly preparation did: each replay block's
 //! espionage day pages once its hours are observed, and everything else at each flush, with
 //! the days rendered so far when a batch ends partway through a block.
 
-use super::{Content, Observer, TABLES, facts};
+use super::{Content, Observer, Reads, TABLES, facts};
 use dashboard_base::{prepared::frame_changes::FrameChanges, source::Source};
 use dashboard_core::config::LoadContext;
 use replay_data::rows::{TABLE_COUNT, TableId};
-use replay_frame::frame::{DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, not_selected};
+use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use std::{io, sync::atomic::AtomicBool};
 
 /// What every branch's emit reads: the recording, its content options and the content bound.
@@ -25,11 +25,14 @@ pub trait Pages {
     fn writer(&mut self) -> io::Result<&mut store::Writer>;
 }
 
-/// One branch's observers, the frame they read, and the next of its replay blocks to finish.
+/// One branch's observers, the countries and reads they observe, and the next of its replay
+/// blocks to finish.
 pub struct Emit {
     branch: u64,
     observer: Box<Observer>,
+    /// Countries and CountryLinks as last handed on; no other table.
     frame: DecodedFrame,
+    reads: Box<Reads>,
     block: usize,
     /// Every block the observed hours reach is finished: what the flush writes is all the
     /// branch goes on with.
@@ -54,6 +57,7 @@ impl Emit {
                 tables: std::array::from_fn(|_| not_selected()),
                 metrics: Metrics::default(),
             },
+            reads: Box::default(),
             block,
             finished: true,
         }
@@ -64,7 +68,7 @@ impl Emit {
     pub fn observe(
         &mut self,
         inputs: Inputs<'_>,
-        hour: facts::Hour,
+        mut hour: facts::Hour,
         pages: &mut dyn Pages,
     ) -> io::Result<()> {
         let at = hour.hour;
@@ -75,23 +79,19 @@ impl Emit {
         {
             self.finish(inputs, pages.writer()?)?;
         }
-        for (table, view) in hour.views {
-            self.frame.tables[table.index()] = view;
+        if let Some([countries, links]) = hour.countries.take() {
+            self.frame.tables[TableId::Countries.index()] = countries;
+            self.frame.tables[TableId::CountryLinks.index()] = links;
         }
         self.frame.hour = at;
+        self.reads.apply(&mut hour);
         let reads = [
             (TableId::OperativeMemberships, facts::MEMBERSHIPS_READ),
             (TableId::Operations, facts::OPERATIONS_READ),
         ];
         let mut table_read = [false; TABLE_COUNT];
         for (table, bit) in reads {
-            let read = hour.reads & bit != 0;
-            table_read[table.index()] = read;
-            self.frame.metrics.table_ns[table.index()] = if read {
-                READ_TIME_NOT_RECORDED
-            } else {
-                0
-            };
+            table_read[table.index()] = hour.reads & bit != 0;
         }
         // A segment's first hour, as the first hour of a block read alone, changed everything.
         let mut rows_changed = [hour.opens; TABLE_COUNT];
@@ -110,25 +110,27 @@ impl Emit {
         });
         let rebuilt = |table: TableId| rebuilds[table.index()];
         let cancelled = AtomicBool::new(false);
-        let observed = if self.observer.reads_history(&self.frame, &changes) {
+        let observed = if self.observer.reads_history_of(&changes, &self.reads) {
             // The espionage log reads its own series as last committed.
             pages.writer()?;
             let (store, key) =
                 dashboard_base::prepared::files(inputs.source, inputs.context.content.as_ref())?;
-            self.observer.observe(
+            self.observer.observe_reads(
                 inputs.source,
                 inputs.content,
                 &self.frame,
+                (hour.flags, &self.reads),
                 (&changes, roster.as_ref()),
                 &rebuilt,
                 Some((&store, &key)),
                 &cancelled,
             )
         } else {
-            self.observer.observe(
+            self.observer.observe_reads(
                 inputs.source,
                 inputs.content,
                 &self.frame,
+                (hour.flags, &self.reads),
                 (&changes, roster.as_ref()),
                 &rebuilt,
                 None,

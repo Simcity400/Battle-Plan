@@ -36,6 +36,9 @@ pub struct Accumulator {
     next_clock: Option<i32>,
     #[serde(skip)]
     configured: bool,
+    /// The row path's reads ([`Self::observe_bound`]).
+    #[serde(skip)]
+    reader: super::Reader,
     #[cfg(test)]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -79,6 +82,7 @@ impl Accumulator {
         result
     }
 
+    /// Observes `frame` of the row path, reading its tables where [`Self::reads`].
     pub fn observe_bound(
         &mut self,
         frame: &DecodedFrame,
@@ -87,9 +91,55 @@ impl Accumulator {
         defines: Result<cryptology::Defines, &str>,
         warnings: &[String],
     ) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:decryption");
+        let read = self
+            .reads(frame.hour, changes, countries.changed)
+            .then(|| {
+                self.reader
+                    .read(frame, defines.ok(), countries, Some(changes))
+            });
+        self.observe_read(
+            frame.hour,
+            changes,
+            countries.changed,
+            read.as_ref(),
+            defines,
+            warnings,
+        )
+    }
+
+    /// Whether `hour` reads the cipher tables: an input changed, or a learned slope is due to
+    /// be checked again.
+    fn reads(&self, hour: i32, changes: &FrameChanges, countries_changed: bool) -> bool {
+        Self::inputs_changed(self.last, hour, changes, countries_changed)
+            || self.next_clock.is_some_and(|at| hour >= at)
+    }
+
+    fn inputs_changed(
+        previous: Option<i32>,
+        hour: i32,
+        changes: &FrameChanges,
+        countries_changed: bool,
+    ) -> bool {
         use replay_data::rows::TableId;
-        let hour = frame.hour;
+        countries_changed
+            || previous.is_none_or(|last| last.checked_add(1) != Some(hour))
+            || [TableId::Cryptology, TableId::RaidIntelInputs]
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+    }
+
+    /// Observes `hour`, whose change facts are `changes`, from the scan's `read` of it, given
+    /// wherever the hour [`Self::reads`].
+    pub(crate) fn observe_read(
+        &mut self,
+        hour: i32,
+        changes: &FrameChanges,
+        countries_changed: bool,
+        read: Option<&super::CipherRead>,
+        defines: Result<cryptology::Defines, &str>,
+        warnings: &[String],
+    ) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:decryption");
         let previous = self.last;
         if !self.configured {
             self.content_warnings = warnings.to_vec();
@@ -98,11 +148,7 @@ impl Accumulator {
         self.first.get_or_insert(hour);
         self.last = Some(hour);
         self.values.advance(hour)?;
-        let inputs_changed = countries.changed
-            || previous.is_none_or(|last| last.checked_add(1) != Some(hour))
-            || [TableId::Cryptology, TableId::RaidIntelInputs]
-                .iter()
-                .any(|table| changes.rows_changed[table.index()]);
+        let inputs_changed = Self::inputs_changed(previous, hour, changes, countries_changed);
         let previous_coverage = self.scan.coverage.last().cloned();
         if !inputs_changed && self.next_clock.is_none_or(|at| hour < at) {
             self.scan
@@ -124,9 +170,8 @@ impl Accumulator {
                 }
             }
         }
-        let observed = self
-            .scan
-            .frame_countries(frame, defines, countries, Some(changes))?;
+        let read = read.ok_or_else(|| io::Error::other("The cipher read was not given"))?;
+        let observed = self.scan.observe_read(hour, read, defines)?;
         let active: BTreeSet<_> = observed.iter().map(|row| row.key).collect();
         for removed in self.active.difference(&active) {
             let key = self.keys[&serde_json::to_string(removed)?];

@@ -220,12 +220,12 @@ fn write(walk: &mut Synthetic, hour: i32) {
 
 /// The projected hours, a projector starting cold at each of `starts` and at each walk's first
 /// hour (after the gap, the walk starts again), and the decoded frames of the same hours.
-fn walked(starts: &[i32]) -> (Vec<facts::Hour>, Vec<DecodedFrame>) {
+fn walked(starts: &[i32], content: &Content) -> (Vec<facts::Hour>, Vec<DecodedFrame>) {
     let mut out = Vec::new();
     let mut frames: Vec<DecodedFrame> = Vec::new();
     let mut walk: Option<Synthetic> = None;
     let mut world = None;
-    let mut projector = Projector::new().unwrap();
+    let mut projector = Projector::new(content).unwrap();
     let needs = facts::needs().unwrap();
     for (ordinal, hour) in (0..).zip(offsets()) {
         let at = base() + hour;
@@ -237,7 +237,7 @@ fn walked(starts: &[i32]) -> (Vec<facts::Hour>, Vec<DecodedFrame>) {
         write(walk, hour);
         let cold = starts.contains(&hour);
         if cold {
-            projector = Projector::new().unwrap();
+            projector = Projector::new(content).unwrap();
         }
         let decoded = walk
             .end(|state, manifest, decoded, first| {
@@ -463,7 +463,7 @@ fn held_to_hourly_preparation(length: usize) {
     let context = LoadContext { content: None };
     let content = Content::load(&source, &context).unwrap();
     let flag = AtomicBool::new(false);
-    let (hours, frames) = walked(&[30, 77]);
+    let (hours, frames) = walked(&[30, 77], &content);
     assert_eq!(hours.len(), frames.len());
     // Hourly preparation: every decoded frame told its change facts, each block finished.
     let reference = Fixture::new();
@@ -548,17 +548,32 @@ fn held_to_hourly_preparation(length: usize) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Of hours that change nothing the observers read, the projector hands on no view, and tells
+/// Whether `hour` hands on no read and no countries.
+fn reads_nothing(hour: &facts::Hour) -> bool {
+    hour.countries.is_none()
+        && hour.cipher.is_none()
+        && hour.placements.is_none()
+        && hour.agencies.is_none()
+        && hour.members.is_none()
+        && hour.operations.is_none()
+        && hour.names.is_none()
+        && hour.census.is_none()
+        && hour.completions.is_none()
+}
+
+/// Of hours that change nothing the observers read, the projector hands on no read, and tells
 /// only of the agencies and the fields no observer reads.
 #[test]
-fn hours_that_change_only_unread_fields_hand_on_no_view() {
-    let (hours, _) = walked(&[]);
+fn hours_that_change_only_unread_fields_hand_on_no_read() {
+    let (source, root) = recording(10);
+    let content = Content::load(&source, &LoadContext { content: None }).unwrap();
+    let (hours, _) = walked(&[], &content);
     let position = |table: TableId| TABLES.iter().position(|&read| read == table).unwrap();
     let agencies = 1 << position(TableId::IntelligenceAgencies);
     // Hour 2 follows hour 1 with nothing the observers read changed.
     let quiet = &hours[2];
     assert!(!quiet.opens);
-    assert!(quiet.views.is_empty(), "no view is handed on");
+    assert!(reads_nothing(quiet), "no read is handed on");
     assert_eq!(
         quiet.changed, agencies,
         "only the agencies' rebuild is told"
@@ -576,23 +591,17 @@ fn hours_that_change_only_unread_fields_hand_on_no_view() {
         );
     }
     assert_eq!(quiet.reads, 0);
-    // The day's first hour reads the memberships and operations, which changed.
+    // The day's first hour reads the memberships and operations, whose preparation moved.
     let day = hours.iter().find(|hour| hour.hour == base() + 24).unwrap();
     assert_eq!(day.reads, facts::MEMBERSHIPS_READ | facts::OPERATIONS_READ);
-    assert!(
-        day.views
-            .iter()
-            .any(|(table, _)| *table == TableId::Operations)
-    );
-    // The first hour after the gap opens: every table is told changed, and each whole table
-    // the walk built again is handed on.
+    assert!(day.census.is_some(), "the operations census moved");
+    assert!(day.countries.is_none(), "no country changed");
+    // The first hour after the gap opens: every table is told changed, and the countries and
+    // every read are handed on again.
     let reopened = hours.iter().find(|hour| hour.hour == base() + 48).unwrap();
     assert!(reopened.opens);
     assert_eq!(reopened.changed, (1 << TABLES.len()) - 1);
-    assert!(
-        reopened
-            .views
-            .iter()
-            .any(|(table, _)| *table == TableId::CountryLinks)
-    );
+    assert!(reopened.countries.is_some());
+    assert!(reopened.cipher.is_some());
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -3868,8 +3868,9 @@ impl<O: dashboard_keyed::Observer> Native for Observed<O> {
     }
 }
 
-/// The intelligence observers: their tables from each segment's operator, and the observers
-/// themselves in each branch's emit, publishing their pages as the walk did.
+/// The intelligence observers: each segment's operator reads their tables as they do and hands
+/// on what its reads changed, and each branch's emit observes those reads in order, publishing
+/// their pages as the walk did.
 struct Intel<'p> {
     inputs: intelligence_prepared::emit::Inputs<'p>,
 }
@@ -3897,8 +3898,8 @@ impl intelligence_prepared::emit::Pages for Staged<'_, '_, '_> {
     }
 }
 
-impl Native for Intel<'_> {
-    type Operator = intelligence_prepared::facts::Projector;
+impl<'p> Native for Intel<'p> {
+    type Operator = intelligence_prepared::facts::Projector<'p>;
     type Branch = Box<intelligence_prepared::emit::Emit>;
 
     fn tables(&self) -> &'static [TableId] {
@@ -3910,7 +3911,7 @@ impl Native for Intel<'_> {
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        intelligence_prepared::facts::Projector::new()
+        intelligence_prepared::facts::Projector::new(self.inputs.content)
     }
 
     fn branch(&self, branch: u64, _: i32) -> io::Result<Self::Branch> {

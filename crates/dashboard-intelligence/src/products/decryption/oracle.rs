@@ -76,8 +76,10 @@ impl Scan {
     ) -> io::Result<Vec<ObservedPair>> {
         let mut countries = std::mem::take(&mut self.native_countries);
         countries.update(frame, None);
-        let result = self.frame_countries(frame, defines, &countries, None);
+        let read = self
+            .reader
+            .read(frame, defines.ok(), &countries, None);
         self.native_countries = countries;
-        result
+        self.observe_read(frame.hour, &read, defines)
     }
 }

@@ -1,112 +1,70 @@
 //! Cache selected country names through the current shared native resolver.
-//! Keep the supplying frame intact, including reserved names and raw tag caches.
+//! Names are read where the supplying frame is held, including reserved names and raw tag caches.
 use super::operative_rows::{CountryIdentity, country_at};
-use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
+use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
-use replay_data::{rows::TableSchema, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::TableView};
-use std::collections::{BTreeMap, BTreeSet};
+use replay_data::rows::{CountryLinkRow, CountryRow};
+use replay_frame::frame::DecodedFrame;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io,
+};
 
-fn rows<T: TableSchema>(frame: &DecodedFrame) -> &[T::Row] {
-    match &*frame.tables[T::ID.index()] {
-        TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-            rows.rows::<T>().unwrap_or(&[])
-        }
-        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => &[],
-    }
+/// Each named slot's definite country name, or why it has none.
+pub(crate) type SlotNames = HashMap<u32, Result<String, String>>;
+
+/// The definite names of `slots` in `frame`.
+pub(crate) fn slot_names(
+    frame: &DecodedFrame,
+    slots: impl IntoIterator<Item = u32>,
+    localisation: &Localisation,
+) -> SlotNames {
+    // This shared resolver indexes canonical country slots once. Repeated
+    // selected-slot reverse searches become quadratic for a large captor census.
+    let names = CountryNames::read(frame, localisation);
+    slots
+        .into_iter()
+        .map(|slot| {
+            let name = names
+                .name_with(slot, "_DEF")
+                .map(|name| installed_content_localisation::localisation::crt_case_text(&name, true, true))
+                .and_then(|name| dashboard_text::catalogue::plain_text(&name));
+            (slot, name)
+        })
+        .collect()
 }
 
 #[derive(Default)]
 pub(super) struct CountryNameCache {
-    input: BTreeMap<u32, Option<Result<Operands, String>>>,
-    slots: BTreeMap<CountryIdentity, bool>,
-    reserved_built: Option<u8>,
     names: BTreeMap<CountryIdentity, Result<String, String>>,
 }
 
 impl CountryNameCache {
+    /// Names `slots` at an hour of `countries` and `links`: each present one as `named` names its
+    /// slot.
     pub(super) fn update(
         &mut self,
-        frame: &DecodedFrame,
         slots: BTreeSet<CountryIdentity>,
-        localisation: &Localisation,
-    ) -> bool {
-        if slots.is_empty() {
-            let changed = !self.slots.is_empty();
-            self.input.clear();
-            self.slots.clear();
-            self.names.clear();
-            self.reserved_built = None;
-            return changed;
-        }
-        let countries = rows::<tables::Countries>(frame);
-        let links = rows::<tables::CountryLinks>(frame);
-        let requested: BTreeMap<_, _> = slots
-            .iter()
-            .map(|&identity| {
-                (
-                    identity,
-                    identity == CountryIdentity { slot: 0, id: 0 }
-                        || country_at(identity, countries, links).is_some(),
-                )
-            })
-            .collect();
-        // This shared resolver indexes canonical country slots once. Repeated
-        // selected-slot reverse searches become quadratic for a large captor census.
-        let names = CountryNames::read(frame, localisation);
-        let mut pending: Vec<_> = slots.iter().map(|identity| identity.slot).collect();
-        let mut input = BTreeMap::new();
-        while let Some(slot) = pending.pop() {
-            if input.contains_key(&slot) {
-                continue;
-            }
-            let operand = names.operands(slot).cloned();
-            if let Some(overlord) = operand
-                .as_ref()
-                .and_then(|value| value.as_ref().ok())
-                .and_then(|value| value.overlord)
-            {
-                pending.push(overlord);
-            }
-            input.insert(slot, operand);
-        }
-        // The zero country's three caches have independent built bits,
-        // separate from its generator operands.
-        let reserved_built = input
-            .contains_key(&0)
-            .then(|| {
-                frame
-                    .complete::<tables::ReservedCountryNaming>()
-                    .ok()
-                    .and_then(|rows| match rows {
-                        [row] => Some(row.built),
-                        _ => None,
-                    })
-            })
-            .flatten();
-        if self.input == input && self.slots == requested && self.reserved_built == reserved_built {
-            return false;
-        }
-        self.names = requested
-            .iter()
-            .map(|(&identity, &present)| {
+        countries: &[CountryRow],
+        links: &[CountryLinkRow],
+        named: &SlotNames,
+    ) -> io::Result<()> {
+        self.names = slots
+            .into_iter()
+            .map(|identity| {
+                let present = identity == CountryIdentity { slot: 0, id: 0 }
+                    || country_at(identity, countries, links).is_some();
                 let name = if present {
-                    names
-                        .name_with(identity.slot, "_DEF")
-                        .map(|name| {
-                            installed_content_localisation::localisation::crt_case_text(&name, true, true)
-                        })
-                        .and_then(|name| dashboard_text::catalogue::plain_text(&name))
+                    named.get(&identity.slot).cloned().ok_or_else(|| {
+                        io::Error::other("A captor's country name was not read")
+                    })?
                 } else {
                     Err("Country naming identity is unavailable at this hour".into())
                 };
-                (identity, name)
+                Ok((identity, name))
             })
-            .collect();
-        self.input = input;
-        self.slots = requested;
-        self.reserved_built = reserved_built;
-        true
+            .collect::<io::Result<_>>()?;
+        Ok(())
     }
 
     pub(super) fn name(&self, identity: CountryIdentity) -> Result<&str, &str> {
@@ -122,6 +80,39 @@ impl CountryNameCache {
 mod tests {
     use super::*;
     use dashboard_base::test_fixtures::source;
+    use replay_data::rows::{TableSchema, tables};
+    use replay_frame::frame::TableView;
+
+    fn rows<T: TableSchema>(frame: &DecodedFrame) -> &[T::Row] {
+        match &*frame.tables[T::ID.index()] {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
+                rows.rows::<T>().unwrap_or(&[])
+            }
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => &[],
+        }
+    }
+
+    /// Names `identities` as the roster does at `frame`'s hour.
+    fn update(
+        cache: &mut CountryNameCache,
+        frame: &DecodedFrame,
+        identities: BTreeSet<CountryIdentity>,
+        localisation: &Localisation,
+    ) {
+        let named = slot_names(
+            frame,
+            identities.iter().map(|identity| identity.slot),
+            localisation,
+        );
+        cache
+            .update(
+                identities,
+                rows::<tables::Countries>(frame),
+                rows::<tables::CountryLinks>(frame),
+                &named,
+            )
+            .unwrap();
+    }
     use replay_data::{
         rows::AutonomyRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
         rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows,
@@ -160,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn country_name_cache_ignores_unrelated_values_and_refreshes_naming_operands() {
+    fn country_name_cache_refreshes_naming_operands() {
         let mut frame = naming_frame(b"synthetic");
         frame.tables[TableId::PoliticalParties.index()] =
             TableView::Complete(TableRows::PoliticalParties(vec![])).into();
@@ -172,26 +163,26 @@ mod tests {
         .into_iter()
         .collect();
         let mut cache = CountryNameCache::default();
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &loc));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &loc);
         assert_eq!(cache.name(identity), Ok("Old name"));
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *frame.tables[TableId::Countries.index()]
         {
             rows[0].command_power_raw += 1;
         }
-        assert!(!cache.update(&frame, BTreeSet::from([identity]), &loc));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &loc);
         if let TableView::Complete(TableRows::CountryAppearance(rows)) =
             &mut *frame.tables[TableId::CountryAppearance.index()]
         {
             rows[0].red += 1;
         }
-        assert!(!cache.update(&frame, BTreeSet::from([identity]), &loc));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &loc);
         if let TableView::Complete(TableRows::CountryAppearance(rows)) =
             &mut *frame.tables[TableId::CountryAppearance.index()]
         {
             rows[0].cosmetic_tag = b"changed".to_vec();
         }
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &loc));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &loc);
         assert_eq!(cache.name(identity), Ok("New name"));
     }
 
@@ -286,7 +277,7 @@ mod tests {
         .collect();
         let mut cache = CountryNameCache::default();
         let compare = |cache: &mut CountryNameCache, frame: &DecodedFrame| {
-            assert!(cache.update(frame, BTreeSet::from([identity]), &localisation));
+            update(cache, frame, BTreeSet::from([identity]), &localisation);
             let expected = CountryNames::read(frame, &localisation)
                 .name_with(identity.slot, "_DEF")
                 .map(|name| installed_content_localisation::localisation::crt_case_text(&name, true, true))
@@ -357,7 +348,7 @@ mod tests {
             .into_iter()
             .collect();
         let mut cache = CountryNameCache::default();
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &localisation);
         assert_eq!(cache.name(identity), Ok(""));
         assert_eq!(
             installed_content_country_names::country_names::original_or_own_tag(&frame, 0),
@@ -368,7 +359,7 @@ mod tests {
         {
             rows[0].built = 2;
         }
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &localisation);
         assert_eq!(cache.name(identity), Ok("The reserved name"));
         assert_eq!(
             installed_content_country_names::country_names::original_or_own_tag(&frame, 0),
@@ -384,7 +375,7 @@ mod tests {
             .collect();
         let identity = CountryIdentity { slot: 1, id: 7 };
         let mut cache = CountryNameCache::default();
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &localisation);
         assert_eq!(cache.name(identity), Ok("Synthetic"));
         let countries = rows::<tables::Countries>(&frame).to_vec();
         frame.tables[TableId::Countries.index()] = TableView::Truncated {
@@ -392,7 +383,7 @@ mod tests {
             missing: 1,
         }
         .into();
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &localisation);
         assert!(cache.name(identity).is_err());
         frame.tables[TableId::Countries.index()] =
             TableView::Complete(TableRows::Countries(vec![CountryRow {
@@ -408,7 +399,7 @@ mod tests {
                 canonical_slot: 1,
             }]))
             .into();
-        assert!(cache.update(&frame, BTreeSet::from([identity]), &localisation));
+        update(&mut cache, &frame, BTreeSet::from([identity]), &localisation);
         assert_eq!(
             cache.name(identity),
             Err("Country naming identity is unavailable at this hour")

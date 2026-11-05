@@ -1,11 +1,11 @@
 //! The intelligence products share one observer: decryption, operative
 //! placements, agency comparison, the operatives roster and the espionage log.
 //!
-//! The family is prepared on the segment driver: each segment's operator hands
-//! on the tables the observers read where an hour changed what they read
+//! The family is prepared on the segment driver: each segment's operator reads
+//! its tables as the observers read them and hands on what those reads changed
 //! ([`facts`]), and each branch's ordered emit tells the observers every hour
-//! on a frame of those tables as last handed on, publishing their pages where
-//! hourly preparation did ([`emit`]).
+//! from its reads as last handed on, publishing their pages where hourly
+//! preparation did ([`emit`]).
 use dashboard_base::{
     catalogue,
     prepared::frame_changes::FrameChanges,
@@ -18,6 +18,7 @@ use std::{io, sync::atomic::AtomicBool};
 
 #[cfg(test)]
 mod columnar_tests;
+pub mod delta;
 pub mod emit;
 pub mod facts;
 mod query;
@@ -96,6 +97,21 @@ pub(super) fn joins() -> usize {
     JOINS.with(std::cell::Cell::get)
 }
 
+/// What the observers read of an hour beside its change facts and countries, as each segment's
+/// operator hands it on ([`facts`]) and a branch's emit holds it.
+#[derive(Default)]
+pub struct Reads {
+    pub(crate) cipher: super::decryption::CipherRead,
+    /// The census of the last membership read the placements resolve.
+    pub(crate) placements: Option<super::operative_placements::PlacementRead>,
+    pub(crate) agencies: super::agency_comparison::AgencyRead,
+    pub(crate) roster: super::operatives_roster::RosterRead,
+    /// The last operations census read of a complete table.
+    pub(crate) operations: Option<super::espionage_log::CensusRead>,
+    /// The completions, each with its definition's name: none where incomplete.
+    pub(crate) completions: Option<Vec<super::espionage_log::Completion>>,
+}
+
 #[derive(Default)]
 pub struct Observer {
     decryption: super::decryption::prepared::Accumulator,
@@ -110,6 +126,7 @@ pub struct Observer {
 impl Observer {
     /// Whether observing `frame` reads the espionage log's series as last committed
     /// ([`Self::observe`]'s `history`).
+    #[cfg(test)]
     pub fn reads_history(&self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
         self.espionage.needs_history_changes(frame, changes)
     }
@@ -119,6 +136,7 @@ impl Observer {
     /// roster marks the inputs its next read joins afresh by them, read fields or not, as
     /// hourly preparation's change facts report a table rebuilt. `history` is the store the
     /// family last committed, given where [`Self::reads_history`].
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
@@ -170,6 +188,109 @@ impl Observer {
         } else {
             self.espionage
                 .observe_changes(source, frame, changes, &self.countries, None, cancelled)
+        }
+    }
+
+    /// Whether observing an hour whose change facts are `changes` from `reads` reads the
+    /// espionage log's series as last committed ([`Self::observe_reads`]'s `history`).
+    pub(crate) fn reads_history_of(&self, changes: &FrameChanges, reads: &Reads) -> bool {
+        self.espionage
+            .needs_history_read(changes, reads.completions.as_deref())
+    }
+
+    /// Observes `frame`'s hour from `reads`, as [`Self::observe`] observes a decoded frame:
+    /// `frame` holds only the countries, `flags` what the hour read of the census.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_reads(
+        &mut self,
+        source: &Source,
+        content: &Content,
+        frame: &DecodedFrame,
+        (flags, reads): (super::operatives_roster::Flags, &Reads),
+        (changes, roster): (&FrameChanges, Option<&FrameChanges>),
+        rebuilt: &dyn Fn(TableId) -> bool,
+        history: Option<(&store::Store, &store::SourceKey)>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope_phase("intelligence:observe");
+        let hour = frame.hour;
+        self.roster.note_rebuilt(rebuilt);
+        self.countries.update(frame, Some(changes));
+        self.decryption.observe_read(
+            hour,
+            changes,
+            self.countries.changed,
+            Some(&reads.cipher),
+            content.defines.as_ref().copied().map_err(String::as_str),
+            &content.warnings,
+        )?;
+        self.placements.observe_read(
+            hour,
+            super::operative_placements::Census {
+                read: flags.membership_read,
+                feature: flags.feature,
+                complete: flags.memberships,
+            },
+            changes,
+            &self.countries,
+            &content.catalogue,
+            reads.placements.as_ref(),
+        )?;
+        self.agencies.observe_read(
+            source,
+            hour,
+            changes,
+            &self.countries,
+            super::agency_comparison::Census {
+                read: flags.membership_read,
+                complete: flags.memberships,
+            },
+            &reads.agencies,
+        )?;
+        self.roster.observe_read(
+            hour,
+            flags,
+            &reads.roster,
+            roster.unwrap_or(changes),
+            &self.countries,
+            &content.operative,
+        )?;
+        let census = super::espionage_log::Census {
+            complete: flags.operations,
+            read: flags.operations_read,
+        };
+        let read = (reads.operations.as_ref(), reads.completions.as_deref());
+        let at = (frame.branch, hour);
+        if self.reads_history_of(changes, reads) {
+            let (store, key) = history
+                .ok_or_else(|| io::Error::other("The espionage log's history was not given"))?;
+            let mut reader = dashboard_base::prepared::series::Reader::new(
+                store,
+                key,
+                format!("espionage-log-{}-series", frame.branch),
+                cancelled,
+            )?;
+            self.espionage.observe_read(
+                source,
+                at,
+                census,
+                read,
+                changes,
+                &self.countries,
+                Some(&mut reader),
+                cancelled,
+            )
+        } else {
+            self.espionage.observe_read(
+                source,
+                at,
+                census,
+                read,
+                changes,
+                &self.countries,
+                None,
+                cancelled,
+            )
         }
     }
 

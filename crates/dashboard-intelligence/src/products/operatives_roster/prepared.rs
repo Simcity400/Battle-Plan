@@ -50,6 +50,13 @@ pub struct Params {
     pub include_departed: bool,
 }
 
+/// Where an hour's roster reads come from: the row path's frame, read as the hour needs, or the
+/// reads a segment's operator handed on.
+enum Given<'a> {
+    Frame(&'a replay_frame::frame::DecodedFrame),
+    Read(&'a RosterRead),
+}
+
 /// Tables whose change makes the next membership read join the census afresh.
 const MEMBERSHIP_INPUTS: [TableId; 5] = [
     TableId::OperativeMemberships,
@@ -102,14 +109,53 @@ impl Prepared {
         if rebuilt(TableId::CharacterOperatives)
             && let Some(scan) = &mut self.scan
         {
-            scan.characters = None;
+            scan.reader.forget_characters();
         }
         self.membership_dirty |= MEMBERSHIP_INPUTS.iter().any(|&table| rebuilt(table));
     }
 
+    /// Observes `frame` of the row path, reading what its hour needs of it.
     pub fn observe_bound(
         &mut self,
         frame: &replay_frame::frame::DecodedFrame,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        content: &Result<
+            Option<std::sync::Arc<super::super::operative_content::OperativeContent>>,
+            String,
+        >,
+    ) -> io::Result<()> {
+        self.observe_given(
+            frame.hour,
+            Flags::of(frame),
+            Given::Frame(frame),
+            changes,
+            countries,
+            content,
+        )
+    }
+
+    /// Observes `hour`, whose change facts are `changes`, from the roster's `read` of it.
+    pub(crate) fn observe_read(
+        &mut self,
+        hour: i32,
+        flags: Flags,
+        read: &RosterRead,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        content: &Result<
+            Option<std::sync::Arc<super::super::operative_content::OperativeContent>>,
+            String,
+        >,
+    ) -> io::Result<()> {
+        self.observe_given(hour, flags, Given::Read(read), changes, countries, content)
+    }
+
+    fn observe_given(
+        &mut self,
+        hour: i32,
+        flags: Flags,
+        given: Given<'_>,
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
         content: &Result<
@@ -130,10 +176,10 @@ impl Prepared {
         let scan = self.scan.as_mut().expect("roster scan");
         let previous = self.last;
         if changes.rows_changed[TableId::CharacterOperatives.index()] {
-            scan.characters = None;
+            scan.reader.forget_characters();
         }
         let identity_changed = countries.changed
-            || previous.is_none_or(|last| last.checked_add(1) != Some(frame.hour))
+            || previous.is_none_or(|last| last.checked_add(1) != Some(hour))
             || changes.rows_changed[TableId::SimulationFeatures.index()];
         self.membership_dirty |= MEMBERSHIP_INPUTS
             .iter()
@@ -160,10 +206,8 @@ impl Prepared {
                 }
             }
         }
-        let read = operative_rows::membership_read(frame)
-            && frame.complete::<tables::OperativeMemberships>().is_ok();
-        let operations_read = operative_rows::operations_read(frame)
-            && frame.complete::<tables::Operations>().is_ok();
+        let read = flags.membership_read && flags.memberships;
+        let operations_read = flags.operations_read && flags.operations;
         let inputs_changed = identity_changed
             || (read && self.membership_dirty)
             || (operations_read && self.operations_dirty)
@@ -182,14 +226,14 @@ impl Prepared {
         if inputs_changed {
             indices.extend(self.current.iter().copied());
         }
-        while let Some((&hour, _)) = self
+        while let Some((&due, _)) = self
             .clocks
             .first_key_value()
-            .filter(|(hour, _)| **hour <= frame.hour)
+            .filter(|(due, _)| **due <= hour)
         {
-            indices.extend(self.clocks.remove(&hour).expect("roster clock"));
+            indices.extend(self.clocks.remove(&due).expect("roster clock"));
         }
-        self.values.advance(frame.hour)?;
+        self.values.advance(hour)?;
         // Equal fresh reads date the already authenticated census without another
         // country/operative join. Empty known rosters get the same read proof.
         if read && !self.membership_dirty {
@@ -198,19 +242,19 @@ impl Prepared {
                 if !history.open {
                     continue;
                 }
-                history.read_hour = frame.hour;
+                history.read_hour = hour;
                 history.reply.observed.clear();
                 history.reply.observed.push(OperativeRosterObservation {
-                    first_hour: frame.hour,
-                    last_hour: frame.hour,
-                    read_hour: frame.hour,
+                    first_hour: hour,
+                    last_hour: hour,
+                    read_hour: hour,
                 });
                 let read_key = key(
                     &mut self.keys,
                     series::field_key(&history.reply.tag, "observed"),
                 )?;
                 self.values
-                    .observe(read_key, frame.hour, Some(i128::from(frame.hour)), false);
+                    .observe(read_key, hour, Some(i128::from(hour)), false);
             }
         }
         if !indices.is_empty() || inputs_changed {
@@ -234,21 +278,37 @@ impl Prepared {
                     }
                 }
             }
+            let owned;
+            let read = match given {
+                Given::Read(read) => read,
+                Given::Frame(frame) => {
+                    owned = scan.frame_read(
+                        frame,
+                        bound,
+                        countries,
+                        Some(changes),
+                        !self.membership_dirty,
+                    );
+                    &owned
+                }
+            };
             scan.observe_indices(
-                frame,
+                hour,
+                flags,
                 bound,
                 None,
                 Some(&indices),
                 Some(changes),
                 (!self.membership_dirty, self.operations_dirty),
                 countries,
+                read,
             )?;
         } else {
-            scan.observe_operations(frame)?;
-            if operative_rows::agency_feature(frame) == Some(false)
+            scan.observe_operations(hour, flags)?;
+            if flags.feature == Some(false)
                 && let Some(span) = scan.agency_absent.last_mut()
             {
-                span.last_hour = frame.hour;
+                span.last_hour = hour;
             }
         }
         if read {
@@ -260,21 +320,21 @@ impl Prepared {
         if identity_changed {
             self.current = current;
         }
-        self.first.get_or_insert(frame.hour);
-        self.last = Some(frame.hour);
+        self.first.get_or_insert(hour);
+        self.last = Some(hour);
         let operations = scan.operation_read_hour.map(i128::from);
         if operations_read
             || changes.rows_changed[TableId::Operations.index()]
-            || self.first == Some(frame.hour)
+            || self.first == Some(hour)
         {
             self.values
-                .observe(OPERATIONS, frame.hour, operations, false);
+                .observe(OPERATIONS, hour, operations, false);
         }
         if identity_changed {
             self.values.observe(
                 ABSENT,
-                frame.hour,
-                (operative_rows::agency_feature(frame) == Some(false)).then_some(1),
+                hour,
+                (flags.feature == Some(false)).then_some(1),
                 false,
             );
         }
@@ -285,7 +345,7 @@ impl Prepared {
                 series::field_key(&history.reply.tag, "observed"),
             )?;
             let observed = history.open.then_some(i128::from(history.read_hour));
-            self.values.observe(read_key, frame.hour, observed, false);
+            self.values.observe(read_key, hour, observed, false);
             let changed = std::mem::take(&mut history.changed);
             for entry_index in changed {
                 let entry = &mut history.reply.operatives[entry_index];
@@ -293,14 +353,14 @@ impl Prepared {
                     &mut self.keys,
                     series::field_key(&history.reply.tag, &format!("episode {}", entry.key)),
                 )?;
-                let run = entry.runs.last().filter(|run| run.last_hour == frame.hour);
+                let run = entry.runs.last().filter(|run| run.last_hour == hour);
                 if let Some(run) = run {
-                    if entry.departed_hour == Some(frame.hour) {
+                    if entry.departed_hour == Some(hour) {
                         self.values.push(
                             episode_key,
                             series::Run::new(
-                                frame.hour,
-                                frame.hour,
+                                hour,
+                                hour,
                                 i128::from(run.first_hour),
                                 true,
                             ),
@@ -308,9 +368,9 @@ impl Prepared {
                     } else {
                         self.values.observe(
                             episode_key,
-                            frame.hour,
+                            hour,
                             Some(i128::from(run.first_hour)),
-                            run.first_hour == frame.hour,
+                            run.first_hour == hour,
                         );
                     }
                 }
@@ -321,7 +381,7 @@ impl Prepared {
                 super::super::intelligence_prepared::work(|work| work.emitted += 1);
                 self.values.event(
                     episode_key,
-                    frame.hour,
+                    hour,
                     &Episode {
                         country,
                         entry: entry.clone(),
@@ -337,7 +397,7 @@ impl Prepared {
                         &mut self.keys,
                         series::field_key(&history.reply.tag, &format!("capture {}", entry.key)),
                     )?;
-                    self.values.event(capture_key, frame.hour, run)?;
+                    self.values.event(capture_key, hour, run)?;
                 }
                 if entry.runs.len() > 1 {
                     entry.runs.drain(..entry.runs.len() - 1);
@@ -362,7 +422,7 @@ impl Prepared {
                 .collect();
             if let Some(old) = self.active.get(&index) {
                 for &removed in old.difference(&active) {
-                    self.values.observe(removed, frame.hour, None, false);
+                    self.values.observe(removed, hour, None, false);
                 }
             }
             self.active.insert(index, active);
@@ -389,19 +449,17 @@ impl Prepared {
                     .filter_map(|held| {
                         // Truncated day rounding holds a cooldown's zero for 47 hours.
                         (1..=48)
-                            .filter_map(|offset| frame.hour.checked_add(offset))
-                            .find(|&hour| {
+                            .filter_map(|offset| hour.checked_add(offset))
+                            .find(|&at| {
                                 (held.value.captured == Some(true)
-                                    && hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24
-                                        != frame
-                                            .hour
-                                            .wrapping_sub(engine_native::cdate::HOUR_EPOCH)
+                                    && at.wrapping_sub(engine_native::cdate::HOUR_EPOCH) / 24
+                                        != hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH)
                                             / 24)
                                     || held.cooldown.is_some_and(|(kind, _, end)| {
                                         super::super::operative_content::cooldown_remaining(
-                                            kind, end, hour,
+                                            kind, end, at,
                                         ) != super::super::operative_content::cooldown_remaining(
-                                            kind, end, frame.hour,
+                                            kind, end, hour,
                                         )
                                     })
                             })

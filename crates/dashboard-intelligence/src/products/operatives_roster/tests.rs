@@ -1511,7 +1511,8 @@ fn operative_portrait_join_requires_full_reference_and_native_category() {
             ..Default::default()
         },
     ];
-    let links = character_links(&rows, &mut BoundedRefusals::new(REPLY_BUDGET));
+    let (links, refused) = character_links(&rows);
+    assert!(refused.is_empty());
     assert!(!links.contains_key(&reference));
     assert_eq!(links.get(&((2u64 << 32) | 17)), Some(&Some(9)));
     assert!(!links.contains_key(&((3u64 << 32) | 17)));

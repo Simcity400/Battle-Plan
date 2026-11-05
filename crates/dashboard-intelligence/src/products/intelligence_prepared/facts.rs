@@ -1,11 +1,28 @@
-//! The intelligence family's hours, projected from a columnar walk ([`replay::segments`]): the
-//! tables its observers read ([`super::TABLES`]), each held by the fields they read, handed on
-//! where the hour may have changed those fields, with the change facts the observers are told.
-//! The observers themselves run in the ordered emit ([`super::emit`]), which keeps every table
-//! as last handed on. Every segment starts cold: its first hour, and any hour after one it did
-//! not walk, reads every table again and reports every table changed.
+//! The intelligence family's operator on a columnar walk ([`replay::segments`]). It holds the
+//! tables its observers read ([`super::TABLES`]), each by the fields they read, and reads them as
+//! each observer does: the cipher scan's joined pairs, the placements' census, the agencies' rows,
+//! rosters and acquired levels, the roster's operatives, operations and captors' names, and the
+//! espionage log's operations and completions. It hands on only what an hour read otherwise than
+//! the segment's hour before; of the tables, only the countries and the rare completions reach the
+//! emit ([`super::emit`]). Every segment starts cold: its first hour reads every table again and
+//! hands each read on whole, and an hour after one it did not walk reads every table again and
+//! reports every table changed.
 
-use super::TABLES;
+use super::{
+    Reads, TABLES,
+    delta::{self, Keyed, Listed},
+};
+use crate::products::{
+    agency_comparison::{self, Acquired, AgencyRead, RosterCounts, ScannedUpgrades},
+    country_name_cache::{SlotNames, slot_names},
+    decryption::{self, CipherRead, PairRead},
+    espionage_log::{self, CensusRead, Completion, OperationRead},
+    operative_placements::{self, PlacementRead},
+    operative_rows::CountryInputs,
+    operatives_roster::{self, Experience, Flags, Member, Members},
+};
+use dashboard_base::prepared::frame_changes::FrameChanges;
+use dashboard_text::metadata::link_slot;
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columns,
@@ -13,10 +30,16 @@ use replay::{
 };
 use replay_data::rows::{
     AutonomyRow, CountryAppearanceRow, CountryRow, IntelligenceAgencyRow, PoliticalPartyRow,
-    PoliticsRow, RaidIntelInputRow, TableId, TableSchema, tables,
+    PoliticsRow, RaidIntelInputRow, TABLE_COUNT, TableId, TableSchema, tables,
 };
-use replay_frame::frame::{SharedView, TableView};
-use std::{io, mem::size_of};
+use replay_frame::frame::{
+    DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, SharedView, TableView, not_selected,
+};
+use std::{
+    collections::BTreeSet,
+    io,
+    mem::size_of,
+};
 
 // An hour's change bits are kept one per table.
 const _: () = assert!(READ.len() <= 32);
@@ -112,7 +135,8 @@ pub fn needs() -> io::Result<Needs> {
     })
 }
 
-/// One walked hour of a branch.
+/// One walked hour of a branch: its change facts, and what the observers read of it otherwise
+/// than the segment's hour before.
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
@@ -128,21 +152,195 @@ pub struct Hour {
     /// Whether the hour may have changed the fields of Operations the roster reads; the other
     /// observers read every field ([`ROSTER_OPERATIONS`]).
     pub roster_operations: bool,
-    /// The views that differ from those last handed on, each reduced to its read fields.
-    pub views: Vec<(TableId, SharedView)>,
-    /// What the views first handed on here hold.
+    pub(crate) flags: Flags,
+    /// Countries and CountryLinks as the observers read them, where either changed.
+    pub(crate) countries: Option<[SharedView; 2]>,
+    pub(crate) cipher: Option<Box<CipherDelta>>,
+    pub(crate) placements: Option<Box<PlacementRead>>,
+    pub(crate) agencies: Option<Box<AgencyDelta>>,
+    pub(crate) members: Option<Box<MembersDelta>>,
+    pub(crate) operations: Option<Option<Vec<(u64, Option<String>)>>>,
+    pub(crate) names: Option<Box<Keyed<u32, Result<String, String>>>>,
+    pub(crate) census: Option<Box<CensusDelta>>,
+    pub(crate) completions: Option<Option<Vec<Completion>>>,
+    /// What the hour's reads hold.
     held: usize,
 }
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        self.views.capacity() * size_of::<(TableId, SharedView)>() + self.held
+        self.held
     }
 }
 
 /// The read bit of OperativeMemberships and of Operations in [`Hour::reads`].
 pub const MEMBERSHIPS_READ: u8 = 1;
 pub const OPERATIONS_READ: u8 = 2;
+
+/// The cipher scan's read as read again.
+pub(crate) enum CipherDelta {
+    Whole(CipherRead),
+    Pairs {
+        incomplete: Option<String>,
+        pairs: Listed<PairRead>,
+    },
+}
+
+/// The agency scan's read as read again: its slots and acquired levels where built again, its
+/// roster at a membership read.
+pub(crate) struct AgencyDelta {
+    complete: bool,
+    refused: usize,
+    slots: Option<Keyed<u32, Option<IntelligenceAgencyRow>>>,
+    roster: Option<Option<RosterCounts>>,
+    acquired: Option<AcquiredDelta>,
+}
+
+pub(crate) enum AcquiredDelta {
+    Whole(Result<Acquired, (io::ErrorKind, String)>),
+    Slots {
+        slots: Option<Keyed<u32, ScannedUpgrades>>,
+        default: Option<ScannedUpgrades>,
+    },
+}
+
+/// The roster's census as read again.
+pub(crate) enum MembersDelta {
+    Whole(Members),
+    Slots {
+        notes: Vec<(String, String)>,
+        links_known: bool,
+        slots: Vec<(u32, SlotPatch)>,
+    },
+}
+
+/// A roster slot's members as read again.
+pub(crate) enum SlotPatch {
+    Whole(Vec<Member>),
+    /// Only their experience moved: by position, that of each member it moved.
+    Experience(Vec<(u32, Experience)>),
+    Gone,
+}
+
+/// The espionage log's operations census as read again.
+pub(crate) enum CensusDelta {
+    Whole(CensusRead),
+    Rows {
+        lexical: bool,
+        rows: Listed<OperationRead>,
+    },
+}
+
+impl Reads {
+    /// The reads `hour` handed on, applied to those held.
+    pub(crate) fn apply(&mut self, hour: &mut Hour) {
+        if let Some(cipher) = hour.cipher.take() {
+            match *cipher {
+                CipherDelta::Whole(read) => self.cipher = read,
+                CipherDelta::Pairs {
+                    incomplete: read,
+                    pairs: changed,
+                } => {
+                    if let CipherRead::Rows { incomplete, pairs } = &mut self.cipher {
+                        *incomplete = read;
+                        changed.apply(pairs);
+                    }
+                }
+            }
+        }
+        if let Some(placements) = hour.placements.take() {
+            self.placements = Some(*placements);
+        }
+        if let Some(agencies) = hour.agencies.take() {
+            let AgencyDelta {
+                complete,
+                refused,
+                slots,
+                roster,
+                acquired,
+            } = *agencies;
+            let held = &mut self.agencies;
+            held.complete = complete;
+            held.refused = refused;
+            if let Some(slots) = slots {
+                slots.apply(&mut held.slots);
+            }
+            if let Some(roster) = roster {
+                held.roster = roster;
+            }
+            match acquired {
+                Some(AcquiredDelta::Whole(acquired)) => held.acquired = acquired,
+                Some(AcquiredDelta::Slots { slots, default }) => {
+                    if let Ok((by_slot, held)) = &mut held.acquired {
+                        if let Some(slots) = slots {
+                            slots.apply(by_slot);
+                        }
+                        if let Some(default) = default {
+                            *held = default;
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        if let Some(members) = hour.members.take() {
+            match *members {
+                MembersDelta::Whole(members) => self.roster.members = Some(members),
+                MembersDelta::Slots {
+                    notes,
+                    links_known,
+                    slots,
+                } => {
+                    if let Some(held) = &mut self.roster.members {
+                        held.notes = notes;
+                        held.links_known = links_known;
+                        for (slot, patch) in slots {
+                            match patch {
+                                SlotPatch::Whole(members) => {
+                                    held.by_slot.insert(slot, members);
+                                }
+                                SlotPatch::Experience(moved) => {
+                                    if let Some(members) = held.by_slot.get_mut(&slot) {
+                                        for (position, experience) in &moved {
+                                            members[*position as usize].gain(experience);
+                                        }
+                                    }
+                                }
+                                SlotPatch::Gone => {
+                                    held.by_slot.remove(&slot);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(operations) = hour.operations.take() {
+            self.roster.operations = operations;
+        }
+        if let Some(names) = hour.names.take() {
+            names.apply(&mut self.roster.names);
+        }
+        if let Some(census) = hour.census.take() {
+            match *census {
+                CensusDelta::Whole(census) => self.operations = Some(census),
+                CensusDelta::Rows { lexical, rows } => {
+                    if let Some(CensusRead {
+                        rows: Some(held),
+                        lexical: held_lexical,
+                    }) = &mut self.operations
+                    {
+                        *held_lexical = lexical;
+                        rows.apply(held);
+                    }
+                }
+            }
+        }
+        if let Some(completions) = hour.completions.take() {
+            self.completions = completions;
+        }
+    }
+}
 
 /// What one view keeps alive: its allocation and its rows or reason.
 fn view_bytes(view: &TableView) -> usize {
@@ -243,54 +441,391 @@ fn read_view(table: TableId, view: &SharedView, held: &mut Option<SharedView>) -
     }
 }
 
-/// One segment's projection.
-pub struct Projector {
+/// The tables whose change makes the roster's census read again, beside the fields of Operations
+/// naming its operations ([`ROSTER_OPERATIONS`]).
+const MEMBERSHIP_INPUTS: [TableId; 5] = [
+    TableId::OperativeMemberships,
+    TableId::SimulationFeatures,
+    TableId::CharacterOperatives,
+    TableId::CharacterPortraits,
+    TableId::LexicalTokens,
+];
+
+/// The tables a captor's name is read from.
+const NAMING: [TableId; 7] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+];
+
+/// What the segment handed on of each read, as the emit holds it: none before its first.
+#[derive(Default)]
+struct Sent {
+    cipher: Option<CipherRead>,
+    placements: Option<PlacementRead>,
+    agencies: Option<AgencyRead>,
+    members: Option<Members>,
+    operations: Option<Option<Vec<(u64, Option<String>)>>>,
+    names: Option<SlotNames>,
+    census: Option<CensusRead>,
+    completions: Option<Option<Vec<Completion>>>,
+}
+
+/// One segment's operator.
+pub struct Projector<'p> {
+    content: &'p super::Content,
     /// Each of [`TABLES`], by position: its hold and the fields read.
     holds: Vec<(TableId, Hold, u64)>,
     /// The fields of Operations the roster reads, a bit by column.
     roster_operations: u64,
-    /// Nothing is held: the next hour hands on every table, as a segment's first.
+    /// Nothing is held: the next hour reads every table, as a segment's first.
     cold: bool,
     last: Option<i32>,
-    /// By position: the view last handed on, and the last reduced view of a reduced table.
-    sent: Vec<Option<SharedView>>,
+    /// Every table as last read, each by its read fields; by position, the last reduced view of
+    /// a reduced table.
+    frame: DecodedFrame,
     reduced: Vec<Option<SharedView>>,
     /// The tables the hour asks of the walk's frame, kept from hour to hour.
     asks: Vec<(TableId, Hold)>,
     asked: Vec<usize>,
+    countries: CountryInputs,
+    cipher: decryption::Reader,
+    agencies: agency_comparison::Reader,
+    roster: operatives_roster::Reader,
+    /// The placements' and the roster's census must be read again at the next membership read.
+    placements_dirty: bool,
+    members_dirty: bool,
+    /// The slots a captor of the segment's last membership read can be in: none before it,
+    /// when every slot's name is read.
+    captors: Option<BTreeSet<u32>>,
+    sent: Sent,
+    /// The country views last handed on: a view handed on again is charged only once.
+    handed_countries: Option<[SharedView; 2]>,
 }
 
 /// What [`Projector::save`] writes: nothing but that it restarts, since every table is read
 /// again from the walker's tables at the next hour, as at a segment's first.
 const SAVED: &[u8] = b"intelligence projector: cold";
 
-impl Projector {
-    pub fn new() -> io::Result<Self> {
+impl<'p> Projector<'p> {
+    pub fn new(content: &'p super::Content) -> io::Result<Self> {
         let mut roster_operations = 0_u64;
         for name in ROSTER_OPERATIONS {
             roster_operations |= 1 << columns::field(TableId::Operations, name)?;
         }
         Ok(Self {
+            content,
             holds: holds()?,
             roster_operations,
             cold: true,
             last: None,
-            sent: vec![None; TABLES.len()],
+            frame: DecodedFrame {
+                branch: 0,
+                hour: 0,
+                tables: std::array::from_fn(|_| not_selected()),
+                metrics: Metrics::default(),
+            },
             reduced: vec![None; TABLES.len()],
             asks: Vec::with_capacity(TABLES.len()),
             asked: Vec::with_capacity(TABLES.len()),
+            countries: CountryInputs::default(),
+            cipher: decryption::Reader::default(),
+            agencies: agency_comparison::Reader::default(),
+            roster: operatives_roster::Reader::default(),
+            placements_dirty: true,
+            members_dirty: true,
+            captors: None,
+            sent: Sent::default(),
+            handed_countries: None,
         })
     }
 
     fn restart(&mut self) {
         self.cold = true;
         self.last = None;
-        self.sent.fill(None);
+        self.frame.tables = std::array::from_fn(|_| not_selected());
         self.reduced.fill(None);
+        self.countries = CountryInputs::default();
+        self.cipher = decryption::Reader::default();
+        self.agencies = agency_comparison::Reader::default();
+        self.roster = operatives_roster::Reader::default();
+        self.placements_dirty = true;
+        self.members_dirty = true;
+        self.captors = None;
+        self.sent = Sent::default();
+        self.handed_countries = None;
+    }
+
+    /// What the frame's views and the reads handed on hold.
+    fn held_bytes(&self) -> usize {
+        let views: usize = self
+            .frame
+            .tables
+            .iter()
+            .chain(self.reduced.iter().flatten())
+            .map(|view| view_bytes(view))
+            .sum();
+        let sent = &self.sent;
+        let cipher = match &sent.cipher {
+            Some(CipherRead::Rows { pairs, .. }) => {
+                pairs.capacity() * size_of::<PairRead>()
+                    + pairs.iter().map(PairRead::heap).sum::<usize>()
+            }
+            _ => 0,
+        };
+        let agencies = sent.agencies.as_ref().map_or(0, |read| {
+            read.slots
+                .values()
+                .map(|row| size_of::<(u32, Option<IntelligenceAgencyRow>)>() + agency_comparison::agency_heap(row))
+                .sum::<usize>()
+                + read.acquired.as_ref().map_or(0, |(slots, _)| {
+                    slots
+                        .values()
+                        .map(|upgrades| {
+                            size_of::<(u32, ScannedUpgrades)>()
+                                + agency_comparison::upgrades_heap(upgrades)
+                        })
+                        .sum()
+                })
+        });
+        let members = sent
+            .members
+            .as_ref()
+            .map_or(0, |members| groups(members.by_slot.values()));
+        let names = sent.names.as_ref().map_or(0, |names| {
+            names
+                .values()
+                .map(|name| match name {
+                    Ok(name) | Err(name) => size_of::<(u32, Result<String, String>)>() + name.capacity(),
+                })
+                .sum()
+        });
+        let census = sent
+            .census
+            .as_ref()
+            .and_then(|census| census.rows.as_ref())
+            .map_or(0, |rows| {
+                rows.capacity() * size_of::<OperationRead>()
+                    + rows.iter().map(OperationRead::heap).sum::<usize>()
+            });
+        let completions = sent.completions.iter().flatten().flatten().map(|completion| {
+            size_of::<Completion>() + espionage_log::completion_heap(completion)
+        });
+        views
+            + cipher
+            + sent.placements.as_ref().map_or(0, PlacementRead::heap)
+            + agencies
+            + members
+            + names
+            + census
+            + completions.sum::<usize>()
     }
 }
 
-impl Operator<World> for Projector {
+/// `new` where it differs from `sent`, which it becomes.
+fn whole<T: Clone + PartialEq>(sent: &mut Option<T>, new: T) -> Option<T> {
+    if sent.as_ref() == Some(&new) {
+        return None;
+    }
+    *sent = Some(new.clone());
+    Some(new)
+}
+
+/// What `new` changed of the cipher read `sent`, which it becomes.
+fn cipher_delta(sent: &mut Option<CipherRead>, new: CipherRead) -> Option<CipherDelta> {
+    let delta = match (sent.as_ref(), &new) {
+        (
+            Some(CipherRead::Rows {
+                incomplete: held,
+                pairs: old,
+            }),
+            CipherRead::Rows { incomplete, pairs },
+        ) => match Listed::of(Some(old.as_slice()), pairs, PairRead::key) {
+            None if held == incomplete => return None,
+            None => Some(CipherDelta::Pairs {
+                incomplete: incomplete.clone(),
+                pairs: Listed::Patched(Vec::new()),
+            }),
+            Some(Listed::Whole(_)) => Some(CipherDelta::Whole(new.clone())),
+            Some(pairs) => Some(CipherDelta::Pairs {
+                incomplete: incomplete.clone(),
+                pairs,
+            }),
+        },
+        (Some(held), _) if *held == new => return None,
+        _ => Some(CipherDelta::Whole(new.clone())),
+    };
+    *sent = Some(new);
+    delta
+}
+
+/// What `new` changed of the agency read `sent`, which it becomes: its slots and acquired levels
+/// where `rebuilt`, its roster at a membership `read`.
+fn agency_delta(
+    sent: &mut Option<AgencyRead>,
+    new: &AgencyRead,
+    rebuilt: (bool, bool),
+    read: bool,
+) -> Option<Box<AgencyDelta>> {
+    let Some(held) = sent.as_mut() else {
+        *sent = Some(new.clone());
+        return Some(Box::new(AgencyDelta {
+            complete: new.complete,
+            refused: new.refused,
+            slots: Keyed::of(None, &new.slots),
+            roster: Some(new.roster.clone()),
+            acquired: Some(AcquiredDelta::Whole(new.acquired.clone())),
+        }));
+    };
+    let slots = rebuilt
+        .0
+        .then(|| Keyed::of(Some(&held.slots), &new.slots))
+        .flatten();
+    let roster = (read && held.roster != new.roster).then(|| new.roster.clone());
+    let acquired = if !rebuilt.1 || held.acquired == new.acquired {
+        None
+    } else {
+        match (&held.acquired, &new.acquired) {
+            (Ok((held_slots, held_default)), Ok((slots, default))) => Some(AcquiredDelta::Slots {
+                slots: Keyed::of(Some(held_slots), slots),
+                default: (held_default != default).then(|| default.clone()),
+            }),
+            _ => Some(AcquiredDelta::Whole(new.acquired.clone())),
+        }
+    };
+    if slots.is_none()
+        && roster.is_none()
+        && acquired.is_none()
+        && held.complete == new.complete
+        && held.refused == new.refused
+    {
+        return None;
+    }
+    held.complete = new.complete;
+    held.refused = new.refused;
+    if rebuilt.0 {
+        held.slots.clone_from(&new.slots);
+    }
+    if roster.is_some() {
+        held.roster.clone_from(&new.roster);
+    }
+    if acquired.is_some() {
+        held.acquired.clone_from(&new.acquired);
+    }
+    Some(Box::new(AgencyDelta {
+        complete: new.complete,
+        refused: new.refused,
+        slots,
+        roster,
+        acquired,
+    }))
+}
+
+/// What `new` changed of the roster census `sent`, which it becomes.
+fn members_delta(sent: &mut Option<Members>, new: Members) -> Option<MembersDelta> {
+    let delta = match sent.as_ref() {
+        None => MembersDelta::Whole(new.clone()),
+        Some(held) => {
+            let mut slots: Vec<(u32, SlotPatch)> = new
+                .by_slot
+                .iter()
+                .filter_map(|(&slot, members)| {
+                    let patch = match held.by_slot.get(&slot) {
+                        Some(old) if old == members => return None,
+                        Some(old) if old.len() == members.len() => {
+                            match experience_moved(old, members) {
+                                Some(moved) => SlotPatch::Experience(moved),
+                                None => SlotPatch::Whole(members.clone()),
+                            }
+                        }
+                        _ => SlotPatch::Whole(members.clone()),
+                    };
+                    Some((slot, patch))
+                })
+                .collect();
+            slots.extend(
+                held.by_slot
+                    .keys()
+                    .filter(|slot| !new.by_slot.contains_key(*slot))
+                    .map(|&slot| (slot, SlotPatch::Gone)),
+            );
+            if slots.is_empty() && held.notes == new.notes && held.links_known == new.links_known
+            {
+                return None;
+            }
+            MembersDelta::Slots {
+                notes: new.notes.clone(),
+                links_known: new.links_known,
+                slots,
+            }
+        }
+    };
+    *sent = Some(new);
+    Some(delta)
+}
+
+/// By position, the experience of each of `new` that moved from `old`, where that is all that
+/// changed: none where any changed otherwise.
+fn experience_moved(old: &[Member], new: &[Member]) -> Option<Vec<(u32, Experience)>> {
+    let mut moved = Vec::new();
+    for (position, (old, new)) in (0_u32..).zip(old.iter().zip(new)) {
+        if old != new {
+            moved.push((position, old.experience_moved(new)?));
+        }
+    }
+    Some(moved)
+}
+
+/// What `new` changed of the operations census `sent`, which it becomes.
+fn census_delta(sent: &mut Option<CensusRead>, new: CensusRead) -> Option<CensusDelta> {
+    let delta = match (sent.as_ref(), &new.rows) {
+        (
+            Some(CensusRead {
+                rows: Some(old),
+                lexical,
+            }),
+            Some(rows),
+        ) => match Listed::of(Some(old.as_slice()), rows, |row: &OperationRead| row.id) {
+            None if *lexical == new.lexical => return None,
+            None => CensusDelta::Rows {
+                lexical: new.lexical,
+                rows: Listed::Patched(Vec::new()),
+            },
+            Some(Listed::Whole(_)) => CensusDelta::Whole(new.clone()),
+            Some(rows) => CensusDelta::Rows {
+                lexical: new.lexical,
+                rows,
+            },
+        },
+        (Some(held), _) if *held == new => return None,
+        _ => CensusDelta::Whole(new.clone()),
+    };
+    *sent = Some(new);
+    Some(delta)
+}
+
+/// The slots a captor of `frame`'s membership read can be in: the reserved slot, and each
+/// captured operative's captor's.
+fn captors(frame: &DecodedFrame, countries: &CountryInputs) -> BTreeSet<u32> {
+    let mut slots = BTreeSet::from([0]);
+    if let (Some((_, links)), Ok(rows)) = (
+        countries.complete(),
+        frame.complete::<tables::OperativeMemberships>(),
+    ) {
+        slots.extend(
+            rows.iter()
+                .filter(|row| row.assignment == 0 && row.capturer_country != 0)
+                .filter_map(|row| link_slot(links, row.capturer_country)),
+        );
+    }
+    slots
+}
+
+impl Operator<World> for Projector<'_> {
     type Output = Hour;
 
     fn start(&mut self, _: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
@@ -328,11 +863,8 @@ impl Operator<World> for Projector {
                 changed |= 1 << position;
             }
         }
-        let mut views = Vec::new();
-        let mut held = 0;
         if !self.asks.is_empty() {
             let frame = world.frame_held(hour.state, &self.asks)?;
-            views.reserve_exact(self.asked.len());
             for &position in &self.asked {
                 let table = self.holds[position].0;
                 let view = read_view(
@@ -340,17 +872,14 @@ impl Operator<World> for Projector {
                     &frame.tables[table.index()],
                     &mut self.reduced[position],
                 );
-                if self.sent[position]
-                    .as_ref()
-                    .is_some_and(|sent| SharedView::ptr_eq(sent, &view))
-                {
-                    continue;
+                let held = &mut self.frame.tables[table.index()];
+                if !SharedView::ptr_eq(held, &view) {
+                    *held = view;
                 }
-                held += view_bytes(&view);
-                self.sent[position] = Some(view.clone());
-                views.push((table, view));
             }
         }
+        self.frame.branch = hour.branch;
+        self.frame.hour = at;
         let read = |table: TableId| world.metrics().table_ns[table.index()] != 0;
         let reads = if read(TableId::OperativeMemberships) {
             MEMBERSHIPS_READ
@@ -361,8 +890,272 @@ impl Operator<World> for Projector {
         } else {
             0
         };
+        let mut table_read = [false; TABLE_COUNT];
+        for (table, bit) in [
+            (TableId::OperativeMemberships, MEMBERSHIPS_READ),
+            (TableId::Operations, OPERATIONS_READ),
+        ] {
+            let read = reads & bit != 0;
+            table_read[table.index()] = read;
+            self.frame.metrics.table_ns[table.index()] = if read {
+                READ_TIME_NOT_RECORDED
+            } else {
+                0
+            };
+        }
         let roster_operations =
             opens || world.touched(TableId::Operations, self.roster_operations);
+        let mut rows_changed = [opens; TABLE_COUNT];
+        for (position, table) in TABLES.iter().enumerate() {
+            rows_changed[table.index()] |= changed & (1 << position) != 0;
+        }
+        let changes = FrameChanges::observed(rows_changed, table_read, [false; TABLE_COUNT], None);
+        let rows = |table: TableId| rows_changed[table.index()];
+        let mut held = 0;
+        self.countries.update(&self.frame, Some(&changes));
+        let countries = (rows(TableId::Countries) || rows(TableId::CountryLinks)).then(|| {
+            let views = [
+                self.frame.tables[TableId::Countries.index()].clone(),
+                self.frame.tables[TableId::CountryLinks.index()].clone(),
+            ];
+            held += 2 * size_of::<SharedView>();
+            // Each newly handed-on allocation stays alive with the queued hour: charge its rows.
+            for (index, view) in views.iter().enumerate() {
+                let handed = self.handed_countries.as_ref().map(|last| &last[index]);
+                if !handed.is_some_and(|last| SharedView::ptr_eq(last, view)) {
+                    held += view_bytes(view);
+                }
+            }
+            self.handed_countries = Some(views.clone());
+            views
+        });
+        let flags = Flags::of(&self.frame);
+        let content = self.content;
+        let frame = &self.frame;
+        let inputs = &self.countries;
+        let complete = inputs.complete().is_some();
+        // Ciphers.
+        let cipher = (rows(TableId::Cryptology)
+            || rows(TableId::RaidIntelInputs)
+            || inputs.changed)
+            .then(|| {
+                let read = self.cipher.read(
+                    frame,
+                    content.defines.as_ref().ok().copied(),
+                    inputs,
+                    Some(&changes),
+                );
+                cipher_delta(&mut self.sent.cipher, read).map(Box::new)
+            })
+            .flatten();
+        if let Some(cipher) = &cipher {
+            held += size_of::<CipherDelta>();
+            held += match &**cipher {
+                CipherDelta::Whole(CipherRead::Rows { pairs, .. }) => {
+                    pairs.capacity() * size_of::<PairRead>()
+                        + pairs.iter().map(PairRead::heap).sum::<usize>()
+                }
+                CipherDelta::Whole(_) => 0,
+                CipherDelta::Pairs { pairs, .. } => pairs.bytes(PairRead::heap),
+            };
+        }
+        // Placements.
+        self.placements_dirty |= rows(TableId::OperativeMemberships) || inputs.changed;
+        let census = operative_placements::Census {
+            read: flags.membership_read,
+            feature: flags.feature,
+            complete: flags.memberships,
+        };
+        let placements = (self.placements_dirty && census.resolves(inputs))
+            .then(|| {
+                self.placements_dirty = false;
+                let captured = frame
+                    .complete::<tables::OperativeMemberships>()
+                    .expect("a complete census");
+                let localisation = content
+                    .catalogue
+                    .as_ref()
+                    .ok()
+                    .and_then(Option::as_deref)
+                    .map(|catalogue| catalogue.localisation.as_ref());
+                whole(
+                    &mut self.sent.placements,
+                    operative_placements::read(captured, inputs, localisation),
+                )
+                .map(Box::new)
+            })
+            .flatten();
+        if let Some(placements) = &placements {
+            held += size_of::<PlacementRead>() + placements.heap();
+        }
+        // Agencies.
+        let agencies = if complete
+            && (rows(TableId::IntelligenceAgencies)
+                || rows(TableId::AgencyUpgradeLevels)
+                || rows(TableId::LexicalTokens)
+                || rows(TableId::OperativeMemberships)
+                || flags.membership_read
+                || inputs.changed)
+        {
+            self.agencies.read(frame, inputs, Some(&changes))?;
+            agency_delta(
+                &mut self.sent.agencies,
+                self.agencies.current(),
+                self.agencies.rebuilt(),
+                flags.membership_read,
+            )
+        } else {
+            None
+        };
+        if let Some(agencies) = &agencies {
+            held += size_of::<AgencyDelta>()
+                + agencies
+                    .slots
+                    .as_ref()
+                    .map_or(0, |slots| slots.bytes(agency_comparison::agency_heap))
+                + agencies
+                    .roster
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .map_or(0, |(counts, _, _)| {
+                        counts.capacity() * size_of::<(u32, u32)>()
+                    })
+                + match &agencies.acquired {
+                    Some(AcquiredDelta::Whole(Ok((slots, _)))) => slots
+                        .values()
+                        .map(|upgrades| {
+                            size_of::<(u32, ScannedUpgrades)>()
+                                + agency_comparison::upgrades_heap(upgrades)
+                        })
+                        .sum(),
+                    Some(AcquiredDelta::Slots {
+                        slots: Some(slots), ..
+                    }) => slots.bytes(agency_comparison::upgrades_heap),
+                    _ => 0,
+                };
+        }
+        // The roster's census, operations and captors' names.
+        let operative = content.operative.as_ref().ok().and_then(Option::as_deref);
+        if rows(TableId::CharacterOperatives)
+            || rebuilt & (1 << position(TableId::CharacterOperatives)) != 0
+        {
+            self.roster.forget_characters();
+        }
+        self.members_dirty |= MEMBERSHIP_INPUTS.iter().any(|&table| rows(table))
+            || roster_operations
+            || inputs.changed;
+        let members = (self.members_dirty
+            && flags.feature == Some(true)
+            && flags.memberships
+            && flags.membership_read
+            && complete)
+            .then(|| {
+                self.members_dirty = false;
+                let members = self.roster.members(frame, operative, inputs, Some(&changes));
+                members_delta(&mut self.sent.members, members).map(Box::new)
+            })
+            .flatten();
+        if let Some(members) = &members {
+            held += size_of::<MembersDelta>();
+            held += match &**members {
+                MembersDelta::Whole(members) => groups(members.by_slot.values()),
+                MembersDelta::Slots { slots, .. } => {
+                    slots.capacity() * size_of::<(u32, SlotPatch)>()
+                        + slots
+                            .iter()
+                            .map(|(_, patch)| match patch {
+                                SlotPatch::Whole(members) => groups(std::iter::once(members)),
+                                SlotPatch::Experience(moved) => {
+                                    moved.capacity() * size_of::<(u32, Experience)>()
+                                        + moved
+                                            .iter()
+                                            .map(|(_, experience)| experience.heap())
+                                            .sum::<usize>()
+                                }
+                                SlotPatch::Gone => 0,
+                            })
+                            .sum::<usize>()
+                }
+            };
+        }
+        let operations = (rows(TableId::Operations) || rows(TableId::LexicalTokens))
+            .then(|| whole(&mut self.sent.operations, operatives_roster::operations(frame)))
+            .flatten();
+        if let Some(Some(operations)) = &operations {
+            held += operations
+                .iter()
+                .map(|(_, token)| size_of::<(u64, Option<String>)>() + delta::optional(token))
+                .sum::<usize>();
+        }
+        let names = match operative.filter(|_| complete) {
+            Some(operative) => {
+                let mut asked = NAMING.iter().any(|&table| rows(table));
+                if flags.membership_read && flags.memberships {
+                    let captors = captors(frame, inputs);
+                    asked |= self.captors.as_ref() != Some(&captors);
+                    self.captors = Some(captors);
+                }
+                asked
+                    .then(|| {
+                        let named = match &self.captors {
+                            Some(captors) => slot_names(
+                                frame,
+                                captors.iter().copied(),
+                                &operative.catalogue.localisation,
+                            ),
+                            // Before the segment's first membership read, every captor held
+                            // from before it can be in any slot.
+                            None => {
+                                let (_, links) = inputs.complete().expect("complete countries");
+                                slot_names(
+                                    frame,
+                                    std::iter::once(0)
+                                        .chain(links.iter().map(|link| link.canonical_slot)),
+                                    &operative.catalogue.localisation,
+                                )
+                            }
+                        };
+                        let keyed = Keyed::of(self.sent.names.as_ref(), &named);
+                        self.sent.names = Some(named);
+                        keyed.map(Box::new)
+                    })
+                    .flatten()
+            }
+            None => None,
+        };
+        if let Some(names) = &names {
+            held += size_of::<Keyed<u32, Result<String, String>>>();
+            held += names.bytes(|name| match name {
+                Ok(name) | Err(name) => name.capacity(),
+            });
+        }
+        // The espionage log's operations census and completions.
+        let census = (flags.operations && flags.operations_read)
+            .then(|| {
+                census_delta(
+                    &mut self.sent.census,
+                    espionage_log::census_read(frame, inputs),
+                )
+                .map(Box::new)
+            })
+            .flatten();
+        if let Some(census) = &census {
+            held += size_of::<CensusDelta>();
+            held += match &**census {
+                CensusDelta::Whole(census) => census.rows.as_ref().map_or(0, |rows| {
+                    rows.capacity() * size_of::<OperationRead>()
+                        + rows.iter().map(OperationRead::heap).sum::<usize>()
+                }),
+                CensusDelta::Rows { rows, .. } => rows.bytes(OperationRead::heap),
+            };
+        }
+        let completions = (rows(TableId::OperationCompletions) || rows(TableId::LexicalTokens))
+            .then(|| whole(&mut self.sent.completions, espionage_log::completions(frame)))
+            .flatten();
+        if let Some(Some(completions)) = &completions {
+            held += completions.capacity() * size_of::<Completion>()
+                + completions.iter().map(espionage_log::completion_heap).sum::<usize>();
+        }
         out.push(Hour {
             branch: hour.branch,
             hour: at,
@@ -371,20 +1164,22 @@ impl Operator<World> for Projector {
             rebuilt,
             reads,
             roster_operations,
-            views,
+            flags,
+            countries,
+            cipher,
+            placements,
+            agencies,
+            members,
+            operations,
+            names,
+            census,
+            completions,
             held,
         })
     }
 
     fn carried(&self) -> Option<usize> {
-        Some(
-            self.sent
-                .iter()
-                .chain(&self.reduced)
-                .flatten()
-                .map(|view| view_bytes(view))
-                .sum(),
-        )
+        Some(self.held_bytes())
     }
 
     fn save(&self, out: &mut Vec<u8>) -> io::Result<bool> {
@@ -402,4 +1197,21 @@ impl Operator<World> for Projector {
         self.restart();
         Ok(())
     }
+}
+
+/// What the census's slot groups hold.
+fn groups<'a>(by_slot: impl Iterator<Item = &'a Vec<Member>>) -> usize {
+    by_slot
+        .map(|members| {
+            members.capacity() * size_of::<Member>() + members.iter().map(Member::heap).sum::<usize>()
+        })
+        .sum()
+}
+
+/// `table`'s position in [`TABLES`].
+fn position(table: TableId) -> usize {
+    TABLES
+        .iter()
+        .position(|&read| read == table)
+        .expect("an intelligence table")
 }

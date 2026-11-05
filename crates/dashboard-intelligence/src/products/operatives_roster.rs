@@ -1,7 +1,7 @@
 //! Agency operatives, dated by each membership read. The active roster is
 //! separate from the three recruitment vectors. Capture is assignment 0,
 //! independent of the capturer link.
-use super::country_name_cache::CountryNameCache;
+use super::country_name_cache::{CountryNameCache, slot_names};
 use super::operative_content::{OperativeArt, draw_art};
 use super::{
     operative_rows, operative_rows::CountryIdentity, operative_rows::identity,
@@ -184,18 +184,22 @@ impl Strings {
     }
 
     fn intern(&mut self, value: Option<String>, budget: &mut Budget) -> io::Result<Option<u32>> {
+        self.intern_str(value.as_deref(), budget)
+    }
+
+    fn intern_str(&mut self, value: Option<&str>, budget: &mut Budget) -> io::Result<Option<u32>> {
         let Some(value) = value else {
             return Ok(None);
         };
-        if let Some(index) = self.indices.get(&value).copied() {
+        if let Some(index) = self.indices.get(value).copied() {
             self.used(index);
             return Ok(Some(index));
         }
         budget.add(&value)?;
         let index = u32::try_from(self.values.len())
             .map_err(|_| io::Error::other("Too many operative reply strings"))?;
-        self.indices.insert(value.clone(), index);
-        self.values.push(value);
+        self.indices.insert(value.to_owned(), index);
+        self.values.push(value.to_owned());
         self.used(index);
         Ok(Some(index))
     }
@@ -341,19 +345,85 @@ impl Held {
     }
 }
 
+/// An operative's values as read, before their strings are interned ([`Valued::intern`]), with
+/// what the read refused of them.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Valued {
+    values: OperativeRosterValues,
+    /// In intern order: the name's missing reason, the portrait, its missing reason, the
+    /// experience's missing reason, the assignment icon and the assignment's missing reason.
+    strings: [Option<String>; 6],
+    notes: Vec<(String, String)>,
+}
+
+impl Valued {
+    /// The values, their strings interned into `tables` in the order the roster first met them.
+    fn intern(
+        &self,
+        tables: &mut ReplyTables,
+        budget: &mut Budget,
+    ) -> io::Result<OperativeRosterValues> {
+        let [
+            name_missing,
+            portrait,
+            portrait_missing,
+            experience_missing,
+            assignment_icon,
+            assignment_missing,
+        ] = &self.strings;
+        let mut values = self.values.clone();
+        values.name_missing = tables.reasons.intern_str(name_missing.as_deref(), budget)?;
+        values.portrait = tables.artwork.intern_str(portrait.as_deref(), budget)?;
+        values.portrait_missing = tables
+            .reasons
+            .intern_str(portrait_missing.as_deref(), budget)?;
+        values.experience_missing = tables
+            .reasons
+            .intern_str(experience_missing.as_deref(), budget)?;
+        values.assignment_icon = tables
+            .artwork
+            .intern_str(assignment_icon.as_deref(), budget)?;
+        values.assignment_missing = tables
+            .reasons
+            .intern_str(assignment_missing.as_deref(), budget)?;
+        Ok(values)
+    }
+
+    fn heap(&self) -> usize {
+        let values = &self.values;
+        [
+            &values.name,
+            &values.experience_text,
+            &values.assignment_name,
+            &values.target_tag,
+            &values.capturer_tag,
+            &values.owner_tag,
+        ]
+        .into_iter()
+        .chain(&self.strings)
+        .map(|text| text.as_ref().map_or(0, String::capacity))
+        .sum::<usize>()
+            + values.experience_raw.capacity()
+            + self.notes.capacity() * std::mem::size_of::<(String, String)>()
+            + self
+                .notes
+                .iter()
+                .map(|(reason, identity)| reason.capacity() + identity.capacity())
+                .sum::<usize>()
+    }
+}
+
 fn operative_values(
     content: Option<&super::operative_content::OperativeContent>,
-    frame: &replay_frame::frame::DecodedFrame,
+    portraits: Option<&[replay_data::rows::CharacterPortraitRow]>,
     row: &OperativeMembershipRow,
     character: Option<u32>,
     operation_token: Option<&str>,
-    output: (&mut ReplyTables, &mut Budget, &mut BoundedRefusals),
-) -> io::Result<OperativeRosterValues> {
-    let (tables, budget, refused) = output;
+) -> Valued {
     let name =
         operative_rows::recorded_name(content.map(|c| c.catalogue.localisation.as_ref()), row);
     let portrait = match (content, character) {
-        (Some(content), Some(character)) => content.portrait(character, frame.complete::<tables::CharacterPortraits>().ok()),
+        (Some(content), Some(character)) => content.portrait(character, portraits),
         _ => Err("No recorded operative-to-character portrait link; the operative's own portrait path is not recorded".into()),
     };
     let experience = content.map(|content| content.experience(row.skill, row.experience_raw));
@@ -384,6 +454,7 @@ fn operative_values(
             })
     });
     let portrait_missing = portrait.as_ref().err().cloned();
+    let mut notes = Vec::new();
     for (reason, field) in [
         (name.missing.clone(), "name"),
         (portrait_missing.clone(), "portrait"),
@@ -405,48 +476,55 @@ fn operative_values(
             } else {
                 format!("operative {} {field}", row.id)
             };
-            refused.note(reason, identity);
+            notes.push((reason, identity));
         }
     }
     let captured = Some(operative_rows::captured(row.assignment));
     let capture_known =
         captured == Some(true) && row.captured_hour != engine_native::cgame_date::NULL_RAW_HOUR;
-    Ok(OperativeRosterValues {
-        name: name.name,
-        unnamed: name.unnamed,
-        name_missing: tables.reasons.intern(name.missing, budget)?,
-        // Art is kept as what it is drawn from, and drawn when a reply is served.
-        portrait: tables
-            .artwork
-            .intern(portrait.ok().map(|art| art.key()), budget)?,
-        portrait_missing: tables.reasons.intern(portrait_missing, budget)?,
-        skill: row.skill,
-        experience_raw: row.experience_raw.to_string(),
-        experience_text: experience.as_ref().and_then(|info| info.text.clone()),
-        experience_ratio: experience
-            .as_ref()
-            .and_then(|info| info.progress_raw)
-            .map(|raw| raw as f64 / 100_000.0),
-        experience_missing: tables.reasons.intern(experience_missing, budget)?,
-        assignment_name: assignment.as_ref().and_then(|info| info.name.clone()),
-        assignment_duration: None,
-        assignment_progress: None,
-        assignment_icon: tables.artwork.intern(
-            assignment
+    let assignment_icon = assignment
+        .as_ref()
+        .and_then(|info| info.icon.as_ref())
+        .map(|art| art.key());
+    Valued {
+        values: OperativeRosterValues {
+            name: name.name,
+            unnamed: name.unnamed,
+            name_missing: None,
+            // Art is kept as what it is drawn from, and drawn when a reply is served.
+            portrait: None,
+            portrait_missing: None,
+            skill: row.skill,
+            experience_raw: row.experience_raw.to_string(),
+            experience_text: experience.as_ref().and_then(|info| info.text.clone()),
+            experience_ratio: experience
                 .as_ref()
-                .and_then(|info| info.icon.as_ref())
-                .map(|art| art.key()),
-            budget,
-        )?,
-        assignment_icon_missing: None,
-        assignment_operation: row.assignment == 4,
-        assignment_missing: tables.reasons.intern(assignment_missing, budget)?,
-        captured,
-        captured_hour: capture_known.then_some(row.captured_hour),
-        capturer_tag: None,
-        owner_tag: None,
-        target_tag: None,
-    })
+                .and_then(|info| info.progress_raw)
+                .map(|raw| raw as f64 / 100_000.0),
+            experience_missing: None,
+            assignment_name: assignment.as_ref().and_then(|info| info.name.clone()),
+            assignment_duration: None,
+            assignment_progress: None,
+            assignment_icon: None,
+            assignment_icon_missing: None,
+            assignment_operation: row.assignment == 4,
+            assignment_missing: None,
+            captured,
+            captured_hour: capture_known.then_some(row.captured_hour),
+            capturer_tag: None,
+            owner_tag: None,
+            target_tag: None,
+        },
+        strings: [
+            name.missing,
+            portrait.ok().map(|art| art.key()),
+            portrait_missing,
+            experience_missing,
+            assignment_icon,
+            assignment_missing,
+        ],
+        notes,
+    }
 }
 
 /// An incremental serialized-size bound stops history growth, rather than
@@ -681,9 +759,462 @@ struct Scan {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     native_countries: operative_rows::CountryInputs,
+    /// The row path's census reads ([`Self::frame_read`]).
     #[serde(skip)]
-    characters: Option<HashMap<u64, Option<u32>>>,
+    reader: Reader,
 }
+
+/// The tables a capturer's name is read from beside the countries.
+const NAMING: [TableId; 5] = [
+    TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+];
+
+/// What an hour tells the roster beside its reads.
+#[derive(Clone, Copy)]
+pub(crate) struct Flags {
+    pub(crate) feature: Option<bool>,
+    /// OperativeMemberships is complete, and was read.
+    pub(crate) memberships: bool,
+    pub(crate) membership_read: bool,
+    /// Operations is complete, and was read.
+    pub(crate) operations: bool,
+    pub(crate) operations_read: bool,
+}
+
+impl Flags {
+    pub(crate) fn of(frame: &replay_frame::frame::DecodedFrame) -> Self {
+        Self {
+            feature: operative_rows::agency_feature(frame),
+            memberships: frame.complete::<tables::OperativeMemberships>().is_ok(),
+            membership_read: operative_rows::membership_read(frame),
+            operations: frame.complete::<tables::Operations>().is_ok(),
+            operations_read: operative_rows::operations_read(frame),
+        }
+    }
+}
+
+/// What the roster reads of an hour's tables.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RosterRead {
+    /// The census of a membership read.
+    pub(crate) members: Option<Members>,
+    /// Each Operations row's id and its definition's token, in row order: none unless
+    /// Operations is complete.
+    pub(crate) operations: Option<Vec<(u64, Option<String>)>>,
+    /// Each named slot's definite country name, or why it has none.
+    pub(crate) names: HashMap<u32, Result<String, String>>,
+}
+
+impl RosterRead {
+    fn operation_name(&self, id: u64) -> Option<&str> {
+        let operations = self.operations.as_ref()?;
+        let index = operations
+            .binary_search_by_key(&id, |&(id, _)| id)
+            .ok()?;
+        operations[index].1.as_deref()
+    }
+}
+
+/// A membership read's census: each roster slot's rows as read, in row order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Members {
+    /// What the read refused beside its rows: conflicting character links and unresolved
+    /// roster countries.
+    pub(crate) notes: Vec<(String, String)>,
+    /// Every row's roster country resolved.
+    pub(crate) links_known: bool,
+    pub(crate) by_slot: HashMap<u32, Vec<Member>>,
+}
+
+/// A membership row as the census reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Member {
+    /// Refused: the census is incomplete.
+    Refused { reason: String, identity: String },
+    /// Off the active roster, or a repeat of an earlier equal row.
+    Skipped,
+    Held(Box<MemberHeld>),
+}
+
+impl Member {
+    pub(crate) fn heap(&self) -> usize {
+        match self {
+            Self::Refused { reason, identity } => reason.capacity() + identity.capacity(),
+            Self::Skipped => 0,
+            Self::Held(held) => {
+                std::mem::size_of::<MemberHeld>()
+                    + held.read.heap()
+                    + held.unread.as_ref().map_or(0, |unread| {
+                        std::mem::size_of::<Valued>() + unread.heap()
+                    })
+                    + held
+                        .notes
+                        .iter()
+                        .map(|(reason, identity)| reason.capacity() + identity.capacity())
+                        .sum::<usize>()
+            }
+        }
+    }
+}
+
+impl Member {
+    /// `new`'s experience, where that is all `new` read otherwise than `self`.
+    pub(crate) fn experience_moved(&self, new: &Self) -> Option<Experience> {
+        let (Self::Held(old), Self::Held(new)) = (self, new) else {
+            return None;
+        };
+        let held = |old: &Valued, new: &Valued| {
+            old.strings == new.strings
+                && old.notes == new.notes
+                && same_but_experience(&old.values, &new.values)
+        };
+        let same = old.id == new.id
+            && old.assignment == new.assignment
+            && old.notes == new.notes
+            && old.owner == new.owner
+            && old.target == new.target
+            && old.capturer == new.capturer
+            && old.operation == new.operation
+            && old.cooldown == new.cooldown
+            && held(&old.read, &new.read)
+            && match (&old.unread, &new.unread) {
+                (None, None) => true,
+                (Some(old), Some(unread)) => {
+                    held(old, unread) && experience(&unread.values) == experience(&new.read.values)
+                }
+                _ => false,
+            };
+        let values = &new.read.values;
+        same.then(|| {
+            Some(Experience {
+                raw: values.experience_raw.parse().ok()?,
+                ratio: values.experience_ratio,
+                text: (old.read.values.experience_text != values.experience_text)
+                    .then(|| values.experience_text.clone()),
+            })
+        })
+        .flatten()
+    }
+
+    /// Takes on `experience`, as read after the read it was read from.
+    pub(crate) fn gain(&mut self, experience: &Experience) {
+        let Self::Held(held) = self else {
+            return;
+        };
+        for valued in std::iter::once(&mut held.read).chain(held.unread.as_mut()) {
+            valued.values.experience_raw = experience.raw.to_string();
+            valued.values.experience_ratio = experience.ratio;
+            if let Some(text) = &experience.text {
+                valued.values.experience_text.clone_from(text);
+            }
+        }
+    }
+}
+
+/// What a membership read moves of an operative from day to day: its experience.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Experience {
+    raw: i64,
+    ratio: Option<f64>,
+    /// Its text, where that changed.
+    text: Option<Option<String>>,
+}
+
+impl Experience {
+    pub(crate) fn heap(&self) -> usize {
+        self.text
+            .as_ref()
+            .and_then(Option::as_ref)
+            .map_or(0, String::capacity)
+    }
+}
+
+/// `values`' experience.
+fn experience(values: &OperativeRosterValues) -> (&str, &Option<String>, Option<f64>) {
+    (
+        &values.experience_raw,
+        &values.experience_text,
+        values.experience_ratio,
+    )
+}
+
+/// Whether `a` and `b` are equal but for their experience.
+fn same_but_experience(a: &OperativeRosterValues, b: &OperativeRosterValues) -> bool {
+    let OperativeRosterValues {
+        name,
+        unnamed,
+        name_missing,
+        portrait,
+        portrait_missing,
+        skill,
+        experience_raw: _,
+        experience_text: _,
+        experience_ratio: _,
+        experience_missing,
+        assignment_name,
+        assignment_duration,
+        assignment_progress,
+        assignment_missing,
+        assignment_icon,
+        assignment_icon_missing,
+        assignment_operation,
+        target_tag,
+        captured,
+        capturer_tag,
+        captured_hour,
+        owner_tag,
+    } = a;
+    *name == b.name
+        && *unnamed == b.unnamed
+        && *name_missing == b.name_missing
+        && *portrait == b.portrait
+        && *portrait_missing == b.portrait_missing
+        && *skill == b.skill
+        && *experience_missing == b.experience_missing
+        && *assignment_name == b.assignment_name
+        && *assignment_duration == b.assignment_duration
+        && *assignment_progress == b.assignment_progress
+        && *assignment_missing == b.assignment_missing
+        && *assignment_icon == b.assignment_icon
+        && *assignment_icon_missing == b.assignment_icon_missing
+        && *assignment_operation == b.assignment_operation
+        && *target_tag == b.target_tag
+        && *captured == b.captured
+        && *capturer_tag == b.capturer_tag
+        && *captured_hour == b.captured_hour
+        && *owner_tag == b.owner_tag
+}
+
+/// An active or departed operative as read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MemberHeld {
+    id: u64,
+    assignment: u32,
+    /// Its values with the operation's definition named, and without where they differ:
+    /// an operation is named only once Operations is read.
+    read: Valued,
+    unread: Option<Valued>,
+    /// The roles the read could not resolve.
+    notes: Vec<(String, String)>,
+    owner: Option<CountryIdentity>,
+    target: Option<CountryIdentity>,
+    capturer: Option<CountryIdentity>,
+    operation: Option<u64>,
+    cooldown: Option<(u32, i32, i32)>,
+}
+
+/// Reads the roster's census, keeping each operative reference's character until its links
+/// change.
+#[derive(Default)]
+pub(crate) struct Reader {
+    characters: Option<(HashMap<u64, Option<u32>>, Vec<(String, String)>)>,
+}
+
+impl Reader {
+    /// The character links are read again at the next census.
+    pub(crate) fn forget_characters(&mut self) {
+        self.characters = None;
+    }
+
+    /// The census of `frame`, a membership read of complete memberships whose countries
+    /// `inputs` are complete; `changes` None reads the character links again.
+    pub(crate) fn members(
+        &mut self,
+        frame: &replay_frame::frame::DecodedFrame,
+        content: Option<&super::operative_content::OperativeContent>,
+        inputs: &operative_rows::CountryInputs,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> Members {
+        let (_, links) = inputs.complete().expect("complete roster countries");
+        let rows = frame
+            .complete::<tables::OperativeMemberships>()
+            .expect("a complete census");
+        #[cfg(test)]
+        super::intelligence_prepared::work(|work| work.row_visits += rows.len());
+        if self.characters.is_none()
+            || changes
+                .is_none_or(|changes| changes.rows_changed[TableId::CharacterOperatives.index()])
+        {
+            self.characters = Some(character_links(
+                frame
+                    .complete::<tables::CharacterOperatives>()
+                    .unwrap_or(&[]),
+            ));
+        }
+        let (characters, character_notes) =
+            self.characters.as_ref().expect("current character links");
+        let mut notes = character_notes.clone();
+        // Group once; never country x operative scanning, nor a player/AI test.
+        let mut grouped: HashMap<u32, Vec<&OperativeMembershipRow>> = HashMap::new();
+        let mut links_known = true;
+        for row in rows {
+            if let Some(slot) = link_slot(links, row.roster_country) {
+                grouped.entry(slot).or_default().push(row);
+            } else {
+                links_known = false;
+                notes.push((
+                    "unresolved roster country".into(),
+                    format!("operative {} / roster {}", row.id, row.roster_country),
+                ));
+            }
+        }
+        let portraits = frame.complete::<tables::CharacterPortraits>().ok();
+        let slots = &inputs.slots;
+        let by_slot = grouped
+            .into_iter()
+            .map(|(slot, rows)| {
+                let mut unique = BTreeMap::new();
+                let members = rows
+                    .into_iter()
+                    .map(|row| {
+                        member(
+                            frame,
+                            content,
+                            (links, slots),
+                            (characters, portraits),
+                            &mut unique,
+                            row,
+                        )
+                    })
+                    .collect();
+                (slot, members)
+            })
+            .collect();
+        Members {
+            notes,
+            links_known,
+            by_slot,
+        }
+    }
+}
+
+/// `row` as its roster slot's census reads it, `unique` holding the rows read before it.
+fn member(
+    frame: &replay_frame::frame::DecodedFrame,
+    content: Option<&super::operative_content::OperativeContent>,
+    (links, slots): (&[CountryLinkRow], &HashMap<u32, CountryRow>),
+    (characters, portraits): (
+        &HashMap<u64, Option<u32>>,
+        Option<&[replay_data::rows::CharacterPortraitRow]>,
+    ),
+    unique: &mut BTreeMap<u64, operative_rows::MembershipSnapshot>,
+    row: &OperativeMembershipRow,
+) -> Member {
+    if let Err(reason) = operative_rows::supported_kind_assignment(row.roster_kind, row.assignment)
+    {
+        return Member::Refused {
+            reason,
+            identity: format!("operative {}", row.id),
+        };
+    }
+    // Only the active agency roster establishes membership.
+    if row.roster_kind != 0 {
+        return Member::Skipped;
+    }
+    match operative_rows::admit(unique, row, links, slots) {
+        Ok(true) => {}
+        Ok(false) => return Member::Skipped,
+        Err(reason) => {
+            return Member::Refused {
+                reason,
+                identity: format!("operative {}", row.id),
+            };
+        }
+    }
+    let operation_token = row
+        .operation
+        .require("OperativeMemberships.operation")
+        .ok()
+        .copied()
+        .flatten()
+        .and_then(|id| operation_name(frame, id));
+    let character = characters.get(&row.id).copied().flatten();
+    let mut read = operative_values(content, portraits, row, character, operation_token);
+    let mut unread = operation_token
+        .map(|_| operative_values(content, portraits, row, character, None))
+        .filter(|unread| *unread != read);
+    let owner = identity(row.owner_country, links, slots);
+    let target = row
+        .target_country
+        .require("OperativeMemberships.target_country")
+        .ok()
+        .copied()
+        .flatten()
+        .and_then(|raw| identity(raw, links, slots));
+    let captured = read.values.captured == Some(true);
+    // Captured status resolves raw zero to the reserved slot;
+    // it needs no Countries row.
+    let capturer = captured
+        .then(|| {
+            if row.capturer_country == 0 || link_slot(links, row.capturer_country) == Some(0) {
+                Some(CountryIdentity { slot: 0, id: 0 })
+            } else {
+                identity(row.capturer_country, links, slots)
+            }
+        })
+        .flatten();
+    let mut notes = Vec::new();
+    for (needed, resolved, role) in [
+        (true, owner, "owner"),
+        (
+            row.target_country
+                .require("OperativeMemberships.target_country")
+                .map_or(true, Option::is_some),
+            target,
+            "target",
+        ),
+        (captured, capturer, "capturer"),
+    ] {
+        if needed && resolved.is_none() {
+            notes.push((
+                format!("operative {role} not recorded or unresolved"),
+                format!("operative {} {role}", row.id),
+            ));
+        }
+    }
+    for valued in std::iter::once(&mut read).chain(unread.as_mut()) {
+        valued.values.owner_tag = tag_of(owner, slots);
+        valued.values.target_tag = tag_of(target, slots);
+        valued.values.capturer_tag = tag_of(capturer, slots);
+    }
+    Member::Held(Box::new(MemberHeld {
+        id: row.id,
+        assignment: row.assignment,
+        read,
+        unread,
+        notes,
+        owner,
+        target,
+        capturer,
+        operation: (row.assignment == 4)
+            .then(|| {
+                row.operation
+                    .require("OperativeMemberships.operation")
+                    .ok()
+                    .copied()
+                    .flatten()
+            })
+            .flatten(),
+        cooldown: operative_rows::cooldown(row).ok().flatten(),
+    }))
+}
+
+/// Each Operations row's id and its definition's token, in row order: none unless Operations
+/// is complete.
+pub(crate) fn operations(frame: &replay_frame::frame::DecodedFrame) -> Option<Vec<(u64, Option<String>)>> {
+    let operations = frame.complete::<tables::Operations>().ok()?;
+    Some(
+        operations
+            .iter()
+            .map(|row| (row.id, operation_name(frame, row.id).map(str::to_owned)))
+            .collect(),
+    )
+}
+
 impl Scan {
     fn new(
         tags: &[String],
@@ -720,7 +1251,7 @@ impl Scan {
             content_warning_count,
             #[cfg(any(test, feature = "test-support"))]
             native_countries: Default::default(),
-            characters: None,
+            reader: Reader::default(),
         })
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -744,7 +1275,7 @@ impl Scan {
         }
     }
 
-    fn observe_operations(&mut self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<()> {
+    fn observe_operations(&mut self, hour: i32, flags: Flags) -> io::Result<()> {
         let Self {
             operation_read_hour,
             operations,
@@ -752,32 +1283,30 @@ impl Scan {
             budget,
             ..
         } = self;
-        let decoded = frame;
-        if last_hour.is_some_and(|last| last.checked_add(1) != Some(frame.hour)) {
+        if last_hour.is_some_and(|last| last.checked_add(1) != Some(hour)) {
             *operation_read_hour = None;
         }
-        *last_hour = Some(frame.hour);
+        *last_hour = Some(hour);
         // collector::extended::intel times the operation/assignment walk
         // under Operations itself. A held table or slot peer is no read.
-        let operations_read = decoded.complete::<tables::Operations>().is_ok()
-            && operative_rows::operations_read(decoded);
-        if decoded.complete::<tables::Operations>().is_err() {
+        let operations_read = flags.operations && flags.operations_read;
+        if !flags.operations {
             *operation_read_hour = None;
         } else if operations_read {
-            *operation_read_hour = Some(frame.hour);
+            *operation_read_hour = Some(hour);
         }
         if let Some(read_hour) = *operation_read_hour {
             match operations.last_mut() {
                 Some(observation)
-                    if observation.last_hour.checked_add(1) == Some(frame.hour)
+                    if observation.last_hour.checked_add(1) == Some(hour)
                         && observation.read_hour == read_hour =>
                 {
-                    observation.last_hour = frame.hour
+                    observation.last_hour = hour
                 }
                 _ => {
                     let observation = OperativeRosterObservation {
-                        first_hour: frame.hour,
-                        last_hour: frame.hour,
+                        first_hour: hour,
+                        last_hour: hour,
                         read_hour,
                     };
                     budget.add(&observation)?;
@@ -790,21 +1319,22 @@ impl Scan {
     #[allow(clippy::too_many_arguments)]
     fn observe_indices(
         &mut self,
-        frame: &replay_frame::frame::DecodedFrame,
+        hour: i32,
+        flags: Flags,
         content: Option<&super::operative_content::OperativeContent>,
         selected_identities: Option<&BTreeSet<(u32, u32)>>,
         indices: Option<&BTreeSet<usize>>,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         reads: (bool, bool),
         inputs: &operative_rows::CountryInputs,
+        read: &RosterRead,
     ) -> io::Result<()> {
         let (reuse_read, operations_changed) = reads;
         let indices: Vec<_> = indices.map_or_else(
             || (0..self.histories.len()).collect(),
             |indices| indices.iter().copied().collect(),
         );
-        self.observe_operations(frame)?;
-        let decoded = frame;
+        self.observe_operations(hour, flags)?;
         let Self {
             histories,
             refused,
@@ -814,29 +1344,27 @@ impl Scan {
             budget,
             operation_read_hour,
             agency_absent,
-            characters,
             ..
         } = self;
-        let operations_read = decoded.complete::<tables::Operations>().is_ok()
-            && operative_rows::operations_read(decoded);
+        let operations_read = flags.operations && flags.operations_read;
         // Feature availability is independent of whether the roster table
         // exists: an absent agency must be reported even in old recordings.
-        let feature = operative_rows::agency_feature(decoded);
+        let feature = flags.feature;
         if feature != Some(true) {
             for &index in &indices {
                 let history = &mut histories[index];
                 history.interrupt();
-                history.track.step(None, frame.hour);
+                history.track.step(None, hour);
             }
             if feature == Some(false) {
                 match agency_absent.last_mut() {
-                    Some(span) if span.last_hour.checked_add(1) == Some(frame.hour) => {
-                        span.last_hour = frame.hour
+                    Some(span) if span.last_hour.checked_add(1) == Some(hour) => {
+                        span.last_hour = hour
                     }
                     _ => {
                         let span = dashboard_base::products::country_groups::HourSpan {
-                            first_hour: frame.hour,
-                            last_hour: frame.hour,
+                            first_hour: hour,
+                            last_hour: hour,
                         };
                         budget.add(&span)?;
                         agency_absent.push(span);
@@ -854,25 +1382,25 @@ impl Scan {
             }
             return Ok(());
         }
-        let (Some((countries, links)), Ok(rows)) = (
-            inputs.complete(),
-            decoded.complete::<tables::OperativeMemberships>(),
-        ) else {
+        let (Some((countries, links)), true) = (inputs.complete(), flags.memberships) else {
             for &index in &indices {
                 let history = &mut histories[index];
                 history.interrupt();
-                history.track.step(None, frame.hour);
+                history.track.step(None, hour);
             }
             return Ok(());
         };
-        let read = operative_rows::membership_read(decoded) && !reuse_read;
-        #[cfg(test)]
-        super::intelligence_prepared::work(|work| {
-            work.row_visits += if read { rows.len() } else { 0 }
-        });
-        // Build the full identity catalogue only for actual roster reads.
-        let slots = &inputs.slots;
-        if read {
+        let read_now = flags.membership_read && !reuse_read;
+        let members = if read_now {
+            Some(
+                read.members
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("The operative census was not read"))?,
+            )
+        } else {
+            None
+        };
+        if read_now {
             for id in &inputs.unresolved {
                 refused.note("country identity is unresolved", format!("country {id}"));
             }
@@ -887,9 +1415,9 @@ impl Scan {
                         .is_none_or(|row| row.tag != history.reply.tag.as_bytes())
                 })
             });
-        let tagged = (read || identity_changed).then_some(&inputs.tagged);
+        let tagged = (read_now || identity_changed).then_some(&inputs.tagged);
         let mut renamed = BTreeMap::new();
-        if !read && identity_changed {
+        if !read_now && identity_changed {
             for &index in &indices {
                 let history = &mut histories[index];
                 let Some(country) = history.country else {
@@ -900,7 +1428,7 @@ impl Scan {
                 };
                 if !history.open
                     || history.reply.observed.last().is_none_or(|observation| {
-                        observation.last_hour.checked_add(1) != Some(frame.hour)
+                        observation.last_hour.checked_add(1) != Some(hour)
                     })
                     || row.tag == history.reply.tag.as_bytes()
                     || inputs.aliases.get(row.tag.as_slice()) != Some(&1)
@@ -928,33 +1456,9 @@ impl Scan {
                     )));
             }
         }
-        if read
-            && (characters.is_none()
-                || changes.is_none_or(|changes| {
-                    changes.rows_changed[TableId::CharacterOperatives.index()]
-                }))
-        {
-            *characters = Some(character_links(
-                decoded
-                    .complete::<tables::CharacterOperatives>()
-                    .unwrap_or(&[]),
-                refused,
-            ));
-        }
-        // Group once; never country x operative scanning, nor a player/AI test.
-        let mut by_slot: HashMap<u32, Vec<&OperativeMembershipRow>> = HashMap::new();
-        let mut roster_links_known = true;
-        if read {
-            for row in rows {
-                if let Some(slot) = link_slot(links, row.roster_country) {
-                    by_slot.entry(slot).or_default().push(row);
-                } else {
-                    roster_links_known = false;
-                    refused.note(
-                        "unresolved roster country",
-                        format!("operative {} / roster {}", row.id, row.roster_country),
-                    );
-                }
+        if let Some(members) = members {
+            for (reason, identity) in &members.notes {
+                refused.note(reason.as_str(), identity.as_str());
             }
         }
         for &index in &indices {
@@ -977,7 +1481,7 @@ impl Scan {
             });
             let continues = history
                 .track
-                .step(current.map(|c| (c.slot, c.id)), frame.hour);
+                .step(current.map(|c| (c.slot, c.id)), hour);
             if !continues {
                 history.interrupt();
             }
@@ -997,7 +1501,7 @@ impl Scan {
                 .entry(scope.clone())
                 .or_insert_with(|| BoundedRefusals::new(usize::MAX));
             std::mem::swap(refused, local);
-            tables.scope(&scope, frame.hour, 0);
+            tables.scope(&scope, hour, 0);
             if let Some(Some((held, joined, read_hour))) = renamed.remove(&current) {
                 history.active.clear();
                 history.latest.clear();
@@ -1012,136 +1516,66 @@ impl Scan {
                 history.read_hour = read_hour;
                 history.open = true;
             }
-            if read {
+            if let Some(members) = members {
                 let mut values = BTreeMap::new();
                 let mut departed = Vec::new();
-                let mut unique = BTreeMap::new();
                 // An unassigned row could belong to any requested country;
                 // it cannot turn that country's unknown roster into empty.
-                let mut complete = roster_links_known;
-                for row in by_slot.get(&current.slot).into_iter().flatten() {
-                    if let Err(reason) =
-                        operative_rows::supported_kind_assignment(row.roster_kind, row.assignment)
-                    {
-                        refused.note(reason, format!("operative {}", row.id));
-                        complete = false;
-                        continue;
-                    }
-                    // Only the active agency roster establishes membership.
-                    if row.roster_kind != 0 {
-                        continue;
-                    }
-                    match operative_rows::admit(&mut unique, row, links, slots) {
-                        Ok(true) => {}
-                        Ok(false) => continue,
-                        Err(reason) => {
-                            refused.note(reason, format!("operative {}", row.id));
+                let mut complete = members.links_known;
+                for member in members.by_slot.get(&current.slot).into_iter().flatten() {
+                    let member = match member {
+                        Member::Refused { reason, identity } => {
+                            refused.note(reason.as_str(), identity.as_str());
                             complete = false;
                             continue;
                         }
+                        Member::Skipped => continue,
+                        Member::Held(member) => member,
+                    };
+                    // The operation's definition names an operative only once Operations is read.
+                    let valued = match &member.unread {
+                        Some(unread) if operation_read_hour.is_none() => unread,
+                        _ => &member.read,
+                    };
+                    for (reason, identity) in &valued.notes {
+                        refused.note(reason.as_str(), identity.as_str());
                     }
-                    let operation_token = row
-                        .operation
-                        .require("OperativeMemberships.operation")
-                        .ok()
-                        .copied()
-                        .flatten()
-                        .and_then(|id| operation_name(decoded, id))
-                        .filter(|_| operation_read_hour.is_some());
-                    let mut value = operative_values(
-                        content,
-                        decoded,
-                        row,
-                        characters
-                            .as_ref()
-                            .and_then(|characters| characters.get(&row.id))
-                            .copied()
-                            .flatten(),
-                        operation_token,
-                        (tables, budget, refused),
-                    )?;
-                    let owner = identity(row.owner_country, links, slots);
-                    let target = row
-                        .target_country
-                        .require("OperativeMemberships.target_country")
-                        .ok()
-                        .copied()
-                        .flatten()
-                        .and_then(|raw| identity(raw, links, slots));
-                    // Captured status resolves raw zero to the reserved slot;
-                    // it needs no Countries row.
-                    let capturer = (value.captured == Some(true))
-                        .then(|| {
-                            if row.capturer_country == 0
-                                || link_slot(links, row.capturer_country) == Some(0)
-                            {
-                                Some(CountryIdentity { slot: 0, id: 0 })
-                            } else {
-                                identity(row.capturer_country, links, slots)
-                            }
-                        })
-                        .flatten();
-                    for (needed, resolved, role) in [
-                        (true, owner, "owner"),
-                        (
-                            row.target_country
-                                .require("OperativeMemberships.target_country")
-                                .map_or(true, Option::is_some),
-                            target,
-                            "target",
-                        ),
-                        (value.captured == Some(true), capturer, "capturer"),
-                    ] {
-                        if needed && resolved.is_none() {
-                            refused.note(
-                                format!("operative {role} not recorded or unresolved"),
-                                format!("operative {} {role}", row.id),
-                            );
-                        }
+                    let value = valued.intern(tables, budget)?;
+                    for (reason, identity) in &member.notes {
+                        refused.note(reason.as_str(), identity.as_str());
                     }
-                    value.owner_tag = tag_of(owner, slots);
-                    value.target_tag = tag_of(target, slots);
-                    value.capturer_tag = tag_of(capturer, slots);
                     let held = Held {
                         value,
-                        owner,
-                        target,
-                        capturer,
-                        operation: (row.assignment == 4)
-                            .then(|| {
-                                row.operation
-                                    .require("OperativeMemberships.operation")
-                                    .ok()
-                                    .copied()
-                                    .flatten()
-                            })
-                            .flatten(),
+                        owner: member.owner,
+                        target: member.target,
+                        capturer: member.capturer,
+                        operation: member.operation,
                         captured_input: None,
-                        cooldown: operative_rows::cooldown(row).ok().flatten(),
+                        cooldown: member.cooldown,
                         cooldown_remaining: None,
                     };
                     // Disband writes assignment 2 and death writes 5;
                     // the agency status dispatcher has neither arm.
-                    if matches!(row.assignment, 2 | 5) {
+                    if matches!(member.assignment, 2 | 5) {
                         departed.push((
-                            row.id,
+                            member.id,
                             held,
-                            if row.assignment == 2 {
+                            if member.assignment == 2 {
                                 "Disbanded"
                             } else {
                                 "Killed"
                             },
                         ));
-                    } else if values.insert(row.id, held).is_some() {
+                    } else if values.insert(member.id, held).is_some() {
                         refused.note(
                             "conflicting active memberships",
-                            format!("operative {}", row.id),
+                            format!("operative {}", member.id),
                         );
                         complete = false;
                     }
                 }
                 if complete {
-                    history.read(frame.hour, values, departed, budget)?;
+                    history.read(hour, values, departed, budget)?;
                 } else {
                     history.interrupt();
                 }
@@ -1156,7 +1590,7 @@ impl Scan {
                 // date that identity separately, without changing assignment or target.
                 for (&id, held) in &mut history.held {
                     if let Some(operation) = held.operation {
-                        let token = operation_name(decoded, operation);
+                        let token = read.operation_name(operation);
                         let assignment = content.assignment(
                             &OperativeMembershipRow {
                                 id,
@@ -1200,19 +1634,13 @@ impl Scan {
             }
             std::mem::swap(refused, scoped.get_mut(&scope).expect("roster refusals"));
         }
-        if let Some(content) = content
-            && (read
+        if content.is_some()
+            && (read_now
                 || inputs.changed
                 || changes.is_none_or(|changes| {
-                    [
-                        TableId::CountryAppearance,
-                        TableId::ReservedCountryNaming,
-                        TableId::Politics,
-                        TableId::PoliticalParties,
-                        TableId::Autonomy,
-                    ]
-                    .iter()
-                    .any(|table| changes.rows_changed[table.index()])
+                    NAMING
+                        .iter()
+                        .any(|table| changes.rows_changed[table.index()])
                 }))
         {
             let capturers = indices
@@ -1221,7 +1649,7 @@ impl Scan {
                 .filter(|held| held.value.captured == Some(true))
                 .filter_map(|held| held.capturer)
                 .collect();
-            names.update(decoded, capturers, &content.catalogue.localisation);
+            names.update(capturers, countries, links, &read.names)?;
         }
         for &index in &indices {
             let history = &mut histories[index];
@@ -1234,9 +1662,9 @@ impl Scan {
                 .entry(scope.clone())
                 .or_insert_with(|| BoundedRefusals::new(usize::MAX));
             std::mem::swap(refused, local);
-            tables.scope(&scope, frame.hour, 1);
+            tables.scope(&scope, hour, 1);
             history.publish(
-                frame.hour,
+                hour,
                 &mut Projection {
                     countries,
                     links,
@@ -1256,6 +1684,39 @@ impl Scan {
         }
         Ok(())
     }
+
+    /// What `frame` gives the row path at an hour observed with `reuse_read`: the census where
+    /// it is read afresh, the operations, and, with `content`, every country's name.
+    fn frame_read(
+        &mut self,
+        frame: &replay_frame::frame::DecodedFrame,
+        content: Option<&super::operative_content::OperativeContent>,
+        inputs: &operative_rows::CountryInputs,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+        reuse_read: bool,
+    ) -> RosterRead {
+        let flags = Flags::of(frame);
+        let members = (flags.feature == Some(true)
+            && flags.memberships
+            && flags.membership_read
+            && !reuse_read
+            && inputs.complete().is_some())
+        .then(|| self.reader.members(frame, content, inputs, changes));
+        let names = match (content, inputs.complete()) {
+            (Some(content), Some((_, links))) => slot_names(
+                frame,
+                std::iter::once(0).chain(links.iter().map(|link| link.canonical_slot)),
+                &content.catalogue.localisation,
+            ),
+            _ => HashMap::new(),
+        };
+        RosterRead {
+            members,
+            operations: operations(frame),
+            names,
+        }
+    }
+
     fn reply(
         &self,
         branch: u64,
@@ -1460,20 +1921,21 @@ fn draw_artwork(
 // category 3 reaches role 4 portrait selection.
 fn character_links(
     rows: &[CharacterOperativeRow],
-    refused: &mut BoundedRefusals,
-) -> HashMap<u64, Option<u32>> {
+) -> (HashMap<u64, Option<u32>>, Vec<(String, String)>) {
     let mut result = HashMap::new();
+    let mut refused = Vec::new();
     for row in rows.iter().filter(|row| row.resolved && row.category == 3) {
         let linked = result.entry(row.reference).or_insert(Some(row.character));
         if *linked != Some(row.character) {
             *linked = None;
-            refused.note(
-                "conflicting character links for one operative reference; its portrait is unknown",
+            refused.push((
+                "conflicting character links for one operative reference; its portrait is unknown"
+                    .into(),
                 format!("operative {} portrait", row.reference),
-            );
+            ));
         }
     }
-    result
+    (result, refused)
 }
 
 fn operation_name(frame: &replay_frame::frame::DecodedFrame, id: u64) -> Option<&str> {

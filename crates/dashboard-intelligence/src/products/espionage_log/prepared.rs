@@ -152,6 +152,17 @@ impl Prepared {
     pub fn needs_history_changes(&self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
         changes.rows_changed[TableId::OperationCompletions.index()] && self.needs_history(frame)
     }
+
+    /// Whether observing an hour whose change facts are `changes` and completions `completions`
+    /// reads the series as last committed.
+    pub(crate) fn needs_history_read(
+        &self,
+        changes: &FrameChanges,
+        completions: Option<&[Completion]>,
+    ) -> bool {
+        changes.rows_changed[TableId::OperationCompletions.index()]
+            && self.needs_history_rows(completions)
+    }
     fn materialize(&mut self) {
         if let Some(through) = self.builder.available.last().map(|span| span.last_hour) {
             for &(index, _) in self.builder.open.values() {
@@ -164,23 +175,25 @@ impl Prepared {
         }
     }
     pub fn needs_history(&self, frame: &DecodedFrame) -> bool {
-        frame
-            .complete::<tables::OperationCompletions>()
-            .is_ok_and(|rows| {
-                rows.iter().any(|row| {
-                    !self
-                        .builder
-                        .seen_completions
-                        .contains_key(&(row.owner, row.sequence))
-                        && (self
-                            .keys
-                            .contains_key(&completion_key(row.owner, row.sequence))
-                            || self.keys.contains_key(&instance_key(
-                                row.id,
-                                (row.owner, row.target, row.definition_token),
-                            )))
-                })
+        self.needs_history_rows(completions(frame).as_deref())
+    }
+
+    fn needs_history_rows(&self, completions: Option<&[Completion]>) -> bool {
+        completions.is_some_and(|rows| {
+            rows.iter().any(|(row, _)| {
+                !self
+                    .builder
+                    .seen_completions
+                    .contains_key(&(row.owner, row.sequence))
+                    && (self
+                        .keys
+                        .contains_key(&completion_key(row.owner, row.sequence))
+                        || self.keys.contains_key(&instance_key(
+                            row.id,
+                            (row.owner, row.target, row.definition_token),
+                        )))
             })
+        })
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(
@@ -200,10 +213,40 @@ impl Prepared {
         self.test_countries = countries;
         result
     }
+    /// Observes `frame` of the row path, reading what its hour needs of it.
     pub fn observe_changes(
         &mut self,
         source: &Source,
         frame: &DecodedFrame,
+        changes: &FrameChanges,
+        countries: &super::super::operative_rows::CountryInputs,
+        reader: Option<&mut Reader<'_>>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let census = Census::of(frame);
+        let operations = (census.complete && census.read).then(|| census_read(frame, countries));
+        let completions = completions(frame);
+        self.observe_read(
+            source,
+            (frame.branch, frame.hour),
+            census,
+            (operations.as_ref(), completions.as_deref()),
+            changes,
+            countries,
+            reader,
+            cancelled,
+        )
+    }
+
+    /// Observes `hour` of `branch`, whose change facts are `changes`, from its operations
+    /// census read (at a read of a complete table) and its completions (none where incomplete).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_read(
+        &mut self,
+        source: &Source,
+        (branch, hour): (u64, i32),
+        census: Census,
+        (operations, completions): (Option<&CensusRead>, Option<&[Completion]>),
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
         mut reader: Option<&mut Reader<'_>>,
@@ -211,61 +254,66 @@ impl Prepared {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("intelligence:espionage");
         let replay = source.replay_ref();
-        self.initialize(source, frame.branch)?;
-        self.advance(source, frame.branch, i64::from(frame.hour) - 1, cancelled)?;
+        self.initialize(source, branch)?;
+        self.advance(source, branch, i64::from(hour) - 1, cancelled)?;
         self.builder
             .changed
             .get_or_insert_with(BTreeMap::new)
             .clear();
         self.builder.new_completions.clear();
-        if operations_read(frame) || changes.rows_changed[TableId::OperationCompletions.index()] {
+        // The read is timed under Operations itself, its table complete or not.
+        let read = census.read;
+        if read || changes.rows_changed[TableId::OperationCompletions.index()] {
             self.materialize();
         }
-        if operations_read(frame) || frame.complete::<tables::Operations>().is_err() {
-            self.builder.observe_countries(frame, countries);
+        if read || !census.complete {
+            self.builder
+                .observe_operations(hour, census, operations, countries)?;
         } else if self
             .builder
             .available
             .last()
-            .is_some_and(|span| span.last_hour.checked_add(1) == Some(frame.hour))
+            .is_some_and(|span| span.last_hour.checked_add(1) == Some(hour))
         {
-            self.builder.mark_available(frame.hour);
+            self.builder.mark_available(hour);
         }
         if changes.rows_changed[TableId::OperationCompletions.index()] {
-            if let Some(reader) = reader.as_mut() {
-                self.restore_completions(frame, reader, cancelled)?;
+            if let Some(reader) = reader.as_mut()
+                && let Some(completions) = completions
+            {
+                self.restore_completions(hour, completions, reader, cancelled)?;
             }
             self.builder
-                .observe_completions_countries(frame, replay, frame.branch, countries)?;
+                .observe_completions_read(hour, completions, replay, branch, countries)?;
         } else if TableId::OperationCompletions
             .last_change()
             .present(replay.format.version())
         {
-            if frame.complete::<tables::OperationCompletions>().is_ok() {
-                extend(&mut self.builder.completions, frame.hour);
+            if completions.is_some() {
+                extend(&mut self.builder.completions, hour);
             } else {
                 self.builder.warn(
                     "OperationCompletions unavailable or incomplete; completion coverage unknown",
                 );
             }
         }
-        self.last = Some(frame.hour);
-        self.values.advance(frame.hour)?;
+        self.last = Some(hour);
+        self.values.advance(hour)?;
         if self
             .builder
             .available
             .last()
-            .is_some_and(|span| span.last_hour == frame.hour)
+            .is_some_and(|span| span.last_hour == hour)
         {
-            extend(&mut self.available, frame.hour);
+            extend(&mut self.available, hour);
         }
         if self
             .builder
             .completions
             .last()
-            .is_some_and(|span| span.last_hour == frame.hour)
+            .is_some_and(|span| span.last_hour == hour)
         {
-            extend(&mut self.completions, frame.hour);
+            extend(&mut self.completions, hour);
         }
         let instances = std::mem::take(
             self.builder
@@ -319,7 +367,7 @@ impl Prepared {
                 super::super::intelligence_prepared::work(|work| work.emitted += 1);
                 self.values.event(
                     episode,
-                    frame.hour,
+                    hour,
                     &Candidate {
                         handle,
                         fingerprint,
@@ -331,7 +379,7 @@ impl Prepared {
             }
             if new {
                 let instance = key(&mut self.keys, instance_key(handle, fingerprint))?;
-                self.values.event(instance, frame.hour, &operation.id)?;
+                self.values.event(instance, hour, &operation.id)?;
             }
         }
         for (owner, sequence) in std::mem::take(&mut self.builder.new_completions) {
@@ -339,7 +387,7 @@ impl Prepared {
             let name = completion_key(owner, sequence);
             if !self.keys.contains_key(&name) {
                 let completion = key(&mut self.keys, name)?;
-                self.values.event(completion, frame.hour, reference)?;
+                self.values.event(completion, hour, reference)?;
             }
         }
         Ok(())
@@ -347,15 +395,14 @@ impl Prepared {
 
     fn restore_completions(
         &mut self,
-        frame: &DecodedFrame,
+        hour: i32,
+        rows: &[Completion],
         reader: &mut Reader<'_>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        let Ok(rows) = frame.complete::<tables::OperationCompletions>() else {
-            return Ok(());
-        };
+        let rows = rows.iter().map(|(row, _)| row);
         let mut needed: BTreeMap<(u64, (u32, u32, u32)), usize> = BTreeMap::new();
-        for row in rows {
+        for row in rows.clone() {
             if !self
                 .builder
                 .seen_completions
@@ -379,7 +426,7 @@ impl Prepared {
                 continue;
             }
             if let Some(&key) = self.keys.get(&completion_key(row.owner, row.sequence)) {
-                let (_, reference) = reader.latest_event(key, frame.hour)?.ok_or_else(|| {
+                let (_, reference) = reader.latest_event(key, hour)?.ok_or_else(|| {
                     dashboard_core::invalid("Missing immutable espionage completion")
                 })?;
                 self.builder.seen_completions.insert(
@@ -405,7 +452,7 @@ impl Prepared {
                     .keys
                     .get(&episode_key(&id))
                     .ok_or_else(|| dashboard_core::invalid("Missing espionage episode key"))?;
-                let (_, row) = reader.latest_event(episode, frame.hour)?.ok_or_else(|| {
+                let (_, row) = reader.latest_event(episode, hour)?.ok_or_else(|| {
                     dashboard_core::invalid("Missing espionage episode continuation")
                 })?;
                 let candidate: Candidate = serde_json::from_slice(&row)?;
