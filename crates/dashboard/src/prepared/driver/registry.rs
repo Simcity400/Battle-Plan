@@ -221,8 +221,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["division-equipment"],
         queries: &["division-equipment-history"],
         gates: &[crate::products::division_equipment::history::QUERY],
-        // 3: every lead hour supplies the context a resumed engine needs.
-        version: 3,
+        // 4: the engine handed on holds its reads alone, and saves its context.
+        version: 4,
         ..family("division-equipment")
     },
     Descriptor {

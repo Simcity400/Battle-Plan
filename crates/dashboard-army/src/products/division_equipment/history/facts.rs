@@ -4,7 +4,9 @@
 //! engine. A reply stands on reads made up to two days before its hour, which a restart does
 //! not hold: until the segment's reads are its own, its hours go to the emit as inputs
 //! ([`Projected::Lead`]), which the engine of the segment before steps; from then on, as the
-//! engine's answers. Every start is the operator's own, so segments walk at once.
+//! engine's answers. That engine is handed on with its reads alone ([`Engine::hand_on`]): the
+//! segment's first hour gives every other table whole. Every start is the operator's own, so
+//! segments walk at once.
 
 use super::DESIGNS;
 use super::engine::{
@@ -90,7 +92,8 @@ pub(crate) enum Projected {
     /// steps it.
     Lead(Box<Input>),
     Hour(Box<Output>),
-    /// The segment's engine after its last hour; none when it answered none of them.
+    /// The segment's engine after its last hour, holding its reads alone; none when it
+    /// answered none of them.
     Handover(Option<Box<Engine>>),
 }
 
@@ -492,6 +495,7 @@ impl Operator<World> for Projector {
         }
         let input = Input {
             hour: at,
+            whole,
             gap: self
                 .gaps
                 .iter()
@@ -508,7 +512,7 @@ impl Operator<World> for Projector {
             templates: Self::templates(state)?,
             tokens: Self::tokens(state)?,
             subunits: Self::wrote(state, TableId::CountryLocalSubunits)?,
-            frame: if context_changed || self.engine.as_ref().is_some_and(|engine| !engine.own()) {
+            frame: if context_changed {
                 Some(world.frame_held(state, &self.context)?)
             } else {
                 None
@@ -539,7 +543,10 @@ impl Operator<World> for Projector {
         let Some(last) = self.last else {
             return Ok(());
         };
-        let engine = self.engine.take().filter(|engine| engine.own());
+        let engine = self.engine.take().filter(|engine| engine.own()).map(|mut engine| {
+            engine.hand_on();
+            engine
+        });
         out.push(Hour {
             branch: self.branch,
             hour: last,

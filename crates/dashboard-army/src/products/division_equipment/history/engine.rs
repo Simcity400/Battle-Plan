@@ -133,6 +133,9 @@ impl Countries {
 /// One hour as an engine reads it.
 pub(crate) struct Input {
     pub(crate) hour: i32,
+    /// The first hour of a walk, or one after an hour it did not walk: every table held this
+    /// hour is given whole, with the countries and the small tables.
+    pub(crate) whole: bool,
     pub(crate) gap: bool,
     /// Whether the hour reads the daily pools, the stockpile and the designs.
     pub(crate) reads: [bool; 3],
@@ -284,17 +287,22 @@ pub(crate) struct Change {
 
 /// An answered hour's changes, encoded as they are pushed: a few bytes each, where a change held
 /// as itself takes 64, so the hours a segment's walk projects wait for their emit in a fraction
-/// of the memory. Handles are kept whole, which the emit reads back without decoding.
+/// of the memory. A reply's changes are pushed together: each names its country and attribution
+/// only where they differ from the change before.
 #[derive(Default)]
 pub(crate) struct Changes {
     bytes: Vec<u8>,
     count: usize,
+    last: Option<(u32, u8)>,
 }
 
 impl Changes {
     pub(crate) fn push(&mut self, change: Change) {
         let out = &mut self.bytes;
         let index = |found: Option<usize>| found.expect("a listed measure or part") as u8;
+        let reply = (change.tag, change.side);
+        let same = self.last == Some(reply);
+        self.last = Some(reply);
         let field: u8 = match change.field {
             Field::State => 0,
             Field::Divisions => 1,
@@ -313,9 +321,11 @@ impl Changes {
             Some(Value::Number(_)) => 1,
             Some(Value::Operand(_)) => 2,
         };
-        out.push(field << 2 | value);
-        put_varint(out, u128::from(change.tag));
-        out.push(change.side);
+        out.push(field << 3 | u8::from(same) << 2 | value);
+        if !same {
+            put_varint(out, u128::from(change.tag));
+            out.push(change.side);
+        }
         match change.field {
             Field::State | Field::Divisions | Field::Short | Field::Unknown | Field::Refused => {}
             Field::Type(kind, measure) => {
@@ -324,14 +334,14 @@ impl Changes {
             }
             Field::Variant(kind, handle) | Field::Design(kind, handle) => {
                 put_varint(out, u128::from(kind));
-                out.extend_from_slice(&handle.to_le_bytes());
+                put_varint(out, u128::from(handle));
             }
             Field::Template(template, part) => {
-                out.extend_from_slice(&template.to_le_bytes());
+                put_varint(out, u128::from(template));
                 out.push(index(PARTS.iter().position(|&held| held == part)));
             }
             Field::Note(note) => put_varint(out, u128::from(note)),
-            Field::StockDesign(handle) => out.extend_from_slice(&handle.to_le_bytes()),
+            Field::StockDesign(handle) => put_varint(out, u128::from(handle)),
         }
         match change.value {
             None => {}
@@ -350,7 +360,10 @@ impl Changes {
 
     /// The changes in the order they were pushed.
     pub(crate) fn iter(&self) -> impl Iterator<Item = io::Result<Change>> + '_ {
-        let mut input = Encoded(&self.bytes);
+        let mut input = Encoded {
+            bytes: &self.bytes,
+            reply: None,
+        };
         (0..self.count).map(move |_| input.change())
     }
 
@@ -366,15 +379,24 @@ impl Changes {
 }
 
 /// The bytes of [`Changes`] not yet read back.
-struct Encoded<'a>(&'a [u8]);
+struct Encoded<'a> {
+    bytes: &'a [u8],
+    /// The country and attribution of the change read last.
+    reply: Option<(u32, u8)>,
+}
 
 impl Encoded<'_> {
     /// The change [`Changes::push`] encoded next.
     fn change(&mut self) -> io::Result<Change> {
         let header = self.byte()?;
-        let tag = self.narrow()?;
-        let side = self.byte()?;
-        let field = match header >> 2 {
+        let (tag, side) = if header & 4 != 0 {
+            self.reply.ok_or_else(broken)?
+        } else {
+            let reply = (self.narrow()?, self.byte()?);
+            self.reply = Some(reply);
+            reply
+        };
+        let field = match header >> 3 {
             0 => Field::State,
             1 => Field::Divisions,
             2 => Field::Short,
@@ -385,15 +407,15 @@ impl Encoded<'_> {
                 let measure = *MEASURES.get(usize::from(self.byte()?)).ok_or_else(broken)?;
                 Field::Type(kind, measure)
             }
-            6 => Field::Variant(self.narrow()?, self.whole()?),
-            7 => Field::Design(self.narrow()?, self.whole()?),
+            6 => Field::Variant(self.narrow()?, self.wide()?),
+            7 => Field::Design(self.narrow()?, self.wide()?),
             8 => {
-                let template = self.whole()?;
+                let template = self.wide()?;
                 let part = *PARTS.get(usize::from(self.byte()?)).ok_or_else(broken)?;
                 Field::Template(template, part)
             }
             9 => Field::Note(self.narrow()?),
-            10 => Field::StockDesign(self.whole()?),
+            10 => Field::StockDesign(self.wide()?),
             _ => return Err(broken()),
         };
         let value = match header & 3 {
@@ -415,17 +437,14 @@ impl Encoded<'_> {
 
     #[inline]
     fn byte(&mut self) -> io::Result<u8> {
-        let (&byte, rest) = self.0.split_first().ok_or_else(broken)?;
-        self.0 = rest;
+        let (&byte, rest) = self.bytes.split_first().ok_or_else(broken)?;
+        self.bytes = rest;
         Ok(byte)
     }
 
-    /// A handle, kept whole.
     #[inline]
-    fn whole(&mut self) -> io::Result<u64> {
-        let (bytes, rest) = self.0.split_first_chunk::<8>().ok_or_else(broken)?;
-        self.0 = rest;
-        Ok(u64::from_le_bytes(*bytes))
+    fn wide(&mut self) -> io::Result<u64> {
+        u64::try_from(self.varint()?).map_err(|_| broken())
     }
 
     #[inline]
@@ -1564,6 +1583,10 @@ pub(crate) struct Engine {
     /// Pairs of reads that look a design up alike wherever its rows are alike.
     alike: Vec<((i32, i32), bool)>,
     templates: FastMap<u64, Template>,
+    /// The templates named again each hour.
+    hourly: BTreeSet<u64>,
+    /// Handed on: it holds its reads and numbering alone, until an hour gives the rest whole.
+    bare: bool,
     /// Countries numbered, by index; each listed one's holder, by index.
     tags: Vec<Arc<str>>,
     numbers: HashMap<Arc<str>, u32>,
@@ -1664,6 +1687,8 @@ impl Engine {
             looks: FastMap::default(),
             alike: Vec::new(),
             templates: FastMap::default(),
+            hourly: BTreeSet::new(),
+            bare: false,
             tags: Vec::new(),
             numbers: HashMap::new(),
             listed: BTreeMap::new(),
@@ -1793,10 +1818,54 @@ impl Engine {
         self.frame = None;
     }
 
+    /// Lets go of all but what the segment after cannot read itself: its reads, the pools as
+    /// the table and their last read hold them, and its designs' lookups with the operands
+    /// they name. Its next hour, the segment after's first, gives every other table whole and
+    /// every reply whole.
+    pub(crate) fn hand_on(&mut self) {
+        self.bare = true;
+        self.open = false;
+        // Named again by content: the emit catalogues an operand once whatever its number.
+        self.namings = BTreeMap::new();
+        self.artworks = BTreeMap::new();
+        self.divisions = FastMap::default();
+        self.maxima = FastMap::default();
+        self.manpower = FastMap::default();
+        self.new = FastMap::default();
+        self.stock_rows = FastMap::default();
+        self.countries = Arc::default();
+        self.frame = None;
+        self.wholes = None;
+        self.sources = None;
+        self.templates = FastMap::default();
+        self.hourly = BTreeSet::new();
+        self.listed = BTreeMap::new();
+        self.slots = FastMap::default();
+        self.sums = FastMap::default();
+        self.unlinked = [0; 2];
+        self.by_template = FastMap::default();
+        self.by_handle = FastMap::default();
+        self.stock_parts = FastMap::default();
+        self.given = FastMap::default();
+        self.stock_given = FastMap::default();
+        self.dirty = FastMap::default();
+        self.stock_dirty = BTreeSet::new();
+        self.notes_dirty = false;
+        self.scratch = Share::default();
+    }
+
     /// One hour: its rows applied, its reads stepped, and its replies' changes; none while
     /// the reads it stands on are not its own.
     pub(crate) fn step(&mut self, input: &Input) -> io::Result<Option<Output>> {
         let _cpu = ::replay_frame::cpu::scope("division_equipment.engine", None);
+        if self.bare {
+            if !input.whole {
+                return Err(io::Error::other(
+                    "A division equipment engine handed on was not given its next hour whole",
+                ));
+            }
+            self.bare = false;
+        }
         let hour = input.hour;
         let follows = self.last.and_then(|last| last.checked_add(1)) == Some(hour);
         // The first hour reads what the branch started with; any other only the hour before.
@@ -2048,6 +2117,7 @@ impl Engine {
         self.stock_dirty.clear();
         self.notes_dirty = false;
         self.templates.clear();
+        self.hourly.clear();
         self.listed.clear();
         self.slots.clear();
         let countries = Arc::clone(&self.countries);
@@ -2159,6 +2229,15 @@ impl Engine {
         }
     }
 
+    fn keep_template(&mut self, handle: u64, template: Template) {
+        if template.hourly {
+            self.hourly.insert(handle);
+        } else {
+            self.hourly.remove(&handle);
+        }
+        self.templates.insert(handle, template);
+    }
+
     /// An hour whose countries, links and local sub-units are the hour before's: only what
     /// its changes reach is computed again.
     fn update(
@@ -2189,15 +2268,15 @@ impl Engine {
                     .copied()
                     .filter(|handle| self.templates.contains_key(handle))
                     .collect();
-                asked.extend(
-                    self.templates
-                        .iter()
-                        .filter(|(_, template)| {
-                            template.hourly
-                                || (tokens == Tokens::Appended && template.need.is_err())
-                        })
-                        .map(|(handle, _)| *handle),
-                );
+                asked.extend(self.hourly.iter().copied());
+                if tokens == Tokens::Appended {
+                    asked.extend(
+                        self.templates
+                            .iter()
+                            .filter(|(_, template)| template.need.is_err())
+                            .map(|(handle, _)| *handle),
+                    );
+                }
                 asked.into_iter().collect()
             }
         };
@@ -2215,7 +2294,7 @@ impl Engine {
             if (held.naming, held.artwork) != (now.naming, now.artwork) {
                 relabelled.insert(handle);
             }
-            self.templates.insert(handle, now);
+            self.keep_template(handle, now);
         }
         for (id, added) in std::mem::take(&mut touched.gone) {
             self.take(id, &added);
@@ -2357,7 +2436,7 @@ impl Engine {
         };
         if !self.templates.contains_key(&placed.template) {
             let template = self.template(needs, frame, placed.template);
-            self.templates.insert(placed.template, template);
+            self.keep_template(placed.template, template);
         }
         let pool = self.pool(id);
         let read = self.supplies.designs.read;
@@ -3200,7 +3279,19 @@ impl Engine {
             + hashed(&self.manpower)
             + rows(&self.new)
             + rows(&self.daily)
-            + rows(&self.pooled)
+            // A pool its last read left as the table holds it shares the table's rows.
+            + hashed(&self.pooled)
+            + self
+                .pooled
+                .iter()
+                .filter(|&(id, rows)| {
+                    !self
+                        .daily
+                        .get(id)
+                        .is_some_and(|daily| Arc::ptr_eq(daily, rows))
+                })
+                .map(|(_, rows)| 16 + rows.len() * size_of::<Row>())
+                .sum::<usize>()
             + rows(&self.stock_rows)
             + self.daily_since.capacity() * 9
             + self.census.as_ref().map_or(0, |ids| ids.capacity() * 8)
@@ -3235,6 +3326,7 @@ impl Engine {
                 .map(|ids| ids.capacity() * 9)
                 .sum::<usize>();
         bytes += hashed(&self.templates)
+            + self.hourly.len() * 24
             + self
                 .templates
                 .values()
@@ -3548,6 +3640,15 @@ impl Engine {
         for (&hour, read) in &self.reads {
             read.saved(&self.history, hour).encode_checkpoint(out)?;
         }
+        out.push(u8::from(self.bare));
+        // A lead gives the small tables only where they changed.
+        match &self.frame {
+            None => out.push(0),
+            Some(frame) => {
+                out.push(1);
+                frame.encode_checkpoint(out)?;
+            }
+        }
         Ok(())
     }
 
@@ -3678,6 +3779,12 @@ impl Engine {
         }
         // The next designs frame follows one this engine never saw.
         engine.history.based = false;
+        engine.bare = input.bool()?;
+        engine.frame = match input.u8()? {
+            0 => None,
+            1 => Some(DecodedFrame::decode_checkpoint(&mut input)?),
+            _ => return Err(damaged()),
+        };
         input.finish()?;
         engine.open = false;
         Ok(engine)
