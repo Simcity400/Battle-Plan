@@ -1,7 +1,7 @@
 //! The peace observer as the segment driver's emit steps it ([`super::emit`]): each completed
 //! deal and finalizer outcome leaves it as an event, and what it goes on with is its
 //! continuation, saved at each cut. A reply joins the events with the continuation.
-use super::*;
+use super::{reads::HourReads, *};
 use dashboard_base::prepared::series::{compress, decompress};
 
 #[derive(Serialize, Deserialize)]
@@ -34,12 +34,27 @@ impl Prepared {
         })
     }
 
-    /// `frame` observed with its change facts, the roster's slot read when `read`; the deals it
-    /// completes and the finalizer outcomes it captures go to `events`.
-    pub(super) fn observe_changed(
+    /// `frame` observed as the row path reads it, the roster's slot read when `read`.
+    #[cfg(test)]
+    pub(super) fn observe_frame(
         &mut self,
         frame: &DecodedFrame,
-        changes: &FrameChanges,
+        read: bool,
+        events: &mut Vec<Event>,
+    ) -> io::Result<()> {
+        let reads = self
+            .scan
+            .reader
+            .read(frame, &[true; replay_data::rows::TABLE_COUNT]);
+        self.observe_changed(frame.hour, reads, read, events)
+    }
+
+    /// `hour` observed with the reads it changed, the roster's slot read when `read`; the
+    /// deals it completes and the finalizer outcomes it captures go to `events`.
+    pub(super) fn observe_changed(
+        &mut self,
+        hour: i32,
+        reads: HourReads,
         read: bool,
         events: &mut Vec<Event>,
     ) -> io::Result<()> {
@@ -53,8 +68,8 @@ impl Prepared {
             )
         };
         let before = counts(&self.scan);
-        self.scan.last = self.scan.last.max(frame.hour);
-        self.scan.observe_changed(frame, changes, read)?;
+        self.scan.last = self.scan.last.max(hour);
+        self.scan.observe_changed(hour, reads, read)?;
         events.extend(
             self.scan
                 .exact
@@ -128,18 +143,12 @@ impl Prepared {
         Ok(())
     }
 
-    /// Hours `first..=last` that continue the last observed hour (`frame`) with no field the
-    /// scan reads changing, the roster's slot read at `reads`: [`Self::observe_changed`] for
-    /// each, at once ([`Scan::advance_quiet`]); no deal or finalizer event leaves them. False,
-    /// with nothing changed, when the hours must be observed one by one.
-    pub(super) fn advance_quiet(
-        &mut self,
-        frame: &DecodedFrame,
-        first: i32,
-        last: i32,
-        reads: &[i32],
-    ) -> bool {
-        if !self.scan.advance_quiet(frame, first, last, reads) {
+    /// Hours `first..=last` that continue the last observed hour with no field the scan reads
+    /// changing, the roster's slot read at `reads`: [`Self::observe_changed`] for each, at once
+    /// ([`Scan::advance_quiet`]); no deal or finalizer event leaves them. False, with nothing
+    /// changed, when the hours must be observed one by one.
+    pub(super) fn advance_quiet(&mut self, first: i32, last: i32, reads: &[i32]) -> bool {
+        if !self.scan.advance_quiet(first, last, reads) {
             return false;
         }
         self.scan.last = self.scan.last.max(last);

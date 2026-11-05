@@ -11,7 +11,6 @@
 //! A state handed to a country the same settlement released joins the transfer
 //! graphs marked `released`, from its own former owner at the before read.
 
-use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::{Source, catalogue, content};
 use dashboard_base::{
     products::LoadContext,
@@ -19,10 +18,10 @@ use dashboard_base::{
     products::Product,
     products::country_groups::{HourSpan, war_ongoing},
 };
-use dashboard_text::metadata::{CountryKeys, branch_bounds, country_tables};
+use dashboard_text::metadata::branch_bounds;
 use replay::container::Replay;
-use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
+use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -37,6 +36,8 @@ use ts_rs::TS;
 #[cfg(test)]
 use dashboard_text::metadata::{slot_read, validate_campaign};
 #[cfg(test)]
+use replay_data::rows::TableId;
+#[cfg(test)]
 use replay_frame::frame::FrameDecoder;
 
 pub struct PeaceDeals;
@@ -45,6 +46,7 @@ mod exact;
 pub mod facts;
 pub mod prepared;
 pub mod query;
+mod reads;
 mod served;
 #[cfg(test)]
 mod columnar_tests;
@@ -432,7 +434,7 @@ type Tag = Arc<str>;
 
 /// Raw references are resolved once per frame, with aliases joined by slot,
 /// beside each tag's native (canonical slot, country id).
-#[derive(Serialize, Deserialize)]
+#[derive(PartialEq, Serialize, Deserialize)]
 struct CountryTags {
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     tags: HashMap<u32, Tag>,
@@ -466,85 +468,6 @@ impl CountryTags {
             }
         }
         Some(Self { tags, identities })
-    }
-}
-
-/// The last `CountryTags`, kept while the only rows they read are unchanged:
-/// the Countries keys and CountryLinks.
-#[derive(Default)]
-struct CountryResolution {
-    countries: CountryKeys,
-    links: Option<ViewIdentity>,
-    ready: bool,
-    resolved: Option<Arc<CountryTags>>,
-}
-
-impl CountryResolution {
-    fn read_changed(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-    ) -> Option<Arc<CountryTags>> {
-        if self.ready
-            && !changes.rows_changed[TableId::Countries.index()]
-            && !changes.rows_changed[TableId::CountryLinks.index()]
-        {
-            return self.resolved.clone();
-        }
-        let Ok((countries, links)) = country_tables(frame) else {
-            self.ready = true;
-            self.resolved = None;
-            self.countries = CountryKeys::default();
-            self.links = None;
-            return None;
-        };
-        if !self.ready
-            || !self.countries.same(countries)
-            || self
-                .links
-                .as_ref()
-                .is_none_or(|view| !view.is(&frame.tables[TableId::CountryLinks.index()]))
-        {
-            self.resolved = CountryTags::resolve(countries, links).map(Arc::new);
-            self.countries = CountryKeys::read(countries);
-            self.links = Some(frame.tables[TableId::CountryLinks.index()].identity());
-        }
-        self.ready = true;
-        self.resolved.clone()
-    }
-}
-
-/// The last victory points summed by state, kept while every province's state
-/// and victory points compare equal. Provinces changes every hour.
-#[derive(Default)]
-struct VictoryPoints {
-    fields: Vec<(u32, i32)>,
-    totals: Option<Arc<HashMap<u32, i64>>>,
-}
-
-impl VictoryPoints {
-    fn read_changed(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-    ) -> Option<Arc<HashMap<u32, i64>>> {
-        if !changes.rows_changed[TableId::Provinces.index()] {
-            return self.totals.clone();
-        }
-        let Ok(rows) = frame.complete::<tables::Provinces>() else {
-            self.totals = None;
-            return None;
-        };
-        let fields = rows.iter().map(|row| (row.state, row.victory_points));
-        if self.totals.is_none() || !fields.clone().eq(self.fields.iter().copied()) {
-            let mut totals = HashMap::new();
-            for (state, victory_points) in fields.clone() {
-                *totals.entry(state).or_insert(0_i64) += i64::from(victory_points);
-            }
-            self.totals = Some(Arc::new(totals));
-            self.fields = fields.collect();
-        }
-        self.totals.clone()
     }
 }
 
@@ -589,17 +512,10 @@ fn pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-/// Current native fields and their resolved joins. No frame or replay row is kept.
+/// The resolved joins of the current native fields ([`reads::Reads`]).
 #[allow(clippy::type_complexity)]
 #[derive(Default)]
 struct SnapshotInputs {
-    owners: Option<Vec<(u32, u32)>>,
-    wars: Option<Vec<(u32, u32, i32, i32)>>,
-    subjects: Option<Vec<(u32, u32, i32, i32, u8, Vec<u8>)>>,
-    existence: Option<Vec<(u32, bool)>>,
-    politics: Option<Vec<(u32, Option<u32>)>>,
-    parties: Option<Vec<(u32, u32, Vec<u8>)>>,
-    appearances: Option<Vec<(u32, Vec<u8>)>>,
     resolved_owners: Option<(
         Arc<HashMap<u32, Tag>>,
         Arc<HashMap<Tag, Vec<u32>>>,
@@ -621,81 +537,39 @@ struct SnapshotInputs {
     row_visits: usize,
 }
 impl SnapshotInputs {
+    /// The joins of `reads` at `hour` resolved again where `changed` or the holders moved:
+    /// whether existence or the holders changed.
     fn refresh(
         &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
+        reads: &reads::Reads,
+        changed: &reads::Changed,
+        hour: i32,
         countries: Option<&CountryTags>,
         holders_changed: bool,
     ) -> bool {
         let forced = !self.ready;
-        macro_rules! fields {
-            ($field:ident, $table:ident, $project:expr) => {{
-                let mut changed = forced;
-                if forced || changes.rows_changed[TableId::$table.index()] {
-                    let next = frame.complete::<tables::$table>().ok().map(|rows| {
-                        #[cfg(test)]
-                        {
-                            self.row_visits += rows.len();
-                        }
-                        rows.iter().map($project).collect::<Vec<_>>()
-                    });
-                    changed |= self.$field != next;
-                    self.$field = next;
-                }
-                changed
-            }};
+        let owners_changed = forced || changed.owners;
+        let wars_changed = forced || changed.wars;
+        let subjects_changed = forced || changed.subjects;
+        let exists_changed = forced || changed.existence;
+        let politics_changed = forced || changed.politics;
+        let parties_changed = forced || changed.parties;
+        let appearances_changed = forced || changed.appearances;
+        #[cfg(test)]
+        {
+            let visits = |changed: bool, rows: Option<usize>| {
+                if changed { rows.unwrap_or(0) } else { 0 }
+            };
+            self.row_visits += visits(owners_changed, reads.owners.as_ref().map(Vec::len))
+                + visits(wars_changed, reads.wars.as_ref().map(Vec::len))
+                + visits(subjects_changed, reads.subjects.as_ref().map(Vec::len))
+                + visits(exists_changed, reads.existence.as_ref().map(Vec::len))
+                + visits(politics_changed, reads.politics.as_ref().map(Vec::len))
+                + visits(parties_changed, reads.parties.as_ref().map(Vec::len))
+                + visits(appearances_changed, reads.appearances.as_ref().map(Vec::len));
         }
-        let owners_changed = fields!(owners, States, |row: &replay_data::rows::StateRow| (
-            row.id, row.owner
-        ));
-        let wars_changed = fields!(
-            wars,
-            WarRelations,
-            |row: &replay_data::rows::WarRelationRow| (
-                row.first_country,
-                row.second_country,
-                row.start_hour,
-                row.end_hour
-            )
-        );
-        let subjects_changed =
-            fields!(subjects, Subjects, |row: &replay_data::rows::SubjectRow| (
-                row.overlord,
-                row.subject,
-                row.start_hour,
-                row.end_hour,
-                row.cancel,
-                row.state.clone()
-            ));
-        let exists_changed = fields!(
-            existence,
-            CountryCounterInputs,
-            |row: &replay_data::rows::CountryCounterInputRow| (
-                row.country,
-                row.owned_state_count > 0
-            )
-        );
-        let politics_changed = fields!(
-            politics,
-            Politics,
-            |row: &replay_data::rows::PoliticsRow| (row.country, row.ruling_party)
-        );
-        let parties_changed = fields!(
-            parties,
-            PoliticalParties,
-            |row: &replay_data::rows::PoliticalPartyRow| (row.country, row.id, row.token.clone())
-        );
-        let appearances_changed = fields!(
-            appearances,
-            CountryAppearance,
-            |row: &replay_data::rows::CountryAppearanceRow| (
-                row.country,
-                row.leader_ideology.clone()
-            )
-        );
         if owners_changed || holders_changed {
-            self.resolved_owners = self
+            self.resolved_owners = reads
                 .owners
                 .as_ref()
                 .zip(countries)
@@ -721,7 +595,7 @@ impl SnapshotInputs {
                 });
         }
         if wars_changed || holders_changed {
-            self.resolved_wars = self.wars.as_ref().zip(countries).map(|(rows, countries)| {
+            self.resolved_wars = reads.wars.as_ref().zip(countries).map(|(rows, countries)| {
                 let mut wars = HashMap::new();
                 let mut unresolved = Vec::new();
                 let mut ambiguous = HashSet::new();
@@ -748,25 +622,26 @@ impl SnapshotInputs {
         }
         if subjects_changed
             || holders_changed
-            || self.subject_expiry.is_some_and(|due| due <= frame.hour)
+            || self.subject_expiry.is_some_and(|due| due <= hour)
         {
-            self.subject_expiry = self
+            self.subject_expiry = reads
                 .subjects
                 .iter()
                 .flatten()
                 .filter_map(|&(_, _, start, end, cancel, _)| {
-                    (cancel == 0 && end > start && end > frame.hour).then_some(end)
+                    (cancel == 0 && end > start && end > hour).then_some(end)
                 })
                 .min();
             self.resolved_subjects =
-                self.subjects
+                reads
+                    .subjects
                     .as_ref()
                     .zip(countries)
                     .and_then(|(rows, countries)| {
                         let subjects: HashMap<_, _> = rows
                             .iter()
                             .filter(|(_, _, start, end, cancel, _)| {
-                                *cancel == 0 && (*end <= *start || frame.hour < *end)
+                                *cancel == 0 && (*end <= *start || hour < *end)
                             })
                             .map(|(a, b, start, _, _, state)| {
                                 Some((
@@ -791,7 +666,8 @@ impl SnapshotInputs {
         }
         if exists_changed || holders_changed {
             self.resolved_existence =
-                self.existence
+                reads
+                    .existence
                     .as_ref()
                     .zip(countries)
                     .and_then(|(rows, countries)| {
@@ -802,11 +678,11 @@ impl SnapshotInputs {
                     });
         }
         if politics_changed || parties_changed || appearances_changed || holders_changed {
-            self.resolved_governments = self
+            self.resolved_governments = reads
                 .politics
                 .as_ref()
-                .zip(self.parties.as_ref())
-                .zip(self.appearances.as_ref())
+                .zip(reads.parties.as_ref())
+                .zip(reads.appearances.as_ref())
                 .zip(countries)
                 .and_then(|(((politics, parties), appearances), countries)| {
                     let tokens = parties
@@ -854,7 +730,8 @@ impl SnapshotInputs {
     }
     fn snapshot(
         &self,
-        frame: &DecodedFrame,
+        hour: i32,
+        roster_complete: bool,
         countries: Arc<CountryTags>,
         vps: Option<Arc<HashMap<u32, i64>>>,
         state_action_key: Option<String>,
@@ -866,8 +743,8 @@ impl SnapshotInputs {
             .clone()
             .unwrap_or_else(|| (Arc::new(HashMap::new()), Arc::new(HashMap::new())));
         Some(Snapshot {
-            hour: frame.hour,
-            roster_complete: frame.complete::<tables::PeaceConferences>().is_ok(),
+            hour,
+            roster_complete,
             countries,
             owners: Arc::clone(owners),
             states_by_owner: Arc::clone(by_owner),
@@ -1134,16 +1011,17 @@ struct Scan {
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     first_existing: HashMap<Tag, i32>,
     exact: exact::Observed,
-    #[serde(skip)]
-    lexical_view: Option<ViewIdentity>,
     action_key: Option<String>,
     action_reasons: std::collections::BTreeSet<String>,
+    /// The native operands read, as the hours handed them on.
     #[serde(skip)]
-    country_tags: CountryResolution,
-    #[serde(skip)]
-    victory_points: VictoryPoints,
+    reads: reads::Reads,
     #[serde(skip)]
     snapshot_inputs: SnapshotInputs,
+    /// The row path's reader of each frame observed.
+    #[cfg(test)]
+    #[serde(skip)]
+    reader: reads::Reader,
     /// The scan ends at a prepared prefix's last hour, not the branch's:
     /// what it has not yet observed is still being prepared.
     #[serde(skip)]
@@ -1156,8 +1034,10 @@ impl Scan {
             format, first, last,
             open: HashMap::new(), pending: HashMap::new(), processed: HashSet::new(), unassigned: HashSet::new(),
             has_active: false, has_ambiguous: false, previous: None, previous_hour: first.checked_sub(1), unobserved_frontier: None,
-            first_existing: HashMap::new(), exact: Default::default(), lexical_view: None, action_key: None,
-            action_reasons: Default::default(), country_tags: Default::default(), victory_points: Default::default(), snapshot_inputs: Default::default(),
+            first_existing: HashMap::new(), exact: Default::default(), action_key: None,
+            action_reasons: Default::default(), reads: Default::default(), snapshot_inputs: Default::default(),
+            #[cfg(test)]
+            reader: Default::default(),
             prefix: false,
         }
     }
@@ -1203,26 +1083,17 @@ impl Scan {
             TableId::PeaceConferences,
             frame.hour,
         );
-        self.observe_changed(
-            frame,
-            &FrameChanges {
-                rows_changed: [true; replay_data::rows::TABLE_COUNT],
-                table_read: [true; replay_data::rows::TABLE_COUNT],
-                slot_read: [true; replay_data::rows::TABLE_COUNT],
-                updates: None,
-            },
-            read,
-        )
+        let reads = self.reader.read(frame, &[true; replay_data::rows::TABLE_COUNT]);
+        self.observe_changed(frame.hour, reads, read)
     }
-    /// `frame` observed, its change facts `changes`; `read` is whether the hour read the
+    /// `hour` observed, the reads it changed `reads`; `read` is whether the hour read the
     /// conference roster's slot.
     fn observe_changed(
         &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
+        hour: i32,
+        mut reads: reads::HourReads,
         read: bool,
     ) -> io::Result<()> {
-        let hour = frame.hour;
         if let Some(prev) = self.previous_hour
             && prev.checked_add(1).is_some_and(|next| next < hour)
         {
@@ -1230,37 +1101,33 @@ impl Scan {
             self.reply.unobserved.all(prev + 1, hour - 1);
         }
         self.previous_hour = Some(hour);
-        // A weak identity: holding the view would copy it at its next delta.
-        let view = &frame.tables[TableId::LexicalTokens.index()];
-        if self
-            .lexical_view
-            .as_ref()
-            .is_none_or(|prior| !prior.is(view))
-        {
-            self.action_key = state_action_key(frame)
+        let changed = self.reads.apply(&mut reads)?;
+        if let Some(key) = reads.action_key.take() {
+            self.action_key = key
                 .inspect_err(|reason| {
                     self.action_reasons.insert(reason.clone());
                 })
                 .ok();
-            self.lexical_view = Some(view.identity());
         }
-        let prior_countries = self.country_tags.resolved.clone();
-        let countries = self.country_tags.read_changed(frame, changes);
-        let holders_changed = match (&prior_countries, &countries) {
-            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-            (None, None) => false,
-            _ => true,
-        };
-        let vps = self.victory_points.read_changed(frame, changes);
-        let exists_changed =
-            self.snapshot_inputs
-                .refresh(frame, changes, countries.as_deref(), holders_changed);
+        let countries = self.reads.countries.clone();
+        let holders_changed = changed.holders;
+        let vps = self.reads.vps.clone();
+        let exists_changed = self.snapshot_inputs.refresh(
+            &self.reads,
+            &changed,
+            hour,
+            countries.as_deref(),
+            holders_changed,
+        );
         let exists = self.snapshot_inputs.resolved_existence.clone();
+        let roster = self.reads.roster.take();
+        let roster_complete = roster.is_some();
         let current = countries
             .as_ref()
             .and_then(|countries| {
                 self.snapshot_inputs.snapshot(
-                    frame,
+                    hour,
+                    roster_complete,
                     Arc::clone(countries),
                     vps.clone(),
                     self.action_key.clone(),
@@ -1268,19 +1135,18 @@ impl Scan {
             })
             .map(Arc::new);
         self.exact.observe_changed(
-            frame,
+            hour,
             countries.as_deref(),
             vps.as_deref(),
             self.action_key.as_deref(),
-            holders_changed || !self.snapshot_inputs.ready,
-            changes,
+            holders_changed,
+            &self.reads.finalizers,
+            (!reads.settled.is_empty()).then_some(&reads.settled[..]),
         );
         let had_open = !self.open.is_empty();
         let had_active = self.has_active;
         let roster_read = hour == self.first || read;
-        let roster = frame.complete::<tables::PeaceConferences>();
-        let roster_complete = roster.is_ok();
-        if roster_read && let Ok(rows) = roster {
+        if roster_read && let Some(rows) = &roster {
             let active: Vec<_> = self
                 .open
                 .values()
@@ -1290,7 +1156,7 @@ impl Scan {
             if active.len() > 1 {
                 self.unassigned.extend(active);
             }
-            let present: HashSet<_> = rows.iter().map(|row| row.id).collect();
+            let present: HashSet<_> = rows.iter().map(|&(id, _, _)| id).collect();
             self.open.retain(|id, conference| {
                 if present.contains(id) {
                     return true;
@@ -1309,14 +1175,14 @@ impl Scan {
                 }
                 false
             });
-            for row in rows {
-                let conference = self.open.entry(row.id).or_insert_with(|| {
+            for &(id, current_turn, finalized) in rows {
+                let conference = self.open.entry(id).or_insert_with(|| {
                     let mut deal = card(
-                        format!("conference:{}:{}", row.id, hour),
+                        format!("conference:{id}:{hour}"),
                         PeaceObservation::RecordedConference,
                         hour,
                     );
-                    deal.conference_id = Some(row.id.to_string());
+                    deal.conference_id = Some(id.to_string());
                     self.reply.deals.push(deal);
                     OpenConference {
                         index: self.reply.deals.len() - 1,
@@ -1326,9 +1192,9 @@ impl Scan {
                 let index = conference.index;
                 let deal = &mut self.reply.deals[index];
                 deal.last_observed_hour = hour;
-                deal.current_turn = Some(row.current_turn);
-                deal.finalized = Some(row.finalized != 0);
-                if row.finalized != 0 && deal.first_finalized_hour.is_none() {
+                deal.current_turn = Some(current_turn);
+                deal.finalized = Some(finalized != 0);
+                if finalized != 0 && deal.first_finalized_hour.is_none() {
                     deal.first_finalized_hour = Some(hour);
                     deal.end_hour = Some(hour);
                     deal.end_is_by = true;
@@ -1336,7 +1202,7 @@ impl Scan {
                         self.pending.insert(index, conference.before.clone());
                     }
                 }
-                if row.finalized == 0 && current.is_some() {
+                if finalized == 0 && current.is_some() {
                     conference.before = if self.unassigned.contains(&index) {
                         None
                     } else {
@@ -1372,8 +1238,8 @@ impl Scan {
                 current
                     .as_ref()
                     .is_none_or(|s| !s.unresolved_wars.is_empty()),
-                frame.complete::<tables::Provinces>().is_err(),
-                frame.complete::<tables::Subjects>().is_err()
+                vps.is_none(),
+                self.reads.subjects.is_none()
                     || current.as_ref().is_none_or(|s| !s.subjects_known),
                 current.as_ref().is_none_or(|s| s.governments.is_none()),
                 exists.is_none(),
@@ -1459,10 +1325,11 @@ impl Scan {
                 }
             }
         }
+        self.reads.roster = roster;
         Ok(())
     }
     /// Hours `first..=last` of a block read by its changes, which continue
-    /// the last observed hour (`frame`, whose rows they hold) and at which no
+    /// the last observed hour (whose reads they hold) and at which no
     /// field this scan reads changed, with the conference roster's slot read
     /// at `reads`: [`Self::observe_changed`]'s step for each, at once. Every
     /// operand, holder, snapshot and comparison is the hour before's, so an
@@ -1472,14 +1339,8 @@ impl Scan {
     /// snapshot it takes. False, with nothing changed, when an hour could do
     /// more: a gap, a subject relation's end, a roster read while a
     /// conference or comparison is held, or a comparison waiting for this
-    /// snapshot. The caller then observes the hours on their frames.
-    fn advance_quiet(
-        &mut self,
-        frame: &DecodedFrame,
-        first: i32,
-        last: i32,
-        reads: &[i32],
-    ) -> bool {
+    /// snapshot. The caller then observes the hours one by one.
+    fn advance_quiet(&mut self, first: i32, last: i32, reads: &[i32]) -> bool {
         let Some((_, _, flags)) = self.unobserved_frontier else {
             return false;
         };
@@ -1487,7 +1348,6 @@ impl Scan {
             || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first)
             || !self.exact.continues(first)
             || !self.snapshot_inputs.ready
-            || !self.country_tags.ready
             || self
                 .snapshot_inputs
                 .subject_expiry
@@ -1495,8 +1355,8 @@ impl Scan {
         {
             return false;
         }
-        let roster = frame.complete::<tables::PeaceConferences>();
-        let roster_complete = roster.is_ok();
+        let roster = self.reads.roster.as_ref();
+        let roster_complete = roster.is_some();
         // The branch's first hour reads the roster too.
         let branch_first = self.first;
         let read = |hour: i32| hour == branch_first || reads.binary_search(&hour).is_ok();
@@ -1510,13 +1370,13 @@ impl Scan {
         if (current.is_some() && !self.pending.is_empty())
             || (any_read
                 && roster_complete
-                && (roster.is_ok_and(|rows| !rows.is_empty())
+                && (roster.is_some_and(|rows| !rows.is_empty())
                     || !self.open.is_empty()
                     || !self.pending.is_empty()))
         {
             return false;
         }
-        let settlements = exact::missing_reason(&frame.tables[TableId::PeaceSettlements.index()]);
+        let settlements = self.reads.finalizers.reason.clone();
         for hour in first..=last {
             let roster_read = read(hour);
             if roster_read && roster_complete {

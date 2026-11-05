@@ -1,11 +1,12 @@
-//! Peace facts, projected hour by hour from a columnar walk ([`replay::segments`]): the walk's
-//! frame of the peace tables, held in the fields the observer reads, at each hour one of those
-//! fields changed, with which tables changed; and at every hour whether the conference roster's
-//! slot was read. A segment's first hour, an hour after one not walked and an hour a table's
-//! status changed hold every table changed. Every other hour holds the rows of the last hour
-//! that held a frame, which the emit ([`super::emit`]) steps through without one.
+//! Peace facts, projected hour by hour from a columnar walk ([`replay::segments`]): the
+//! segment's operator reads the peace tables an hour may have changed as the observer does
+//! ([`super::reads::Reader`]) and hands on only what those reads give otherwise than the
+//! segment's reads before: an owner, a war pair, a victory-point total, a finalizer row first
+//! read. A segment's first hour and an hour after one not walked read every table again and
+//! hand each read on whole; an hour that changed no read hands on nothing, and the emit
+//! ([`super::emit`]) steps through it on the reads it holds.
 
-use dashboard_base::prepared::{frame_changes::FrameChanges, prepass::HeldBytes};
+use super::reads::{HourReads, Reader};
 use dashboard_text::metadata::slot_read;
 use dashboard_world::{Hold, Needs, World};
 use replay::{
@@ -16,7 +17,6 @@ use replay_data::{
     format::FormatVersion,
     rows::{TABLE_COUNT, TableId},
 };
-use replay_frame::frame::DecodedFrame;
 use std::{io, mem::size_of};
 
 /// The tables the observer reads, and the fields of each it reads; every field where none
@@ -94,30 +94,29 @@ pub fn needs() -> io::Result<Needs> {
     })
 }
 
-/// An hour at which a field the observer reads changed: the walk's frame of the peace tables
-/// and which of them changed.
-pub struct Observed {
-    pub frame: DecodedFrame,
-    pub changes: FrameChanges,
-    /// The views of the tables that changed, which this hour alone holds.
-    held: usize,
-}
-
 /// One hour of a segment.
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     /// Whether the conference roster's slot was read.
     pub read: bool,
-    /// None when no field the observer reads changed: the hour holds the last frame's rows.
-    pub observed: Option<Box<Observed>>,
+    /// What the hour's reads give otherwise than the reads before them; none when it changed
+    /// none and follows the segment's hour before.
+    pub(super) reads: Option<Box<HourReads>>,
+}
+
+impl Hour {
+    /// Whether the hour handed its reads on.
+    pub fn observed(&self) -> bool {
+        self.reads.is_some()
+    }
 }
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        self.observed
+        self.reads
             .as_ref()
-            .map_or(0, |observed| size_of::<Observed>() + observed.held)
+            .map_or(0, |reads| size_of::<HourReads>() + reads.bytes())
     }
 }
 
@@ -128,12 +127,15 @@ pub struct Projector {
     /// The fields of each table the observer reads, as change-mask bits: every bit for a
     /// table read whole.
     masks: Vec<(TableId, u64)>,
-    /// Nothing is held: the next hour holds every table changed, as a segment's first.
+    /// The asks of the hour's changed tables, kept from hour to hour.
+    moved: Vec<(TableId, Hold)>,
+    /// Nothing is held: the next hour reads every table, as a segment's first.
     cold: bool,
     last: Option<i32>,
+    reader: Reader,
 }
 
-/// What [`Projector::save`] writes: nothing but that it restarts, since its next hour holds
+/// What [`Projector::save`] writes: nothing but that it restarts, since its next hour reads
 /// every table again, as at a segment's first hour.
 const SAVED: &[u8] = b"peace projector: cold";
 
@@ -154,21 +156,28 @@ impl Projector {
             .collect();
         Ok(Self {
             format,
+            moved: Vec::with_capacity(asks.len()),
             asks,
             masks,
             cold: true,
             last: None,
+            reader: Reader::default(),
         })
+    }
+
+    fn restart(&mut self) {
+        self.cold = true;
+        self.last = None;
+        self.reader = Reader::default();
     }
 }
 
-// Every segment starts cold: its first hour holds every table changed; what came before is the
-// emit's.
+// Every segment starts cold: its first hour hands every read on; what came before is the emit's.
 impl Operator<World> for Projector {
     type Output = Hour;
 
     fn start(&mut self, _: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
-        self.cold = true;
+        self.restart();
         Ok(())
     }
 
@@ -186,48 +195,45 @@ impl Operator<World> for Projector {
             || self.last.and_then(|last| last.checked_add(1)) != Some(at);
         self.cold = false;
         self.last = Some(at);
-        let mut rows_changed = [false; TABLE_COUNT];
-        let mut changed = opens;
+        let mut changed = [false; TABLE_COUNT];
         for &(table, mask) in &self.masks {
-            let touched = opens || world.touched(table, mask);
-            rows_changed[table.index()] = touched;
-            changed |= touched;
+            changed[table.index()] = opens || world.touched(table, mask);
         }
+        // A finalizer row first read names its actions' tokens in the hour's dictionary.
+        let dictionary =
+            changed[TableId::LexicalTokens.index()] || changed[TableId::PeaceSettlements.index()];
+        // Country tags resolve from both identity tables: either moving asks for the two.
+        let identity =
+            changed[TableId::Countries.index()] || changed[TableId::CountryLinks.index()];
+        self.moved.clear();
+        self.moved.extend(self.asks.iter().copied().filter(|&(table, _)| {
+            changed[table.index()]
+                || (table == TableId::LexicalTokens && dictionary)
+                || (identity && matches!(table, TableId::Countries | TableId::CountryLinks))
+        }));
         let read = slot_read(self.format, world.metrics(), TableId::PeaceConferences, at);
-        let observed = if changed {
-            let frame = world.frame_held(hour.state, &self.asks)?;
-            let mut held = HeldBytes::default();
-            for &(table, _) in &self.asks {
-                if rows_changed[table.index()] {
-                    held.view(&frame.tables[table.index()]);
-                }
-            }
-            let held = usize::try_from(held.total()).unwrap_or(usize::MAX);
-            Some(Box::new(Observed {
-                frame,
-                changes: FrameChanges {
-                    rows_changed,
-                    table_read: [false; TABLE_COUNT],
-                    slot_read: [false; TABLE_COUNT],
-                    updates: None,
-                },
-                held,
-            }))
-        } else {
+        let reads = if self.moved.is_empty() {
             None
+        } else {
+            // The frame is dropped before the hour ends: the walk's views are not kept.
+            let frame = world.frame_held(hour.state, &self.moved)?;
+            let reads = self.reader.read(&frame, &changed);
+            (opens || !reads.is_empty()).then(|| Box::new(reads))
         };
         out.push(Hour {
             branch: hour.branch,
             hour: at,
             read,
-            observed,
+            reads,
         })
     }
 
     fn carried(&self) -> Option<usize> {
         Some(
             self.asks.capacity() * size_of::<(TableId, Hold)>()
-                + self.masks.capacity() * size_of::<(TableId, u64)>(),
+                + self.moved.capacity() * size_of::<(TableId, Hold)>()
+                + self.masks.capacity() * size_of::<(TableId, u64)>()
+                + self.reader.bytes(),
         )
     }
 
@@ -243,8 +249,7 @@ impl Operator<World> for Projector {
                 "Not a saved peace projector",
             ));
         }
-        self.cold = true;
-        self.last = None;
+        self.restart();
         Ok(())
     }
 }

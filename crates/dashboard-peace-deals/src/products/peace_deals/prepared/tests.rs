@@ -3,7 +3,6 @@ use crate::products::peace_deals::{
     test_fixtures::{frame, replay},
     tests::{settled_row, with_settlement},
 };
-use dashboard_base::prepared::frame_changes::FrameChangeTracker;
 
 /// Whether `frame` read the conference roster's slot.
 fn read(recording: &Replay, frame: &DecodedFrame) -> bool {
@@ -15,7 +14,7 @@ fn read(recording: &Replay, frame: &DecodedFrame) -> bool {
     )
 }
 
-/// `frame` observed with every table changed, its events published as the emit writes them.
+/// `frame` observed, its events published as the emit writes them.
 fn observe(
     prepared: &mut Prepared,
     recording: &Replay,
@@ -23,14 +22,8 @@ fn observe(
     published: &mut Vec<Vec<u8>>,
 ) {
     let mut events = Vec::new();
-    let changes = FrameChanges {
-        rows_changed: [true; replay_data::rows::TABLE_COUNT],
-        table_read: [true; replay_data::rows::TABLE_COUNT],
-        slot_read: [true; replay_data::rows::TABLE_COUNT],
-        updates: None,
-    };
     prepared
-        .observe_changed(frame, &changes, read(recording, frame), &mut events)
+        .observe_frame(frame, read(recording, frame), &mut events)
         .unwrap();
     published.extend(events.iter().map(|event| serde_json::to_vec(event).unwrap()));
 }
@@ -48,7 +41,6 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_cuts_resume_and
     let mut current = frame(100, 2, false, &[]);
     let recording = replay(vec![current.clone()]);
     let mut prepared = Prepared::new(&recording, 1).unwrap();
-    let mut tracker = FrameChangeTracker::new();
     let mut frames = Vec::new();
     let mut published = Vec::new();
     let mut continuation = Vec::new();
@@ -74,12 +66,7 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_cuts_resume_and
         let mut events = Vec::new();
         let roster = read(&recording, &current);
         prepared
-            .observe_changed(
-                &current,
-                &tracker.observe(&current, recording.format),
-                roster,
-                &mut events,
-            )
+            .observe_frame(&current, roster, &mut events)
             .unwrap();
         published.extend(events.iter().map(|event| serde_json::to_vec(event).unwrap()));
         frames.push(current.clone());
@@ -87,7 +74,6 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_cuts_resume_and
             continuation = prepared.continuation().unwrap();
             compare(&continuation, &published, &frames);
             prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
-            tracker.invalidate();
         }
     }
     let actual = reply(&continuation, events(&published), 135, false).unwrap();
@@ -130,18 +116,10 @@ fn peace_snapshot_projections_share_unchanged_maps_and_expire_subjects_at_native
         });
     }
     let mut prepared = Prepared::new(&recording, 1).unwrap();
-    let mut tracker = FrameChangeTracker::new();
     let mut events = Vec::new();
     let mut step = |prepared: &mut Prepared, current: &DecodedFrame| {
         let roster = read(&recording, current);
-        prepared
-            .observe_changed(
-                current,
-                &tracker.observe(current, recording.format),
-                roster,
-                &mut events,
-            )
-            .unwrap();
+        prepared.observe_frame(current, roster, &mut events).unwrap();
     };
     step(&mut prepared, &current);
     let first = prepared.scan.previous.clone().unwrap();

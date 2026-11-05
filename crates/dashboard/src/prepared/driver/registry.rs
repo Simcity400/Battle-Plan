@@ -796,7 +796,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["peace-deals"],
         gates: &["peace-deals"],
         // 2: conferences and outcomes on the segment driver, published as a series root.
-        version: 2,
+        // 3: the operator hands on what the observer's reads changed, not the tables.
+        version: 3,
         ..family("peace")
     },
     // The event feed reads the projects' published completions when asked,

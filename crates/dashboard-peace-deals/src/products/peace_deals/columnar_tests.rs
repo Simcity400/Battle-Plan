@@ -352,7 +352,7 @@ fn build(
 }
 
 /// Every placement of segment starts, cuts and a resume publishes the scan's reply, complete
-/// and through each cut, while the hours no field the observer reads changed hold no frame.
+/// and through each cut, while the hours no field the observer reads changed hand nothing on.
 #[test]
 fn the_publication_answers_what_the_scan_of_the_row_frames_does() {
     for (starts, cuts, resume) in [
@@ -373,10 +373,10 @@ fn the_publication_answers_what_the_scan_of_the_row_frames_does() {
         let mut starts = starts.to_vec();
         starts.extend(resume.map(|cut| cut + 1));
         let (hours, frames) = projected(&starts);
-        let held = hours.iter().filter(|hour| hour.observed.is_some()).count();
+        let held = hours.iter().filter(|hour| hour.observed()).count();
         assert!(
             held * 3 < hours.len(),
-            "{label}: {held} of {} hours hold a frame",
+            "{label}: {held} of {} hours hand reads on",
             hours.len()
         );
         let (pages, root) = build(hours, &frames, cuts, resume, &label);

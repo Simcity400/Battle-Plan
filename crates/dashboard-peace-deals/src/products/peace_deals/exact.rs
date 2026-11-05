@@ -1,5 +1,5 @@
 //! Exact finalizer observations override the derived card of the same identity.
-use super::*;
+use super::{reads::Finalizers, reads::Settled, *};
 use replay_data::rows::SettledPeaceAction;
 use replay_frame::frame::TableView;
 
@@ -170,16 +170,20 @@ impl Observed {
         }
         self.materialized = Some(through);
     }
+    /// `hour` observed: the finalizer table as it reads (`finalizers`), and the rows it reads
+    /// for the first time, none where it read none (`settled`).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_changed(
         &mut self,
-        frame: &DecodedFrame,
+        hour: i32,
         countries: Option<&CountryTags>,
         vps: Option<&HashMap<u32, i64>>,
         action_key: Option<&str>,
         holders_changed: bool,
-        changes: &FrameChanges,
+        finalizers: &Finalizers,
+        settled: Option<&[Settled]>,
     ) {
-        let continuous = self.frontier.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        let continuous = self.frontier.and_then(|frontier| frontier.checked_add(1)) == Some(hour);
         if holders_changed || !continuous {
             self.seal();
             self.active.clear();
@@ -194,15 +198,15 @@ impl Observed {
                     let identity = countries.identities[tag];
                     let reads = self.country_tags.entry(raw).or_default();
                     if let Some(last) = reads.last_mut().filter(|last| {
-                        last.last_hour.checked_add(1) == Some(frame.hour)
+                        last.last_hour.checked_add(1) == Some(hour)
                             && last.tag == *tag
                             && last.identity == identity
                     }) {
-                        last.last_hour = frame.hour;
+                        last.last_hour = hour;
                     } else {
                         reads.push(TagRead {
-                            first_hour: frame.hour,
-                            last_hour: frame.hour,
+                            first_hour: hour,
+                            last_hour: hour,
                             tag: tag.clone(),
                             identity,
                         });
@@ -215,34 +219,18 @@ impl Observed {
                     .flat_map(|countries| countries.tags.keys())
                     .copied(),
             );
-            self.materialized = Some(frame.hour);
+            self.materialized = Some(hour);
         }
-        self.frontier = Some(frame.hour);
-        let view = &*frame.tables[TableId::PeaceSettlements.index()];
-        if !changes.rows_changed[TableId::PeaceSettlements.index()]
-            && matches!(view, TableView::Complete(_))
-        {
-            return;
+        self.frontier = Some(hour);
+        if let Some(reason) = &finalizers.reason {
+            self.missing(hour, reason.clone());
         }
-        if let Some(reason) = missing_reason(view) {
-            self.missing(frame.hour, reason);
-        }
-        let rows = match view {
-            TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-                rows.rows::<tables::PeaceSettlements>()
-            }
-            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => None,
-        };
-        let Some(rows) = rows else {
+        let Some(settled) = settled.filter(|_| finalizers.readable) else {
             return;
         };
-        if !changes.rows_changed[TableId::PeaceSettlements.index()] {
-            return;
-        }
         // Late finalizer facts can name any accepted hour, including this one.
         self.seal();
-        let tokens = frame.complete::<tables::LexicalTokens>().ok();
-        for row in rows {
+        for Settled { row, tokens } in settled {
             #[cfg(test)]
             {
                 self.row_visits += 1;
@@ -266,7 +254,7 @@ impl Observed {
                     subjects: Vec::new(),
                     cached_names: Vec::new(),
                 },
-                publication_hour: frame.hour,
+                publication_hour: hour,
                 tags: row
                     .hour
                     .map(|hour| {
@@ -329,25 +317,13 @@ impl Observed {
                         })
                         .collect()
                 }),
-                vps_hour: vps.map(|_| frame.hour),
+                vps_hour: vps.map(|_| hour),
                 state_action_key: action_key.map(str::to_owned),
             };
-            let tokens: HashMap<u32, String> = row
-                .actions
-                .iter()
-                .filter_map(|a| {
-                    let tokens = tokens?;
-                    let index = tokens.binary_search_by_key(&a.token, |r| r.token).ok()?;
-                    Some((
-                        a.token,
-                        std::str::from_utf8(&tokens[index].literal).ok()?.to_owned(),
-                    ))
-                })
-                .collect();
             capture.row.actions = row
                 .actions
                 .iter()
-                .map(|a| action(a, &tokens, &capture.tags))
+                .map(|a| action(a, tokens, &capture.tags))
                 .collect();
             capture.row.cached_names = capture
                 .row

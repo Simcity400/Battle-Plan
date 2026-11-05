@@ -4,24 +4,20 @@
 //! the observer's continuation is an event at the cut's last hour, which a reply joins with the
 //! events before it ([`super::query`]).
 //!
-//! An hour that holds no frame holds the rows of the last that did: the observer takes their
-//! step at once where it can, and observes each on that frame otherwise.
+//! An hour that hands on no reads changed none: the observer takes the step of such hours at
+//! once where it can, and observes each on the reads it holds otherwise.
 
 use super::{
-    facts::{self, Observed},
+    facts,
     prepared::{Event, Prepared},
+    reads::HourReads,
 };
-use dashboard_base::prepared::{
-    frame_changes::FrameChanges,
-    series::{compress, decompress},
-};
+use dashboard_base::prepared::series::{compress, decompress};
 use dashboard_series::{
     Cell, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
     family::{Actors, Directory, Place},
 };
 use replay::container::Replay;
-use replay_data::rows::TABLE_COUNT;
-use replay_frame::frame::DecodedFrame;
 use std::io;
 
 /// The family's keys are spelled under it.
@@ -51,9 +47,10 @@ pub struct Emit {
     actors: Actors,
     /// EVENTS and CONTINUATION.
     keys: Option<[KeyHandle; 2]>,
-    /// The last hour that held a frame, whose rows the hours after it hold until the next.
-    frame: Option<DecodedFrame>,
-    /// Hours after it not yet stepped through: the first, the last and the roster's reads.
+    /// The observer holds reads: an hour that changed none can follow.
+    observed: bool,
+    /// Hours that changed no read, not yet stepped through: the first, the last and the
+    /// roster's reads.
     quiet: Option<(i32, i32, Vec<i32>)>,
     events: Vec<Event>,
     last: Option<i32>,
@@ -72,7 +69,7 @@ impl Emit {
             prepared,
             actors: Actors::new(SCHEMA),
             keys: None,
-            frame: None,
+            observed: false,
             quiet: None,
             events: Vec::new(),
             last: None,
@@ -148,9 +145,9 @@ impl Emit {
         let follows = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         self.last = Some(at);
         self.first.get_or_insert(at);
-        let Some(observed) = hour.observed else {
-            if !follows || self.frame.is_none() {
-                return Err(invalid("A peace hour without a frame follows none"));
+        let Some(reads) = hour.reads else {
+            if !follows || !self.observed {
+                return Err(invalid("A peace hour without reads follows none"));
             }
             let (_, last, reads) = self.quiet.get_or_insert_with(|| (at, at, Vec::new()));
             *last = at;
@@ -160,10 +157,9 @@ impl Emit {
             return Ok(());
         };
         self.settle(writer)?;
-        let Observed { frame, changes, .. } = *observed;
         self.prepared
-            .observe_changed(&frame, &changes, hour.read, &mut self.events)?;
-        self.frame = Some(frame);
+            .observe_changed(at, *reads, hour.read, &mut self.events)?;
+        self.observed = true;
         self.publish(writer, at)
     }
 
@@ -172,25 +168,13 @@ impl Emit {
         let Some((first, last, reads)) = self.quiet.take() else {
             return Ok(());
         };
-        let Some(frame) = self.frame.as_ref() else {
-            return Err(invalid("A peace hour without a frame follows none"));
-        };
-        if self.prepared.advance_quiet(frame, first, last, &reads) {
+        if self.prepared.advance_quiet(first, last, &reads) {
             return Ok(());
         }
-        // Each hour holds the frame's rows and changes none of them.
-        let unchanged = FrameChanges {
-            rows_changed: [false; TABLE_COUNT],
-            table_read: [false; TABLE_COUNT],
-            slot_read: [false; TABLE_COUNT],
-            updates: None,
-        };
-        let mut held = frame.clone();
         for at in first..=last {
-            held.hour = at;
             let read = reads.binary_search(&at).is_ok();
             self.prepared
-                .observe_changed(&held, &unchanged, read, &mut self.events)?;
+                .observe_changed(at, HourReads::default(), read, &mut self.events)?;
             self.publish(writer, at)?;
         }
         Ok(())
@@ -219,7 +203,7 @@ impl Emit {
     }
 
     /// What the emit goes on with after a cut: the observer and the last hour kept. Its next
-    /// hour holds a frame, as a segment's first does.
+    /// hour hands every read on, as a segment's first does.
     pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
         if self.quiet.is_some() {
             return Err(invalid("A peace emit is saved with hours not stepped through"));
