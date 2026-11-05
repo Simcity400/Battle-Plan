@@ -7,6 +7,7 @@
 use super::*;
 use std::collections::HashMap;
 use std::collections::btree_map::Entry as Slot;
+use std::sync::mpsc;
 
 pub(super) type Key = (u8, u64);
 pub(super) const HANDLE: u8 = 0;
@@ -154,11 +155,95 @@ impl Trees {
     }
 }
 
+/// Where a history's fold reads its tree's nodes: the fold's own pages, or, on a shard's
+/// thread, the fold's thread that holds them.
+enum Reader<'a> {
+    Local {
+        pages: &'a mut dyn Pages,
+        trees: &'a mut Trees,
+    },
+    Remote(&'a Remote),
+}
+
 /// What a history's fold reads beyond its own state, and the chunk its events go into.
 pub(super) struct Ctx<'a> {
-    pub pages: &'a mut dyn Pages,
-    pub trees: &'a mut Trees,
+    reader: Reader<'a>,
+    /// The sweep generation a read or change marks its value with.
+    pub generation: u64,
     pub chunk: u64,
+}
+
+impl<'a> Ctx<'a> {
+    pub fn new(pages: &'a mut dyn Pages, trees: &'a mut Trees, chunk: u64) -> Self {
+        Self {
+            generation: trees.generation,
+            reader: Reader::Local { pages, trees },
+            chunk,
+        }
+    }
+
+    /// A shard's context, reading nodes through `remote`.
+    pub fn remote(remote: &'a Remote, generation: u64, chunk: u64) -> Self {
+        Self {
+            reader: Reader::Remote(remote),
+            generation,
+            chunk,
+        }
+    }
+
+    /// The fold's own pages and trees, which a shard's thread never holds.
+    pub fn local(&mut self) -> io::Result<(&mut (dyn Pages + 'a), &mut Trees)> {
+        match &mut self.reader {
+            Reader::Local { pages, trees } => Ok((&mut **pages, &mut **trees)),
+            Reader::Remote(_) => Err(crate::invalid(
+                "A production shard reads pages only through the fold's thread",
+            )),
+        }
+    }
+
+    /// The value at `key` of the tree at `root`.
+    fn get(&mut self, root: Option<NodeRef>, key: Key) -> io::Result<Option<Vec<u8>>> {
+        match &mut self.reader {
+            Reader::Local { pages, trees } => get(&mut **pages, &mut **trees, root, key),
+            Reader::Remote(remote) => find(|at| remote.node(at), root, key),
+        }
+    }
+}
+
+/// A node a shard asks the fold's thread to read, and where the answer goes.
+pub(super) struct Request {
+    at: NodeRef,
+    reply: mpsc::Sender<io::Result<Arc<Node>>>,
+}
+
+impl Request {
+    /// Reads the node asked for and answers it.
+    pub fn serve(self, pages: &mut dyn Pages, trees: &mut Trees) {
+        let node = trees.nodes.get(pages, &trees.section, self.at);
+        // A shard that is gone asks nothing more.
+        let _ = self.reply.send(node);
+    }
+}
+
+/// A shard's way to the fold thread's pages.
+pub(super) struct Remote {
+    requests: mpsc::Sender<Request>,
+}
+
+impl Remote {
+    pub fn new(requests: mpsc::Sender<Request>) -> Self {
+        Self { requests }
+    }
+
+    fn node(&self, at: NodeRef) -> io::Result<Arc<Node>> {
+        let gone = || crate::invalid("The production fold's thread stopped serving its shards");
+        // Its own answer's way, so a request dropped unanswered ends the wait.
+        let (reply, answer) = mpsc::channel();
+        self.requests
+            .send(Request { at, reply })
+            .map_err(|_| gone())?;
+        answer.recv().map_err(|_| gone())?
+    }
 }
 
 /// The value at `key` of the tree at `root`.
@@ -168,11 +253,20 @@ fn get(
     root: Option<NodeRef>,
     key: Key,
 ) -> io::Result<Option<Vec<u8>>> {
+    find(|at| trees.nodes.get(pages, &trees.section, at), root, key)
+}
+
+/// The value at `key` of the tree at `root`, its nodes read by `read`.
+fn find(
+    mut read: impl FnMut(NodeRef) -> io::Result<Arc<Node>>,
+    root: Option<NodeRef>,
+    key: Key,
+) -> io::Result<Option<Vec<u8>>> {
     let Some(mut at) = root else {
         return Ok(None);
     };
     for _ in 0..DEPTH {
-        let node = trees.nodes.get(pages, &trees.section, at)?;
+        let node = read(at)?;
         match &*node {
             Node::Leaf(entries) => {
                 return Ok(entries
@@ -370,11 +464,12 @@ impl<V: product_codec::Product + Clone> Resident<V> {
         root: Option<NodeRef>,
         ctx: &mut Ctx<'_>,
     ) -> io::Result<Option<&V>> {
-        let seen = ctx.trees.generation;
+        let seen = ctx.generation;
         let entry = match self.entries.entry(id) {
             Slot::Occupied(entry) => entry.into_mut(),
             Slot::Vacant(vacant) => {
-                let value = get(ctx.pages, ctx.trees, root, (self.kind, id))?
+                let value = ctx
+                    .get(root, (self.kind, id))?
                     .map(|bytes| product_codec::decode::<V>(&bytes))
                     .transpose()?;
                 vacant.insert(Entry {

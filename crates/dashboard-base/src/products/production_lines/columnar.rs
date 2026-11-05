@@ -3,12 +3,14 @@
 //! the hour built anew and whether the fold reads that change, their completeness and sample
 //! hours, the variant catalogue's evidence and built operands and, only where the fold's input
 //! changed, that input as the fold extracts it from a frame: the countries' identities, the
-//! definitions a variant read compares, the designs, the organisations, the census's rows, the
-//! modifier refusal and the icon operands. Rows come from the walk's world's views, built only at
-//! the hours that need them, and every operand is made with the fold's own functions. The emit
-//! folds each hour through the fold a row preparation runs ([`Prepared`]), its input taken from
-//! these facts, so the index it publishes, and every reply read from it, are those of the same
-//! hours' frames. Each segment starts cold, as a row block starts at a keyframe.
+//! definitions a variant read compares, the designs, the organisations, the modifier refusal, the
+//! icon operands and each census as a delta of the segment's census before ([`Census`]): every
+//! row at its first, then only the rows that changed, came or went. Rows come from the walk's
+//! world's views, built only at the hours that need them, and every operand is made with the
+//! fold's own functions. The emit takes each census into the one it holds and folds each hour
+//! through the fold a row preparation runs ([`Prepared`]), each country's part on spare cores, so
+//! the index it publishes, and every reply read from it, are those of the same hours' frames.
+//! Each segment starts cold, as a row block starts at a keyframe.
 
 use super::{
     Country, DesignRead, RawOrganisation, link_slot, organisation_name, organisation_state,
@@ -203,15 +205,199 @@ pub(super) enum Organisations {
     Updates(Vec<(u64, Option<Box<Organisation>>)>),
 }
 
-/// A census's rows, by the canonical slot their links resolve.
-#[derive(Default)]
+/// One census table's entries as a census changed them from the segment's census before, each
+/// list by slot and key: every entry in `added` when `whole`; else those in place of one held
+/// under their key and slot, those under a key not held under their slot, and the slot and key
+/// of each one gone or moved to another slot.
+pub(super) struct Delta<E> {
+    pub whole: bool,
+    pub changed: Vec<E>,
+    pub added: Vec<E>,
+    pub gone: Vec<(Option<u32>, u128)>,
+}
+
+impl<E: Entry> Delta<E> {
+    fn heap(&self) -> usize {
+        self.changed
+            .iter()
+            .chain(&self.added)
+            .map(Entry::heap)
+            .sum::<usize>()
+            + self.gone.len() * size_of::<(Option<u32>, u128)>()
+    }
+}
+
+/// A census's rows as deltas of the segment's census before: each line and output row with the
+/// canonical slot its link resolves, None where it resolves none.
 pub(super) struct Census {
-    pub lines: BTreeMap<u32, Vec<ProductionLineRow>>,
-    pub unlinked_lines: Vec<ProductionLineRow>,
-    pub output: BTreeMap<u32, Vec<ProductionLineOutputRow>>,
-    pub unlinked_output: Vec<ProductionLineOutputRow>,
-    pub modifier_countries: BTreeMap<u32, Arc<CountryProductionModifiersRow>>,
-    pub modifier_lines: BTreeMap<u64, ProductionLineModifiersRow>,
+    pub lines: Delta<(Option<u32>, ProductionLineRow)>,
+    pub output: Delta<(Option<u32>, ProductionLineOutputRow)>,
+    pub modifier_countries: Delta<Arc<CountryProductionModifiersRow>>,
+    pub modifier_lines: Delta<ProductionLineModifiersRow>,
+}
+
+impl Census {
+    fn heap(&self) -> usize {
+        self.lines.heap()
+            + self.output.heap()
+            + self.modifier_countries.heap()
+            + self.modifier_lines.heap()
+    }
+}
+
+/// A census entry: its row, and the slot it is held under.
+pub(super) trait Entry: Clone {
+    type Row: RowCodec + PartialEq;
+    fn row(&self) -> &Self::Row;
+    fn slot(&self) -> Option<u32>;
+    fn of(slot: Option<u32>, row: &Self::Row) -> Self;
+    fn heap(&self) -> usize;
+}
+
+impl<R: RowCodec + PartialEq + Clone> Entry for (Option<u32>, R) {
+    type Row = R;
+    fn row(&self) -> &R {
+        &self.1
+    }
+    fn slot(&self) -> Option<u32> {
+        self.0
+    }
+    fn of(slot: Option<u32>, row: &R) -> Self {
+        (slot, row.clone())
+    }
+    fn heap(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
+impl Entry for Arc<CountryProductionModifiersRow> {
+    type Row = CountryProductionModifiersRow;
+    fn row(&self) -> &CountryProductionModifiersRow {
+        self
+    }
+    fn slot(&self) -> Option<u32> {
+        None
+    }
+    fn of(_: Option<u32>, row: &CountryProductionModifiersRow) -> Self {
+        Arc::new(row.clone())
+    }
+    fn heap(&self) -> usize {
+        size_of::<Self>() + modifier_country_heap(self)
+    }
+}
+
+impl Entry for ProductionLineModifiersRow {
+    type Row = Self;
+    fn row(&self) -> &Self {
+        self
+    }
+    fn slot(&self) -> Option<u32> {
+        None
+    }
+    fn of(_: Option<u32>, row: &Self) -> Self {
+        row.clone()
+    }
+    fn heap(&self) -> usize {
+        size_of::<Self>() + self.factory_efficiencies.len() * size_of::<i64>()
+    }
+}
+
+/// The delta `rows` (ascending by key, each with its slot) make of `held`, which then holds
+/// them: every row when `whole`, and a whole empty table where none is left.
+fn diff<'r, E: Entry>(
+    held: &mut Vec<E>,
+    whole: bool,
+    rows: impl IntoIterator<Item = (Option<u32>, &'r E::Row)>,
+) -> io::Result<Delta<E>>
+where
+    E::Row: 'r,
+{
+    let mut last: Option<u128> = None;
+    let mut ascending = |key: u128| {
+        let after = last.is_none_or(|last| last < key);
+        last = Some(key);
+        if after {
+            Ok(())
+        } else {
+            Err(invalid("A production census table is out of key order"))
+        }
+    };
+    let by_slot = |entry: &E| (entry.slot(), entry.row().key());
+    if whole {
+        let mut next = Vec::new();
+        for (slot, row) in rows {
+            ascending(row.key())?;
+            next.push(E::of(slot, row));
+        }
+        let mut added = next.clone();
+        added.sort_unstable_by_key(by_slot);
+        *held = next;
+        return Ok(Delta {
+            whole: true,
+            changed: Vec::new(),
+            added,
+            gone: Vec::new(),
+        });
+    }
+    let mut next = Vec::with_capacity(held.len());
+    let (mut changed, mut added, mut gone) = (Vec::new(), Vec::new(), Vec::new());
+    let mut old = std::mem::take(held).into_iter().peekable();
+    for (slot, row) in rows {
+        let key = row.key();
+        ascending(key)?;
+        while let Some(entry) = old.next_if(|entry| entry.row().key() < key) {
+            gone.push((entry.slot(), key_of(&entry)));
+        }
+        match old.next_if(|entry| entry.row().key() == key) {
+            Some(entry) if entry.slot() == slot && entry.row() == row => next.push(entry),
+            Some(entry) if entry.slot() == slot => {
+                let entry = E::of(slot, row);
+                changed.push(entry.clone());
+                next.push(entry);
+            }
+            moved => {
+                if let Some(entry) = moved {
+                    gone.push((entry.slot(), key));
+                }
+                let entry = E::of(slot, row);
+                added.push(entry.clone());
+                next.push(entry);
+            }
+        }
+    }
+    gone.extend(old.map(|entry| (entry.slot(), key_of(&entry))));
+    let emptied = next.is_empty() && !gone.is_empty();
+    *held = next;
+    if emptied {
+        return Ok(Delta {
+            whole: true,
+            changed: Vec::new(),
+            added: Vec::new(),
+            gone: Vec::new(),
+        });
+    }
+    changed.sort_unstable_by_key(by_slot);
+    added.sort_unstable_by_key(by_slot);
+    gone.sort_unstable();
+    Ok(Delta {
+        whole: false,
+        changed,
+        added,
+        gone,
+    })
+}
+
+fn key_of<E: Entry>(entry: &E) -> u128 {
+    entry.row().key()
+}
+
+/// The census entries the segment last handed on, which its next census is a delta of.
+#[derive(Default)]
+struct Held {
+    lines: Vec<(Option<u32>, ProductionLineRow)>,
+    output: Vec<(Option<u32>, ProductionLineOutputRow)>,
+    modifier_countries: Vec<Arc<CountryProductionModifiersRow>>,
+    modifier_lines: Vec<ProductionLineModifiersRow>,
 }
 
 /// The icon rule's country operands, and each equipment type token's spelling.
@@ -237,6 +423,7 @@ pub(super) struct Facts {
     pub respell_all: bool,
     pub designs: Option<Designs>,
     pub organisations: Option<Organisations>,
+    /// At a census the emit takes, a delta of the segment's census before.
     pub census: Option<Census>,
     pub refusal: Option<String>,
     pub icons: Option<Icons>,
@@ -315,8 +502,8 @@ fn definition_heap(row: &VariantDefinitionRow) -> usize {
 }
 
 impl Facts {
-    /// The bytes it holds, `new_modifiers` those of the modifier rows first shared here.
-    fn heap(&self, new_modifiers: usize, new_icons: usize) -> usize {
+    /// The bytes it holds, `new_icons` those of the icon operands first held here.
+    fn heap(&self, new_icons: usize) -> usize {
         let identities = self.identities.as_ref().map_or(0, |identities| {
             identities.holders.len() * (size_of::<((u32, u32), Option<String>)>() + 8)
                 + identities.selected.as_ref().map_or(0, |selected| {
@@ -360,23 +547,7 @@ impl Facts {
                 .sum(),
             _ => 0,
         };
-        let census = self.census.as_ref().map_or(0, |census| {
-            let lines =
-                census.lines.values().map(Vec::len).sum::<usize>() + census.unlinked_lines.len();
-            let output =
-                census.output.values().map(Vec::len).sum::<usize>() + census.unlinked_output.len();
-            lines * size_of::<ProductionLineRow>()
-                + output * size_of::<ProductionLineOutputRow>()
-                + census.modifier_countries.len() * 24
-                + census
-                    .modifier_lines
-                    .values()
-                    .map(|row| {
-                        size_of::<ProductionLineModifiersRow>() + row.factory_efficiencies.len() * 8
-                    })
-                    .sum::<usize>()
-                + new_modifiers
-        });
+        let census = self.census.as_ref().map_or(0, Census::heap);
         size_of::<Self>()
             + identities
             + definitions
@@ -529,8 +700,8 @@ pub struct Projector {
     /// left them.
     country_keys: Vec<(u32, u32)>,
     country_rows: BTreeMap<u32, usize>,
-    /// The last census's modifier rows, shared while equal.
-    modifiers: BTreeMap<u32, Arc<CountryProductionModifiersRow>>,
+    /// The census entries last handed on; None before the segment's first census.
+    held: Option<Held>,
     /// The modifier refusal while ModifierDefinitions and the spellings stay as they were.
     refusal: Option<Option<String>>,
     icon_hour: Option<Arc<Result<IconHour, String>>>,
@@ -584,7 +755,7 @@ impl Projector {
             mio: Mio::default(),
             country_keys: Vec::new(),
             country_rows: BTreeMap::new(),
-            modifiers: BTreeMap::new(),
+            held: None,
             refusal: None,
             icon_hour: None,
             icon_dirty: true,
@@ -910,7 +1081,7 @@ impl Operator<World> for Projector {
             respell_all,
             ..Facts::default()
         };
-        let (mut new_modifiers, mut new_icons) = (0, 0);
+        let mut new_icons = 0;
         if !lent.is_empty() {
             let mut frame = self.frame.take().unwrap_or_else(|| empty(0));
             world.frame_held_into(state, &lent, &mut frame)?;
@@ -936,7 +1107,7 @@ impl Operator<World> for Projector {
             );
             dashboard_world::release(&mut frame, &lent);
             self.frame = Some(frame);
-            (new_modifiers, new_icons) = made?;
+            new_icons = made?;
         } else if designs {
             facts.designs = Some(Designs::Incomplete);
         }
@@ -975,7 +1146,7 @@ impl Operator<World> for Projector {
         let bytes = raws_bytes
             + facts
                 .as_ref()
-                .map_or(0, |facts| facts.heap(new_modifiers, new_icons));
+                .map_or(0, |facts| facts.heap(new_icons));
         out.push(Hour {
             hour: at,
             reads: Bits::of(&flags.reads),
@@ -1012,8 +1183,8 @@ struct Wants {
 }
 
 impl Projector {
-    /// Fills `facts` from the views lent into `frame`; the bytes of the modifier rows and icon
-    /// operands first held here.
+    /// Fills `facts` from the views lent into `frame`; the bytes of the icon operands first held
+    /// here.
     #[allow(clippy::too_many_arguments)]
     fn facts(
         &mut self,
@@ -1024,7 +1195,7 @@ impl Projector {
         wants: Wants,
         at: i32,
         facts: &mut Facts,
-    ) -> io::Result<(usize, usize)> {
+    ) -> io::Result<usize> {
         if wants.refuse {
             self.refusal = Some(self.refusal(state, names, frame, at)?);
         }
@@ -1130,49 +1301,55 @@ impl Projector {
             )?;
             facts.organisations = Some(Organisations::Updates(updates));
         }
-        let mut new_modifiers = 0;
         if wants.census
             && let Some(links) = links
         {
-            let mut census = Census::default();
-            if let Ok(rows) = frame.complete::<tables::ProductionLines>() {
-                for row in rows {
-                    match link_slot(links, row.country) {
-                        Some(slot) => census.lines.entry(slot).or_default().push(row.clone()),
-                        None => census.unlinked_lines.push(row.clone()),
-                    }
-                }
-            }
-            if let Ok(rows) = frame.complete::<tables::ProductionLineOutput>() {
-                for row in rows {
-                    match link_slot(links, row.country) {
-                        Some(slot) => census.output.entry(slot).or_default().push(row.clone()),
-                        None => census.unlinked_output.push(row.clone()),
-                    }
-                }
-            }
+            let whole = self.held.is_none();
+            let held = self.held.get_or_insert_with(Held::default);
+            let lines = frame
+                .complete::<tables::ProductionLines>()
+                .unwrap_or_default();
+            let output = frame
+                .complete::<tables::ProductionLineOutput>()
+                .unwrap_or_default();
             let refused = wants.refusal_due && !self.refusal.as_ref().is_some_and(Option::is_none);
-            if wants.modifiers && !refused {
-                let mut shared = BTreeMap::new();
-                for row in frame.complete::<tables::CountryProductionModifiers>()? {
-                    let held = match self.modifiers.get(&row.country) {
-                        Some(held) if **held == *row => Arc::clone(held),
-                        _ => {
-                            new_modifiers += modifier_country_heap(row);
-                            Arc::new(row.clone())
-                        }
-                    };
-                    shared.insert(row.country, held);
-                }
-                census.modifier_countries = shared.clone();
-                self.modifiers = shared;
-                census.modifier_lines = frame
-                    .complete::<tables::ProductionLineModifiers>()?
-                    .iter()
-                    .map(|row| (row.line, row.clone()))
-                    .collect();
-            }
-            facts.census = Some(census);
+            let (countries, modified): (
+                &[CountryProductionModifiersRow],
+                &[ProductionLineModifiersRow],
+            ) = if wants.modifiers && !refused {
+                (
+                    frame.complete::<tables::CountryProductionModifiers>()?,
+                    frame.complete::<tables::ProductionLineModifiers>()?,
+                )
+            } else {
+                (&[], &[])
+            };
+            facts.census = Some(Census {
+                lines: diff(
+                    &mut held.lines,
+                    whole,
+                    lines
+                        .iter()
+                        .map(|row| (link_slot(links, row.country), row)),
+                )?,
+                output: diff(
+                    &mut held.output,
+                    whole,
+                    output
+                        .iter()
+                        .map(|row| (link_slot(links, row.country), row)),
+                )?,
+                modifier_countries: diff(
+                    &mut held.modifier_countries,
+                    whole,
+                    countries.iter().map(|row| (None, row)),
+                )?,
+                modifier_lines: diff(
+                    &mut held.modifier_lines,
+                    whole,
+                    modified.iter().map(|row| (None, row)),
+                )?,
+            });
         }
         let mut new_icons = 0;
         if wants.icon_hour
@@ -1203,7 +1380,7 @@ impl Projector {
             self.tokens = Some(Arc::new(held));
             self.tokens_dirty = false;
         }
-        Ok((new_modifiers, new_icons))
+        Ok(new_icons)
     }
 
     /// The modifier refusal of the modifier tables' fixed layout, read from ModifierDefinitions

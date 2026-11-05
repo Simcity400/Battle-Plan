@@ -859,7 +859,8 @@ pub(crate) static JOBS: &[Job] = &[
     },
     Job {
         name: "production-lines",
-        version: 1,
+        // 2: its operators hand on census deltas, and its fold runs in shards by country.
+        version: 2,
         gates: &[
             "production-lines",
             "production-line-detail",

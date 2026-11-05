@@ -1,4 +1,4 @@
-use super::columnar::{Designs, Hour as Native, Organisation, Organisations};
+use super::columnar::{Census, Delta, Designs, Hour as Native, Organisation, Organisations};
 use super::*;
 use crate::prepared::frame_changes::{FrameChanges, field_mask};
 use replay_data::rows::{
@@ -64,11 +64,19 @@ impl HourInput {
     }
 
     pub fn output_due(&self, country: Option<Country>) -> Option<bool> {
-        self.output_read.then_some(match country {
+        self.output_due_at(self.output_read, self.lines_read, country)
+    }
+
+    /// [`Self::output_due`] of a read with these flags.
+    pub fn output_due_at(
+        &self,
+        output_read: bool,
+        lines_read: bool,
+        country: Option<Country>,
+    ) -> Option<bool> {
+        output_read.then_some(match country {
             Some(Country::Absent) => true,
-            Some(Country::Found(..)) => {
-                self.lines_read && self.lines_complete && self.output_complete
-            }
+            Some(Country::Found(..)) => lines_read && self.lines_complete && self.output_complete,
             Some(Country::Unresolved) | None => false,
         })
     }
@@ -123,6 +131,134 @@ pub(super) struct World {
     icon_cache: BTreeMap<u64, (bool, IconChoice)>,
     /// The variants whose cached choice the native hour input already holds, by `known`.
     icon_held: BTreeMap<u64, bool>,
+    /// How many of the native hour input's census rows produce each variant; None until a
+    /// census is taken whole.
+    census: Option<Produced>,
+    /// Native censuses by hour, in order, not yet taken: a quiet hour's waits for the next
+    /// census the fold takes, each a delta of the one before.
+    censuses: Vec<(i32, Census)>,
+}
+
+/// How many of the hour input's census line and output rows produce each variant.
+type Produced = BTreeMap<u64, usize>;
+
+fn forget(variants: &mut Produced, variant: u64) {
+    if let Some(count) = variants.get_mut(&variant) {
+        *count -= 1;
+        if *count == 0 {
+            variants.remove(&variant);
+        }
+    }
+}
+
+fn unheld() -> io::Error {
+    crate::invalid("A native production census changes a row the fold does not hold")
+}
+
+/// The rows held under `slot`: a slot's, or the unlinked.
+fn slot_rows<'a, R>(
+    (slotted, unlinked): (&'a mut BTreeMap<u32, Vec<R>>, &'a mut Vec<R>),
+    slot: Option<u32>,
+) -> Option<&'a mut Vec<R>> {
+    match slot {
+        Some(slot) => slotted.get_mut(&slot),
+        None => Some(unlinked),
+    }
+}
+
+/// Takes one table's census delta into its rows by slot and unlinked, each ascending by key.
+fn take_rows<R: RowCodec>(
+    delta: Delta<(Option<u32>, R)>,
+    (slotted, unlinked): (&mut BTreeMap<u32, Vec<R>>, &mut Vec<R>),
+    variants: &mut Produced,
+    variant: impl Fn(&R) -> u64,
+) -> io::Result<()> {
+    if delta.whole {
+        for row in slotted.values().flatten().chain(unlinked.iter()) {
+            forget(variants, variant(row));
+        }
+        slotted.clear();
+        unlinked.clear();
+    }
+    let mut gone = delta.gone.into_iter().peekable();
+    while let Some((slot, key)) = gone.next() {
+        let rows = slot_rows((&mut *slotted, &mut *unlinked), slot).ok_or_else(unheld)?;
+        let mut take = |key: u128| -> io::Result<()> {
+            let at = rows
+                .binary_search_by_key(&key, |row| row.key())
+                .map_err(|_| unheld())?;
+            forget(variants, variant(&rows.remove(at)));
+            Ok(())
+        };
+        take(key)?;
+        while let Some((_, key)) = gone.next_if(|(next, _)| *next == slot) {
+            take(key)?;
+        }
+        if let Some(slot) = slot
+            && slotted.get(&slot).is_some_and(Vec::is_empty)
+        {
+            slotted.remove(&slot);
+        }
+    }
+    for (slot, row) in delta.added {
+        let rows = match slot {
+            Some(slot) => slotted.entry(slot).or_default(),
+            None => &mut *unlinked,
+        };
+        let key = row.key();
+        let at = match rows.binary_search_by_key(&key, |row| row.key()) {
+            Ok(_) => return Err(unheld()),
+            Err(at) => at,
+        };
+        *variants.entry(variant(&row)).or_default() += 1;
+        rows.insert(at, row);
+    }
+    let mut changed = delta.changed.into_iter().peekable();
+    while let Some((slot, row)) = changed.next() {
+        let rows = slot_rows((&mut *slotted, &mut *unlinked), slot).ok_or_else(unheld)?;
+        let mut place = |row: R| -> io::Result<()> {
+            let at = rows
+                .binary_search_by_key(&row.key(), |row| row.key())
+                .map_err(|_| unheld())?;
+            let (was, now) = (variant(&rows[at]), variant(&row));
+            if was != now {
+                forget(variants, was);
+                *variants.entry(now).or_default() += 1;
+            }
+            rows[at] = row;
+            Ok(())
+        };
+        place(row)?;
+        while let Some((_, row)) = changed.next_if(|(next, _)| *next == slot) {
+            place(row)?;
+        }
+    }
+    Ok(())
+}
+
+/// Takes a keyed census delta into `held`, by `key` of each entry.
+fn take_keyed<K: Ord, E>(
+    delta: Delta<E>,
+    held: &mut BTreeMap<K, E>,
+    key: impl Fn(&E) -> K,
+    of: impl Fn(u128) -> K,
+) -> io::Result<()> {
+    if delta.whole {
+        held.clear();
+    }
+    for (_, gone) in delta.gone {
+        held.remove(&of(gone)).ok_or_else(unheld)?;
+    }
+    for entry in delta.added {
+        if held.insert(key(&entry), entry).is_some() {
+            return Err(unheld());
+        }
+    }
+    for entry in delta.changed {
+        let place = held.get_mut(&key(&entry)).ok_or_else(unheld)?;
+        *place = entry;
+    }
+    Ok(())
 }
 
 /// The world in one ledger record: the latest version of each variant and the definitions
@@ -1004,6 +1140,9 @@ impl World {
         if hour.rebuilt.get(TableId::VariantDefinitions) {
             self.definitions_seen = false;
         }
+        if let Some(census) = hour.facts.as_mut().and_then(|facts| facts.census.take()) {
+            self.censuses.push((hour.hour, census));
+        }
         match hour
             .facts
             .as_mut()
@@ -1058,6 +1197,44 @@ impl World {
         };
         self.icon_cache.retain(|id, _| !spelled(id));
         self.icon_held.retain(|id, _| !spelled(id));
+    }
+
+    /// Takes a native census, a delta of the census `input` holds, into it.
+    fn take_census(&mut self, input: &mut HourInput, census: Census) -> io::Result<()> {
+        let whole = census.lines.whole
+            && census.output.whole
+            && census.modifier_countries.whole
+            && census.modifier_lines.whole;
+        if self.census.is_none() && !whole {
+            return Err(crate::invalid(
+                "A native production census changes one the fold never took",
+            ));
+        }
+        let variants = self.census.get_or_insert_with(Produced::new);
+        take_rows(
+            census.lines,
+            (&mut input.lines, &mut input.unlinked_lines),
+            variants,
+            |row| row.variant,
+        )?;
+        take_rows(
+            census.output,
+            (&mut input.output, &mut input.unlinked_output),
+            variants,
+            |row| row.variant,
+        )?;
+        take_keyed(
+            census.modifier_countries,
+            &mut input.modifier_countries,
+            |row| row.country,
+            |key| key as u32,
+        )?;
+        take_keyed(
+            census.modifier_lines,
+            &mut input.modifier_lines,
+            |row| row.line,
+            |key| key as u64,
+        )
     }
 
     /// [`Self::quiet`] of a native hour.
@@ -1168,6 +1345,7 @@ impl World {
         let at = hour.hour;
         if previous.is_none() {
             self.icon_held.clear();
+            self.census = None;
         }
         let (reads, complete, relevant, rebuilt, stale) = (
             hour.reads,
@@ -1375,16 +1553,14 @@ impl World {
             }
         }
         if input.lines_read && complete(TableId::CountryLinks) {
-            let census = facts
-                .census
-                .take()
-                .ok_or_else(|| crate::invalid("A native production census hour holds no census"))?;
-            input.lines = census.lines;
-            input.unlinked_lines = census.unlinked_lines;
-            input.output = census.output;
-            input.unlinked_output = census.unlinked_output;
-            input.modifier_countries = census.modifier_countries;
-            input.modifier_lines = census.modifier_lines;
+            if self.censuses.last().is_none_or(|(hour, _)| *hour != at) {
+                return Err(crate::invalid(
+                    "A native production census hour holds no census",
+                ));
+            }
+            for (_, census) in std::mem::take(&mut self.censuses) {
+                self.take_census(&mut input, census)?;
+            }
         }
         if (definitions_read || input.lines_read)
             && complete(TableId::LexicalTokens)
@@ -1409,20 +1585,9 @@ impl World {
             produced.extend(naming.iter().map(|(id, _)| *id));
             if input.lines_read {
                 produced.extend(
-                    input
-                        .lines
-                        .values()
-                        .flatten()
-                        .chain(&input.unlinked_lines)
-                        .map(|row| row.variant),
-                );
-                produced.extend(
-                    input
-                        .output
-                        .values()
-                        .flatten()
-                        .chain(&input.unlinked_output)
-                        .map(|row| row.variant),
+                    self.census
+                        .iter()
+                        .flat_map(|variants| variants.keys().copied()),
                 );
             }
             let renamed: BTreeSet<u64> = naming.iter().map(|(id, _)| *id).collect();

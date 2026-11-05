@@ -522,10 +522,15 @@ impl CountryState {
         }
     }
 
-    fn record_designs(&mut self, input: &HourInput, ctx: &mut Ctx<'_>) -> io::Result<()> {
+    fn record_designs(
+        &mut self,
+        input: &HourInput,
+        at: Dated,
+        ctx: &mut Ctx<'_>,
+    ) -> io::Result<()> {
         let variants: Vec<u64> = self.active_variants.iter().copied().collect();
         for variant in variants {
-            self.record_design(input, variant, ctx)?;
+            self.record_design(input, at, variant, ctx)?;
         }
         Ok(())
     }
@@ -553,15 +558,16 @@ impl CountryState {
     fn record_design(
         &mut self,
         input: &HourInput,
+        at: Dated,
         variant: u64,
         ctx: &mut Ctx<'_>,
     ) -> io::Result<()> {
         let read = DesignRead {
-            first_hour: input.hour,
+            first_hour: at.hour,
             read_hour: input
                 .designs
                 .get(&variant)
-                .and_then(|_| input.design_read_hour),
+                .and_then(|_| at.design_read_hour),
             ..input.designs.get(&variant).copied().unwrap_or_default()
         };
         self.anchor_design(variant, ctx)?;
@@ -574,20 +580,20 @@ impl CountryState {
         {
             self.keys
                 .designs
-                .put(variant, (read, ctx.chunk), ctx.trees.generation);
+                .put(variant, (read, ctx.chunk), ctx.generation);
             self.dirty.designs.insert(variant);
             self.events.versions.designs.push((variant, read));
             self.touch(std::mem::size_of::<(u64, DesignRead)>());
         }
         if let Some(author) = read.author.filter(|id| *id != 0)
-            && input.author_names_due
+            && at.author_names_due
             && self.keys.organisations.get(author, root, ctx)?.is_none()
             && let Some(raw) = input.author_names.get(&author)
         {
             self.organisation_version(
                 author,
                 RawOrganisation {
-                    first_hour: input.hour,
+                    first_hour: at.hour,
                     ..raw.clone()
                 },
                 ctx,
@@ -617,7 +623,7 @@ impl CountryState {
         self.events.versions.organisations.push((id, raw.clone()));
         self.keys
             .organisations
-            .put(id, (raw, ctx.chunk), ctx.trees.generation);
+            .put(id, (raw, ctx.chunk), ctx.generation);
         self.dirty.organisations.insert(id);
         self.touch(bytes * (1 + usize::from(named)));
         Ok(())
@@ -635,7 +641,7 @@ impl CountryState {
             return Ok(());
         }
         self.events.overview.icons.push((id, hour, icon.clone()));
-        self.keys.icons.put(id, icon.clone(), ctx.trees.generation);
+        self.keys.icons.put(id, icon.clone(), ctx.generation);
         self.dirty.icons.insert(id);
         self.touch(icon_bytes(icon));
         Ok(())
@@ -690,7 +696,7 @@ impl CountryState {
                 lifetime: line.lifetime,
                 appearance: line.appearance,
             },
-            ctx.trees.generation,
+            ctx.generation,
         );
         self.dirty.handles.insert(line.handle);
     }
@@ -776,9 +782,10 @@ impl CountryState {
         Ok(())
     }
 
+    /// Follows `evidence`'s reads, each read as `input` with the read's hour and flags.
     fn observe_evidence(
         &mut self,
-        input: &mut HourInput,
+        input: &HourInput,
         country: Country,
         evidence: &[ReadEvidence],
         ctx: &mut Ctx<'_>,
@@ -802,15 +809,9 @@ impl CountryState {
             .filter(|id| *id != 0)
             .collect();
         for read in evidence {
-            input.hour = read.hour;
-            input.lines_read = read.lines_read;
-            input.output_read = read.output_read;
-            input.modifiers_read = read.modifiers_read;
-            input.design_revision = read.design_revision;
-            input.design_read_hour = read.design_read_hour;
-            input.organisation_read_hour = read.organisation_read_hour;
-            input.author_names_due = read.author_names_due;
-            if let Some(available) = input.output_due(Some(country)) {
+            if let Some(available) =
+                input.output_due_at(read.output_read, read.lines_read, Some(country))
+            {
                 self.output_due(available, read.hour)?;
             }
             let changed = self.last_design_revision != Some(read.design_revision);
@@ -819,7 +820,15 @@ impl CountryState {
                 continue;
             }
             if changed {
-                self.record_designs(input, ctx)?;
+                self.record_designs(
+                    input,
+                    Dated {
+                        hour: read.hour,
+                        design_read_hour: read.design_read_hour,
+                        author_names_due: read.author_names_due,
+                    },
+                    ctx,
+                )?;
             }
             if !read.lines_read {
                 continue;
@@ -869,7 +878,7 @@ impl CountryState {
             return Ok(());
         };
         if self.carried && designs_changed {
-            self.record_designs(input, ctx)?;
+            self.record_designs(input, Dated::of(input), ctx)?;
         }
         if !input.lines_read {
             self.carry_through(&hours);
@@ -979,7 +988,7 @@ impl CountryState {
                 self.touch(std::mem::size_of::<index::Life>());
                 (Line::new(lifetime, row.handle, appearance), true)
             };
-            self.record_design(input, row.variant, ctx)?;
+            self.record_design(input, Dated::of(input), row.variant, ctx)?;
             let values = RawRun {
                 first_hour: hour,
                 last_hour: hour,
@@ -1200,7 +1209,7 @@ impl CountryState {
                                 lifetime,
                                 appearance: 1,
                             },
-                            ctx.trees.generation,
+                            ctx.generation,
                         );
                         self.dirty.handles.insert(handle);
                         self.touch(std::mem::size_of::<index::Life>());
@@ -1280,6 +1289,25 @@ impl CountryState {
             }
         }
         Ok(())
+    }
+}
+
+/// What a design read is dated by: its hour, the hour the designs were read, and whether its
+/// authors' names are due.
+#[derive(Clone, Copy)]
+struct Dated {
+    hour: i32,
+    design_read_hour: Option<i32>,
+    author_names_due: bool,
+}
+
+impl Dated {
+    fn of(input: &HourInput) -> Self {
+        Self {
+            hour: input.hour,
+            design_read_hour: input.design_read_hour,
+            author_names_due: input.author_names_due,
+        }
     }
 }
 
@@ -1429,9 +1457,9 @@ impl History {
         let Some(blob) = self.blob else {
             return Ok(());
         };
-        let bytes = ctx
-            .pages
-            .read_at(&ctx.trees.section, blob)?
+        let (pages, trees) = ctx.local()?;
+        let bytes = pages
+            .read_at(&trees.section, blob)?
             .ok_or_else(|| crate::invalid("Missing put-away production history"))?;
         let ledger: HistoryLedger = index::unpack(&bytes)?;
         if !matches!(ledger.state, StateLedger::Loaded { .. }) {
@@ -1557,12 +1585,6 @@ impl Observed<'_> {
     }
 }
 
-/// A country the fold holds: a native lifetime, or a tag's own projection.
-enum Held {
-    Native(NativeCountry),
-    Tag(String),
-}
-
 /// How a query reads one history: where its view begins and where what it carries ends.
 #[derive(Clone, Debug)]
 pub(super) struct HistoryView {
@@ -1633,8 +1655,9 @@ pub struct Prepared {
     deferred_breaks: bool,
     /// The last hour and design revision the countries followed or deferred.
     followed: Option<(i32, u64)>,
-    /// The countries a design change records, while they carry the same lines.
-    designing: Option<Vec<Held>>,
+    /// The countries a design change records while they carry the same lines: natives, and
+    /// tags' own projections.
+    designing: Option<(BTreeSet<NativeCountry>, BTreeSet<String>)>,
     next_history: u64,
     /// Chunks written.
     chunks: u64,
@@ -2194,23 +2217,16 @@ impl Prepared {
             self.evidence_bytes = 0;
             if !evidence.is_empty() {
                 self.follow_deferred(input.countries.as_ref());
-                let chunk = self.chunks;
+                let reads = evidence.iter().any(|read| read.lines_read);
+                let mut work = Vec::with_capacity(self.native.len() + self.aliases.len() + 1);
                 for (key, country) in &mut self.native {
                     let selected = if input.linked.contains(&(key.slot, key.id)) {
                         Country::Found(key.slot, key.id)
                     } else {
                         Country::Unresolved
                     };
-                    country.state.observe_evidence(
-                        &mut input,
-                        selected,
-                        &evidence,
-                        &mut Ctx {
-                            pages: &mut *pages,
-                            trees: &mut self.trees,
-                            chunk,
-                        },
-                    )?;
+                    let weight = weigh(country, reads);
+                    work.push((country, selected, weight));
                 }
                 for (tag, alias) in &mut self.aliases {
                     if let Some(country) = alias.projection_mut() {
@@ -2220,28 +2236,33 @@ impl Prepared {
                             .and_then(|countries| countries.get(tag))
                             .copied()
                             .unwrap_or(Country::Absent);
-                        country.state.observe_evidence(
-                            &mut input,
-                            selected,
-                            &evidence,
-                            &mut Ctx {
-                                pages: &mut *pages,
-                                trees: &mut self.trees,
-                                chunk,
-                            },
-                        )?;
+                        let weight = weigh(country, reads);
+                        work.push((country, selected, weight));
                     }
                 }
-                self.absent.state.observe_evidence(
-                    &mut input,
-                    Country::Absent,
-                    &evidence,
-                    &mut Ctx {
-                        pages: &mut *pages,
-                        trees: &mut self.trees,
-                        chunk,
+                work.push((&mut self.absent, Country::Absent, 1));
+                each(
+                    &mut *pages,
+                    &mut self.trees,
+                    self.chunks,
+                    work,
+                    |history, selected, ctx| {
+                        history
+                            .state
+                            .observe_evidence(&input, selected, &evidence, ctx)
                     },
                 )?;
+                // The input as the last read left it.
+                if let Some(read) = evidence.last() {
+                    input.hour = read.hour;
+                    input.lines_read = read.lines_read;
+                    input.output_read = read.output_read;
+                    input.modifiers_read = read.modifiers_read;
+                    input.design_revision = read.design_revision;
+                    input.design_read_hour = read.design_read_hour;
+                    input.organisation_read_hour = read.organisation_read_hour;
+                    input.author_names_due = read.author_names_due;
+                }
                 self.followed = Some((last, input.design_revision));
             }
             input.hour = last;
@@ -2272,12 +2293,13 @@ impl Prepared {
         // Such an hour ends every carried country's lines; none carries any again before a read.
         self.deferred_breaks |= !input.lines_complete || through.checked_add(1) != Some(input.hour);
         if input.design_revision != revision && !self.deferred_breaks {
-            let designing = self.designing.get_or_insert_with(|| {
+            let (natives, tags) = self.designing.get_or_insert_with(|| {
                 let natives = self
                     .native
                     .iter()
                     .filter(|(_, country)| country.state.designs_carried())
-                    .map(|(key, _)| Held::Native(key.clone()));
+                    .map(|(key, _)| key.clone())
+                    .collect();
                 let tags = self
                     .aliases
                     .iter()
@@ -2286,29 +2308,37 @@ impl Prepared {
                             .projection()
                             .is_some_and(|country| country.state.designs_carried())
                     })
-                    .map(|(tag, _)| Held::Tag(tag.clone()));
-                natives.chain(tags).collect()
+                    .map(|(tag, _)| tag.clone())
+                    .collect();
+                (natives, tags)
             });
-            for held in designing.iter() {
-                let country = match held {
-                    Held::Native(key) => self.native.get_mut(key),
-                    Held::Tag(tag) => self
-                        .aliases
-                        .get_mut(tag)
-                        .and_then(TagCountry::projection_mut),
-                };
-                if let Some(country) = country {
-                    crate::prepared::prepass::note("production-lines.country_design");
-                    country.state.record_designs(
-                        input,
-                        &mut Ctx {
-                            pages: &mut *pages,
-                            trees: &mut self.trees,
-                            chunk: self.chunks,
-                        },
-                    )?;
+            let mut work = Vec::with_capacity(natives.len() + tags.len());
+            for (key, country) in &mut self.native {
+                if natives.contains(key) {
+                    let weight = 1 + country.state.active_variants.len();
+                    work.push((country, (), weight));
                 }
             }
+            for (tag, alias) in &mut self.aliases {
+                if tags.contains(tag)
+                    && let Some(country) = alias.projection_mut()
+                {
+                    let weight = 1 + country.state.active_variants.len();
+                    work.push((country, (), weight));
+                }
+            }
+            each(
+                &mut *pages,
+                &mut self.trees,
+                self.chunks,
+                work,
+                |history, (), ctx| {
+                    crate::prepared::prepass::note("production-lines.country_design");
+                    history
+                        .state
+                        .record_designs(input, Dated::of(input), ctx)
+                },
+            )?;
         }
         let hours = Hours::of(input);
         if !self
@@ -2430,11 +2460,7 @@ impl Prepared {
                             fork(&mut self.next_history, self.chunks, &self.absent)
                         }
                     };
-                    let mut ctx = Ctx {
-                        pages: &mut *pages,
-                        trees: &mut self.trees,
-                        chunk: self.chunks,
-                    };
+                    let mut ctx = Ctx::new(&mut *pages, &mut self.trees, self.chunks);
                     country.load(&mut ctx)?;
                     country.wake(&self.absent)?;
                     self.native.insert(key.clone(), country);
@@ -2447,11 +2473,7 @@ impl Prepared {
                 if !self.aliases.contains_key(tag) {
                     let mut alias = self.dormant.remove(tag).unwrap_or(TagCountry::Absent);
                     if let Some(country) = alias.projection_mut() {
-                        let mut ctx = Ctx {
-                            pages: &mut *pages,
-                            trees: &mut self.trees,
-                            chunk: self.chunks,
-                        };
+                        let mut ctx = Ctx::new(&mut *pages, &mut self.trees, self.chunks);
                         country.load(&mut ctx)?;
                         country.wake(&self.absent)?;
                     }
@@ -2496,11 +2518,7 @@ impl Prepared {
                 _ => {}
             }
             // A literal tag diverges at renames/reuse; retain its history without changing native identity.
-            let mut ctx = Ctx {
-                pages: &mut *pages,
-                trees: &mut self.trees,
-                chunk: self.chunks,
-            };
+            let mut ctx = Ctx::new(&mut *pages, &mut self.trees, self.chunks);
             let mut country = match &*alias {
                 TagCountry::Absent => fork(&mut self.next_history, self.chunks, &self.absent),
                 TagCountry::Native(key) => match self.native.get(key) {
@@ -2520,7 +2538,7 @@ impl Prepared {
             country.wake(&self.absent)?;
             *alias = TagCountry::Projected(Box::new(country));
         }
-        let chunk = self.chunks;
+        let mut work = Vec::with_capacity(self.native.len() + self.aliases.len() + 1);
         for (key, country) in &mut self.native {
             let selected = input.countries.as_ref().map(|_| {
                 if self.active.get(&(key.slot, key.id)) == Some(key) {
@@ -2533,15 +2551,8 @@ impl Prepared {
                     Country::Absent
                 }
             });
-            country.state.observe_input(
-                input,
-                selected,
-                &mut Ctx {
-                    pages: &mut *pages,
-                    trees: &mut self.trees,
-                    chunk,
-                },
-            )?;
+            let weight = weigh(country, input.lines_read);
+            work.push((country, selected, weight));
         }
         for (tag, alias) in &mut self.aliases {
             let Some(country) = alias.projection_mut() else {
@@ -2551,24 +2562,17 @@ impl Prepared {
                 .countries
                 .as_ref()
                 .map(|countries| countries.get(tag).copied().unwrap_or(Country::Absent));
-            country.state.observe_input(
-                input,
-                selected,
-                &mut Ctx {
-                    pages: &mut *pages,
-                    trees: &mut self.trees,
-                    chunk,
-                },
-            )?;
+            let weight = weigh(country, input.lines_read);
+            work.push((country, selected, weight));
         }
-        self.absent.state.observe_input(
-            input,
-            input.countries.as_ref().map(|_| Country::Absent),
-            &mut Ctx {
-                pages: &mut *pages,
-                trees: &mut self.trees,
-                chunk,
-            },
+        let absent = input.countries.as_ref().map(|_| Country::Absent);
+        work.push((&mut self.absent, absent, 1));
+        each(
+            pages,
+            &mut self.trees,
+            self.chunks,
+            work,
+            |history, selected, ctx| history.state.observe_input(input, selected, ctx),
         )?;
         let retired: Vec<_> = self
             .native
@@ -2689,10 +2693,9 @@ impl Prepared {
         }
         let _cpu = replay_frame::cpu::scope("fold flush", None);
         let ordinal = self.chunks;
-        let mut taken = Vec::new();
-        {
+        let taken: Vec<(u64, Events)> = {
             let _phase = replay_frame::cpu::scope_phase("production-lines:events");
-            let trees = &mut self.trees;
+            let mut work = Vec::new();
             let live = std::iter::once(&mut self.absent)
                 .chain(self.native.values_mut())
                 .chain(
@@ -2701,19 +2704,8 @@ impl Prepared {
                         .filter_map(TagCountry::projection_mut),
                 );
             for history in live {
-                history.state.materialize();
-                if !history.state.events.is_empty() {
-                    history.state.overview = Some(ordinal);
-                    let events = history.state.take_events(
-                        true,
-                        &mut Ctx {
-                            pages: &mut *pages,
-                            trees: &mut *trees,
-                            chunk: ordinal + 1,
-                        },
-                    )?;
-                    taken.push((history.id, events));
-                }
+                let weight = weigh(history, true);
+                work.push((history, true, weight));
             }
             let dormant = self.retired.values_mut().chain(
                 self.dormant
@@ -2721,21 +2713,34 @@ impl Prepared {
                     .filter_map(TagCountry::projection_mut),
             );
             for history in dormant {
-                if !history.state.events.is_empty() {
-                    history.state.materialize();
-                    history.state.overview = Some(ordinal);
-                    let events = history.state.take_events(
-                        false,
-                        &mut Ctx {
-                            pages: &mut *pages,
-                            trees: &mut *trees,
-                            chunk: ordinal + 1,
-                        },
-                    )?;
-                    taken.push((history.id, events));
-                }
+                let weight = weigh(history, true);
+                work.push((history, false, weight));
             }
-        }
+            // A dormant history is materialized only where it has events to write.
+            each(
+                &mut *pages,
+                &mut self.trees,
+                ordinal + 1,
+                work,
+                |history, live, ctx| {
+                    if live {
+                        history.state.materialize();
+                    }
+                    if history.state.events.is_empty() {
+                        return Ok(None);
+                    }
+                    if !live {
+                        history.state.materialize();
+                    }
+                    history.state.overview = Some(ordinal);
+                    let events = history.state.take_events(live, ctx)?;
+                    Ok(Some((history.id, events)))
+                },
+            )?
+            .into_iter()
+            .flatten()
+            .collect()
+        };
         let variants: BTreeMap<u64, Vec<equipment::VariantVersion>> = self
             .world
             .take_flushed()
@@ -3175,11 +3180,7 @@ impl Prepared {
                 .restore(
                     id,
                     live,
-                    &mut Ctx {
-                        pages: &mut *pages,
-                        trees: &mut trees,
-                        chunk,
-                    },
+                    &mut Ctx::new(&mut *pages, &mut trees, chunk),
                 )
         };
         let absent = history(record.absent, true)?;
@@ -3283,6 +3284,103 @@ fn tail<T>(values: &mut Vec<T>) {
         values.drain(..values.len() - 1);
         values.shrink_to_fit();
     }
+}
+
+/// A fold step's work, in lines, past which it is shared out over spare cores.
+const SHARD_WORK: usize = 8 * 1024;
+/// The least work, in lines, a shard is given.
+const SHARD_LEAST: usize = 1024;
+
+/// What a fold step weighs on `history`: its open lines where the hour reads them.
+fn weigh(history: &History, lines_read: bool) -> usize {
+    1 + if lines_read {
+        history.state.open.len()
+    } else {
+        0
+    }
+}
+
+/// Runs `step` on each history of `work` with its operand, and gives back what each step gave,
+/// in order. Large work is shared out by its weights in contiguous shards over spare cores,
+/// whose tree reads this thread serves from `pages`.
+fn each<'h, S, R, F>(
+    pages: &mut dyn Pages,
+    trees: &mut Trees,
+    chunk: u64,
+    work: Vec<(&'h mut History, S, usize)>,
+    step: F,
+) -> io::Result<Vec<R>>
+where
+    S: Send,
+    R: Send,
+    F: Fn(&mut History, S, &mut Ctx<'_>) -> io::Result<R> + Sync,
+{
+    let total: usize = work.iter().map(|(_, _, weight)| *weight).sum();
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |cores| (cores.get() / 2).max(1))
+        .min(total / SHARD_LEAST)
+        .min(work.len());
+    if total < SHARD_WORK || workers <= 1 {
+        let mut ctx = Ctx::new(pages, trees, chunk);
+        return work
+            .into_iter()
+            .map(|(history, operand, _)| step(history, operand, &mut ctx))
+            .collect();
+    }
+    let share = total.div_ceil(workers);
+    let mut shards: Vec<Vec<(&'h mut History, S)>> = vec![Vec::new()];
+    let mut filled = 0;
+    for (history, operand, weight) in work {
+        if filled >= share && shards.len() < workers {
+            shards.push(Vec::new());
+            filled = 0;
+        }
+        filled += weight;
+        if let Some(shard) = shards.last_mut() {
+            shard.push((history, operand));
+        }
+    }
+    let generation = trees.generation;
+    let (requests, asked) = std::sync::mpsc::channel::<keys::Request>();
+    let context = replay_frame::cpu::Context::capture();
+    let step = &step;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = shards
+            .into_iter()
+            .map(|shard| {
+                let remote = keys::Remote::new(requests.clone());
+                let context = context.clone();
+                scope.spawn(move || {
+                    let _cpu = context.enter("fold observe");
+                    let mut ctx = Ctx::remote(&remote, generation, chunk);
+                    shard
+                        .into_iter()
+                        .map(|(history, operand)| step(history, operand, &mut ctx))
+                        .collect::<io::Result<Vec<R>>>()
+                })
+            })
+            .collect();
+        // Every shard holds its own way here; the reads end once they all finish.
+        drop(requests);
+        for request in asked {
+            request.serve(&mut *pages, &mut *trees);
+        }
+        let mut given = Vec::new();
+        let mut failed = None;
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(shard)) => given.extend(shard),
+                Ok(Err(error)) => {
+                    failed.get_or_insert(error);
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(given),
+        }
+    })
 }
 
 /// Encodes each history's parts on spare cores, in contiguous groups of about equal bytes.
