@@ -405,7 +405,7 @@ fn requested_selected(
 }
 
 fn reply_too_large() -> io::Error {
-    io::Error::other(
+    dashboard_base::products::over_budget(
         "NuclearReplyTooLarge: the complete nuclear stockpile reply exceeds the transport budget; no countries or runs were omitted",
     )
 }

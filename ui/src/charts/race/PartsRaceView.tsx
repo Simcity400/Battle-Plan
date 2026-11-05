@@ -23,6 +23,7 @@ import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
+import { countryPageJoin, registerPageJoin } from '../../dashboard/pageJoins';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -402,6 +403,9 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
 type PreparedPartsReply = NativePartsRaceReply & { summaries?: { tag: string; summary: ChartSummary;
   parts: { key: string; summary: ChartSummary }[] }[] };
 
+// Nukes and factories join their own replies' shapes (`preparedNukes`, `preparedFactories`).
+registerPageJoin(['air-force-size', 'navy-size'], countryPageJoin<PreparedPartsReply>(mergePreparedParts));
+
 /** The common part schema is aligned once when independently reached pages join. */
 function mergePreparedParts(replies: readonly (NativePartsRaceReply | undefined)[]): NativePartsRaceReply | undefined {
   const available = replies.filter((reply): reply is NativePartsRaceReply => !!reply);
@@ -523,8 +527,10 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
     if (!enabled || !track || !request || !active) return null;
     const controller = new AbortController(); pending.current.add(controller);
     try {
-      const reply = validate(await preparedSeriesQuery(client, track.source, 'series-summary', { branchId, tags, family,
-        from: Math.floor(hour), to: Math.floor(hour), width: 1, within: within && Object.fromEntries(within) }, controller.signal));
+      // Every page: a later one holds lines the first does not.
+      const reply = await loadProduct(client, { ...request, product: 'series-summary', params: { branchId, tags, family,
+        from: Math.floor(hour), to: Math.floor(hour), width: 1, within: within && Object.fromEntries(within) } },
+      controller.signal, validate, track.source, false, undefined, undefined, true);
       if (controller.signal.aborted || alive.current !== owner) return null;
       return reply.series.filter(series => series.runs.some(run => run.firstHour <= hour && run.lastHour >= hour && run.total !== null)).map(series => series.tag);
     } finally { pending.current.delete(controller); }

@@ -11,17 +11,30 @@ import { worldFilter, resolveCountries } from '../../dashboard/groups';
 import type { ResolvedCountries } from '../../dashboard/groups';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
+import { pagePreparation, registerPageJoin } from '../../dashboard/pageJoins';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
 import type { ProductRequest } from '../../dashboard/client';
 import { NumericReply } from '../../dashboard/numericReply';
-import type { MarketLendLeaseReply } from '../../generated/dashboard';
+import type { MarketLendLeaseReply, TradeFlowsReply } from '../../generated/dashboard';
 import { marketRequest, validateMarketReply } from './marketData';
 import type { PreparedTradeReply } from './tradeData';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { mergePreparedTrade, decodeTrade, resourceName, tradeScope, validateTradeFlowsReply } from './tradeData';
+import { compareFlows, mergePreparedTrade, decodeTrade, resourceName, tradeScope, validateTradeFlowsReply } from './tradeData';
 import { usePlaybackHour } from '../../dashboard/playback.ts';
+
+/** Each page holds every read and some flows, each with its own summary, integrals and bounds;
+ * the joined flows take the order the whole selection's reply gives them. */
+function joinTradePages(pages: readonly unknown[]): unknown {
+  const replies = pages as (TradeFlowsReply & Record<string, unknown>)[];
+  const first = replies[0];
+  const byFlow = Object.fromEntries(['summaries', 'prefixes', 'bounds'].filter(field => field in first)
+    .map(field => [field, Object.assign({}, ...replies.map(reply => reply[field] ?? {}))]));
+  return { ...first, ...pagePreparation(replies[replies.length - 1]), ...byFlow, cursor: null,
+    flows: replies.flatMap(reply => reply.flows).sort(compareFlows), warnings: [...new Set(replies.flatMap(reply => reply.warnings))] };
+}
+registerPageJoin(['trade-flows'], joinTradePages);
 
 /** The trade flows product for a branch: every country's trade (null), or the deals of
  * the holders that ever had one of `tags`. */

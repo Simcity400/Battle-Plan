@@ -344,6 +344,7 @@ struct Params {
     from: Option<f64>,
     to: Option<f64>,
     width: Option<u32>,
+    cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -546,67 +547,73 @@ pub fn series<P: PageRead>(
                 );
             }
             let bounds = (from.floor() as i32, through(to.ceil() as i32));
-            let mut lines = Vec::new();
-            for tag in selected {
-                check_cancel(cancelled)?;
-                let Some(&actor) = tags.get(&tag) else {
-                    continue;
-                };
-                // A ranked line holds only the hours its country ranks within the top, of
-                // those asked for: it ends where the country leaves the selection.
-                let ranked = match params.family.top {
-                    Some(top) => {
-                        let ranked = top_spans(snapshot, keys.rank(actor, column), bounds, top)?;
-                        let ranked = match holders.get(&tag) {
-                            Some(asked) => pieces(&ranked, asked, cancelled)?,
-                            None => ranked,
-                        };
-                        if ranked.is_empty() {
-                            continue;
+            series::summary_budget(from, to, width, 1)?;
+            let budget = crate::products::MAX_PRODUCT_REPLY_BYTES;
+            series::paged(params.cursor.as_deref(), budget, |page| {
+                let mut lines = Vec::new();
+                for at in page.lines(selected.len()) {
+                    let tag = &selected[at];
+                    check_cancel(cancelled)?;
+                    let Some(&actor) = tags.get(tag) else {
+                        continue;
+                    };
+                    // A ranked line holds only the hours its country ranks within the top, of
+                    // those asked for: it ends where the country leaves the selection.
+                    let ranked = match params.family.top {
+                        Some(top) => {
+                            let ranked = top_spans(snapshot, keys.rank(actor, column), bounds, top)?;
+                            let ranked = match holders.get(tag) {
+                                Some(asked) => pieces(&ranked, asked, cancelled)?,
+                                None => ranked,
+                            };
+                            if ranked.is_empty() {
+                                continue;
+                            }
+                            Some(ranked)
                         }
-                        Some(ranked)
-                    }
-                    None => None,
-                };
-                let within = ranked
-                    .as_deref()
-                    .or_else(|| holders.get(&tag).map(Vec::as_slice));
-                let line = summary(
-                    snapshot,
-                    value_key(actor),
-                    bounds,
-                    (from, to, width),
-                    within,
-                )?;
-                series::summary_budget(from, to, width, lines.len() + 1)?;
-                let end_runs = match line.buckets.iter().rev().flatten().next() {
-                    Some(bucket) => runs(
+                        None => None,
+                    };
+                    let within = ranked
+                        .as_deref()
+                        .or_else(|| holders.get(tag).map(Vec::as_slice));
+                    let line = summary(
                         snapshot,
-                        keys.facts(actor),
-                        bucket.last_hour,
-                        bucket.last_hour,
-                    )?,
-                    None => Vec::new(),
-                };
-                let country = history.countries.get(&tag);
-                let identities = country.map(|country| {
-                    country
-                        .identities
-                        .iter()
-                        .filter(|identity| {
-                            selected_ids.as_ref().is_none_or(|ids| {
-                                ids.contains(&(identity.slot, identity.country_id))
+                        value_key(actor),
+                        bounds,
+                        (from, to, width),
+                        within,
+                    )?;
+                    let end_runs = match line.buckets.iter().rev().flatten().next() {
+                        Some(bucket) => runs(
+                            snapshot,
+                            keys.facts(actor),
+                            bucket.last_hour,
+                            bucket.last_hour,
+                        )?,
+                        None => Vec::new(),
+                    };
+                    let country = history.countries.get(tag);
+                    let identities = country.map(|country| {
+                        country
+                            .identities
+                            .iter()
+                            .filter(|identity| {
+                                selected_ids.as_ref().is_none_or(|ids| {
+                                    ids.contains(&(identity.slot, identity.country_id))
+                                })
                             })
-                        })
-                        .collect::<Vec<_>>()
-                });
-                lines.push(json!({"tag": tag, "summary": line, "marks": null,"endRuns":end_runs,
-                    "segments":holders.get(&tag).or_else(||country.map(|country|country.segments.as_ref())),
-                    "identities":identities}));
-            }
-            Ok(
-                json!({"branchId":params.branch_id,"measure":measure,"decimals":0,"series": lines, "warnings": warnings}),
-            )
+                            .collect::<Vec<_>>()
+                    });
+                    let line = json!({"tag": tag, "summary": line, "marks": null,"endRuns":end_runs,
+                        "segments":holders.get(tag).or_else(||country.map(|country|country.segments.as_ref())),
+                        "identities":identities});
+                    if !page.admit(at, &line)? {
+                        break;
+                    }
+                    lines.push(line);
+                }
+                Ok(json!({"branchId":params.branch_id,"measure":measure,"decimals":0,"series": lines, "warnings": warnings}))
+            })
         }
         "series-next-change" => {
             let mut navigation: Navigation = serde_json::from_value(value)?;

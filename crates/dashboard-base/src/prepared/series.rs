@@ -4510,6 +4510,9 @@ pub fn viewport(
         .ok_or_else(|| invalid("invalid series width"))?;
     Ok((from, to, width))
 }
+fn viewport_refused() -> io::Error {
+    invalid("Series summary exceeds the transport reply budget. Request a smaller viewport.")
+}
 pub fn summary_budget(from: f64, to: f64, width: u32, keys: usize) -> io::Result<()> {
     let hours = (to.floor() - from.floor() + 1.0).max(0.0) as usize;
     let buckets = hours.min((width as usize).saturating_mul(2).saturating_add(2));
@@ -4518,11 +4521,109 @@ pub fn summary_budget(from: f64, to: f64, width: u32, keys: usize) -> io::Result
         .saturating_mul(std::mem::size_of::<ChartBucket>() + std::mem::size_of::<ChartRun>())
         > crate::products::MAX_PRODUCT_REPLY_BYTES
     {
-        return Err(invalid(
-            "Series summary exceeds the transport reply budget. Request a smaller viewport.",
-        ));
+        return Err(viewport_refused());
     }
     Ok(())
+}
+/// One reply's page of a summary's lines, measured as they are sent: from the request's
+/// `cursor`, each line in order while the transport budget holds it; the first that does not
+/// fit opens the next page, named by [`Self::cursor`]. Only a line too large for a reply of its
+/// own is refused. Pages are answered through [`paged`].
+#[derive(Debug)]
+pub struct LinePage {
+    budget: usize,
+    first: usize,
+    used: usize,
+    held: Vec<usize>,
+    next: Option<usize>,
+}
+impl LinePage {
+    /// A page whose reply holds at most `budget` bytes.
+    fn within(cursor: Option<&str>, budget: usize) -> io::Result<Self> {
+        let first = cursor
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| invalid("invalid summary cursor"))?
+            .unwrap_or(0);
+        Ok(Self {
+            budget,
+            first,
+            used: 0,
+            held: Vec::new(),
+            next: None,
+        })
+    }
+    /// The lines of `count` this answer may offer: from the first, short of any line already
+    /// given to the next page.
+    pub fn lines(&self, count: usize) -> std::ops::Range<usize> {
+        self.first..self.next.map_or(count, |next| next.min(count))
+    }
+    /// Whether line `index` may be this page's, before it is measured.
+    pub fn wants(&self, index: usize) -> bool {
+        index >= self.first && self.next.is_none_or(|next| index < next)
+    }
+    /// Whether line `index`, as `line` is sent, is this page's. Lines are offered in order
+    /// from [`Self::lines`]; once one is not this page's, no later line is.
+    pub fn admit(&mut self, index: usize, line: &impl Serialize) -> io::Result<bool> {
+        if !self.wants(index) {
+            return Ok(false);
+        }
+        let room = self.budget.saturating_sub(self.used);
+        match crate::transport::json_len(line, room) {
+            Some(bytes) => {
+                // Its separating comma.
+                self.used = self.used.saturating_add(bytes + 1);
+                self.held.push(index);
+                Ok(true)
+            }
+            None if self.held.is_empty() => Err(viewport_refused()),
+            None => {
+                self.next = Some(index);
+                Ok(false)
+            }
+        }
+    }
+    /// Gives the later half of the lines the last answer held to the next page, and empties the
+    /// page for an answer of the rest alone. A line alone that does not fit is refused.
+    fn halve(&mut self) -> io::Result<()> {
+        if self.held.len() < 2 {
+            return Err(viewport_refused());
+        }
+        self.next = Some(self.held[self.held.len() / 2]);
+        self.held.clear();
+        self.used = 0;
+        Ok(())
+    }
+    /// The cursor of the next page; none when this page holds the last line.
+    pub fn cursor(&self) -> Option<String> {
+        self.next.map(|next| next.to_string())
+    }
+}
+/// The page of a summary's lines from `cursor` whose reply, with its `cursor`, holds at most
+/// `budget` bytes. `answer` reads and presents the page from nothing, offering each line it
+/// reads to the page in order ([`LinePage::admit`]). A reply over the budget, refused by its
+/// presenter or measured here, gives the later half of its lines to the next page and is
+/// answered again for the lines it keeps alone, so nothing the dropped lines read reaches it;
+/// each retry reads those lines again.
+pub fn paged(
+    cursor: Option<&str>,
+    budget: usize,
+    mut answer: impl FnMut(&mut LinePage) -> io::Result<serde_json::Value>,
+) -> io::Result<serde_json::Value> {
+    let mut page = LinePage::within(cursor, budget)?;
+    loop {
+        match answer(&mut page) {
+            Ok(mut reply) => {
+                reply["cursor"] = serde_json::json!(page.cursor());
+                if crate::transport::json_len(&reply, page.budget).is_some() {
+                    return Ok(reply);
+                }
+            }
+            Err(error) if crate::products::is_over_budget(&error) => {}
+            Err(error) => return Err(error),
+        }
+        page.halve()?;
+    }
 }
 pub fn event_window(
     from: Option<f64>,

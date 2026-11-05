@@ -1,5 +1,5 @@
-//! The catalogue's served replies: every view of every branch, for every country and for some
-//! countries one at a time.
+//! The catalogue's served replies, as the widgets ask them: every country's licences, and some
+//! countries' organisations and designs, one at a time.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::json;
@@ -14,11 +14,11 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
     for branch in ask.branches().to_vec() {
         let id = branch.name();
         let countries = ask.countries(branch.id)?;
-        for view in ["licences", "organisations", "designs"] {
-            ask.ask(
-                super::QUERY,
-                json!({ "branchId": id, "view": view, "tags": [] }),
-            )?;
+        ask.ask(
+            super::QUERY,
+            json!({ "branchId": id, "view": "licences", "tags": [] }),
+        )?;
+        for view in ["organisations", "designs"] {
             for tag in served::some(&countries) {
                 ask.ask(
                     super::QUERY,

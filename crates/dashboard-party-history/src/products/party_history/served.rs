@@ -1,6 +1,6 @@
-//! Party history's served replies: some countries' charts over each span, dense and hour by
-//! hour, their states at each hour, their mark pages, navigation from each hour and their whole
-//! histories.
+//! Party history's served replies: some countries' charts over each span at a small and a wide
+//! chart's width, their states at each hour, their mark pages, navigation from each hour and
+//! their whole histories.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -21,7 +21,6 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let id = branch.name();
         let (first, last) = (branch.first_hour, branch.last_hour);
         let countries = ask.countries(branch.id)?;
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         let params = |tag: &str, mode: &str, extra: Value| {
             let mut params = json!({ "branchId": id, "tag": tag, "mode": mode });
             if let (Some(params), Value::Object(extra)) = (params.as_object_mut(), extra) {
@@ -31,7 +30,7 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         };
         for tag in served::some(&countries) {
             for span in branch.spans() {
-                for width in [i64::from(WIDTH), hourly(span).max(1)] {
+                for width in [WIDTH, served::WIDE] {
                     let extra = json!({ "from": span.0, "to": span.1, "width": width });
                     ask.ask("party-history", params(&tag, "summary", extra))?;
                 }

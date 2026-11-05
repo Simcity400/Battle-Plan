@@ -2,6 +2,10 @@ import type { CountryNukesReply } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { clipToSpans, overlayRuns, runIndexAt } from '../../charts/series';
 import { summaryShareRuns } from '../../charts/share';
+import { countryPageJoin, registerPageJoin } from '../../dashboard/pageJoins';
+
+type NukesPage = CountryNukesReply & { summaries?: { tag: string; summary: ChartSummary }[] };
+registerPageJoin(['country-nukes'], countryPageJoin<NukesPage>(mergeNukes));
 
 export function mergeNukes(replies: readonly (CountryNukesReply | undefined)[]): CountryNukesReply | undefined {
   const pages = replies.filter((page): page is CountryNukesReply => !!page);

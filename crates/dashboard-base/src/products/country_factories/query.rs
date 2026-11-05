@@ -267,7 +267,6 @@ pub fn series<P: PageRead>(
         .then(|| shared.last_hour.min(snapshot.publication().accepted.last));
     let through = |last: i32| reach.map_or(last, |reach| last.min(reach));
     let coverage = crate::prepared::prefix::extent(source, branch, accepted)?;
-    let mut scanned = scanned(directory);
     let rank: FactoryTop = serde_json::from_value(if params["family"]["top"].is_null() {
         json!({
             "count": 1,
@@ -389,165 +388,215 @@ pub fn series<P: PageRead>(
     let selected = country_history::selected_identities(history, &selection.tags);
     let dense =
         product != "series-state" && i64::from(last) - i64::from(first) + 1 > i64::from(width);
-    let mut display = Vec::new();
-    for tag in &wanted {
-        crate::metadata::check_cancel(cancelled)?;
-        let mix = key(directory, tag, MIX, None);
-        let supply = key(directory, tag, READS, None);
-        let mut spans: Vec<_> = if let Some(members) = &membership {
-            members.get(tag).cloned().unwrap_or_default()
-        } else {
-            history
-                .countries
-                .get(tag)
-                .into_iter()
-                .flat_map(|country| country.identities.iter())
-                .filter(|identity| selected.contains(&(identity.slot, identity.country_id)))
-                .map(|identity| HourSpan {
-                    first_hour: identity.first_hour,
-                    last_hour: identity.last_hour,
-                })
-                .collect()
+    // The page's lines read and presented from nothing: exactly those tags, none expanded again.
+    let mut answer = |mut page: Option<&mut series::LinePage>| -> io::Result<Value> {
+        let mut scanned = scanned(directory);
+        let (mut display, mut shown) = (Vec::new(), Vec::new());
+        let lines = match page.as_deref() {
+            Some(page) => page.lines(wanted.len()),
+            None => 0..wanted.len(),
         };
-        if let Some(within) = within.get(tag) {
-            spans = clipped(&spans, within, cancelled)?;
-        }
-        let view = (from, to, width);
-        let bounds = (first, through(last));
-        let line = summary(
-            snapshot,
-            key(directory, tag, VALUES, Some(index)),
-            bounds,
-            view,
-            &spans,
-        )?;
-        let mut dates = BTreeSet::new();
-        let mut parts = Vec::new();
-        if dense {
-            for ordinal in 0..FIELD_COUNT {
-                let part = key(directory, tag, PARTS, Some(ordinal as u64));
-                let part = summary(snapshot, part, bounds, view, &spans)?;
-                dates_of(&part, &mut dates);
-                parts.push(json!({ "key": ordinal.to_string(), "summary": part }));
-            }
-            dates_of(&line, &mut dates);
-        }
-        let runs: Vec<dashboard_series::Run> = if dense || product == "series-state" {
-            if product == "series-state" {
-                dates.extend(
-                    reads
-                        .iter()
-                        .filter(|read| &read.tag == tag && read.hour == through(read.hour))
-                        .map(|read| read.hour),
-                );
-            }
-            let mut runs = BTreeMap::new();
-            for &hour in &dates {
-                if let Some(run) = run_at(snapshot, mix, hour)? {
-                    if product == "series-state" {
-                        let starts = run.break_before && run.span.first == hour;
-                        runs.insert(
-                            hour,
-                            dashboard_series::Run {
-                                span: dashboard_series::Span::new(hour, hour)?,
-                                break_before: starts,
-                                ..run
-                            },
-                        );
-                    } else {
-                        runs.insert(run.span.first, run);
-                    }
-                }
-            }
-            runs.into_values().collect()
-        } else {
-            let mut runs = match mix {
-                Some(key) => engine::runs(snapshot, key, first, through(last))?,
-                None => Vec::new(),
-            };
-            // A run the window clips starts no segment at the window's first hour.
-            if let Some(head) = runs.first_mut()
-                && head.break_before
-                && head.span.first == first
-                && run_at(snapshot, mix, first)?.is_some_and(|run| run.span.first < first)
-            {
-                head.break_before = false;
-            }
-            runs
-        };
-        let mut raw = Vec::new();
-        for run in runs {
-            let key = mix.ok_or_else(|| invalid("Missing prepared factory composition"))?;
-            let values = composition(snapshot, key, run.span.first)?;
-            let (first_hour, last_hour) = if product == "series-state" {
-                (run.span.first, run.span.last)
+        for at in lines {
+            let tag = &wanted[at];
+            crate::metadata::check_cancel(cancelled)?;
+            let mix = key(directory, tag, MIX, None);
+            let supply = key(directory, tag, READS, None);
+            let mut spans: Vec<_> = if let Some(members) = &membership {
+                members.get(tag).cloned().unwrap_or_default()
             } else {
-                (run.span.first.max(first), run.span.last.min(through(last)))
+                history
+                    .countries
+                    .get(tag)
+                    .into_iter()
+                    .flat_map(|country| country.identities.iter())
+                    .filter(|identity| selected.contains(&(identity.slot, identity.country_id)))
+                    .map(|identity| HourSpan {
+                        first_hour: identity.first_hour,
+                        last_hour: identity.last_hour,
+                    })
+                    .collect()
             };
-            if first_hour <= last_hour {
-                raw.push(FactoryRun {
-                    first_hour,
-                    last_hour,
-                    starts_segment: run.break_before,
-                    values,
-                });
+            if let Some(within) = within.get(tag) {
+                spans = clipped(&spans, within, cancelled)?;
             }
-        }
-        raw.sort_by_key(|run| run.first_hour);
-        let read_runs = if dense || product == "series-state" {
-            let mut found = BTreeMap::new();
-            for run in &raw {
-                for hour in [run.first_hour, run.last_hour] {
-                    if let Some(read) = run_at(snapshot, supply, hour)? {
-                        found.insert(read.span.first, read);
+            let view = (from, to, width);
+            let bounds = (first, through(last));
+            let line = summary(
+                snapshot,
+                key(directory, tag, VALUES, Some(index)),
+                bounds,
+                view,
+                &spans,
+            )?;
+            let mut dates = BTreeSet::new();
+            let mut parts = Vec::new();
+            if dense {
+                for ordinal in 0..FIELD_COUNT {
+                    let part = key(directory, tag, PARTS, Some(ordinal as u64));
+                    let part = summary(snapshot, part, bounds, view, &spans)?;
+                    dates_of(&part, &mut dates);
+                    parts.push(json!({ "key": ordinal.to_string(), "summary": part }));
+                }
+                dates_of(&line, &mut dates);
+            }
+            let paged = match page.as_deref_mut() {
+                Some(page) => {
+                    let line = json!({ "tag": tag, "summary": line, "parts": parts });
+                    if !page.admit(at, &line)? {
+                        break;
+                    }
+                    Some(line)
+                }
+                None => None,
+            };
+            let runs: Vec<dashboard_series::Run> = if dense || product == "series-state" {
+                if product == "series-state" {
+                    dates.extend(
+                        reads
+                            .iter()
+                            .filter(|read| &read.tag == tag && read.hour == through(read.hour))
+                            .map(|read| read.hour),
+                    );
+                }
+                let mut runs = BTreeMap::new();
+                for &hour in &dates {
+                    if let Some(run) = run_at(snapshot, mix, hour)? {
+                        if product == "series-state" {
+                            let starts = run.break_before && run.span.first == hour;
+                            runs.insert(
+                                hour,
+                                dashboard_series::Run {
+                                    span: dashboard_series::Span::new(hour, hour)?,
+                                    break_before: starts,
+                                    ..run
+                                },
+                            );
+                        } else {
+                            runs.insert(run.span.first, run);
+                        }
                     }
                 }
+                runs.into_values().collect()
+            } else {
+                let mut runs = match mix {
+                    Some(key) => engine::runs(snapshot, key, first, through(last))?,
+                    None => Vec::new(),
+                };
+                // A run the window clips starts no segment at the window's first hour.
+                if let Some(head) = runs.first_mut()
+                    && head.break_before
+                    && head.span.first == first
+                    && run_at(snapshot, mix, first)?.is_some_and(|run| run.span.first < first)
+                {
+                    head.break_before = false;
+                }
+                runs
+            };
+            let mut raw = Vec::new();
+            for run in runs {
+                let key = mix.ok_or_else(|| invalid("Missing prepared factory composition"))?;
+                let values = composition(snapshot, key, run.span.first)?;
+                let (first_hour, last_hour) = if product == "series-state" {
+                    (run.span.first, run.span.last)
+                } else {
+                    (run.span.first.max(first), run.span.last.min(through(last)))
+                };
+                if first_hour <= last_hour {
+                    raw.push(FactoryRun {
+                        first_hour,
+                        last_hour,
+                        starts_segment: run.break_before,
+                        values,
+                    });
+                }
             }
-            found.into_values().collect()
-        } else {
-            match supply {
-                Some(key) => engine::runs(snapshot, key, first, through(last))?,
-                None => Vec::new(),
+            raw.sort_by_key(|run| run.first_hour);
+            let read_runs = if dense || product == "series-state" {
+                let mut found = BTreeMap::new();
+                for run in &raw {
+                    for hour in [run.first_hour, run.last_hour] {
+                        if let Some(read) = run_at(snapshot, supply, hour)? {
+                            found.insert(read.span.first, read);
+                        }
+                    }
+                }
+                found.into_values().collect()
+            } else {
+                match supply {
+                    Some(key) => engine::runs(snapshot, key, first, through(last))?,
+                    None => Vec::new(),
+                }
+            };
+            let provenance = read_runs
+                .iter()
+                .map(supplying)
+                .collect::<io::Result<Vec<_>>>()?;
+            scanned.reads.insert(tag.clone(), provenance);
+            scanned.series.insert(tag.clone(), raw);
+            scanned.segments.insert(
+                tag.clone(),
+                history
+                    .countries
+                    .get(tag)
+                    .into_iter()
+                    .flat_map(|country| country.segments.iter())
+                    .filter(|span| span.first_hour <= last && span.last_hour >= first)
+                    .cloned()
+                    .collect(),
+            );
+            if let Some(line) = paged {
+                display.push(line);
+                shown.push(tag.clone());
             }
-        };
-        let provenance = read_runs
-            .iter()
-            .map(supplying)
-            .collect::<io::Result<Vec<_>>>()?;
-        scanned.reads.insert(tag.clone(), provenance);
-        scanned.series.insert(tag.clone(), raw);
-        scanned.segments.insert(
-            tag.clone(),
-            history
-                .countries
-                .get(tag)
-                .into_iter()
-                .flat_map(|country| country.segments.iter())
-                .filter(|span| span.first_hour <= last && span.last_hour >= first)
-                .cloned()
-                .collect(),
-        );
-        if product != "series-state" {
-            series::summary_budget(from, to, width, display.len() + 1)?;
-            display.push(json!({ "tag": tag, "summary": line, "parts": parts }));
         }
+        let mut request = selection.clone();
+        let members = if page.is_some() {
+            request.tags = shown;
+            membership.as_ref().map(|members| {
+                request
+                    .tags
+                    .iter()
+                    .filter_map(|tag| Some((tag.clone(), members.get(tag)?.clone())))
+                    .collect()
+            })
+        } else {
+            // A state read answers each read tag's aliases too.
+            request.tags = if request.top.is_none() {
+                country_history::selected_aliases(history, &wanted)
+            } else {
+                wanted.clone()
+            };
+            membership.clone()
+        };
+        let reply = present(
+            source,
+            &request,
+            context,
+            cancelled,
+            &scanned,
+            Some(history),
+            members,
+        )?;
+        let mut reply = serde_json::to_value(reply)?;
+        reply["coverage"] = json!(coverage);
+        if page.is_some() {
+            reply["summaries"] = json!(display);
+        }
+        Ok(reply)
+    };
+    if product == "series-state" {
+        let reply = answer(None)?;
+        crate::products::check_reply_budget(&reply)?;
+        return Ok(reply);
     }
-    let mut params = selection;
-    params.tags = wanted;
-    let reply = present(
-        source,
-        &params,
-        context,
-        cancelled,
-        &scanned,
-        Some(history),
-        membership,
-    )?;
-    let mut reply = serde_json::to_value(reply)?;
-    reply["summaries"] = json!(display);
-    reply["coverage"] = json!(coverage);
-    crate::products::check_reply_budget(&reply)?;
-    Ok(reply)
+    series::summary_budget(from, to, width, 1)?;
+    #[cfg(not(test))]
+    let budget = crate::products::MAX_PRODUCT_REPLY_BYTES;
+    #[cfg(test)]
+    let budget = params["pageBudget"]
+        .as_u64()
+        .map_or(crate::products::MAX_PRODUCT_REPLY_BYTES, |budget| budget as usize);
+    series::paged(params["cursor"].as_str(), budget, |page| answer(Some(page)))
 }
 
 /// `top`'s counts by tag actor, as faction totals and the scoreboard read them.

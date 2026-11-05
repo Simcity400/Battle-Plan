@@ -1,5 +1,5 @@
 //! Game score's served replies: every country's score at each hour and some countries' alone,
-//! each part's charts over each span, dense and hour by hour, and navigation from each hour.
+//! and each part's navigation from each hour. The widget draws no chart, so none is asked.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -9,9 +9,6 @@ pub static PLAN: Plan = Plan {
     queries,
     unordered: &[],
 };
-
-/// Pixels a dense summary draws over.
-const WIDTH: u32 = 64;
 
 fn family(measure: Option<&str>) -> Value {
     json!({ "kind": "game-score", "measure": measure })
@@ -33,22 +30,8 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             ask.ask("series-state", state(&[], hour))?;
             ask.ask("series-state", state(&some, hour))?;
         }
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for measure in super::PARTS {
             let measured = family(Some(measure));
-            for span in branch.spans() {
-                for width in [i64::from(WIDTH), hourly(span).max(1)] {
-                    for batch in &batches {
-                        ask.ask(
-                            "series-summary",
-                            json!({
-                                "branchId": id, "family": measured, "tags": batch,
-                                "from": span.0, "to": span.1, "width": width,
-                            }),
-                        )?;
-                    }
-                }
-            }
             let navigate = |tags: &[String], key: &str, from: Option<i32>| {
                 json!({
                     "branchId": id, "family": measured, "tags": tags, "key": key, "from": from,

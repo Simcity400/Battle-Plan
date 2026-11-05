@@ -6,8 +6,8 @@
 //! query time.
 
 use super::{
-    Flow, FlowKey, PartialSpan, Run, ScannedFlows, Terms, TradeCountryIdentity, TradeFlowParams,
-    TradeFlows, TradeFlowsReply,
+    Flow, FlowKey, PartialSpan, Run, ScannedFlows, Terms, TradeCountryIdentity, TradeFlow,
+    TradeFlowParams, TradeFlows, TradeFlowsReply,
     emit::{
         self, ALIASES, DELIVERED, FACT, FAMILY, FIRSTS, GROUPS, KNOWN, READ, REFUSALS, RESOURCES,
         SCHEMA, TOTALS, kind,
@@ -77,6 +77,7 @@ struct Params {
     measure: Option<String>,
     #[serde(default)]
     require_complete: bool,
+    cursor: Option<String>,
 }
 
 /// The `trade-flows` reply to `params`, read from the trade family's publication pinned through
@@ -1018,13 +1019,13 @@ impl Read<'_> {
             return Ok(None);
         }
         if input.width.is_some() {
-            series::summary_budget(from, to, width, flows.len())?;
+            series::summary_budget(from, to, width, 1)?;
         }
         let dense = input
             .width
             .is_some_and(|width| i64::from(last) - i64::from(first) + 1 > i64::from(width));
         let basis = input.basis.unwrap_or(first);
-        let mut moments: BTreeSet<_> = input.hours.iter().copied().chain([first, last]).collect();
+        let moments: BTreeSet<_> = input.hours.iter().copied().chain([first, last]).collect();
         let measure = input.measure.as_deref().unwrap_or("current");
         if !["current", "total", "average"].contains(&measure) {
             return Err(invalid("Invalid trade measure"));
@@ -1045,308 +1046,41 @@ impl Read<'_> {
             0,
             Some(&display_coverage),
         )?;
-        let mut summaries = BTreeMap::new();
-        let mut integrals = BTreeMap::new();
-        let mut bounds = BTreeMap::new();
-        let mut catalogue = ScannedFlows::default();
-        for Named {
-            keys: [fact, delivered],
-            first: flow_first,
-            mut flow,
-        } in flows
-        {
-            dashboard_text::metadata::check_cancel(self.cancelled)?;
-            let token = flow_key(&flow);
-            let mut reader = Runs {
-                fact,
-                first: flow_first,
-                last: published.last,
-                held: BTreeMap::new(),
-            };
-            let within = input.membership.as_ref().map(|_| {
-                combine(
-                    membership
-                        .get(&flow.seller_identity)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]),
-                    membership
-                        .get(&flow.buyer_identity)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]),
-                    input.between,
-                )
-            });
-            let flow_known = if let Some(within) = &within {
-                let within = combine(within, &display_coverage, true);
-                summary(snapshot, known, (first, last), view, 0, Some(&within))?
-            } else {
-                known_summary.clone()
-            };
-            let mut dates = moments.clone();
-            let mut found = if dense {
-                let mut summary = if measure == "current" {
-                    engine::summary(
-                        snapshot,
-                        delivered,
-                        (first, last),
-                        view,
-                        RESOURCE_DECIMALS,
-                        within.as_deref(),
-                    )?
-                } else {
-                    self.integral_summary(snapshot, &mut reader, delivered, (first, last), view)?
-                };
-                if measure != "current" {
-                    // A running average is bounded by its opening value and the daily amounts in
-                    // the bucket. Cumulative-amount extrema alone can miss a ratio peak followed
-                    // by low-volume trading.
-                    let daily = (measure == "average")
-                        .then(|| {
-                            engine::summary(
-                                snapshot,
-                                delivered,
-                                (first, last),
-                                view,
-                                RESOURCE_DECIMALS,
-                                within.as_deref(),
-                            )
-                        })
-                        .transpose()?;
-                    let baseline = match basis.checked_sub(1) {
-                        Some(hour) => reader.prefix(snapshot, hour, within.as_deref(), last_hour)?,
-                        None => [0; 6],
-                    };
-                    for (column, bucket) in summary.buckets.iter_mut().enumerate() {
-                        let Some(bucket) = bucket else {
-                            continue;
-                        };
-                        let hours = [
-                            bucket.first_hour,
-                            bucket.last_hour,
-                            bucket.min_hour,
-                            bucket.max_hour,
-                        ];
-                        let mut samples = Vec::new();
-                        for hour in hours {
-                            let own = reader.prefix(snapshot, hour, within.as_deref(), last_hour)?;
-                            let amount = own[0] - baseline[0];
-                            let duration = own[5] - baseline[5];
-                            let raw = if measure == "total" {
-                                amount as f64 / 24.0
-                            } else if duration > 0 {
-                                amount as f64 / duration as f64
-                            } else {
-                                0.0
-                            };
-                            samples.push((hour, raw / 10f64.powi(i32::from(RESOURCE_DECIMALS))));
-                        }
-                        bucket.first_value = samples[0].1;
-                        bucket.last_value = samples[1].1;
-                        let min = samples
-                            .iter()
-                            .min_by(|a, b| a.1.total_cmp(&b.1))
-                            .expect("four samples");
-                        let max = samples
-                            .iter()
-                            .max_by(|a, b| a.1.total_cmp(&b.1))
-                            .expect("four samples");
-                        bucket.min_hour = min.0;
-                        bucket.min_value = min.1;
-                        bucket.max_hour = max.0;
-                        bucket.max_value = max.1;
-                        bucket.last_value_hour = bucket.last_hour;
-                        if let Some(daily) = daily.as_ref().and_then(|daily| daily.buckets[column])
-                        {
-                            if daily.min_value < bucket.min_value {
-                                bucket.min_value = daily.min_value;
-                                bucket.min_hour = daily.min_hour;
-                            }
-                            if daily.max_value > bucket.max_value {
-                                bucket.max_value = daily.max_value;
-                                bucket.max_hour = daily.max_hour;
-                            }
-                        }
-                    }
-                    summary.runs = None;
-                }
-                for (bucket, coverage) in summary.buckets.iter_mut().zip(&flow_known.buckets) {
-                    if let Some(known) = coverage {
-                        if let Some(values) = bucket {
-                            if values.first_hour > known.first_hour
-                                || values.last_hour < known.last_hour
-                            {
-                                values.min_value = values.min_value.min(0.0);
-                                values.max_value = values.max_value.max(0.0);
-                                if values.first_hour > known.first_hour {
-                                    values.first_hour = known.first_hour;
-                                    values.first_value = 0.0;
-                                }
-                                if values.last_hour < known.last_hour {
-                                    values.last_hour = known.last_hour;
-                                    values.last_value = 0.0;
-                                    values.last_value_hour = known.last_hour;
-                                }
-                            }
-                            values.has_break |= known.has_break;
-                            values.first_break |= known.first_break;
-                        } else {
-                            let mut zero = *known;
-                            zero.first_value = 0.0;
-                            zero.last_value = 0.0;
-                            zero.min_value = 0.0;
-                            zero.max_value = 0.0;
-                            *bucket = Some(zero);
-                        }
-                    } else {
-                        *bucket = None;
-                    }
-                }
-                if let (Some(runs), Some(coverage)) = (&mut summary.runs, &flow_known.runs) {
-                    // The native successful empty census means zero between listed deals.
-                    // Apply that same existing zero fill to the exact supplying runs.
-                    let active: Vec<_> = runs
-                        .iter()
-                        .map(|run| HourSpan {
-                            first_hour: run.first_hour,
-                            last_hour: run.last_hour,
-                        })
-                        .collect();
-                    let known: Vec<_> = coverage
-                        .iter()
-                        .map(|run| HourSpan {
-                            first_hour: run.first_hour,
-                            last_hour: run.last_hour,
-                        })
-                        .collect();
-                    for zero in subtract(&known, &active) {
-                        runs.push(ChartRun {
-                            first_hour: zero.first_hour,
-                            last_hour: zero.last_hour,
-                            value: 0.0,
-                            break_before: true,
-                        });
-                    }
-                    runs.sort_by_key(|run| run.first_hour);
-                    let mut previous: Option<i32> = None;
-                    for run in runs {
-                        run.break_before =
-                            previous.and_then(|hour| hour.checked_add(1)) != Some(run.first_hour);
-                        previous = Some(run.last_hour);
-                    }
-                }
-                for bucket in summary.buckets.iter().flatten() {
-                    dates.extend([
-                        bucket.first_hour,
-                        bucket.last_hour,
-                        bucket.min_hour,
-                        bucket.max_hour,
-                    ]);
-                }
-                summaries.insert(token.clone(), summary);
-                Vec::new()
-            } else {
-                engine::runs(snapshot, fact, first, last)?
-            };
-            for &hour in &dates {
-                if let Some(run) = run_at(snapshot, fact, hour)? {
-                    found.push(run);
-                }
-            }
-            let mut seen = BTreeSet::new();
-            for clipped in found {
-                let run = run_at(snapshot, fact, clipped.span.first)?
-                    .ok_or_else(|| invalid("Trade fact coverage is missing"))?;
-                if !seen.insert((run.span.first, run.span.last)) {
-                    continue;
-                }
-                let start = i32::try_from(run.value)
-                    .map_err(|_| invalid("Invalid trade fact date"))?;
-                let held = reader.held(snapshot, start)?;
-                let alias = |at: u32| {
-                    aliases
-                        .get(at as usize)
-                        .cloned()
-                        .ok_or_else(|| invalid("A prepared trade alias is not valid"))
-                };
-                let row = Run {
-                    first_hour: run.span.first,
-                    last_hour: run.span.last,
-                    terms: held.terms,
-                    seller_tag: alias(held.aliases[0])?,
-                    buyer_tag: alias(held.aliases[1])?,
-                };
-                if let Some(spans) = &within {
-                    for span in spans {
-                        let first = row.first_hour.max(span.first_hour);
-                        let last = row.last_hour.min(span.last_hour);
-                        if first <= last {
-                            flow.runs.push(Run {
-                                first_hour: first,
-                                last_hour: last,
-                                ..row.clone()
-                            });
-                        }
-                    }
-                } else {
-                    flow.runs.push(row);
-                }
-            }
-            flow.runs.sort_by_key(|run| run.first_hour);
-            // Every requested prefix is a fixed number of page lookups, even in peace.
-            for run in &flow.runs {
-                if let Some(hour) = run.first_hour.checked_sub(1) {
-                    dates.insert(hour);
-                }
-                dates.extend([run.first_hour, run.last_hour]);
-            }
-            dates.extend([basis.saturating_sub(1)]);
-            let mut prefixes = BTreeMap::new();
-            let mut observed = BTreeMap::new();
-            for hour in dates {
-                let sum = reader.prefix(snapshot, hour, within.as_deref(), last_hour)?;
-                prefixes.insert(hour, sum.map(|value| value.to_string()));
-                if hour >= basis {
-                    observed.insert(
-                        hour,
-                        reader.bounds(snapshot, basis, hour, within.as_deref())?,
-                    );
-                }
-            }
-            bounds.insert(token.clone(), observed);
-            integrals.insert(token, prefixes);
-            catalogue.flows.push(flow);
-        }
-        let (slice_countries, flows) = catalogue.reply_flows();
         // Stable campaign aliases keep all catalogue indices fixed for paged reads.
-        let country_index = |tag: &str| {
-            reply
-                .countries
-                .binary_search_by(|value| value.as_str().cmp(tag))
-                .map(|at| at as u32)
-                .map_err(|_| invalid("A prepared trade alias is not listed"))
-        };
-        let mut listed = Vec::with_capacity(flows.len());
-        for mut flow in flows {
-            flow.seller = country_index(&slice_countries[flow.seller as usize])?;
-            flow.buyer = country_index(&slice_countries[flow.buyer as usize])?;
-            for index in flow.seller_tags.iter_mut().chain(&mut flow.buyer_tags) {
-                *index = country_index(&slice_countries[*index as usize])?;
+        let countries = reply.countries.clone();
+        let listed = |catalogue: &ScannedFlows| -> io::Result<Vec<TradeFlow>> {
+            let (slice_countries, flows) = catalogue.reply_flows();
+            let country_index = |tag: &str| {
+                countries
+                    .binary_search_by(|value| value.as_str().cmp(tag))
+                    .map(|at| at as u32)
+                    .map_err(|_| invalid("A prepared trade alias is not listed"))
+            };
+            let mut listed = Vec::with_capacity(flows.len());
+            for mut flow in flows {
+                flow.seller = country_index(&slice_countries[flow.seller as usize])?;
+                flow.buyer = country_index(&slice_countries[flow.buyer as usize])?;
+                for index in flow.seller_tags.iter_mut().chain(&mut flow.buyer_tags) {
+                    *index = country_index(&slice_countries[*index as usize])?;
+                }
+                listed.push(flow);
             }
-            listed.push(flow);
-        }
-        reply.flows = listed;
+            Ok(listed)
+        };
+        // The reads' hours: every page holds the reads.
+        let mut read_moments = moments.clone();
         if !dense {
             for (first, last) in spans_of(snapshot, &selected_refusals, first, last)? {
-                moments.extend([first, last]);
+                read_moments.extend([first, last]);
             }
             if let Some(key) = known {
                 for run in engine::runs(snapshot, key, first, last)? {
-                    moments.extend(run.span.first..=run.span.last);
+                    read_moments.extend(run.span.first..=run.span.last);
                 }
             }
         }
         let mut seen = BTreeSet::new();
-        for &hour in &moments {
+        for &hour in &read_moments {
             let Some(key) = known else {
                 break;
             };
@@ -1411,7 +1145,7 @@ impl Read<'_> {
         }
         reply.partial = partial;
         // The known hours, and those leaving out a chosen group's deals, through each hour.
-        let reach = moments
+        let reach = read_moments
             .iter()
             .copied()
             .chain([basis.saturating_sub(1)])
@@ -1433,7 +1167,7 @@ impl Read<'_> {
         });
         let before = basis.saturating_sub(1);
         let mut coverage_counts = BTreeMap::new();
-        for hour in moments {
+        for hour in read_moments {
             coverage_counts.insert(
                 hour,
                 [
@@ -1442,24 +1176,309 @@ impl Read<'_> {
                 ],
             );
         }
-        let mut data = serde_json::to_value(reply)?;
-        data["summaries"] = serde_json::to_value(summaries)?;
-        data["prefixes"] = serde_json::to_value(integrals)?;
-        data["bounds"] = serde_json::to_value(bounds)?;
-        data["coverageCounts"] = serde_json::to_value(coverage_counts)?;
-        data["cumulativePending"] = json!(false);
-        data["exactHours"] = json!(
-            input
-                .hours
-                .iter()
-                .copied()
-                .chain([first, last])
-                .collect::<BTreeSet<_>>()
-        );
-        data["basis"] = json!(basis);
-        data["scoped"] = json!(input.membership.is_some());
-        data["keyCount"] = json!(directory.actors.len());
-        Ok(Some(data))
+        // A flow's summary, integrals and bounds are a line.
+        let budget = dashboard_base::products::MAX_PRODUCT_REPLY_BYTES;
+        series::paged(input.cursor.as_deref(), budget, |page| {
+            let mut summaries = BTreeMap::new();
+            let mut integrals = BTreeMap::new();
+            let mut bounds = BTreeMap::new();
+            let mut catalogue = ScannedFlows::default();
+            for at in page.lines(flows.len()) {
+                let Named {
+                    keys: [fact, delivered],
+                    first: flow_first,
+                    ref flow,
+                } = flows[at];
+                let mut flow = flow.clone();
+                dashboard_text::metadata::check_cancel(self.cancelled)?;
+                let token = flow_key(&flow);
+                let mut reader = Runs {
+                    fact,
+                    first: flow_first,
+                    last: published.last,
+                    held: BTreeMap::new(),
+                };
+                let within = input.membership.as_ref().map(|_| {
+                    combine(
+                        membership
+                            .get(&flow.seller_identity)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        membership
+                            .get(&flow.buyer_identity)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        input.between,
+                    )
+                });
+                let flow_known = if let Some(within) = &within {
+                    let within = combine(within, &display_coverage, true);
+                    summary(snapshot, known, (first, last), view, 0, Some(&within))?
+                } else {
+                    known_summary.clone()
+                };
+                let mut dates = moments.clone();
+                let mut found = if dense {
+                    let mut summary = if measure == "current" {
+                        engine::summary(
+                            snapshot,
+                            delivered,
+                            (first, last),
+                            view,
+                            RESOURCE_DECIMALS,
+                            within.as_deref(),
+                        )?
+                    } else {
+                        self.integral_summary(snapshot, &mut reader, delivered, (first, last), view)?
+                    };
+                    if measure != "current" {
+                        // A running average is bounded by its opening value and the daily amounts in
+                        // the bucket. Cumulative-amount extrema alone can miss a ratio peak followed
+                        // by low-volume trading.
+                        let daily = (measure == "average")
+                            .then(|| {
+                                engine::summary(
+                                    snapshot,
+                                    delivered,
+                                    (first, last),
+                                    view,
+                                    RESOURCE_DECIMALS,
+                                    within.as_deref(),
+                                )
+                            })
+                            .transpose()?;
+                        let baseline = match basis.checked_sub(1) {
+                            Some(hour) => reader.prefix(snapshot, hour, within.as_deref(), last_hour)?,
+                            None => [0; 6],
+                        };
+                        for (column, bucket) in summary.buckets.iter_mut().enumerate() {
+                            let Some(bucket) = bucket else {
+                                continue;
+                            };
+                            let hours = [
+                                bucket.first_hour,
+                                bucket.last_hour,
+                                bucket.min_hour,
+                                bucket.max_hour,
+                            ];
+                            let mut samples = Vec::new();
+                            for hour in hours {
+                                let own = reader.prefix(snapshot, hour, within.as_deref(), last_hour)?;
+                                let amount = own[0] - baseline[0];
+                                let duration = own[5] - baseline[5];
+                                let raw = if measure == "total" {
+                                    amount as f64 / 24.0
+                                } else if duration > 0 {
+                                    amount as f64 / duration as f64
+                                } else {
+                                    0.0
+                                };
+                                samples.push((hour, raw / 10f64.powi(i32::from(RESOURCE_DECIMALS))));
+                            }
+                            bucket.first_value = samples[0].1;
+                            bucket.last_value = samples[1].1;
+                            let min = samples
+                                .iter()
+                                .min_by(|a, b| a.1.total_cmp(&b.1))
+                                .expect("four samples");
+                            let max = samples
+                                .iter()
+                                .max_by(|a, b| a.1.total_cmp(&b.1))
+                                .expect("four samples");
+                            bucket.min_hour = min.0;
+                            bucket.min_value = min.1;
+                            bucket.max_hour = max.0;
+                            bucket.max_value = max.1;
+                            bucket.last_value_hour = bucket.last_hour;
+                            if let Some(daily) = daily.as_ref().and_then(|daily| daily.buckets[column])
+                            {
+                                if daily.min_value < bucket.min_value {
+                                    bucket.min_value = daily.min_value;
+                                    bucket.min_hour = daily.min_hour;
+                                }
+                                if daily.max_value > bucket.max_value {
+                                    bucket.max_value = daily.max_value;
+                                    bucket.max_hour = daily.max_hour;
+                                }
+                            }
+                        }
+                        summary.runs = None;
+                    }
+                    for (bucket, coverage) in summary.buckets.iter_mut().zip(&flow_known.buckets) {
+                        if let Some(known) = coverage {
+                            if let Some(values) = bucket {
+                                if values.first_hour > known.first_hour
+                                    || values.last_hour < known.last_hour
+                                {
+                                    values.min_value = values.min_value.min(0.0);
+                                    values.max_value = values.max_value.max(0.0);
+                                    if values.first_hour > known.first_hour {
+                                        values.first_hour = known.first_hour;
+                                        values.first_value = 0.0;
+                                    }
+                                    if values.last_hour < known.last_hour {
+                                        values.last_hour = known.last_hour;
+                                        values.last_value = 0.0;
+                                        values.last_value_hour = known.last_hour;
+                                    }
+                                }
+                                values.has_break |= known.has_break;
+                                values.first_break |= known.first_break;
+                            } else {
+                                let mut zero = *known;
+                                zero.first_value = 0.0;
+                                zero.last_value = 0.0;
+                                zero.min_value = 0.0;
+                                zero.max_value = 0.0;
+                                *bucket = Some(zero);
+                            }
+                        } else {
+                            *bucket = None;
+                        }
+                    }
+                    if let (Some(runs), Some(coverage)) = (&mut summary.runs, &flow_known.runs) {
+                        // The native successful empty census means zero between listed deals.
+                        // Apply that same existing zero fill to the exact supplying runs.
+                        let active: Vec<_> = runs
+                            .iter()
+                            .map(|run| HourSpan {
+                                first_hour: run.first_hour,
+                                last_hour: run.last_hour,
+                            })
+                            .collect();
+                        let known: Vec<_> = coverage
+                            .iter()
+                            .map(|run| HourSpan {
+                                first_hour: run.first_hour,
+                                last_hour: run.last_hour,
+                            })
+                            .collect();
+                        for zero in subtract(&known, &active) {
+                            runs.push(ChartRun {
+                                first_hour: zero.first_hour,
+                                last_hour: zero.last_hour,
+                                value: 0.0,
+                                break_before: true,
+                            });
+                        }
+                        runs.sort_by_key(|run| run.first_hour);
+                        let mut previous: Option<i32> = None;
+                        for run in runs {
+                            run.break_before =
+                                previous.and_then(|hour| hour.checked_add(1)) != Some(run.first_hour);
+                            previous = Some(run.last_hour);
+                        }
+                    }
+                    for bucket in summary.buckets.iter().flatten() {
+                        dates.extend([
+                            bucket.first_hour,
+                            bucket.last_hour,
+                            bucket.min_hour,
+                            bucket.max_hour,
+                        ]);
+                    }
+                    summaries.insert(token.clone(), summary);
+                    Vec::new()
+                } else {
+                    engine::runs(snapshot, fact, first, last)?
+                };
+                for &hour in &dates {
+                    if let Some(run) = run_at(snapshot, fact, hour)? {
+                        found.push(run);
+                    }
+                }
+                let mut seen = BTreeSet::new();
+                for clipped in found {
+                    let run = run_at(snapshot, fact, clipped.span.first)?
+                        .ok_or_else(|| invalid("Trade fact coverage is missing"))?;
+                    if !seen.insert((run.span.first, run.span.last)) {
+                        continue;
+                    }
+                    let start = i32::try_from(run.value)
+                        .map_err(|_| invalid("Invalid trade fact date"))?;
+                    let held = reader.held(snapshot, start)?;
+                    let alias = |at: u32| {
+                        aliases
+                            .get(at as usize)
+                            .cloned()
+                            .ok_or_else(|| invalid("A prepared trade alias is not valid"))
+                    };
+                    let row = Run {
+                        first_hour: run.span.first,
+                        last_hour: run.span.last,
+                        terms: held.terms,
+                        seller_tag: alias(held.aliases[0])?,
+                        buyer_tag: alias(held.aliases[1])?,
+                    };
+                    if let Some(spans) = &within {
+                        for span in spans {
+                            let first = row.first_hour.max(span.first_hour);
+                            let last = row.last_hour.min(span.last_hour);
+                            if first <= last {
+                                flow.runs.push(Run {
+                                    first_hour: first,
+                                    last_hour: last,
+                                    ..row.clone()
+                                });
+                            }
+                        }
+                    } else {
+                        flow.runs.push(row);
+                    }
+                }
+                flow.runs.sort_by_key(|run| run.first_hour);
+                // Every requested prefix is a fixed number of page lookups, even in peace.
+                for run in &flow.runs {
+                    if let Some(hour) = run.first_hour.checked_sub(1) {
+                        dates.insert(hour);
+                    }
+                    dates.extend([run.first_hour, run.last_hour]);
+                }
+                dates.extend([basis.saturating_sub(1)]);
+                let mut prefixes = BTreeMap::new();
+                let mut observed = BTreeMap::new();
+                for hour in dates {
+                    let sum = reader.prefix(snapshot, hour, within.as_deref(), last_hour)?;
+                    prefixes.insert(hour, sum.map(|value| value.to_string()));
+                    if hour >= basis {
+                        observed.insert(
+                            hour,
+                            reader.bounds(snapshot, basis, hour, within.as_deref())?,
+                        );
+                    }
+                }
+                let line = json!({
+                    "summary": summaries.get(&token), "prefixes": &prefixes, "bounds": &observed,
+                });
+                if !page.admit(at, &line)? {
+                    summaries.remove(&token);
+                    break;
+                }
+                bounds.insert(token.clone(), observed);
+                integrals.insert(token, prefixes);
+                catalogue.flows.push(flow);
+            }
+            reply.flows = listed(&catalogue)?;
+            let mut data = serde_json::to_value(&reply)?;
+            data["summaries"] = serde_json::to_value(summaries)?;
+            data["prefixes"] = serde_json::to_value(integrals)?;
+            data["bounds"] = serde_json::to_value(bounds)?;
+            data["coverageCounts"] = serde_json::to_value(&coverage_counts)?;
+            data["cumulativePending"] = json!(false);
+            data["exactHours"] = json!(
+                input
+                    .hours
+                    .iter()
+                    .copied()
+                    .chain([first, last])
+                    .collect::<BTreeSet<_>>()
+            );
+            data["basis"] = json!(basis);
+            data["scoped"] = json!(input.membership.is_some());
+            data["keyCount"] = json!(directory.actors.len());
+            Ok(data)
+        })
+        .map(Some)
     }
 }
 

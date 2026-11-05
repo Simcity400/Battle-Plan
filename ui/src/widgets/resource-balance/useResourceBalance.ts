@@ -13,6 +13,7 @@ import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { CountrySelection, WidgetSpec } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
 import { loadProduct, useFollowedProduct, useFollowedProducts } from '../../dashboard/products';
+import { pagePreparation, registerPageJoin } from '../../dashboard/pageJoins';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -57,6 +58,21 @@ export function mergePreparedResource(a: PreparedResourceReply, b: PreparedResou
     trades: overlayTrades(a.trades, b.trades),
     exactHours: [...new Set([...(a.exactHours ?? []), ...(b.exactHours ?? [])])] };
 }
+
+/** The same exact facts, read beside another page's lines: each once, in order. */
+const unionRuns = <R extends { firstHour: number }>(runs: readonly R[]): R[] =>
+  [...new Map(runs.map(run => [JSON.stringify(run), run])).values()].sort((a, b) => a.firstHour - b.firstHour);
+
+registerPageJoin(['resource-balance'], pages => {
+  const replies = pages as PreparedResourceReply[];
+  const first = replies[0];
+  return { ...first, ...pagePreparation(replies[replies.length - 1]), cursor: null,
+    series: first.series.map(row => ({ ...row, runs: unionRuns(replies.flatMap(reply => reply.series.find(other => other.id === row.id)?.runs ?? [])) })),
+    dealHours: unionRuns(replies.flatMap(reply => reply.dealHours)),
+    trades: unionRuns(replies.flatMap(reply => reply.trades)),
+    warnings: [...new Set(replies.flatMap(reply => reply.warnings))],
+    summaries: replies.flatMap(reply => reply.summaries ?? []) };
+});
 
 /** Display geometry and exact moments share the same prepared adapter. */
 /** The widget's country and its resource balance reply. */

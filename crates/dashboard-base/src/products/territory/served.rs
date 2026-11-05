@@ -1,6 +1,6 @@
 //! Territory's served replies: the metadata, every measure's ranked and listed charts over each
-//! span, dense and hour by hour, a group's sums, the states at each hour with the regional
-//! breakdown, and navigation from each hour.
+//! span at a small and a wide chart's width, every page of each, a group's sums, the states at
+//! each hour with the regional breakdown, and navigation from each hour.
 
 use crate::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -35,22 +35,23 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let batches = served::batches(&countries);
         let some = served::some(&countries);
         let none: &[String] = &[];
-        let summary = |family: &Value, tags: &[String], (from, to): (i32, i32), width: i64| {
+        let summary = |family: &Value, tags: &[String], (from, to): (i32, i32), width: u32| {
             json!({
                 "branchId": id, "family": family, "tags": tags, "from": from, "to": to,
                 "width": width,
             })
         };
         let state = |family: &Value, tags: &[String], hour: i32| json!({ "branchId": id, "family": family, "tags": tags, "reads": [{ "hour": hour }] });
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for measure in MEASURES {
             for rule in RULES {
                 let ranked = family(measure, rule, Some(TOP), false);
                 let listed = family(measure, rule, None, false);
                 for span in branch.spans() {
-                    for width in [i64::from(WIDTH), hourly(span).max(1)] {
-                        ask.ask("series-summary", summary(&ranked, none, span, width))?;
-                        ask.ask("series-summary", summary(&listed, &some, span, width))?;
+                    for width in [WIDTH, served::WIDE] {
+                        for (family, tags) in [(&ranked, none), (&listed, &some[..])] {
+                            let params = summary(family, tags, span, width);
+                            served::pages(ask, "series-summary", params, "cursor")?;
+                        }
                     }
                 }
                 for hour in [first, branch.middle(), last] {
@@ -59,8 +60,8 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                 }
             }
         }
-        // Every country's states and the group sums of each batch, for one measure of each
-        // table and the area.
+        // Every country's states and charts, and the group sums of each batch, for one measure of
+        // each table and the area.
         for (measure, rule) in [
             ("states", "owned"),
             ("provinces", "controlled"),
@@ -69,23 +70,25 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             let listed = family(measure, rule, None, false);
             let grouped = family(measure, rule, None, true);
             let ranked_group = family(measure, rule, Some(TOP), true);
+            for span in branch.spans() {
+                for width in [WIDTH, served::WIDE] {
+                    let params = summary(&listed, &countries, span, width);
+                    served::pages(ask, "series-summary", params, "cursor")?;
+                }
+            }
             for batch in &batches {
                 for hour in branch.hours() {
                     ask.ask("series-state", state(&listed, batch, hour))?;
                 }
                 for span in branch.spans() {
-                    for width in [i64::from(WIDTH), hourly(span).max(1)] {
-                        ask.ask("series-summary", summary(&listed, batch, span, width))?;
+                    for width in [WIDTH, served::WIDE] {
                         ask.ask("series-summary", summary(&grouped, batch, span, width))?;
                     }
                 }
                 ask.ask("series-state", state(&grouped, batch, branch.middle()))?;
             }
             for span in branch.spans() {
-                ask.ask(
-                    "series-summary",
-                    summary(&ranked_group, none, span, i64::from(WIDTH)),
-                )?;
+                ask.ask("series-summary", summary(&ranked_group, none, span, WIDTH))?;
             }
         }
         // The regional breakdown at each hour, of every measure of both rules it holds.

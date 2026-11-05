@@ -7,7 +7,7 @@ import type { Span } from '../../charts/series';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount, rescale, rescaleSum } from '../../charts/valueAxis.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
-import type { CountryGroupReply, HourSpan, PartialSpan, ResourceInfo, TradeFlowsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, HourSpan, PartialSpan, ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { signed32, signed64, unsigned32 } from '../../dashboard/validation.ts';
@@ -762,6 +762,14 @@ export function measureNote(measure: Measure): string {
 export function unknownNote(known: readonly HourSpan[], from: number, hour: number): string | undefined {
   const missing = Math.max(0, hour - from + 1 - knownHours(known, from, hour));
   return missing >= 1 ? `Trade data is missing for ${formatDays(missing)}.` : undefined;
+}
+
+/** The order the product gives a selection's flows: by seller, buyer and resource, then by
+ * the holders' identity keys as Rust orders strings. Country indexes share the campaign's
+ * sorted alias list, so every page orders them alike. */
+export function compareFlows(a: TradeFlow, b: TradeFlow): number {
+  return a.seller - b.seller || a.buyer - b.buyer || a.resource - b.resource
+    || compareTags(a.sellerIdentity, b.sellerIdentity) || compareTags(a.buyerIdentity, b.buyerIdentity);
 }
 
 /** Exact point requests add dated facts while the accepted viewport keeps drawing. */

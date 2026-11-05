@@ -4458,3 +4458,58 @@ fn a_summary_within_keeps_buckets_that_fill_a_bin_inside_one_span_as_clipping_fo
         assert_eq!(actual, expected, "{view:?}");
     }
 }
+
+/// A presenter's refusal for size alone is told apart from its other refusals, its message
+/// kept, so a page halves on it until it fits, each half answered afresh for its own lines; a
+/// single line too large is the only refusal.
+#[test]
+fn a_page_halves_on_its_presenters_budget_refusal_down_to_one_line() {
+    use crate::products::{MAX_PRODUCT_REPLY_BYTES, check_reply_budget, is_over_budget, over_budget};
+    // The presenter refuses more than two lines' exact runs.
+    let mut answers = Vec::new();
+    let reply = paged(None, 1 << 10, |page| {
+        let mut read = Vec::new();
+        for at in page.lines(8) {
+            if !page.admit(at, &json!({ "tag": at }))? {
+                break;
+            }
+            read.push(at);
+        }
+        answers.push(read.clone());
+        if read.len() > 2 {
+            return Err(over_budget("Air force history exceeds the reply budget"));
+        }
+        Ok(json!({ "series": read }))
+    })
+    .unwrap();
+    assert_eq!(answers, [(0..8).collect::<Vec<_>>(), vec![0, 1, 2, 3], vec![0, 1]]);
+    assert_eq!(reply, json!({ "series": [0, 1], "cursor": "2" }));
+    // A reply measured past the budget halves as a refused one does.
+    let measured = paged(Some("3"), 64, |page| {
+        let mut read = Vec::new();
+        for at in page.lines(7) {
+            if !page.admit(at, &json!({ "tag": at }))? {
+                break;
+            }
+            read.push(at);
+        }
+        Ok(json!({ "series": read, "pad": "x".repeat(10 * read.len()) }))
+    })
+    .unwrap();
+    assert_eq!(measured["series"], json!([3, 4]));
+    assert_eq!(measured["cursor"], "5");
+    assert_eq!(
+        over_budget("Air force history exceeds the reply budget").to_string(),
+        "Air force history exceeds the reply budget"
+    );
+    let oversized = "x".repeat(MAX_PRODUCT_REPLY_BYTES);
+    assert!(is_over_budget(&check_reply_budget(&oversized).unwrap_err()));
+    assert!(!is_over_budget(&io::Error::other("exceeds the reply budget")));
+    assert!(!is_over_budget(&invalid("invalid summary cursor")));
+    let refused = paged(None, 1 << 10, |page| {
+        assert!(page.admit(0, &json!({ "tag": 0 }))?);
+        Err(over_budget("Air force history exceeds the reply budget"))
+    })
+    .unwrap_err();
+    assert!(!is_over_budget(&refused), "a lone line is refused, not halved again");
+}

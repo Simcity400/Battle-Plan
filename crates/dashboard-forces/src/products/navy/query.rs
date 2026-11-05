@@ -394,161 +394,208 @@ pub fn series<P: PageRead>(
             .map(|text| String::from_utf8_lossy(text).into_owned())
             .ok_or_else(|| invalid("A prepared navy part names no key"))
     };
-    let mut scanned = scanned(directory);
-    scanned.classes = classes(directory)?;
     let empty = Arc::new(BTreeMap::new());
-    let mut display = Vec::new();
-    for tag in &wanted {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let (Some(key), Some(mix)) = (value_key(tag), mix_key(tag)) else {
-            continue;
+    // The page's lines read and presented from nothing: exactly those tags, none expanded again.
+    let mut answer = |mut page: Option<&mut series::LinePage>| -> io::Result<Value> {
+        let mut scanned = scanned(directory);
+        scanned.classes = classes(directory)?;
+        let (mut display, mut shown) = (Vec::new(), Vec::new());
+        let lines = match page.as_deref() {
+            Some(page) => page.lines(wanted.len()),
+            None => 0..wanted.len(),
         };
-        let country = history.countries.get(tag);
-        let mut spans: Vec<HourSpan> = if let Some(members) = &membership {
-            members.get(tag).cloned().unwrap_or_default()
-        } else {
-            country
-                .into_iter()
-                .flat_map(|country| country.identities.iter())
-                .filter(|identity| selected.contains(&(identity.slot, identity.country_id)))
-                .map(|identity| HourSpan {
-                    first_hour: identity.first_hour,
-                    last_hour: identity.last_hour,
-                })
-                .collect()
-        };
-        if let Some(within) = within.get(tag) {
-            spans = clipped(&spans, within, cancelled)?;
-        }
-        let view = (from, to, width);
-        let bounds = (first, through(last));
-        let line = summary(snapshot, key, bounds, view, &spans)?;
-        let mut hours = BTreeSet::new();
-        let mut parts = Vec::new();
-        if dense {
-            if strength && let Some(maximum) = maximum_key(tag) {
-                dates(
-                    &summary(snapshot, maximum, bounds, view, &spans)?,
-                    &mut hours,
-                );
+        for at in lines {
+            let tag = &wanted[at];
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let (Some(key), Some(mix)) = (value_key(tag), mix_key(tag)) else {
+                continue;
+            };
+            let country = history.countries.get(tag);
+            let mut spans: Vec<HourSpan> = if let Some(members) = &membership {
+                members.get(tag).cloned().unwrap_or_default()
+            } else {
+                country
+                    .into_iter()
+                    .flat_map(|country| country.identities.iter())
+                    .filter(|identity| selected.contains(&(identity.slot, identity.country_id)))
+                    .map(|identity| HourSpan {
+                        first_hour: identity.first_hour,
+                        last_hour: identity.last_hour,
+                    })
+                    .collect()
+            };
+            if let Some(within) = within.get(tag) {
+                spans = clipped(&spans, within, cancelled)?;
             }
-            let actor = actor(directory, tag).expect("named navy tag");
-            let mut keyed = Vec::new();
-            for &(part, key) in directory.dimensions(actor, emit::parts(index, grouping)) {
-                keyed.push((part_name(part)?, key));
+            let view = (from, to, width);
+            let bounds = (first, through(last));
+            let line = summary(snapshot, key, bounds, view, &spans)?;
+            let mut hours = BTreeSet::new();
+            let mut parts = Vec::new();
+            if dense {
+                if strength && let Some(maximum) = maximum_key(tag) {
+                    dates(
+                        &summary(snapshot, maximum, bounds, view, &spans)?,
+                        &mut hours,
+                    );
+                }
+                let actor = actor(directory, tag).expect("named navy tag");
+                let mut keyed = Vec::new();
+                for &(part, key) in directory.dimensions(actor, emit::parts(index, grouping)) {
+                    keyed.push((part_name(part)?, key));
+                }
+                keyed.sort();
+                for (name, key) in keyed {
+                    let part = summary(snapshot, key, bounds, view, &spans)?;
+                    dates(&part, &mut hours);
+                    parts.push(json!({ "key": name, "summary": part }));
+                }
+                dates(&line, &mut hours);
             }
-            keyed.sort();
-            for (name, key) in keyed {
-                let part = summary(snapshot, key, bounds, view, &spans)?;
-                dates(&part, &mut hours);
-                parts.push(json!({ "key": name, "summary": part }));
-            }
-            dates(&line, &mut hours);
-        }
-        let runs: Vec<dashboard_series::Run> = if dense || product == "series-state" {
-            if product == "series-state" {
-                hours.extend(
-                    reads
-                        .iter()
-                        .filter(|read| &read.tag == tag && read.hour == through(read.hour))
-                        .map(|read| read.hour),
-                );
-            }
-            let mut runs = BTreeMap::new();
-            for &hour in &hours {
-                if let Some(run) = run_at(snapshot, Some(mix), hour)? {
-                    if product == "series-state" {
-                        let starts = run.break_before && run.span.first == hour;
-                        runs.insert(
-                            hour,
-                            dashboard_series::Run {
-                                span: dashboard_series::Span::new(hour, hour)?,
-                                break_before: starts,
-                                ..run
-                            },
-                        );
-                    } else {
-                        runs.insert(run.span.first, run);
+            let paged = match page.as_deref_mut() {
+                Some(page) => {
+                    let line = json!({ "tag": tag, "summary": line, "parts": parts });
+                    if !page.admit(at, &line)? {
+                        break;
+                    }
+                    Some(line)
+                }
+                None => None,
+            };
+            let runs: Vec<dashboard_series::Run> = if dense || product == "series-state" {
+                if product == "series-state" {
+                    hours.extend(
+                        reads
+                            .iter()
+                            .filter(|read| &read.tag == tag && read.hour == through(read.hour))
+                            .map(|read| read.hour),
+                    );
+                }
+                let mut runs = BTreeMap::new();
+                for &hour in &hours {
+                    if let Some(run) = run_at(snapshot, Some(mix), hour)? {
+                        if product == "series-state" {
+                            let starts = run.break_before && run.span.first == hour;
+                            runs.insert(
+                                hour,
+                                dashboard_series::Run {
+                                    span: dashboard_series::Span::new(hour, hour)?,
+                                    break_before: starts,
+                                    ..run
+                                },
+                            );
+                        } else {
+                            runs.insert(run.span.first, run);
+                        }
                     }
                 }
-            }
-            runs.into_values().collect()
-        } else {
-            let mut runs = engine::runs(snapshot, mix, first, through(last))?;
-            // A run the window clips starts no segment at the window's first hour.
-            if let Some(head) = runs.first_mut()
-                && head.break_before
-                && head.span.first == first
-                && run_at(snapshot, Some(mix), first)?.is_some_and(|run| run.span.first < first)
-            {
-                head.break_before = false;
-            }
-            runs
-        };
-        let mut bounded = Vec::new();
-        for run in runs {
-            let value = raw_run(snapshot, mix, &run, &empty)?;
-            let bounds = if product == "series-state" {
-                (run.span.first, run.span.last)
+                runs.into_values().collect()
             } else {
-                (run.span.first.max(first), run.span.last.min(through(last)))
+                let mut runs = engine::runs(snapshot, mix, first, through(last))?;
+                // A run the window clips starts no segment at the window's first hour.
+                if let Some(head) = runs.first_mut()
+                    && head.break_before
+                    && head.span.first == first
+                    && run_at(snapshot, Some(mix), first)?.is_some_and(|run| run.span.first < first)
+                {
+                    head.break_before = false;
+                }
+                runs
             };
-            if bounds.0 <= bounds.1 {
-                bounded.push((bounds, run.break_before, value));
+            let mut bounded = Vec::new();
+            for run in runs {
+                let value = raw_run(snapshot, mix, &run, &empty)?;
+                let bounds = if product == "series-state" {
+                    (run.span.first, run.span.last)
+                } else {
+                    (run.span.first.max(first), run.span.last.min(through(last)))
+                };
+                if bounds.0 <= bounds.1 {
+                    bounded.push((bounds, run.break_before, value));
+                }
+            }
+            // An alias's other holders and hours outside `within` are not the selection.
+            let mut raw = Vec::new();
+            for_each_piece(
+                &bounded,
+                &spans,
+                |&(bounds, _, _)| bounds,
+                cancelled,
+                |(bounds, starts, value), first_hour, last_hour| {
+                    raw.push(RawNavyRun {
+                        first_hour,
+                        last_hour,
+                        starts_segment: *starts && first_hour == bounds.0,
+                        ..value.clone()
+                    });
+                    Ok(())
+                },
+            )?;
+            let held = if strength {
+                &mut scanned.strength_series[ownership]
+            } else {
+                &mut scanned.series[ownership]
+            };
+            held.insert(tag.clone(), raw);
+            scanned.segments.insert(
+                tag.clone(),
+                country
+                    .into_iter()
+                    .flat_map(|country| country.segments.iter())
+                    .filter(|span| span.first_hour <= last && span.last_hour >= first)
+                    .cloned()
+                    .collect(),
+            );
+            if let Some(line) = paged {
+                display.push(line);
+                shown.push(tag.clone());
             }
         }
-        // An alias's other holders and hours outside `within` are not the selection.
-        let mut raw = Vec::new();
-        for_each_piece(
-            &bounded,
-            &spans,
-            |&(bounds, _, _)| bounds,
-            cancelled,
-            |(bounds, starts, value), first_hour, last_hour| {
-                raw.push(RawNavyRun {
-                    first_hour,
-                    last_hour,
-                    starts_segment: *starts && first_hour == bounds.0,
-                    ..value.clone()
-                });
-                Ok(())
-            },
-        )?;
-        let held = if strength {
-            &mut scanned.strength_series[ownership]
+        let mut request = selection.clone();
+        let members = if page.is_some() {
+            request.tags = shown;
+            membership.as_ref().map(|members| {
+                request
+                    .tags
+                    .iter()
+                    .filter_map(|tag| Some((tag.clone(), members.get(tag)?.clone())))
+                    .collect()
+            })
         } else {
-            &mut scanned.series[ownership]
+            // A state read answers each read tag's aliases too.
+            request.tags = if request.top.is_none() {
+                country_history::selected_aliases(history, &wanted)
+            } else {
+                wanted.clone()
+            };
+            membership.clone()
         };
-        held.insert(tag.clone(), raw);
-        scanned.segments.insert(
-            tag.clone(),
-            country
-                .into_iter()
-                .flat_map(|country| country.segments.iter())
-                .filter(|span| span.first_hour <= last && span.last_hour >= first)
-                .cloned()
-                .collect(),
-        );
-        if product != "series-state" {
-            series::summary_budget(from, to, width, display.len() + 1)?;
-            display.push(json!({ "tag": tag, "summary": line, "parts": parts }));
+        let reply = present(
+            source,
+            &request,
+            context,
+            cancelled,
+            &scanned,
+            Some(history),
+            members,
+        )?;
+        let mut reply = serde_json::to_value(reply)?;
+        if page.is_some() {
+            reply["summaries"] = json!(display);
         }
+        Ok(reply)
+    };
+    if product == "series-state" {
+        let reply = answer(None)?;
+        dashboard_base::products::check_reply_budget(&reply)?;
+        return Ok(reply);
     }
-    let mut params = selection;
-    params.tags = wanted;
-    let reply = present(
-        source,
-        &params,
-        context,
-        cancelled,
-        &scanned,
-        Some(history),
-        membership,
-    )?;
-    let mut reply = serde_json::to_value(reply)?;
-    reply["summaries"] = json!(display);
-    dashboard_base::products::check_reply_budget(&reply)?;
-    Ok(reply)
+    series::summary_budget(from, to, width, 1)?;
+    series::paged(
+        params["cursor"].as_str(),
+        dashboard_base::products::MAX_PRODUCT_REPLY_BYTES,
+        |page| answer(Some(page)),
+    )
 }
 
 /// Each tag's roster ships at `hour`, and whether its census was read then; none where it held

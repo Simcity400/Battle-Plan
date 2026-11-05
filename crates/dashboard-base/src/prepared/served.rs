@@ -16,6 +16,9 @@ pub const KEYS: usize = 8;
 pub const BATCH: usize = 64;
 /// Pages one cursor is followed through at most.
 pub const PAGES: usize = 256;
+/// The pixels a wide chart's summary is asked over: a full-width widget on a 2,560-pixel
+/// display. Spans of fewer hours are asked hour by hour, as the chart asks them.
+pub const WIDE: u32 = 2_560;
 
 /// A product's served-reply check.
 pub struct Plan {

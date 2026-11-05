@@ -1684,7 +1684,8 @@ fn read_scanned(
         return Ok(None);
     };
     let (from, to, width) = series::viewport(Some(from), Some(to), Some(width))?;
-    series::summary_budget(from, to, width, metadata.leaves.len())?;
+    // A leaf sends its summary's sampled hours, not its buckets: the reply is measured whole.
+    series::summary_budget(from, to, width, 1)?;
     metadata.scanned.format = format;
     let mut reader = Reader::new(
         store,

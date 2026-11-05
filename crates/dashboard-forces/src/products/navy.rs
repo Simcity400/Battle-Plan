@@ -637,7 +637,7 @@ fn selected(
 
 fn checked_reply(reply: NavyReply) -> io::Result<NavyReply> {
     if dashboard_core::transport::json_len(&reply, MAX_REPLY_BYTES).is_none() {
-        return Err(io::Error::other(
+        return Err(dashboard_base::products::over_budget(
             "The navy size reply exceeds its transport budget",
         ));
     }
@@ -688,6 +688,7 @@ impl Product for NavySize {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
         let mut scanned = scanned_branch(source, branch, cancelled)?;
         let history = country_history::branch_histories(source, branch, false, &[], cancelled)?;
+        let mut selection = params.clone();
         // An alias counts only while a picked country holds it, as the prepared query counts it.
         if params.top.is_none() {
             let spans = country_history::selected_spans(
@@ -697,10 +698,11 @@ impl Product for NavySize {
                 cancelled,
             )?;
             scanned = Arc::new(scanned.held(&spans, cancelled)?);
+            selection.tags = country_history::selected_aliases(&history, &params.tags);
         }
         present(
             source,
-            params,
+            &selection,
             context,
             cancelled,
             &scanned,
@@ -736,6 +738,7 @@ pub fn content_units(
     }
 }
 
+/// The reply for exactly `params.tags`: the caller chose the aliases a selection answers.
 #[allow(clippy::too_many_arguments)]
 fn present(
     source: &Source,
@@ -765,12 +768,6 @@ fn present(
             scanned, selection, units, localise, warnings, cancelled, cache,
         ),
     };
-    let mut selection = params.clone();
-    if selection.top.is_none()
-        && let Some(history) = history
-    {
-        selection.tags = country_history::selected_aliases(history, &params.tags);
-    }
     let mut warnings = Vec::new();
     let catalogue = context
         .content()
@@ -781,7 +778,7 @@ fn present(
             warnings.extend(catalogue.warnings.iter().cloned());
             let units = content_units(&catalogue, &mut warnings);
             let mut result = build(
-                &selection,
+                params,
                 units.as_deref(),
                 &|key| {
                     catalogue.localisation.get(key)?;
@@ -796,7 +793,7 @@ fn present(
         Err(error) => {
             warnings.push(format!("Ship class names are unavailable: {error}"));
             build(
-                &selection,
+                params,
                 None,
                 &|_| None,
                 warnings,

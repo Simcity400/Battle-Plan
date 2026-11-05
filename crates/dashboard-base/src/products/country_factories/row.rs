@@ -597,9 +597,14 @@ pub(super) fn load(
     } else {
         None
     };
+    let mut selection = params.clone();
+    if let Some(history) = &history {
+        selection.tags =
+            crate::products::country_history::selected_aliases(history, &params.tags);
+    }
     present(
         source,
-        params,
+        &selection,
         context,
         cancelled,
         &scanned,

@@ -1,6 +1,6 @@
-//! World tension's served replies: the world tension and contribution charts over each span,
-//! dense and hour by hour, as contributions and as shares, with and without some contributors'
-//! lines; the reads at each hour; and navigation from each hour.
+//! World tension's served replies: the world tension and contribution charts over each span at a
+//! small and a wide chart's width, as contributions and as shares, with and without some
+//! contributors' lines; the reads at each hour; and navigation from each hour.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Map, Value, json};
@@ -49,10 +49,9 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             within.insert(format!("line {at}"), json!([[named, first, last, false]]));
         }
         let selections = [Map::new(), within];
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for share in [false, true] {
             for span in branch.spans() {
-                for width in [i64::from(WIDTH), hourly(span).max(1)] {
+                for width in [WIDTH, served::WIDE] {
                     for selected in &selections {
                         ask.ask(
                             "series-summary",

@@ -30,10 +30,32 @@ pub struct Envelope<'a, T: Serialize> {
     pub data: T,
 }
 
+/// A refusal of a reply for its size alone, so a paged reply can send fewer lines instead.
+#[derive(Debug)]
+struct OverBudget(String);
+impl std::fmt::Display for OverBudget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl std::error::Error for OverBudget {}
+
+/// Refuses a reply that does not fit the transport reply budget, saying why.
+pub fn over_budget(message: impl Into<String>) -> io::Error {
+    io::Error::other(OverBudget(message.into()))
+}
+
+/// Whether `error` refuses a reply only for not fitting the transport reply budget.
+pub fn is_over_budget(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<OverBudget>())
+}
+
 /// Refuse a complete reply instead of dropping recorded entries to fit it.
 pub fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
     if crate::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
-        return Err(io::Error::other(format!(
+        return Err(over_budget(format!(
             "This product reply exceeds the transport reply budget of {MAX_PRODUCT_REPLY_BYTES} bytes"
         )));
     }

@@ -1587,7 +1587,7 @@ fn leader_events_parse_from_their_rows_as_their_pages_return_them() {
             .unwrap()
             .rows
             .into_iter()
-            .map(|row| row.row)
+            .map(|row| serde_json::from_slice::<serde_json::Value>(&row.row).unwrap())
             .collect::<Vec<_>>();
         let parsed = events(&mut reader, key, &cancelled)
             .unwrap()

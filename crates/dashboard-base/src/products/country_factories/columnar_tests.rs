@@ -693,6 +693,90 @@ fn replies_from_the_publication_are_the_row_replies() {
     assert_eq!(held, [100, 133, 150, 160]);
 }
 
+/// A renamed country's two tags are two lines: a page too small for both answers each alone,
+/// the alias it gave away never read back into it.
+#[test]
+fn a_page_halved_between_aliases_answers_each_alone() {
+    let budget = Budget::new(256 << 20);
+    let hours = scenario();
+    let (projected, frames) = projected(&hours, &[110, 140]);
+    let built = build(projected, &[129, 160], Some(129), &budget);
+    let (first, second): (Vec<_>, Vec<_>) = frames.into_iter().partition(|frame| frame.hour < 130);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, first)]).unwrap();
+    let replay = replay
+        .append(&[continuation_records(&replay, 1, second)])
+        .unwrap();
+    let cancelled = AtomicBool::new(false);
+    let history = scan_histories(&replay, 1, false, &[], &cancelled).unwrap();
+    let (source, _root) = file_source(replay);
+    let context = LoadContext { content: None };
+    let cache = Cache::new(&budget);
+    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
+    let accepted = Coverage {
+        schema: crate::prepared::coverage::SCHEMA,
+        first_hour: 100,
+        last_hour: 160,
+        complete: true,
+    };
+    let mut ask = |extra: serde_json::Value| {
+        let mut params = serde_json::json!({
+            "branchId": "1", "tags": ["CCC"],
+            "family": {"kind": "country-factories", "top": null},
+            "from": 100, "to": 160, "width": 100,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        super::query::series(
+            &source,
+            "series-summary",
+            &params,
+            &context,
+            &mut snapshot,
+            &directory,
+            &history,
+            Some(accepted.clone()),
+            &cancelled,
+        )
+        .unwrap()
+    };
+    let tags = |reply: &serde_json::Value, field: &str| -> Vec<serde_json::Value> {
+        reply[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["tag"].clone())
+            .collect()
+    };
+    let of = |reply: &serde_json::Value, tag: &str| -> serde_json::Value {
+        reply["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["tag"] == tag)
+            .cloned()
+            .unwrap()
+    };
+    let whole = ask(serde_json::json!({}));
+    assert_eq!(tags(&whole, "summaries"), ["CCC", "CCX"]);
+    assert!(whole["cursor"].is_null());
+    // Both lines are admitted, but the reply holding both is a byte too large.
+    let bytes = serde_json::to_vec(&whole).unwrap().len();
+    let first = ask(serde_json::json!({ "pageBudget": bytes - 1 }));
+    assert_eq!(first["cursor"], "1");
+    assert_eq!(tags(&first, "summaries"), ["CCC"]);
+    assert_eq!(tags(&first, "series"), ["CCC"], "the alias given away is not read back");
+    assert_eq!(first["summaries"][0], whole["summaries"][0]);
+    assert_eq!(of(&first, "CCC"), of(&whole, "CCC"));
+    let second = ask(serde_json::json!({ "pageBudget": bytes - 1, "cursor": "1" }));
+    assert!(second["cursor"].is_null());
+    assert_eq!(tags(&second, "summaries"), ["CCX"]);
+    assert_eq!(tags(&second, "series"), ["CCX"], "the page's own line alone");
+    assert_eq!(second["summaries"][0], whole["summaries"][1]);
+    assert_eq!(of(&second, "CCX"), of(&whole, "CCX"));
+}
+
 /// Of 1,500 countries, an hour hands the emit only the holders whose values changed, nothing
 /// when only fractions of a factory move, and nothing when nothing changes; and the ranks of
 /// every channel follow the row scan's through a segment start, a cut and a resume while counts

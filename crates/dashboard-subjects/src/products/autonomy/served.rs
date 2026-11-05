@@ -1,6 +1,7 @@
 //! Subject autonomy's served replies, as the Autonomy widget asks them: the whole branch's
-//! subjects, some subjects' charts over each span, dense and hour by hour, two subjects joined as
-//! one series, every subject's values at each hour, and navigation from each hour.
+//! subjects, some subjects' charts over each span at a small and a wide chart's width, two
+//! subjects joined as one series, every subject's values at each hour, and navigation from each
+//! hour.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Map, Value, json};
@@ -49,9 +50,8 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             .map(|reply| served::texts_at(&reply, &["bands", "*", "tag"]))
             .unwrap_or_default();
         let some = served::some(&tags);
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for span in branch.spans() {
-            for width in [i64::from(WIDTH), hourly(span).max(1)] {
+            for width in [WIDTH, served::WIDE] {
                 ask.ask(
                     "series-summary",
                     asked(
@@ -69,7 +69,7 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             let joined = json!({
                 "lineage": [[early, first, middle, true], [late, middle.saturating_add(1), last, false]],
             });
-            for width in [i64::from(WIDTH), hourly((first, last)).max(1)] {
+            for width in [WIDTH, served::WIDE] {
                 ask.ask(
                     "series-summary",
                     asked(

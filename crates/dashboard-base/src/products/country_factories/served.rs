@@ -1,6 +1,6 @@
-//! Country factories' served replies: the ranked and every country's charts over each span,
-//! dense and hour by hour, under two counts, some countries' values at each hour, and
-//! navigation from each hour.
+//! Country factories' served replies: the ranked and every country's charts over each span at a
+//! small and a wide chart's width, every page of each, under two counts, some countries' values
+//! at each hour, and navigation from each hour.
 
 use crate::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -32,7 +32,7 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let (first, last) = (branch.first_hour, branch.last_hour);
         let countries = ask.countries(branch.id)?;
         let batches = served::batches(&countries);
-        let summary = |family: &Value, tags: &[String], (from, to): (i32, i32), width: i64| {
+        let summary = |family: &Value, tags: &[String], (from, to): (i32, i32), width: u32| {
             json!({
                 "branchId": id, "family": family, "tags": tags, "from": from, "to": to,
                 "width": width,
@@ -40,16 +40,23 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         };
         let counts = [("free", &[][..]), ("built", &["military", "naval"][..])];
         let none: &[String] = &[];
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for span in branch.spans() {
-            for width in [i64::from(WIDTH), hourly(span).max(1)] {
+            for width in [WIDTH, served::WIDE] {
                 for (mode, groups) in counts {
                     let ranked = family(true, mode, groups);
-                    ask.ask("series-summary", summary(&ranked, none, span, width))?;
+                    served::pages(
+                        ask,
+                        "series-summary",
+                        summary(&ranked, none, span, width),
+                        "cursor",
+                    )?;
                     let listed = family(false, mode, groups);
-                    for batch in &batches {
-                        ask.ask("series-summary", summary(&listed, batch.as_slice(), span, width))?;
-                    }
+                    served::pages(
+                        ask,
+                        "series-summary",
+                        summary(&listed, &countries, span, width),
+                        "cursor",
+                    )?;
                 }
             }
         }

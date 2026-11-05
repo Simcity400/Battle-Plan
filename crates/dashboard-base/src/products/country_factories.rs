@@ -763,7 +763,7 @@ fn selected_series(
 ) -> io::Result<Vec<FactorySeries>> {
     let bytes = parts_bytes(&parts, cancelled)? + read_bytes(scanned, &parts);
     if bytes > MAX_REPLY_BYTES {
-        return Err(io::Error::other(format!(
+        return Err(super::over_budget(format!(
             "These countries' factory history takes {} MiB, more than one reply holds ({} MiB); choose fewer countries.",
             bytes.div_ceil(1024 * 1024),
             MAX_REPLY_BYTES / (1024 * 1024)
@@ -1018,6 +1018,7 @@ mod columnar_tests;
 #[cfg(test)]
 mod tests;
 
+/// The reply for exactly `params.tags`: the caller chose the aliases a selection answers.
 #[allow(clippy::too_many_arguments)]
 fn present(
     source: &Source,
@@ -1093,13 +1094,9 @@ fn present(
     {
         warnings.push(format!("{tag}: no recorded factories in this branch"));
     }
-    let mut projection = params.clone();
     let histories = history.filter(|_| params.top.is_none() && !params.tags.is_empty());
-    if let Some(history) = histories {
-        projection.tags = super::country_history::selected_aliases(history, &params.tags);
-    }
     if let Some(history) = &histories {
-        let metadata = projection
+        let metadata = params
             .tags
             .iter()
             .map(|tag| {
@@ -1109,10 +1106,10 @@ fn present(
                     })
             })
             .sum::<usize>();
-        if requested_bytes(scanned, &projection, cancelled)?.saturating_add(metadata)
+        if requested_bytes(scanned, params, cancelled)?.saturating_add(metadata)
             > MAX_REPLY_BYTES
         {
-            return Err(io::Error::other(
+            return Err(super::over_budget(
                 "These countries' factory identities and history exceed one reply",
             ));
         }
@@ -1120,14 +1117,14 @@ fn present(
     let mut series = if let Some(membership) = prepared_membership {
         selected_series(
             scanned,
-            selected_parts(scanned, &projection, Some(membership))?,
+            selected_parts(scanned, params, Some(membership))?,
             cancelled,
         )?
     } else {
-        requested_series(scanned, &projection, cancelled)?
+        requested_series(scanned, params, cancelled)?
     };
     if let Some(history) = histories {
-        for tag in &projection.tags {
+        for tag in &params.tags {
             if !series.iter().any(|item| item.tag == *tag) {
                 series.push(FactorySeries {
                     tag: tag.clone(),
@@ -1152,7 +1149,7 @@ fn present(
         warnings,
     };
     super::check_reply_budget(&reply).map_err(|_| {
-        io::Error::other("These countries' factory history exceeds one exact reply")
+        super::over_budget("These countries' factory history exceeds one exact reply")
     })?;
     Ok(reply)
 }

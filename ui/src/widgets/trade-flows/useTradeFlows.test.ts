@@ -154,3 +154,24 @@ test('playback reads its newest hour after the one in flight lands, and says whi
     assert.deepEqual(state.followed, [{ product: 'market-lendlease', moving: ['hour'] }]);
   } finally { await vite.close(); delete globals.__tradeFollowed; }
 });
+
+test('joined trade pages give their flows the order of the whole selection, not of each page', async () => {
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
+  try {
+    await vite.ssrLoadModule('/ui/src/widgets/trade-flows/useTradeFlows.ts');
+    const { pageJoin } = await vite.ssrLoadModule('/ui/src/dashboard/pageJoins.ts');
+    const flow = (seller: number, buyer: number, resource: number, sellerIdentity: string, buyerIdentity: string) => ({
+      seller, buyer, resource, sellerIdentity, buyerIdentity, sellerTags: [seller], buyerTags: [buyer], firstHours: [0], lastHours: [9],
+      deliveredRaw: ['1'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] });
+    const key = (item: ReturnType<typeof flow>) => `${item.seller}>${item.buyer}:${item.resource} ${item.sellerIdentity}${item.buyerIdentity}`;
+    const page = (flows: ReturnType<typeof flow>[], cursor: string | null) => ({ branchId: '1', decimals: 5, resources: [], countries: ['ENG', 'FRA', 'GER', 'ITA'],
+      countryIdentities: [], flows, warnings: [], cursor, summaries: Object.fromEntries(flows.map(item => [key(item), null])) });
+    // Each page as the product sorts it; identity keys order as Rust strings: "[10,1]" before "[9,1]".
+    const first = [flow(2, 3, 1, '[10,1]', '[3,1]'), flow(2, 3, 1, '[9,1]', '[10,2]'), flow(2, 3, 1, '[9,1]', '[2,2]')];
+    const second = [flow(0, 1, 2, '[0,1]', '[1,1]'), flow(2, 0, 1, '[9,1]', '[0,1]'), flow(2, 3, 0, '[9,1]', '[3,1]')];
+    const joined = pageJoin('trade-flows')([page(first, '3'), page(second, null)]);
+    assert.deepEqual(joined.flows.map(key), [second[0], second[1], second[2], first[0], first[1], first[2]].map(key));
+    assert.equal(Object.keys(joined.summaries).length, 6);
+    assert.equal(joined.cursor, null);
+  } finally { await vite.close(); }
+});

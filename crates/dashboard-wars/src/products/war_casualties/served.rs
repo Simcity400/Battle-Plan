@@ -1,7 +1,7 @@
-//! War casualties' served replies: each measure's ranked and some countries' charts over each
-//! span, dense and hour by hour, and navigation from each hour; the ranked and some countries'
-//! states at each served hour; their observations' pages; and the pair and war breakdown
-//! manifests and windows, for every country and some.
+//! War casualties' served replies: each measure's ranked and some countries' navigation from each
+//! hour; the ranked and some countries' states at each served hour; their observations' pages;
+//! and the pair and war breakdown manifests and windows, for every country and some. The widget
+//! draws no chart, so none is asked.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -14,8 +14,6 @@ pub static PLAN: Plan = Plan {
 
 /// The countries a ranked selection names.
 const TOP: u32 = 10;
-/// Pixels a dense summary draws over.
-const WIDTH: i64 = 64;
 /// Observations an events page holds.
 const PAGE: u32 = 64;
 const MEASURES: [&str; 3] = ["dealt", "taken", "unknown"];
@@ -35,22 +33,9 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let countries = ask.countries(branch.id)?;
         let some = served::some(&countries);
         let none: &[String] = &[];
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for measure in MEASURES {
             let ranked = family(measure, Some(TOP));
             let listed = family(measure, None);
-            let summary = |family: &Value, tags: &[String], (from, to): (i32, i32), width: i64| {
-                json!({
-                    "branchId": id, "family": family, "tags": tags, "from": from, "to": to,
-                    "width": width,
-                })
-            };
-            for span in branch.spans() {
-                for width in [WIDTH, hourly(span).max(1)] {
-                    ask.ask("series-summary", summary(&ranked, none, span, width))?;
-                    ask.ask("series-summary", summary(&listed, &some, span, width))?;
-                }
-            }
             let navigate = |family: &Value, tags: &[String], key: &str, from: Option<i32>| {
                 json!({
                     "branchId": id, "family": family, "tags": tags, "key": key, "from": from,

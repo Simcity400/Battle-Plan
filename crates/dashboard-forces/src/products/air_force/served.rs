@@ -1,6 +1,6 @@
 //! Air force size's served replies: under each measure and ownership, the ranked and every
-//! country's charts over each span, dense and hour by hour, some countries' runs at each hour,
-//! and navigation from each hour.
+//! country's charts over each span at a small and a wide chart's width, every page of each, some
+//! countries' runs at each hour, and navigation from each hour.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -27,27 +27,31 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let countries = ask.countries(branch.id)?;
         let batches = served::batches(&countries);
         let none: &[String] = &[];
-        let hourly = |(from, to): (i32, i32)| i64::from(to) - i64::from(from) + 1;
         for measure in ["planes", "wings"] {
             for ownership in ["roster", "effective"] {
                 let ranked = family(Some(TOP), measure, ownership);
                 let listed = family(None, measure, ownership);
                 let summary =
-                    |family: &Value, tags: &[String], (from, to): (i32, i32), width: i64| {
+                    |family: &Value, tags: &[String], (from, to): (i32, i32), width: u32| {
                         json!({
                             "branchId": id, "family": family, "tags": tags, "from": from, "to": to,
                             "width": width,
                         })
                     };
                 for span in branch.spans() {
-                    for width in [i64::from(WIDTH), hourly(span).max(1)] {
-                        ask.ask("series-summary", summary(&ranked, none, span, width))?;
-                        for batch in &batches {
-                            ask.ask(
-                                "series-summary",
-                                summary(&listed, batch.as_slice(), span, width),
-                            )?;
-                        }
+                    for width in [WIDTH, served::WIDE] {
+                        served::pages(
+                            ask,
+                            "series-summary",
+                            summary(&ranked, none, span, width),
+                            "cursor",
+                        )?;
+                        served::pages(
+                            ask,
+                            "series-summary",
+                            summary(&listed, &countries, span, width),
+                            "cursor",
+                        )?;
                     }
                 }
                 for tag in served::some(&countries) {

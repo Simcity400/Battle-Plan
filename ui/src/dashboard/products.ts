@@ -10,6 +10,7 @@ import { forgetReplySizes } from './replySizes.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
 import { isPreparedProduct, preparedSeriesQuery } from './preparedSeries.ts';
 import { validateCountryGroupReply } from './groupsReply.ts';
+import { pageJoin } from './pageJoins.ts';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 import { newId } from '../shell/ids.ts';
 import { finalPreparedReply } from './preparedPrefix.ts';
@@ -102,12 +103,42 @@ function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
   });
 }
 
-/** One-shot loads return their first reply. Mounted prepared loads publish each
+function pagedKind(request: ProductRequest): string | null {
+  if (request.product === 'resource-balance' || request.product === 'trade-flows') return request.product;
+  if (request.product !== 'series-summary') return null;
+  const kind = (request.params as { family?: { kind?: unknown } } | null)?.family?.kind;
+  return typeof kind === 'string' ? kind : null;
+}
+
+/** One-shot loads return their first replies. Mounted prepared loads publish each
  * accepted extent; only final replies enter a bounded cache, the hours' own for a read that
  * follows the playhead (`hours`). Mounts asking the same thing share one read, each told every
  * extent and, while it waits for preparation to cover it, `pending`; a one-shot load may join
- * another's request and is told nothing. */
+ * another's request and is told nothing. A paged reply is read page after page, each published
+ * joined to the pages before it. */
 export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void, hours = false): Promise<T> {
+  const kind = pagedKind(request);
+  if (kind === null) return loadPage(client, request, signal, validate, source, restart, publish, pending, hours);
+  const join = pageJoin(kind);
+  // Each page is validated alone as it is cached; what the consumer is given is the join.
+  const page = (data: unknown) => { validatedData(data, validate); return data; };
+  const pages: unknown[] = [];
+  const joined = () => validatedData(pages.length === 1 ? pages[0] : join!(pages), validate);
+  let asked = request;
+  for (;;) {
+    const at = pages.length;
+    const tell = publish && ((data: unknown) => { if (signal.aborted) return; pages[at] = data; pages.length = at + 1; publish(joined()); });
+    const data = await loadPage<unknown>(client, asked, signal, page, source, restart, tell, pending, hours);
+    pages[at] = data; pages.length = at + 1;
+    const cursor = data !== null && typeof data === 'object' ? (data as { cursor?: unknown }).cursor : undefined;
+    if (typeof cursor !== 'string') return joined();
+    if (!join) throw new Error('This reply arrives in pages that this view cannot join.');
+    if (cursor === (asked.params as { cursor?: unknown } | null)?.cursor) throw new Error('The paged reply named the page it answered as its next.');
+    asked = { ...request, params: { ...(request.params as object), cursor } };
+  }
+}
+
+async function loadPage<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void, hours = false): Promise<T> {
   const prepared = usesPrepared(client, request, source);
   const replies = cache(client, hours), key = productKey(request, contentRevision(client).snapshot(), prepared);
   // A final reply either cache holds answers at once, whichever kind of read settled it.

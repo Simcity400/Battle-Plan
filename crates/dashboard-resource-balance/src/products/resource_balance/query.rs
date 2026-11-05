@@ -51,6 +51,10 @@ pub struct Params {
     within: Option<Vec<HourSpan>>,
     #[serde(default)]
     pub require_complete: bool,
+    cursor: Option<String>,
+    /// A page budget below the transport's, so tests can page small replies.
+    #[cfg(test)]
+    page_budget: Option<usize>,
 }
 
 impl Params {
@@ -434,69 +438,16 @@ pub fn reply<P: PageRead>(
         .width
         .is_some_and(|width| i64::from(to) - i64::from(from) + 1 > i64::from(width));
     if let Some(width) = input.width {
-        series::summary_budget(
-            view_from,
-            view_to,
-            width,
-            reply.series.iter().filter(|row| selected(row.id)).count() * 11,
-        )?;
+        series::summary_budget(view_from, view_to, width, 1)?;
     }
-    let mut summaries = Vec::new();
-    for row in &mut reply.series {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let key = keys.pool(row.id);
-        let mut moments: BTreeSet<i32> = input.hours.iter().copied().collect();
-        let mut held = if dense && selected(row.id) {
-            let width = input.width.unwrap_or(1);
-            let mut line = Vec::with_capacity(11);
-            for index in 0..11 {
-                let value = keys.value(row.id, index);
-                let summary = summary(
-                    snapshot,
-                    value,
-                    (from, to),
-                    (view_from, view_to, width),
-                    input.within.as_deref(),
-                )?;
-                for bucket in summary.buckets.iter().flatten() {
-                    moments.extend([
-                        bucket.first_hour,
-                        bucket.last_hour,
-                        bucket.min_hour,
-                        bucket.max_hour,
-                    ]);
-                }
-                line.push(summary);
-            }
-            summaries.push(json!({
-                "id": row.id, "supply": line[0], "demand": line[1], "parts": &line[2..10],
-                "total": line[10],
-            }));
-            Vec::new()
-        } else if dense {
-            Vec::new()
-        } else {
-            runs(snapshot, key, from, to)?
-        };
-        for &hour in &moments {
-            if let Some(run) = run_at(snapshot, key, hour)? {
-                held.push(run);
-            }
-        }
-        let mut dates = BTreeSet::new();
-        for run in held {
-            let run = run_at(snapshot, key, run.span.first)?
-                .ok_or_else(|| invalid("Resource pool coverage is missing"))?;
-            if !dates.insert((run.span.first, run.span.last)) {
-                continue;
-            }
-            let origin: i32 = narrow(run.value)?;
-            let cells = latest(snapshot, key.expect("a pool run's key"), origin, kind::POOL)?
-                .ok_or_else(|| invalid("Resource pool event is missing"))?;
-            row.runs.push(pool_run(&cells, run.span.first, run.span.last)?);
-        }
-        row.runs.sort_by_key(|run| run.first_hour);
-    }
+    // Each selected resource's eleven summaries are a line; every page holds every row's facts.
+    #[cfg(not(test))]
+    let budget = dashboard_base::products::MAX_PRODUCT_REPLY_BYTES;
+    #[cfg(test)]
+    let budget = input
+        .page_budget
+        .unwrap_or(dashboard_base::products::MAX_PRODUCT_REPLY_BYTES);
+    let asked: BTreeSet<i32> = input.hours.iter().copied().collect();
     let exact_hours: BTreeSet<i32> = input.hours.iter().copied().chain([from, to]).collect();
     let mut hours = exact_hours.clone();
     if !dense {
@@ -553,9 +504,90 @@ pub fn reply<P: PageRead>(
     reply
         .trades
         .sort_by_key(|run| (run.first_hour, run.deal.clone()));
-    let mut data = serde_json::to_value(reply)?;
-    data["summaries"] = json!(summaries);
-    data["campaignSizes"] = serde_json::to_value(maxima)?;
-    data["exactHours"] = json!(exact_hours);
-    Ok(Some(data))
+    // Every row's runs are read again for each answer: a row's line may leave the page.
+    series::paged(input.cursor.as_deref(), budget, |page| {
+        let mut lines = 0;
+        let mut summaries = Vec::new();
+        for row in reply.series.iter_mut() {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let key = keys.pool(row.id);
+            let mut moments = asked.clone();
+            let ordinal = selected(row.id).then(|| {
+                lines += 1;
+                lines - 1
+            });
+            let mut held = if let Some(at) = ordinal.filter(|&at| dense && page.wants(at)) {
+                let width = input.width.unwrap_or(1);
+                let mut line = Vec::with_capacity(11);
+                let mut drawn = BTreeSet::new();
+                for index in 0..11 {
+                    let value = keys.value(row.id, index);
+                    let summary = summary(
+                        snapshot,
+                        value,
+                        (from, to),
+                        (view_from, view_to, width),
+                        input.within.as_deref(),
+                    )?;
+                    for bucket in summary.buckets.iter().flatten() {
+                        drawn.extend([
+                            bucket.first_hour,
+                            bucket.last_hour,
+                            bucket.min_hour,
+                            bucket.max_hour,
+                        ]);
+                    }
+                    line.push(summary);
+                }
+                let line = json!({
+                    "id": row.id, "supply": line[0], "demand": line[1], "parts": &line[2..10],
+                    "total": line[10],
+                });
+                if page.admit(at, &line)? {
+                    moments.extend(drawn);
+                    summaries.push(line);
+                }
+                Vec::new()
+            } else if dense {
+                Vec::new()
+            } else {
+                runs(snapshot, key, from, to)?
+            };
+            for &hour in &moments {
+                if let Some(run) = run_at(snapshot, key, hour)? {
+                    held.push(run);
+                }
+            }
+            row.runs = pool_runs(snapshot, key, held)?;
+        }
+        let mut data = serde_json::to_value(&reply)?;
+        data["summaries"] = json!(summaries);
+        data["campaignSizes"] = serde_json::to_value(&maxima)?;
+        data["exactHours"] = json!(exact_hours);
+        Ok(data)
+    })
+    .map(Some)
+}
+
+/// The pool runs of `key` that `held` reaches, each once and in hour order, as read at its origin.
+fn pool_runs<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    key: Option<u64>,
+    held: Vec<dashboard_series::Run>,
+) -> io::Result<Vec<PoolRun>> {
+    let mut dates = BTreeSet::new();
+    let mut runs = Vec::with_capacity(held.len());
+    for run in held {
+        let run = run_at(snapshot, key, run.span.first)?
+            .ok_or_else(|| invalid("Resource pool coverage is missing"))?;
+        if !dates.insert((run.span.first, run.span.last)) {
+            continue;
+        }
+        let origin: i32 = narrow(run.value)?;
+        let cells = latest(snapshot, key.expect("a pool run's key"), origin, kind::POOL)?
+            .ok_or_else(|| invalid("Resource pool event is missing"))?;
+        runs.push(pool_run(&cells, run.span.first, run.span.last)?);
+    }
+    runs.sort_by_key(|run| run.first_hour);
+    Ok(runs)
 }

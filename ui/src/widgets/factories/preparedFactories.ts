@@ -3,6 +3,10 @@ import type { ChartSummary } from '../../charts/chartSummary';
 import { clipToSpans, overlayRuns, runIndexAt } from '../../charts/series';
 import { overlayCountryIdentities } from '../../dashboard/countryIdentity';
 import { summaryShareRuns } from '../../charts/share';
+import { countryPageJoin, registerPageJoin } from '../../dashboard/pageJoins';
+
+type FactoriesPage = CountryFactoriesReply & { summaries?: { tag: string; summary: ChartSummary }[] };
+registerPageJoin(['country-factories'], countryPageJoin<FactoriesPage>(mergeFactories));
 
 export function mergeFactories(replies: readonly (CountryFactoriesReply | undefined)[]): CountryFactoriesReply | undefined {
   const pages = replies.filter((page): page is CountryFactoriesReply => !!page);

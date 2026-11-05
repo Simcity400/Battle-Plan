@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { useFollowedProduct, useProduct } from '../../dashboard/products.ts';
+import { pagePreparation, registerPageJoin } from '../../dashboard/pageJoins.ts';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { TerritoryMeasure, TerritoryParams, TerritoryReply, TerritoryRule, TerritorySeries, HourSpan } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
@@ -10,6 +11,14 @@ import { TERRITORY_VALUE_COUNT } from '../../dashboard/territoryMeasure.ts';
 import { validateTerritoryReply, territoryColumn } from './territoryData.ts';
 import { validateMeasureSummaries } from '../country-measure/preparedMeasureData.ts';
 import type { MeasureSummaries } from '../country-measure/preparedMeasureData';
+
+registerPageJoin(['territory'], pages => {
+  const replies = pages as MeasureSummaries[];
+  const seen = new Set<string>();
+  return { ...replies[0], ...pagePreparation(replies[replies.length - 1]), cursor: null,
+    series: replies.flatMap(reply => reply.series).filter(line => !seen.has(line.tag) && !!seen.add(line.tag)),
+    warnings: [...new Set(replies.flatMap(reply => reply.warnings))] };
+});
 
 export function useTerritoryMetadata(client: DashboardClient, track: BoundTrack | undefined, active: boolean) {
   const request = track ? { sourceId:track.source.id,revision:track.source.revision,product:'series-state',

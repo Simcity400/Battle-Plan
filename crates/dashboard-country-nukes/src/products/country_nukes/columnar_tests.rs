@@ -848,6 +848,82 @@ fn replies_from_the_publication_are_the_row_replies() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A page halved to one country answers it from its own reads alone: the dates the countries it
+/// gave away were read on never reach its reply, so it is not refused for them.
+#[test]
+fn a_halved_page_keeps_no_reads_of_the_countries_it_gives_away() {
+    let budget = Budget::new(256 << 20);
+    let hours = scenario();
+    let (projected, frames) = projected(&hours, &[110, 140]);
+    let built = build(projected, &[129, 160], Some(129), &budget);
+    let (first, second): (Vec<_>, Vec<_>) = frames.into_iter().partition(|frame| frame.hour < 130);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, first)]).unwrap();
+    let replay = replay
+        .append(&[continuation_records(&replay, 1, second)])
+        .unwrap();
+    let cancelled = AtomicBool::new(false);
+    let history = scan_histories(&replay, 1, false, &[], &cancelled).unwrap();
+    let (source, root) = file_source(replay);
+    let context = LoadContext { content: None };
+    let cache = Cache::new(&budget);
+    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
+    let accepted = Coverage {
+        schema: dashboard_base::prepared::coverage::SCHEMA,
+        first_hour: 100,
+        last_hour: 160,
+        complete: true,
+    };
+    // Dense: each country's compositions are read on its own dates.
+    let mut ask = |tags: serde_json::Value, extra: serde_json::Value| {
+        let mut params = serde_json::json!({
+            "branchId": "1", "tags": tags,
+            "family": {"kind": "country-nukes", "top": null, "originHour": null},
+            "from": 100, "to": 160, "width": 1,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        super::query::series(
+            &source,
+            "series-summary",
+            &params,
+            &context,
+            &mut snapshot,
+            &directory,
+            &history,
+            Some(accepted.clone()),
+            &cancelled,
+        )
+        .unwrap()
+    };
+    let whole = ask(serde_json::json!(["BBB", "CCC"]), serde_json::json!({}));
+    let lines = whole["summaries"].as_array().unwrap();
+    let tags: Vec<_> = lines.iter().map(|line| line["tag"].clone()).collect();
+    assert_eq!(tags, ["BBB", "CCC", "CCX"]);
+    let alone = ask(serde_json::json!(["BBB"]), serde_json::json!({}));
+    assert_ne!(
+        whole["readHours"], alone["readHours"],
+        "C's compositions were read on dates B's were not"
+    );
+    let mut expected = alone.clone();
+    expected["cursor"] = serde_json::json!("1");
+    let bytes = serde_json::to_vec(&expected).unwrap().len();
+    let held: usize = lines
+        .iter()
+        .map(|line| serde_json::to_vec(line).unwrap().len() + 1)
+        .sum();
+    assert!(held <= bytes, "every line is admitted, so the page is halved");
+    // B's reply alone fits exactly; one holding C's dates would be refused.
+    let halved = ask(
+        serde_json::json!(["BBB", "CCC"]),
+        serde_json::json!({ "pageBudget": bytes }),
+    );
+    assert_eq!(halved, expected);
+    drop(source);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// Of 1,500 countries, an hour where one country's stockpile changes hands the emit that
 /// country's slot alone; an hour where every country's rows change but no count shown does, and
 /// an hour where nothing changes, hand nothing but their read.

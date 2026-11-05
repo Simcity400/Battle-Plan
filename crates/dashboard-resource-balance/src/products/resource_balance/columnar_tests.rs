@@ -426,6 +426,55 @@ fn dense_views_summarise_and_navigation_steps_between_changes() {
     assert_eq!(hour["hour"], 102.0, "steel's pools change at 102");
 }
 
+/// A page halved for its rows' facts keeps, for the lines it gives the next page, only the
+/// hours asked for: the reply is the one that never drew those lines.
+#[test]
+fn a_halved_page_keeps_no_samples_of_the_lines_it_gives_away() {
+    let budget = Budget::new(256 << 20);
+    let frames = scenario();
+    let (source, _root) = file_source(recording(&frames));
+    let built = build(projected(&frames, &[]), &[135], None, &budget);
+    let cache = Cache::new(&budget);
+    let mut snapshot = Snapshot::open(built.pages.clone(), &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
+    let context = LoadContext { content: None };
+    let coverage = Coverage {
+        schema: dashboard_base::prepared::coverage::SCHEMA,
+        first_hour: 100,
+        last_hour: 135,
+        complete: true,
+    };
+    let cancelled = AtomicBool::new(false);
+    let view = serde_json::json!({ "from": 100.25, "to": 135.5, "width": 4, "hours": [106] });
+    let mut ask = |extra: serde_json::Value| {
+        let mut params = view.clone();
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        let (input, params) = request("GER", params);
+        query::reply(
+            &source, &context, &mut snapshot, &directory, input, &params, &coverage, &cancelled,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let whole = ask(serde_json::json!({}));
+    assert_eq!(whole["summaries"].as_array().unwrap().len(), 3);
+    assert!(whole["cursor"].is_null());
+    let first = whole["summaries"][0]["id"].clone();
+    let alone = ask(serde_json::json!({ "resources": [first] }));
+    assert_ne!(
+        whole["series"], alone["series"],
+        "the other lines' drawn hours add pool runs"
+    );
+    // Every line is admitted, but the whole reply is a byte too large: the page keeps one line.
+    let bytes = serde_json::to_vec(&whole).unwrap().len();
+    let halved = ask(serde_json::json!({ "pageBudget": bytes - 1 }));
+    assert_eq!(halved["cursor"], "1");
+    assert_eq!(halved["summaries"], serde_json::json!([whole["summaries"][0]]));
+    assert_eq!(halved["series"], alone["series"]);
+}
+
 /// Of 1,500 countries, an hour hands the emit only the holder whose pool changed, and nothing
 /// when nothing the balance reads changes.
 #[test]

@@ -1,6 +1,6 @@
 //! Resource balance's served replies: some countries' balances at each branch hour as the
-//! widget's point view asks them, their charts over each span, dense and hour by hour, with and
-//! without a membership, and navigation from each hour.
+//! widget's point view asks them, their charts over each span at a small and a wide chart's
+//! width, every page of each, with and without a membership, and navigation from each hour.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::json;
@@ -12,7 +12,7 @@ pub static PLAN: Plan = Plan {
 };
 
 /// Pixels a dense summary draws over.
-const WIDTH: i64 = 64;
+const WIDTH: u32 = 64;
 
 fn queries(ask: &mut dyn Ask) -> io::Result<()> {
     for branch in ask.branches().to_vec() {
@@ -28,24 +28,19 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
                 )?;
             }
             for (from, to) in branch.spans() {
-                let hourly = (i64::from(to) - i64::from(from) + 1).max(1);
-                for width in [WIDTH, hourly] {
-                    ask.ask(
-                        "resource-balance",
-                        json!({
-                            "branchId": id, "tag": tag, "from": from, "to": to, "width": width,
-                            "hours": [to],
-                        }),
-                    )?;
+                for width in [WIDTH, served::WIDE] {
+                    let params = json!({
+                        "branchId": id, "tag": tag, "from": from, "to": to, "width": width,
+                        "hours": [to],
+                    });
+                    served::pages(ask, "resource-balance", params, "cursor")?;
                 }
             }
-            ask.ask(
-                "resource-balance",
-                json!({
-                    "branchId": id, "tag": tag, "from": first, "to": last, "width": WIDTH,
-                    "hours": [last], "within": within,
-                }),
-            )?;
+            let params = json!({
+                "branchId": id, "tag": tag, "from": first, "to": last, "width": WIDTH,
+                "hours": [last], "within": within,
+            });
+            served::pages(ask, "resource-balance", params, "cursor")?;
             for hour in branch.hours() {
                 for key in ["ArrowLeft", "ArrowRight"] {
                     ask.ask(

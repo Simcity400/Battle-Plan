@@ -330,6 +330,7 @@ impl Product for AirForceSize {
         let branch = params.branch_id.parse().expect("validated branch");
         let mut scanned = scanned_branch(source, branch, cancelled)?;
         let history = country_history::branch_histories(source, branch, false, &[], cancelled)?;
+        let mut selection = params.clone();
         // An alias counts only while a picked country holds it, as the prepared query counts it.
         if params.top.is_none() {
             let spans = country_history::selected_spans(
@@ -339,10 +340,11 @@ impl Product for AirForceSize {
                 cancelled,
             )?;
             scanned = Arc::new(scanned.held(&spans, cancelled)?);
+            selection.tags = country_history::selected_aliases(&history, &params.tags);
         }
         present(
             source,
-            params,
+            &selection,
             context,
             cancelled,
             &scanned,
@@ -402,6 +404,7 @@ fn part_content(
     }
     Arc::clone(&state.binding.as_ref().expect("air part binding").1)
 }
+/// The reply for exactly `params.tags`: the caller chose the aliases a selection answers.
 #[allow(clippy::too_many_arguments)]
 fn present(
     source: &Source,
@@ -412,12 +415,6 @@ fn present(
     history: Option<&country_history::RecordedHistories>,
     membership: Option<BTreeMap<String, Vec<HourSpan>>>,
 ) -> io::Result<AirForceReply> {
-    let mut selection = params.clone();
-    if selection.top.is_none()
-        && let Some(history) = history
-    {
-        selection.tags = country_history::selected_aliases(history, &params.tags);
-    }
     let mut warnings = Vec::new();
     let catalogue = match context
         .content()
@@ -456,7 +453,7 @@ fn present(
     let mut reply = if let Some(membership) = membership {
         reply::selected(
             scanned,
-            &selection,
+            params,
             units.as_deref(),
             localise,
             warnings,
@@ -467,7 +464,7 @@ fn present(
     } else {
         reply::reply_cached(
             scanned,
-            &selection,
+            params,
             units.as_deref(),
             localise,
             warnings,
@@ -484,7 +481,9 @@ fn present(
         reply.warnings.extend(catalogue.refusal_lines());
     }
     dashboard_base::products::check_reply_budget(&reply).map_err(|_| {
-        io::Error::other("Air force history exceeds the reply budget; choose fewer countries")
+        dashboard_base::products::over_budget(
+            "Air force history exceeds the reply budget; choose fewer countries",
+        )
     })?;
     Ok(reply)
 }

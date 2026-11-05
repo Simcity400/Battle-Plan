@@ -1,6 +1,6 @@
-//! Diplomacy's served replies: every country's pacts and proposals, together
-//! and some alone, the opinions between every country at each hour, and some
-//! pairs' histories.
+//! Diplomacy's served replies, as the widgets ask them: some countries' pacts,
+//! each alone, the opinions between every country at each hour, and some pairs'
+//! histories.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::json;
@@ -17,23 +17,11 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let countries = ask.countries(branch.id)?;
         let batches = served::batches(&countries);
         let some = served::some(&countries);
-        for view in ["pacts", "proposals"] {
+        for tag in &some {
             ask.ask(
                 "diplomacy-state",
-                json!({ "view": view, "branchId": id, "tags": null }),
+                json!({ "view": "pacts", "branchId": id, "tags": [tag] }),
             )?;
-            for batch in &batches {
-                ask.ask(
-                    "diplomacy-state",
-                    json!({ "view": view, "branchId": id, "tags": batch }),
-                )?;
-            }
-            for tag in &some {
-                ask.ask(
-                    "diplomacy-state",
-                    json!({ "view": view, "branchId": id, "tags": [tag] }),
-                )?;
-            }
         }
         for hour in branch.hours() {
             for batch in batches.iter().filter(|batch| batch.len() > 1) {

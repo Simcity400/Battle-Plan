@@ -1,6 +1,7 @@
-//! Trade flows' served replies: every flow's daily amounts, totals and averages charted over
-//! each span, in one bin, dense and hour by hour; some countries' flows and the flows between
-//! two of them; every flow at each hour; and keyboard navigation from each hour.
+//! Trade flows' served replies, every page of each: every flow's daily amounts, totals and
+//! averages charted over each span, in one bin and at a small and a wide chart's width; some
+//! countries' flows and the flows between two of them; every flow at each hour; and keyboard
+//! navigation from each hour.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ pub static PLAN: Plan = Plan {
 };
 
 /// Pixels a dense summary draws over.
-const WIDTH: i64 = 64;
+const WIDTH: u32 = 64;
 const MEASURES: [&str; 3] = ["current", "total", "average"];
 
 fn queries(ask: &mut dyn Ask) -> io::Result<()> {
@@ -21,28 +22,29 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
         let (first, last) = (branch.first_hour, branch.last_hour);
         let countries = ask.countries(branch.id)?;
         let some = served::some(&countries);
-        let page = |tags: Value, (from, to): (i32, i32), width: i64, measure: &str, between: bool| {
-            json!({
-                "branchId": id, "tags": tags, "from": from, "to": to, "width": width,
-                "basis": from, "measure": measure, "between": between, "hours": [to],
-            })
-        };
+        let chart =
+            |tags: Value, (from, to): (i32, i32), width: u32, measure: &str, between: bool| {
+                json!({
+                    "branchId": id, "tags": tags, "from": from, "to": to, "width": width,
+                    "basis": from, "measure": measure, "between": between, "hours": [to],
+                })
+            };
+        let mut pages = |params: Value| served::pages(ask, "trade-flows", params, "cursor");
         for span in branch.spans() {
-            let hourly = (i64::from(span.1) - i64::from(span.0) + 1).max(1);
             for measure in MEASURES {
-                for width in [1, WIDTH, hourly] {
-                    ask.ask("trade-flows", page(Value::Null, span, width, measure, false))?;
+                for width in [1, WIDTH, served::WIDE] {
+                    pages(chart(Value::Null, span, width, measure, false))?;
                 }
             }
             for tag in &some {
-                for width in [WIDTH, hourly] {
-                    ask.ask("trade-flows", page(json!([tag]), span, width, "current", false))?;
+                for width in [WIDTH, served::WIDE] {
+                    pages(chart(json!([tag]), span, width, "current", false))?;
                 }
             }
             if let [seller, buyer, ..] = some.as_slice() {
                 let pair = json!([seller, buyer]);
-                ask.ask("trade-flows", page(pair.clone(), span, WIDTH, "total", true))?;
-                ask.ask("trade-flows", page(pair, span, hourly, "current", true))?;
+                pages(chart(pair.clone(), span, WIDTH, "total", true))?;
+                pages(chart(pair, span, served::WIDE, "current", true))?;
             }
         }
         let navigate = |key: &str, from: Option<i32>| {
@@ -52,13 +54,11 @@ fn queries(ask: &mut dyn Ask) -> io::Result<()> {
             })
         };
         for hour in branch.hours() {
-            ask.ask(
-                "trade-flows",
-                json!({
-                    "branchId": id, "tags": null, "from": hour, "to": hour, "width": 1,
-                    "basis": first, "measure": "current", "between": false, "hours": [hour, last],
-                }),
-            )?;
+            let point = json!({
+                "branchId": id, "tags": null, "from": hour, "to": hour, "width": 1,
+                "basis": first, "measure": "current", "between": false, "hours": [hour, last],
+            });
+            served::pages(ask, "trade-flows", point, "cursor")?;
             for key in ["ArrowLeft", "ArrowRight"] {
                 ask.ask("trade-flows", navigate(key, Some(hour)))?;
             }
