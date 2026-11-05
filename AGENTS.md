@@ -19,6 +19,7 @@
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
 - Check once, when the work is done, not as you go. Work that passed needs no second check before merging.
 - Only run builds when you actually need it.
+- Never run checks if you're going to have to build anyway
 
 ## Code
 
@@ -39,7 +40,7 @@
 ## Running the game
 
 - One agent runs the game at a time. Create the folder `%TEMP%\claude\hoi4_game.lock` before launching and delete it when done. A lock older than 90 minutes is stale.
-- Load straight into a save with `tools\smoke.ps1 -Action Launch -ContinueLastSave`, never through the main menu.
+- Load straight into a save with `tools\smoke.ps1 -Action Launch -ContinueLastSave`, never through the main menu unless you need a new save.
 
 ## Pull requests
 
