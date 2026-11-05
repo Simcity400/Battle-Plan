@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -53,6 +53,23 @@ struct RecordedMount(Option<(Weak<ResolvedContent>, Arc<Presented>)>);
 struct ContentCache {
     bound: Option<(ResolveOptions, Arc<ResolvedContent>)>,
     held: Vec<(ResolveOptions, Weak<ResolvedContent>)>,
+    /// Content a preparation resolves ahead of need ([`Source::resolving_ahead`]), unbound until
+    /// [`Source::content`] asks for it, and released when that preparation ends.
+    ahead: Option<ContentAhead>,
+}
+
+struct ContentAhead {
+    options: ResolveOptions,
+    /// The preparation that started it, and releases it.
+    owner: u64,
+    state: AheadState,
+}
+
+enum AheadState {
+    /// `None` once stopped because its preparation ended, not because it was cancelled.
+    Resolving(std::sync::mpsc::Receiver<Option<io::Result<ResolvedContent>>>),
+    /// Waited for by [`Source::own_content`], which binds nothing.
+    Resolved(Arc<ResolvedContent>),
 }
 
 impl ContentCache {
@@ -68,6 +85,36 @@ impl ContentCache {
         }
     }
 
+    /// The content resolved ahead for these folders, waited for while it resolves, its error
+    /// included (`Interrupted` when its preparation was cancelled); taken out of the cache when
+    /// `claim`ed, else kept for whoever asks next. `None` when none is, or its resolution stopped
+    /// as its preparation ended or panicked: it is resolved where asked for.
+    fn ahead(
+        &mut self,
+        options: &ResolveOptions,
+        claim: bool,
+    ) -> Option<io::Result<Arc<ResolvedContent>>> {
+        let ahead = self
+            .ahead
+            .take_if(|ahead| same_folders(&ahead.options, options))?;
+        let content = match ahead.state {
+            AheadState::Resolved(content) => content,
+            AheadState::Resolving(receiver) => match receiver.recv() {
+                Ok(Some(Ok(content))) => Arc::new(content),
+                Ok(Some(Err(error))) => return Some(Err(error)),
+                Ok(None) | Err(_) => return None,
+            },
+        };
+        if !claim {
+            self.ahead = Some(ContentAhead {
+                options: ahead.options,
+                owner: ahead.owner,
+                state: AheadState::Resolved(Arc::clone(&content)),
+            });
+        }
+        Some(Ok(content))
+    }
+
     /// Binds `content`, holding what was bound while work still holds it.
     fn bind(&mut self, options: &ResolveOptions, content: &Arc<ResolvedContent>) {
         let _ = content.layers.report_uncovered_reads();
@@ -78,6 +125,32 @@ impl ContentCache {
             && !Arc::ptr_eq(&previous, content)
         {
             self.held.push((old, Arc::downgrade(&previous)));
+        }
+    }
+}
+
+/// Ends a preparation's resolution ahead ([`Source::resolving_ahead`]), even when it unwinds.
+struct ReleaseAhead<'scope> {
+    source: &'scope Source,
+    resolver: Option<(u64, std::thread::ScopedJoinHandle<'scope, ()>)>,
+    finished: &'scope AtomicBool,
+}
+
+impl Drop for ReleaseAhead<'_> {
+    fn drop(&mut self) {
+        self.finished.store(true, Ordering::Release);
+        if let Some((owner, resolver)) = self.resolver.take() {
+            // Joined here, so a resolver that panicked leaves its content to be resolved where
+            // asked for rather than panicking the preparation.
+            let _ = resolver.join();
+            let mut cache = self
+                .source
+                .content
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if cache.ahead.as_ref().is_some_and(|ahead| ahead.owner == owner) {
+                cache.ahead = None;
+            }
         }
     }
 }
@@ -252,22 +325,26 @@ impl Source {
         }
     }
 
-    /// The content of the folders work admitted under `options` reads: the bound content, or
-    /// content of these folders work still holds ([`ContentCache`]). Resolved again when there
-    /// is neither, but never bound, so a reply's diagnostics never rebind what other work reads.
+    /// The content of the folders work admitted under `options` reads: the bound content,
+    /// content of these folders work still holds ([`ContentCache`]), or content resolved ahead
+    /// for them. Resolved again when there is none, but never bound, so a reply's diagnostics
+    /// never rebind what other work reads.
     fn own_content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
-        let found = self
+        let mut cache = self
             .content
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .find(options);
-        match found {
-            Some(content) => Ok(content),
-            None => Ok(Arc::new(installed_content_core::resolve(
-                &self.replay.identity,
-                options,
-            )?)),
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(content) = cache.find(options) {
+            return Ok(content);
         }
+        if let Some(resolved) = cache.ahead(options, false) {
+            return resolved;
+        }
+        drop(cache);
+        Ok(Arc::new(installed_content_core::resolve(
+            &self.replay.identity,
+            options,
+        )?))
     }
 
     /// Name the layers that changed since the recording in the content a reply was admitted
@@ -473,7 +550,10 @@ impl Source {
             .map_err(|error| io::Error::other(error.to_string()))?;
         let content = match cache.find(options) {
             Some(content) => content,
-            None => Arc::new(installed_content_core::resolve(&self.replay.identity, options)?),
+            None => match cache.ahead(options, true) {
+                Some(resolved) => resolved?,
+                None => Arc::new(installed_content_core::resolve(&self.replay.identity, options)?),
+            },
         };
         if !cache
             .bound
@@ -483,6 +563,76 @@ impl Source {
             cache.bind(options, &content);
         }
         Ok(content)
+    }
+
+    /// Runs `work`, a preparation, while these folders' content resolves on a thread beside it at
+    /// the caller's priority, unless it is resolved or being resolved, or `cancelled` is set: the
+    /// [`Self::content`] asked for them meanwhile waits for it and returns what it returned, its
+    /// error included, rather than resolving again. Nothing is bound before then. The resolution
+    /// stops when `cancelled` is set or `work` ends, which waits for it, and a result nothing
+    /// claimed is released then.
+    pub fn resolving_ahead<T>(
+        &self,
+        options: Option<&ResolveOptions>,
+        cancelled: &AtomicBool,
+        work: impl FnOnce() -> T,
+    ) -> T {
+        static OWNERS: AtomicU64 = AtomicU64::new(0);
+        let finished = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let resolver = options.and_then(|options| {
+                let mut cache = self
+                    .content
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if cancelled.load(Ordering::Acquire)
+                    || cache.find(options).is_some()
+                    || cache
+                        .ahead
+                        .as_ref()
+                        .is_some_and(|ahead| same_folders(&ahead.options, options))
+                {
+                    return None;
+                }
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                let identity = &self.replay.identity;
+                let finished = &finished;
+                let caller = job_priority::Caller::current();
+                let cpu = job_priority::accounting::Context::capture();
+                // Not started, it is resolved when asked for.
+                let handle = std::thread::Builder::new()
+                    .name("content resolve".into())
+                    .spawn_scoped(scope, move || {
+                        caller.enter();
+                        let _cpu = cpu.enter("content resolve");
+                        let resolved = installed_content_core::resolve_cancellable(
+                            identity,
+                            options,
+                            &[cancelled, finished],
+                        );
+                        // Stopped as the preparation ended: whoever asks still resolves. A
+                        // cancelled preparation's waiters are told so instead of hashing again.
+                        let stopped = matches!(&resolved, Err(error)
+                            if error.kind() == io::ErrorKind::Interrupted
+                                && !cancelled.load(Ordering::Acquire));
+                        let _ = sender.send((!stopped).then_some(resolved));
+                    })
+                    .ok()?;
+                let owner = OWNERS.fetch_add(1, Ordering::Relaxed);
+                cache.ahead = Some(ContentAhead {
+                    options: options.clone(),
+                    owner,
+                    state: AheadState::Resolving(receiver),
+                });
+                Some((owner, handle))
+            });
+            let _release = ReleaseAhead {
+                source: self,
+                resolver,
+                finished: &finished,
+            };
+            work()
+        })
     }
 
     /// The content already resolved for these folders, without resolving it or replacing what

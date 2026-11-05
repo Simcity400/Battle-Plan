@@ -89,7 +89,7 @@ pub mod variable_builtins;
 
 pub use content::{
     ChangedLayer, GatherOptions, GatheredContent, HashStats, ResolveOptions, ResolvedContent,
-    ResolvedLayer, ResolvedLayers, gather, gather_cancellable, resolve,
+    ResolvedLayer, ResolvedLayers, gather, gather_cancellable, resolve, resolve_cancellable,
 };
 
 /// Severity assigned where a content reader creates a diagnostic.

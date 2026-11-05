@@ -6,18 +6,23 @@
 //! ordered emit and publication, the walks every lane shares, the slowest serial lane and the
 //! peak resident bytes, with every status row that failed. `served-check` checks the replies.
 //! `columnar-family-check --recording <r.battleplan> --columnar <c.h4col> --output <new folder>
-//!   [--family F[,F...]|ported] [--threads N] [--scopes] [--walk-only]`
-//! Game content comes from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or none when neither is set.
+//!   [--family F[,F...]|ported] [--threads N] [--content-cache DIR] [--scopes] [--walk-only]`
+//! Game content comes from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or none when neither is set. Its
+//! hashes are kept in `--content-cache`, by default the app's own cache, so a run resolves it as
+//! the app would; the report says what the resolve read.
 //! `--scopes` also reports the CPU each accounting scope charged. `--walk-only` walks the runs
 //! with one lane doing no family's work, for the floor decode, apply and the world cost.
 //! report.json also holds the timeline of every task and phase, from the process's start.
 
-use dashboard::{config::ContentOptions, prepared::driver::native};
+use dashboard::{
+    config::{Config, ContentOptions},
+    prepared::driver::native,
+};
 use replay::columnar_frames::{Limits, Recording};
 use serde_json::{Value, json};
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::AtomicBool,
 };
 
@@ -28,14 +33,14 @@ mod shader_compiler;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const USAGE: &str = "columnar-family-check --recording R --columnar C --output NEW \
-                     [--family F[,F...]|ported] [--threads N] [--scopes] [--walk-only]";
+                     [--family F[,F...]|ported] [--threads N] [--content-cache DIR] [--scopes] [--walk-only]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
 }
 
-/// The content the families read, cached under `output`; none when neither folder is set.
-fn content(output: &Path) -> io::Result<Option<ContentOptions>> {
+/// The content the families read, its hashes kept in `cache_dir`; none when neither folder is set.
+fn content(cache_dir: io::Result<PathBuf>) -> io::Result<Option<ContentOptions>> {
     let (game_dir, user_dir) = match (
         std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")),
         std::env::var_os("BATTLE_PLAN_USER_DIR").or_else(|| std::env::var_os("HOI4_USER_DIR")),
@@ -49,7 +54,7 @@ fn content(output: &Path) -> io::Result<Option<ContentOptions>> {
         }
     };
     engine_executable::executable_tables::initialize(&game_dir)?;
-    let cache_dir = output.join("content");
+    let cache_dir = cache_dir?;
     std::fs::create_dir_all(&cache_dir)?;
     Ok(Some(ContentOptions {
         options: installed_content_core::ResolveOptions {
@@ -67,6 +72,7 @@ fn run() -> io::Result<()> {
     let mut families: Option<String> = None;
     let mut threads = std::thread::available_parallelism().map_or(1, usize::from);
     let (mut scopes, mut walk_only) = (false, false);
+    let mut content_cache = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--scopes" {
@@ -83,6 +89,7 @@ fn run() -> io::Result<()> {
             Some("--columnar") => columnar = Some(PathBuf::from(value)),
             Some("--output") => output = Some(PathBuf::from(value)),
             Some("--family") => families = Some(value.to_string_lossy().into_owned()),
+            Some("--content-cache") => content_cache = Some(PathBuf::from(value)),
             Some("--threads") => {
                 threads = value
                     .to_str()
@@ -101,6 +108,8 @@ fn run() -> io::Result<()> {
         .filter(|list| *list != "ported")
         .map(|list| list.split(',').collect());
     std::fs::create_dir(&output)?;
+    // Read before the scratch store moves LOCALAPPDATA.
+    let content_cache = content_cache.map_or_else(Config::content_cache_dir, Ok);
     let local = output.join("local");
     std::fs::create_dir_all(&local)?;
     let shader_compiler = shader_compiler::configure();
@@ -110,7 +119,7 @@ fn run() -> io::Result<()> {
         replay_frame::cpu::enable();
     }
     let span = replay_frame::timeline::span("game content");
-    let content = content(&output)?;
+    let content = content(content_cache)?;
     drop(span);
     let span = replay_frame::timeline::span("source open");
     let source = dashboard::Source::open(
@@ -122,39 +131,64 @@ fn run() -> io::Result<()> {
         &AtomicBool::new(false),
     )?;
     drop(span);
-    // The change-run index first, as production prepares it: native readers serve from it.
-    let span = replay_frame::timeline::span("index");
-    let started = std::time::Instant::now();
-    let cpu_before = replay_frame::cpu::process_cpu_ns();
-    let index = dashboard::prepared::change_runs::prepare(&source, &AtomicBool::new(false))?;
-    let index_seconds = started.elapsed().as_secs_f64();
-    let index_cpu = cpu_before
-        .zip(replay_frame::cpu::process_cpu_ns())
-        .map(|(before, after)| after.saturating_sub(before) as f64 / 1e9);
-    // The process's peaks so far: the index is its first heavy work.
-    let (index_working, index_commit) = native::peaks()?;
-    drop(span);
-    let span = replay_frame::timeline::span("recording open");
-    let file = Recording::open_path(&columnar, Limits::default())?;
-    let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
-    drop(span);
-    let span = replay_frame::timeline::span("families");
-    let (accepted, measured) = native::measure(
-        &source,
-        content.as_ref(),
-        file,
-        named.as_deref(),
-        threads,
-        walk_only,
-        &AtomicBool::new(false),
-    )?;
-    drop(span);
+    let cancelled = AtomicBool::new(false);
+    // The content resolves beside the index, as production prepares it.
+    let options = content.as_ref().map(|content| &content.options);
+    let (index, index_seconds, index_cpu, index_working, index_commit, damage, accepted, measured) =
+        source.resolving_ahead(options, &cancelled, || -> io::Result<_> {
+            // The change-run index first, as production prepares it: native readers serve from it.
+            let span = replay_frame::timeline::span("index");
+            let started = std::time::Instant::now();
+            let cpu_before = replay_frame::cpu::process_cpu_ns();
+            let index = dashboard::prepared::change_runs::prepare(&source, &cancelled)?;
+            let index_seconds = started.elapsed().as_secs_f64();
+            let index_cpu = cpu_before
+                .zip(replay_frame::cpu::process_cpu_ns())
+                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e9);
+            // The process's peaks so far: the index is its first heavy work.
+            let (index_working, index_commit) = native::peaks()?;
+            drop(span);
+            let span = replay_frame::timeline::span("recording open");
+            let file = Recording::open_path(&columnar, Limits::default())?;
+            let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
+            drop(span);
+            let span = replay_frame::timeline::span("families");
+            let (accepted, measured) = native::measure(
+                &source,
+                content.as_ref(),
+                file,
+                named.as_deref(),
+                threads,
+                walk_only,
+                &cancelled,
+            )?;
+            drop(span);
+            Ok((index, index_seconds, index_cpu, index_working, index_commit, damage, accepted, measured))
+        })?;
     let failed: Vec<_> = accepted
         .sections
         .iter()
         .filter(|section| section.error.is_some())
         .collect();
     let runs: Vec<native::Run> = index.runs.into_iter().map(native::Run::from).collect();
+    let resolved = content.as_ref().map(|content| {
+        let stats = source
+            .bound_content(&content.options)
+            .map(|resolved| resolved.stats.clone());
+        json!({
+            "cache": content.options.cache_dir,
+            // Nothing read: every file's digest came from the cache.
+            "warm": stats.as_ref().map(|stats| stats.files_read == 0),
+            "stats": stats.map(|stats| json!({
+                "files": stats.files,
+                "bytes": stats.bytes,
+                "filesRead": stats.files_read,
+                "bytesRead": stats.bytes_read,
+                "cacheHits": stats.cache_hits,
+                "milliseconds": u64::try_from(stats.elapsed_ms).ok(),
+            })),
+        })
+    });
     let mut report = json!({
         "shaderCompiler": shader_compiler,
         "recording": recording,
@@ -169,6 +203,7 @@ fn run() -> io::Result<()> {
             "peak_commit_bytes": index_commit,
             "runs": runs,
         },
+        "content": resolved,
         "failed": failed,
         "scopes": scopes.then(replay_frame::cpu::snapshot),
     });

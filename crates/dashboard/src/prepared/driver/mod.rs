@@ -32,30 +32,36 @@ pub fn prepare(
     mut accepted: impl FnMut(&Accepted),
 ) -> io::Result<Accepted> {
     let _returned = crate::allocator::ReturnFreed;
-    // The index first: the viewer serves the map from it while the families prepare. Native
-    // recordings refused for it are the campaign map's refusal alone, named in its status, from
-    // the first progress the families report on.
-    let refused = change_runs::prepare(source, cancelled)?.refused;
-    let mut forward = |done: &Accepted| match &refused {
-        Some(reason) => {
-            let mut done = done.clone();
-            map_refused(&mut done.sections, reason);
-            accepted(&done);
+    // The families' content resolves beside the index, which reads none of it.
+    let options = content.map(|content| &content.options);
+    source.resolving_ahead(options, cancelled, || -> io::Result<Accepted> {
+        // The index first: the viewer serves the map from it while the families prepare. Native
+        // recordings refused for it are the campaign map's refusal alone, named in its status,
+        // from the first progress the families report on.
+        let refused = change_runs::prepare(source, cancelled)?.refused;
+        let mut forward = |done: &Accepted| match &refused {
+            Some(reason) => {
+                let mut done = done.clone();
+                map_refused(&mut done.sections, reason);
+                accepted(&done);
+            }
+            None => accepted(done),
+        };
+        let mut done = match native::recording(source)? {
+            Some(recording) => {
+                native::prepare(source, content, recording, cancelled, &mut forward)?
+            }
+            None => {
+                let done = rows::prepare(source, content, cancelled)?;
+                forward(&done);
+                done
+            }
+        };
+        if let Some(reason) = refused {
+            map_refused(&mut done.sections, &reason);
         }
-        None => accepted(done),
-    };
-    let mut done = match native::recording(source)? {
-        Some(recording) => native::prepare(source, content, recording, cancelled, &mut forward)?,
-        None => {
-            let done = rows::prepare(source, content, cancelled)?;
-            forward(&done);
-            done
-        }
-    };
-    if let Some(reason) = refused {
-        map_refused(&mut done.sections, &reason);
-    }
-    Ok(done)
+        Ok(done)
+    })
 }
 
 /// What a complete preparation of `source` accepted, read from its store,

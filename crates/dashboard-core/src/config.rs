@@ -106,13 +106,17 @@ impl Config {
         Ok(ResolveOptions {
             game_dir: self.game_dir.clone(),
             user_dir: self.user_dir.clone(),
-            cache_dir: PathBuf::from(
-                std::env::var_os("LOCALAPPDATA")
-                    .ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
-            )
-            .join("HOI4Replay")
-            .join("viewer"),
+            cache_dir: Self::content_cache_dir()?,
         })
+    }
+
+    /// The folder the app keeps its content caches in, its hashes of the game's files among them.
+    pub fn content_cache_dir() -> io::Result<PathBuf> {
+        Ok(PathBuf::from(
+            std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
+        )
+        .join("HOI4Replay")
+        .join("viewer"))
     }
 }
 

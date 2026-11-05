@@ -1577,6 +1577,7 @@ impl ResolvedLayer {
     }
 
     fn hash(&mut self, cache: &mut HashCache, stats: &mut HashStats) -> io::Result<[u8; 32]> {
+        cache.continuing()?;
         let mut hashes = BTreeMap::new();
         match &self.source {
             LayerSource::Folder(root) => {
@@ -3749,11 +3750,11 @@ const HASH_CACHE: &str = "content-hashes-v2.bin";
 const HASH_CACHE_MAGIC: &[u8; 8] = b"HOI4HC\x00\x02";
 
 #[derive(Default)]
-struct HashCache {
+struct HashCache<'a> {
     entries: BTreeMap<String, CachedHash>,
     dirty: bool,
-    /// Set to stop the gathering this cache serves: every later probe is refused.
-    cancelled: Option<Arc<AtomicBool>>,
+    /// Any one set stops the gathering this cache serves: every later probe is refused.
+    cancelled: &'a [&'a AtomicBool],
 }
 
 /// The first `count` bytes of `rest`, taken off it; `None` when it holds fewer.
@@ -3766,7 +3767,7 @@ fn take<'a>(rest: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
     Some(head)
 }
 
-impl HashCache {
+impl HashCache<'_> {
     /// [`HASH_CACHE_MAGIC`], the entry count, then each entry in key order: its key's length and
     /// UTF-8 bytes, its stamp (size, seconds and nanoseconds) and its digest, little-endian.
     fn encode(&self) -> Vec<u8> {
@@ -3805,7 +3806,7 @@ impl HashCache {
         rest.is_empty().then_some(Self {
             entries,
             dirty: false,
-            cancelled: None,
+            cancelled: &[],
         })
     }
 
@@ -3902,8 +3903,8 @@ impl HashCache {
     fn continuing(&self) -> io::Result<()> {
         if self
             .cancelled
-            .as_ref()
-            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+            .iter()
+            .any(|cancelled| cancelled.load(Ordering::Acquire))
         {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -4260,7 +4261,7 @@ fn append_builtin(
 
 /// Hashes only covered bytes. Call on a background thread before injection.
 pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
-    gather_selected(options, None, None)
+    gather_selected(options, None, &[])
 }
 
 /// [`gather`], stopped with [`io::ErrorKind::Interrupted`] once `cancelled` is set: no file is
@@ -4269,7 +4270,7 @@ pub fn gather_cancellable(
     options: &GatherOptions,
     cancelled: Arc<AtomicBool>,
 ) -> io::Result<GatheredContent> {
-    gather_selected(options, None, Some(cancelled))
+    gather_selected(options, None, &[&*cancelled])
 }
 
 /// Resolves exactly the replay's recorded ids and order and verifies every
@@ -4277,6 +4278,17 @@ pub fn gather_cancellable(
 /// overrides are not loaded. This verifies local bytes; callers still enforce
 /// the recording's `Verification` state before claiming verified content.
 pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<ResolvedContent> {
+    resolve_cancellable(identity, options, &[])
+}
+
+/// [`resolve`], stopped with [`io::ErrorKind::Interrupted`] once any of `cancelled` is set: it is
+/// checked before each layer, file and archive entry is hashed, and the digests taken before are
+/// kept for the next resolution.
+pub fn resolve_cancellable(
+    identity: &Identity,
+    options: &ResolveOptions,
+    cancelled: &[&AtomicBool],
+) -> io::Result<ResolvedContent> {
     identity.validate()?;
     CoveragePolicy::recorded(identity.coverage_policy)?;
     let content = gather_selected(
@@ -4287,7 +4299,7 @@ pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<Reso
             dlc_order: Some(identity.dlc.iter().map(|dlc| dlc.id.clone()).collect()),
         },
         Some(identity),
-        None,
+        cancelled,
     )?;
     Ok(ResolvedContent {
         layers: content.layers,
@@ -4299,7 +4311,7 @@ pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<Reso
 fn gather_selected(
     options: &GatherOptions,
     recorded: Option<&Identity>,
-    cancelled: Option<Arc<AtomicBool>>,
+    cancelled: &[&AtomicBool],
 ) -> io::Result<GatheredContent> {
     let coverage = recorded
         .map(|identity| CoveragePolicy::recorded(identity.coverage_policy))
@@ -4653,7 +4665,7 @@ fn gather_selected(
     // A valid, unchanged cache needs no serialization or write. Missing or
     // unreadable caches are rebuilt and remain disposable after interruptions.
     if cache.dirty {
-        fs::write(cache_path, cache.encode())?;
+        publish_hash_cache(&cache_path, cache)?;
         // The JSON cache this file replaced is disposable.
         let _ = fs::remove_file(options.cache_dir.join("content-hashes-v1.json"));
     }
@@ -4661,6 +4673,31 @@ fn gather_selected(
         content.stats.elapsed_ms = started.elapsed().as_millis();
         content
     })
+}
+
+/// Replaces the cache file at `path` whole with `cache`, joined by the entries another process
+/// published since it was read. Processes share the app's cache: each writes a file of its own
+/// and renames it over the cache, so a reader sees one writer's whole file, never a mix.
+fn publish_hash_cache(path: &Path, mut cache: HashCache) -> io::Result<()> {
+    static PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if let Some(published) = fs::read(path)
+        .ok()
+        .and_then(|bytes| HashCache::decode(&bytes))
+    {
+        for (key, entry) in published.entries {
+            cache.entries.entry(key).or_insert(entry);
+        }
+    }
+    let staged = path.with_file_name(format!(
+        "{HASH_CACHE}.{}.{}.tmp",
+        std::process::id(),
+        PUBLISHED.fetch_add(1, Ordering::Relaxed)
+    ));
+    let published = fs::write(&staged, cache.encode()).and_then(|()| fs::rename(&staged, path));
+    if published.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    published
 }
 
 #[cfg(test)]
