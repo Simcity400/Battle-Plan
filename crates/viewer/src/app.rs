@@ -5777,10 +5777,12 @@ impl eframe::App for Viewer {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        crate::perf_log::frame_start();
         self.embedded_logic(ctx, frame);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        crate::perf_log::frame_ui();
         if let Some(recorder) = viewer_foundation::frame_writer::recorder() {
             let mut recording = Some(recorder.pass());
             let drawn = self.update(ui, frame, &mut recording);
@@ -5796,6 +5798,7 @@ impl eframe::App for Viewer {
         } else {
             self.update(ui, frame, &mut None);
         }
+        crate::perf_log::frame_end();
     }
 }
 

@@ -57,6 +57,9 @@ pub(super) fn run_pump(inner: Arc<Inner>, emit: Arc<dyn Fn(DataEvent) -> bool + 
             if request.cancelled() || inner.closed.load(Ordering::Acquire) {
                 inner.finish(&request, false);
             } else {
+                if let Some(timing) = &request.timing {
+                    timing.bytes(json.len());
+                }
                 match ReplyChunks::new(request.id.clone(), json) {
                     Ok(chunks)
                         if serialized_bytes.saturating_add(chunks.retained_bytes())

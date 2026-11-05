@@ -17,6 +17,7 @@ import { finalPreparedReply } from './preparedPrefix.ts';
 import { useHeldFailure, useHeldFailures } from './heldFailures.ts';
 import { useViewRead } from './viewRead.ts';
 import { inFrame } from './frameUpdates.ts';
+import { perfLog } from '../shell/perf.ts';
 
 /** Each reply's length as the transport received it, so the cache sizes a reply
  * without serialising it again; a reply without one is measured by serialising. */
@@ -150,6 +151,7 @@ async function loadPage<T>(client: DashboardClient, request: ProductRequest, sig
     if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
     const cached = settled();
     if (cached) {
+      perfLog?.cached(request, 'hit');
       const reply = await untilAborted(cached, signal);
       // An abort after the reply settled but before this continuation still cancels.
       if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
@@ -163,6 +165,7 @@ async function loadPage<T>(client: DashboardClient, request: ProductRequest, sig
     const reads = progressive.get(client) ?? new Map<string, ProgressiveRead>();
     progressive.set(client, reads);
     let read = restart ? undefined : reads.get(key);
+    if (read) perfLog?.cached(request, 'joined');
     if (!read) {
       const created: ProgressiveRead = { users: 0, waiting: false, listeners: new Set(), controller: new AbortController(), done: Promise.resolve(undefined) };
       // A unique in-flight entry keeps source release cancellation in the same
@@ -217,14 +220,19 @@ async function loadPage<T>(client: DashboardClient, request: ProductRequest, sig
     }
   }
   const held = settled();
-  if (held) return untilAborted(held, signal).then(reply => {
-    if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-    return told(reply.data);
-  });
+  if (held) {
+    perfLog?.cached(request, 'hit');
+    return untilAborted(held, signal).then(reply => {
+      if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
+      return told(reply.data);
+    });
+  }
   let final = true;
   // A load going in the other cache is joined there: one request, kept where it was started.
   const other = cache(client, !hours);
-  return (!replies.holds(key) && other.holds(key) ? other : replies).get(key, async shared => {
+  const holder = !replies.holds(key) && other.holds(key) ? other : replies;
+  if (perfLog && holder.holds(key)) perfLog.cached(request, 'joined');
+  return holder.get(key, async shared => {
     const reply = prepared ? { ...request, data: await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
       request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart) }
       : validateProductReply(await client.product<unknown>(request, shared), request);

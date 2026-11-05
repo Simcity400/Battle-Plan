@@ -2,6 +2,7 @@
 
 mod dashboard_service;
 mod native;
+mod perf;
 mod popout;
 mod preparation;
 mod recorder;
@@ -194,6 +195,7 @@ fn main() {
         );
         return;
     }
+    perf::init();
     shader_pipeline::artwork::warm();
     if let Err(error) = dashboard::artwork::configure(ARTWORK_BASE) {
         eprintln!("{error}");
@@ -273,18 +275,34 @@ fn main() {
             dashboard_service::dashboard_history_cache,
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,
+            perf::perf_enabled,
+            perf::perf_write,
+            perf::perf_finished,
+            perf::perf_stop,
         ])
         .build(tauri::generate_context!())
         .expect("Could not initialize the replay desktop");
-    app.run(|app, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
-            app.state::<preparation::PreparationMonitor>().shutdown();
-            app.state::<DashboardService>().shutdown();
-            app.state::<popout::PopOuts>().close(app);
-            app.state::<NativeHost>().shutdown();
+    app.run(|app, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" && perf::finish_before_exit(app, shutdown) => api.prevent_close(),
+        tauri::RunEvent::ExitRequested { api, .. } if perf::finish_before_exit(app, shutdown) => {
+            api.prevent_exit();
         }
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            shutdown(app);
+            perf::close();
+        }
+        _ => {}
     });
+}
+
+/// Stops the data service and every viewer.
+fn shutdown(app: &tauri::AppHandle) {
+    app.state::<preparation::PreparationMonitor>().shutdown();
+    app.state::<DashboardService>().shutdown();
+    app.state::<popout::PopOuts>().close(app);
+    app.state::<NativeHost>().shutdown();
 }

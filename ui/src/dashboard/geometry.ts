@@ -4,6 +4,8 @@ import type { MapBounds } from '../shell/api';
 import type { MapOptions } from '../shell/api';
 import type { DashboardClient, DashboardMapState, DashboardMapView, MapOptionsEvent, MapToggle } from './client';
 import { PickerOptions } from './mapPicker';
+import { perfLog } from '../shell/perf';
+import type { MapExpectation } from '../shell/perf';
 export { CAMPAIGN_MAP_VIEW, campaignToggled, toggleMapSetting } from './mapPicker';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 
@@ -95,6 +97,7 @@ export class MapViewsStore {
     document.addEventListener('visibilitychange', this.schedule);
     if (this.client.available) void this.client.onMapStates((states) => {
       if (!this.active || this.generation !== generation) return;
+      perfLog?.mapStates(states, this.expectation);
       for (const state of states) {
         const old = this.states.get(state.id);
         if (old && (state.requestedSequence ?? state.sequence) < (old.requestedSequence ?? old.sequence)
@@ -125,6 +128,7 @@ export class MapViewsStore {
       document.removeEventListener('visibilitychange', this.schedule);
       resolution?.removeEventListener('change', changedResolution);
       this.pending = [];
+      perfLog?.mapViews([]);
       void this.drain();
     };
   }
@@ -160,6 +164,15 @@ export class MapViewsStore {
     this.frame = requestAnimationFrame(() => { this.frame = 0; this.measure(); });
   };
 
+  /** Where a map should be now in its own recording's hours: a followed map moves with the clock, a pinned one stays. */
+  private expectation = (id: string): MapExpectation | null => {
+    const clock = this.clock.getSnapshot();
+    const target = this.surfaces.get(id)?.target(clock);
+    if (!target) return null;
+    const moved = target.playing ? this.clock.positionAt() - clock.position : 0;
+    return { position: target.hour + target.fraction + moved, follow: target.seekSequence !== undefined };
+  };
+
   private notify(id: string): void { for (const listener of this.listeners.get(id) ?? []) listener(); }
   private fail(error: string): void {
     let changed = false;
@@ -193,6 +206,7 @@ export class MapViewsStore {
       views.push(view);
       this.lastViews.set(id, view);
     }
+    perfLog?.mapViews(views);
     this.pending = views;
     void this.drain();
   }

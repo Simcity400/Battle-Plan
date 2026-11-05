@@ -1338,6 +1338,9 @@ impl Inner {
     /// Queue `job` on `lane`, or refuse it with the retryable capacity error
     /// when the lane is full.
     pub(super) fn submit_to(&self, lane: Lane, request: Arc<Request>, job: LoadJob) {
+        if let Some(timing) = &request.timing {
+            timing.queued(lane);
+        }
         let result = {
             let loader = self
                 .loader
@@ -1515,6 +1518,9 @@ impl Inner {
                 self.queue_deferred();
             }
             let request = job.request().cloned();
+            if let Some(timing) = request.as_ref().and_then(|request| request.timing.as_ref()) {
+                timing.started();
+            }
             // Measurement only: the job's CPU by product, when enabled.
             let _cpu = match &job {
                 LoadJob::Product { body, .. } => {

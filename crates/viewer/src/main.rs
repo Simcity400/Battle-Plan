@@ -36,6 +36,7 @@ mod map_icons;
 mod map_source;
 mod map_views;
 mod paint_owner;
+mod perf_log;
 mod playback;
 mod playback_cost;
 mod raid_lane;
@@ -2397,6 +2398,7 @@ fn main() -> std::process::ExitCode {
     // Profiling lines are written by a thread of their own; every mode waits
     // for them, a headless dump included.
     profile_flush();
+    perf_log::finish();
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

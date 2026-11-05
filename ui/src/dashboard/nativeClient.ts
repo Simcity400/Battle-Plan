@@ -14,16 +14,20 @@ import { replyLengths } from './products.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
 import type { Compression } from '../recorder/compression';
+import { perfLog } from '../shell/perf.ts';
+import type { QueryTiming } from '../shell/perf';
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
 }
 
 /** Data replies arrive as raw JSON bytes; the host never parses them. */
-async function rawInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
+async function rawInvoke<T>(command: string, args: Record<string, unknown>, timing?: QueryTiming): Promise<T> {
   const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
+  if (timing) timing.received = performance.now();
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;
   const reply: unknown = JSON.parse(new TextDecoder().decode(result));
+  if (timing) { timing.parsed = performance.now(); timing.bytes = result.byteLength; }
   if (reply && typeof reply === 'object') {
     replyLengths.set(reply, result.byteLength);
     // A prepared reply's data is kept without its envelope.
@@ -42,20 +46,25 @@ async function request<T>(
   if (!desktopAvailable) throw new Error('Open the desktop app to read recordings and display native maps.');
   if (signal.aborted) throw cancelled();
   const requestId = newId();
+  const body = args(requestId);
   const abort = () => { void invoke('dashboard_cancel', { requestId }).catch(() => {}); };
   signal.addEventListener('abort', abort, { once: true });
+  const perf = perfLog, started = perf ? performance.now() : 0, timing: QueryTiming | undefined = perf ? {} : undefined;
+  let outcome: 'ok' | 'cancelled' | 'error' = 'error';
   try {
-    const result = await rawInvoke<T>(command, { ...args(requestId), requestId });
+    const result = await rawInvoke<T>(command, { ...body, requestId }, timing);
     if (signal.aborted) {
       await releaseLate?.(result).catch(() => {});
       throw cancelled();
     }
+    outcome = 'ok';
     return result;
   } catch (error) {
-    if (signal.aborted) throw cancelled();
+    if (signal.aborted) { outcome = 'cancelled'; throw cancelled(); }
     throw error;
   } finally {
     signal.removeEventListener('abort', abort);
+    if (perf && timing) perf.query(command, body, requestId, started, timing, outcome);
   }
 }
 

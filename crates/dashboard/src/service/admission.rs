@@ -14,6 +14,7 @@ pub(super) struct Request {
     pub(super) id: String,
     pub(super) cancelled: AtomicBool,
     pub(super) refresh: AtomicBool,
+    pub(super) timing: Option<super::perf::RequestTiming>,
 }
 
 impl crate::presentation::Cancel for Request {
@@ -28,6 +29,7 @@ impl Request {
             id,
             cancelled: AtomicBool::new(false),
             refresh: AtomicBool::new(false),
+            timing: super::perf::RequestTiming::new(),
         })
     }
 
@@ -196,6 +198,9 @@ impl Inner {
     }
 
     pub(super) fn complete(&self, request: Arc<Request>, result: Result<String, QueryError>) {
+        if let Some(timing) = &request.timing {
+            timing.completed();
+        }
         let mut pending = self
             .pending
             .lock()
@@ -208,6 +213,14 @@ impl Inner {
     }
 
     pub(super) fn finish(&self, request: &Arc<Request>, delivered: bool) {
+        if let Some(timing) = &request.timing {
+            let outcome = match (delivered, request.cancelled()) {
+                (_, true) => "cancelled",
+                (true, false) => "ok",
+                (false, false) => "error",
+            };
+            timing.report(&request.id, outcome);
+        }
         let lease = self
             .pending
             .lock()

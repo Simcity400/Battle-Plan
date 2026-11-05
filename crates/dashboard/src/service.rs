@@ -22,6 +22,7 @@ use std::{
 
 mod admission;
 mod jobs;
+pub mod perf;
 mod pump;
 mod queue;
 use queue::{Sender as SyncSender, channel};

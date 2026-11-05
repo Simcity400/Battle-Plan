@@ -171,7 +171,11 @@ impl Entry {
 
     /// The stored reply JSON, or none.
     pub(crate) fn get(&self) -> Option<String> {
-        self.get_in(Table::shared())
+        let json = self.get_in(Table::shared());
+        if json.is_some() {
+            crate::service::perf::note_disk_hit();
+        }
+        json
     }
 
     /// The stored reply JSON, its images given to `artwork`, or none.

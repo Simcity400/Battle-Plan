@@ -170,6 +170,12 @@ impl NativeHost {
         if inner.popout.is_some() {
             command.env_remove("BATTLE_PLAN_VIEWER_FRAMES");
         }
+        if let Some(prefix) = crate::perf::map_prefix() {
+            command.env("BATTLE_PLAN_PERF_MAP_LOG", prefix).env(
+                "BATTLE_PLAN_PERF_MAP_ROLE",
+                if inner.popout.is_some() { "popout" } else { "main" },
+            );
+        }
         drop(inner);
         let mut child = command
             .args(forwarded)

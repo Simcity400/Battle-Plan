@@ -1,5 +1,6 @@
 import { startTransition, useEffect, useRef, useState } from 'react';
 import type { HourWindow } from './model';
+import { perfLog } from '../shell/perf.ts';
 
 // Widgets look hours up locally and the native map advances the same clock
 // between host updates; neither clock waits for hour builders.
@@ -129,6 +130,7 @@ export class PlaybackController {
     this.snapshot = { ...next, hour, fraction: next.position - hour,
       sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
+    perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence);
     for (const listener of this.listeners) listener();
     if (hourChanged || discontinuity) for (const listener of this.hourListeners) listener();
   }
