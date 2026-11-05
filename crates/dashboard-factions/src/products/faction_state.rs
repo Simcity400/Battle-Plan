@@ -260,6 +260,9 @@ impl Product for FactionState {
     const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = FactionStateParams;
     type Reply = FactionStateReply;
+    fn native_tables() -> Vec<replay_data::rows::TableId> {
+        prepared::native_tables()
+    }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         let (branch, faction) = params.identity();
         if branch.parse::<u64>().is_err() || !faction.parse::<u64>().is_ok_and(|id| id != 0) {

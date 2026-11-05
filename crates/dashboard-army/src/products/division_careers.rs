@@ -40,6 +40,15 @@ pub const TABLES: [TableId; 9] = [
     TableId::LexicalTokens,
 ];
 
+/// The tables a division's record reads: the careers' and its places' names, in table order.
+fn record_tables() -> Vec<TableId> {
+    let mut tables = TABLES.to_vec();
+    tables.extend(place_names::NAME_TABLES);
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionCareersParams {
@@ -177,6 +186,9 @@ impl Product for DivisionCareers {
             CareerTemplate::decl(),
         ]
     }
+    fn native_tables() -> Vec<TableId> {
+        TABLES.to_vec()
+    }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         for tag in p.tags.iter().flatten() {
             dashboard_base::products::validate_tag(tag)?;
@@ -238,6 +250,9 @@ impl Product for DivisionRecord {
             RecordEntry::decl(),
         ]
     }
+    fn native_tables() -> Vec<TableId> {
+        record_tables()
+    }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         p.division.parse::<u64>().map_err(|_| "Invalid division")?;
         p.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
@@ -259,11 +274,7 @@ impl Product for DivisionRecord {
             &p.division,
             cancelled,
             || {
-                let mut tables = TABLES.to_vec();
-                tables.extend(place_names::NAME_TABLES);
-                tables.sort_unstable();
-                tables.dedup();
-                let frame = native::frame_at(source, branch, p.hour, &tables, cancelled)?
+                let frame = native::frame_at(source, branch, p.hour, &record_tables(), cancelled)?
                     .ok_or_else(|| dashboard_core::refused("This hour is not recorded"))?;
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;

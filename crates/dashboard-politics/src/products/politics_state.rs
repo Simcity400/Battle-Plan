@@ -192,6 +192,9 @@ impl Product for PoliticsState {
             PoliticsStateReply::decl(),
         ]
     }
+    fn native_tables() -> Vec<TableId> {
+        [EXILE_TABLES, BALANCE_TABLES].concat()
+    }
     fn validate(p: &PoliticsStateParams) -> Result<(), &'static str> {
         p.branch_id
             .parse::<u64>()

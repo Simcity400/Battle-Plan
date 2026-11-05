@@ -106,6 +106,10 @@ impl Product for DoctrineMastery {
     type Params = DoctrineMasteryParams;
     type Reply = DoctrineMasteryReply;
 
+    fn native_tables() -> Vec<replay_data::rows::TableId> {
+        description_tables().to_vec()
+    }
+
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         validate_tag(&params.tag)?;
         params

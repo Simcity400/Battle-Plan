@@ -2,6 +2,7 @@ use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records, session, source};
 use replay::{
     columnar_file::Capture,
+    columnar_frames::synthetic::{Input, Sample, Synthetic},
     columnar_runs::captures,
     container::Replay,
     spool::{ControlRecord, Record},
@@ -300,4 +301,93 @@ fn a_refused_index_is_the_campaign_map_s_status_and_restored_until_its_natives_c
         crate::prepared::clear(&source, None, &stop).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
+}
+
+/// What faction states' programmes and minefield reports read that row frames leave to the
+/// native capture.
+const LEFT: [TableId; 5] = [
+    TableId::ProjectPrograms,
+    TableId::Projects,
+    TableId::VariantDefinitions,
+    TableId::CountryCounterInputs,
+    TableId::NavalAccidentReports,
+];
+
+/// `T` read whole and empty at the hour.
+fn read_empty<T: replay_data::rows::TableSchema>(walk: &mut Synthetic) {
+    walk.table::<T::Row>(
+        T::ID,
+        Input::Snapshot {
+            rows: &[],
+            partial: None,
+            read: true,
+            sample: Sample::FromReadBit,
+        },
+    )
+    .unwrap();
+}
+
+/// The native recorder's hour of [`LEFT`] and the campaign.
+fn write_left(walk: &mut Synthetic, frame: &DecodedFrame) {
+    use replay_data::rows::tables;
+    crate::native_fixtures::write::<tables::Campaign>(walk, frame);
+    read_empty::<tables::ProjectPrograms>(walk);
+    read_empty::<tables::Projects>(walk);
+    read_empty::<tables::VariantDefinitions>(walk);
+    read_empty::<tables::CountryCounterInputs>(walk);
+    read_empty::<tables::NavalAccidentReports>(walk);
+}
+
+/// The index holds every table a registered product reads through the native hour reader: a
+/// native capture holding what faction states and minefields read, which their row frames leave
+/// to it, is served to both from the index preparation keeps.
+#[test]
+fn a_native_capture_holding_what_products_read_is_served_from_its_index() {
+    use crate::native_fixtures::{Recorded, UNIT_HOURS};
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        for table in LEFT {
+            *frame.tables[table.index()] = TableView::NotRecorded {
+                mode: CaptureMode::Full,
+            };
+        }
+        for table in std::iter::once(TableId::Campaign).chain(LEFT) {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+        frame
+    };
+    let mut input = records(1, (0..UNIT_HOURS).map(frame).collect());
+    input.push(Record::Control(ControlRecord::Detach {
+        session: 1,
+        last_hour: Some(UNIT_HOURS - 1),
+    }));
+    let replay = Replay::from_records(CAMPAIGN.to_vec(), &[input]).unwrap();
+    let recorded = Recorded::new();
+    let streams: Vec<TableId> = std::iter::once(TableId::Campaign).chain(LEFT).collect();
+    recorded.record(&replay, &[(1, 0, 1)], &streams, write_left);
+    let source = recorded.source("native");
+    let stop = AtomicBool::new(false);
+    assert_eq!(prepare(&source, &stop).unwrap(), None);
+    assert_eq!(outcome(&source).unwrap(), Outcome::Indexed);
+    let mut served = Vec::new();
+    for key in ["faction-state", "minefields"] {
+        let read = (crate::products::find(key).unwrap().native_tables)();
+        let frame =
+            dashboard_base::prepared::query::native::frame_at(&source, 1, 100, &read, &stop)
+                .unwrap()
+                .expect("hour 100 is recorded");
+        for table in LEFT.into_iter().filter(|table| read.contains(table)) {
+            assert!(
+                matches!(&*frame.tables[table.index()], TableView::Complete(_)),
+                "{key} reads {table:?} unserved"
+            );
+            served.push(table);
+        }
+    }
+    let mut left = LEFT.to_vec();
+    for tables in [&mut served, &mut left] {
+        tables.sort_unstable();
+        tables.dedup();
+    }
+    assert_eq!(served, left);
 }

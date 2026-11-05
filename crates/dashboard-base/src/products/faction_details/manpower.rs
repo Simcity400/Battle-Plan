@@ -12,6 +12,10 @@ const SUPPLY_TABLES: &[TableId] = &[
     TableId::LexicalTokens,
     TableId::SimulationFeatures,
 ];
+/// Every table a supplying hour's checks and predictions read.
+pub(super) fn native_tables() -> impl Iterator<Item = TableId> {
+    SUPPLY_TABLES.iter().chain(TABLES).copied()
+}
 /// What a prediction reads there, only for a member it is reached for.
 const TABLES: &[TableId] = &[
     TableId::Countries,

@@ -39,10 +39,6 @@ mod tests;
 pub struct RegionalWeather;
 
 pub const TEMPERATURE_REFUSAL: &str = "Temperature unavailable: preparation has not bound the recorded content stack; call regional_weather::block::Observer::bind before folding each branch";
-/// The tables the provinces view reads at its hour.
-pub const PROVINCE_TABLES: &[TableId] = provinces::TABLES;
-/// The tables the modifier and theatre choices read at the last weather hour.
-pub const CHOICE_TABLES: &[TableId] = content::AUXILIARY_TABLES;
 /// Raw temperature units per degree Celsius (fixed5).
 pub const TEMPERATURE_SCALE: i64 = replay_data::temperature::SCALE;
 /// Raw modifier entries use the recording's fixed5 units, without clamping,
@@ -192,6 +188,10 @@ impl Product for RegionalWeather {
     const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = RegionalWeatherParams;
     type Reply = RegionalWeatherResponse;
+
+    fn native_tables() -> Vec<TableId> {
+        [provinces::TABLES, content::AUXILIARY_TABLES].concat()
+    }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         keyed::validate_window(&params.branch_id, params.first_hour, params.last_hour)?;

@@ -98,6 +98,15 @@ pub const TABLES: &[TableId] = &[
     TableId::WargoalTargets,
     TableId::WargoalJustifications,
 ];
+
+/// What a reply reads at its hour: [`TABLES`] and its countries' names, in table order.
+fn read_tables() -> Vec<TableId> {
+    let mut tables = TABLES.to_vec();
+    tables.extend(installed_content_country_names::country_names::TABLES);
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
 impl Product for Wargoals {
     const KEY: &'static str = "wargoals";
     const CONTENT_DEPENDENT: bool = true;
@@ -121,6 +130,9 @@ impl Product for Wargoals {
             WargoalStanding::decl(),
             WargoalStateName::decl(),
         ]
+    }
+    fn native_tables() -> Vec<TableId> {
+        read_tables()
     }
     fn load(
         source: &Source,
@@ -169,10 +181,7 @@ impl Product for Wargoals {
                 }
             }
         };
-        let mut tables = TABLES.to_vec();
-        tables.extend(installed_content_country_names::country_names::TABLES);
-        tables.sort_by_key(|t| t.index());
-        tables.dedup();
+        let tables = read_tables();
         let mut frame = read(&tables)?;
         dashboard_base::prepared::query::native::fill(source, &mut frame, &tables, cancelled)?;
         let (_, slot) = selected_country(

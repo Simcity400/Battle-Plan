@@ -23,35 +23,24 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-/// The tables read from the index at query time: the map's, and those the hour readers of
-/// division careers, division templates, the training queue, army losses, war goals, faction
-/// details, the politics details, regional weather and doctrine descriptions read, in table
-/// order.
+/// The tables read from the index: the map's, and every one a registered product reads through
+/// the native hour reader ([`dashboard_base::products::Product::native_tables`]), in table order.
 pub fn tables() -> &'static [TableId] {
     static TABLES: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
-        use dashboard_army::products::{division_careers, division_templates, training_queue};
-        use dashboard_weather::products::regional_weather;
-        let map = dashboard_base::map_tables::selected_tables();
-        let queue = training_queue::read_tables();
-        let read: [&[TableId]; 14] = [
-            &division_careers::TABLES,
-            &division_templates::TABLES,
-            queue.as_slice(),
-            &dashboard_land_battles::products::army_losses::TABLES,
-            &dashboard_base::products::equipment::DESIGN_TABLES,
-            &dashboard_base::products::place_names::NAME_TABLES,
-            dashboard_wars::products::wargoals::TABLES,
-            &installed_content_country_names::country_names::TABLES,
-            dashboard_base::products::faction_details::TABLES,
-            dashboard_politics::products::politics_state::EXILE_TABLES,
-            dashboard_politics::products::politics_state::BALANCE_TABLES,
-            regional_weather::PROVINCE_TABLES,
-            regional_weather::CHOICE_TABLES,
-            dashboard_doctrine_mastery::products::doctrine_mastery::description_tables(),
-        ];
+        let mut read = [false; replay_data::rows::TABLE_COUNT];
+        let products = crate::products::PRODUCTS
+            .iter()
+            .flat_map(|product| (product.native_tables)());
+        for table in dashboard_base::map_tables::selected_tables()
+            .iter()
+            .copied()
+            .chain(products)
+        {
+            read[table.index()] = true;
+        }
         TableId::ALL
             .into_iter()
-            .filter(|table| map.contains(table) || read.iter().any(|tables| tables.contains(table)))
+            .filter(|table| read[table.index()])
             .collect()
     });
     &TABLES

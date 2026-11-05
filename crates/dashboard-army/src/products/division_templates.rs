@@ -126,6 +126,9 @@ impl Product for DivisionTemplates {
             DesignerKind::decl(),
         ]
     }
+    fn native_tables() -> Vec<TableId> {
+        TABLES.to_vec()
+    }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         dashboard_base::products::validate_tag(&p.tag)?;
         p.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")

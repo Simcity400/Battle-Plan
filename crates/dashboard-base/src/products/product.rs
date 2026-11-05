@@ -94,6 +94,13 @@ pub trait Product: 'static {
         Ok(())
     }
 
+    /// Every table it or its prepared family may read at an hour through the native hour reader
+    /// ([`crate::prepared::query::native`]): a recording's change-run index holds exactly the
+    /// union of these over the registry, and the map's tables.
+    fn native_tables() -> Vec<replay_data::rows::TableId> {
+        Vec::new()
+    }
+
     /// TypeScript declarations this product introduces, parameters and reply first.
     fn types() -> Vec<String> {
         vec![Self::Params::decl(), Self::Reply::decl()]

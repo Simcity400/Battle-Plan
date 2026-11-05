@@ -231,7 +231,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &["faction-state"],
         // 2: lanes on the segment driver, published as a series root.
         // 3: stored scripted names: is_country_leader is now evaluated.
-        version: 3,
+        // 4: programmes a native capture holds are read from the change-run index.
+        version: 4,
         ..family("faction_state")
     },
     Descriptor {

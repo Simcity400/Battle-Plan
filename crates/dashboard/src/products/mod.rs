@@ -136,6 +136,8 @@ pub struct Registered {
     pub prepared_only: bool,
     /// How its served replies are checked ([`Product::SERVED`]).
     pub served: Option<&'static dashboard_base::prepared::served::Plan>,
+    /// What it reads through the native hour reader ([`Product::native_tables`]).
+    pub native_tables: fn() -> Vec<replay_data::rows::TableId>,
 }
 
 const fn register<P: Product>() -> Registered {
@@ -148,6 +150,7 @@ const fn register<P: Product>() -> Registered {
         types: types::<P>,
         prepared_only: false,
         served: P::SERVED,
+        native_tables: P::native_tables,
     }
 }
 

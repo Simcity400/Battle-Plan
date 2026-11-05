@@ -187,6 +187,11 @@ impl Product for TrainingQueue {
             TrainingNeed::decl(),
         ]
     }
+    fn native_tables() -> Vec<TableId> {
+        let mut tables = read_tables();
+        tables.extend(dashboard_base::products::equipment::DESIGN_TABLES);
+        tables
+    }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         dashboard_base::products::validate_tag(&p.tag)?;
         p.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")

@@ -84,6 +84,13 @@ impl Kind {
         }
     }
 }
+/// Every table [`Supplying`] reads through the native hour reader: the programmes' supplying
+/// read and its widest frame.
+pub fn native_tables() -> Vec<TableId> {
+    let mut tables = selectors::programme_text_tables();
+    tables.push(TableId::ProjectPrograms);
+    tables
+}
 /// One branch's programme supplying reads, each sought in rising hours.
 pub struct Supplying<'a> {
     hours: Walk<'a>,

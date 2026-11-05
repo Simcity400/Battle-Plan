@@ -1,6 +1,7 @@
 //! Measures a native preparation of a recording as production prepares it
 //! ([`dashboard::prepared::driver::native`]): every family with a native backend, or those
-//! `--family` names, prepared from the native recording into a scratch store under `--output`.
+//! `--family` names, prepared from the native recording into a scratch store under `--output`,
+//! after the change-run index production prepares first.
 //! Reports what it cost per game hour beside the goal it is judged on: each family's operators,
 //! ordered emit and publication, the walks every lane shares, the slowest serial lane and the
 //! peak resident bytes, with every status row that failed. `served-check` checks the replies.
@@ -111,6 +112,10 @@ fn run() -> io::Result<()> {
         recording.clone(),
         &AtomicBool::new(false),
     )?;
+    // The change-run index first, as production prepares it: native readers serve from it.
+    let started = std::time::Instant::now();
+    let index_refused = dashboard::prepared::change_runs::prepare(&source, &AtomicBool::new(false))?;
+    let index_seconds = started.elapsed().as_secs_f64();
     let file = Recording::open_path(&columnar, Limits::default())?;
     let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
     let (accepted, measured) = native::measure(
@@ -132,6 +137,7 @@ fn run() -> io::Result<()> {
         "columnar": columnar,
         "damage": damage,
         "measured": measured,
+        "index": { "seconds": index_seconds, "refused": index_refused },
         "failed": failed,
         "scopes": scopes.then(replay_frame::cpu::snapshot),
     });

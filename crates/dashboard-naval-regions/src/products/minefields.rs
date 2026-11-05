@@ -110,12 +110,26 @@ impl ReplyWarnings for Reply {
         }
     }
 }
+/// What the reports view reads at its hour.
+const REPORT_TABLES: &[TableId] = &[
+    TableId::NavalAccidentReports,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::VariantDefinitions,
+    TableId::LexicalTokens,
+    TableId::CountryCounterInputs,
+    TableId::ReservedCountryNaming,
+];
 impl Product for Minefields {
     const KEY: &'static str = "minefields";
     const CONTENT_DEPENDENT: bool = true;
     const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = Params;
     type Reply = Reply;
+    fn native_tables() -> Vec<TableId> {
+        REPORT_TABLES.to_vec()
+    }
     fn validate(p: &Params) -> Result<(), &'static str> {
         shared::validate(&p.branch_id, p.first_hour, p.last_hour)?;
         for tag in p.tags.iter().flatten() {
@@ -591,17 +605,7 @@ fn reports(q: &Query<'_>, p: &Params) -> io::Result<serde_json::Value> {
         reports: Vec::new(),
         warnings: Vec::new(),
     };
-    let tables = &[
-        TableId::NavalAccidentReports,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::CountryAppearance,
-        TableId::VariantDefinitions,
-        TableId::LexicalTokens,
-        TableId::CountryCounterInputs,
-        TableId::ReservedCountryNaming,
-    ];
-    let Some(frame) = native::frame_at(q.source, q.branch, hour, tables, q.cancelled)? else {
+    let Some(frame) = native::frame_at(q.source, q.branch, hour, REPORT_TABLES, q.cancelled)? else {
         reply
             .warnings
             .push("1 standing mine report list not shown: requested hour is not recorded".into());

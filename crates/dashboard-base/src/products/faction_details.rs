@@ -206,6 +206,16 @@ impl Product for FactionDetails {
             FactionDetailReply::decl(),
         ]
     }
+    fn native_tables() -> Vec<TableId> {
+        let mut tables = TABLES.to_vec();
+        tables.extend(companions::EXTRA_TABLES);
+        tables.push(TableId::ResourceDefinitions);
+        tables.extend_from_slice(companions::PROGRAMME_TABLES);
+        tables.extend(crate::effect_description::recorded_tables());
+        tables.extend(selectors::programme_text_tables());
+        tables.extend(manpower::native_tables());
+        tables
+    }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         if params.branch_id.parse::<u64>().is_err()
             || !params.faction.parse::<u64>().is_ok_and(|id| id != 0)
